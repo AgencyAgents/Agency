@@ -11,6 +11,7 @@
     { "path": "../net" },
     { "path": "../guard" },
     { "path": "../providers" },
-    { "path": "../rpc" }
+    { "path": "../rpc" },
+    { "path": "../tools" }
   ]
 }

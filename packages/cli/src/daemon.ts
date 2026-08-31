@@ -1,6 +1,7 @@
+import { join } from "node:path";
 import { type Budget, type LoopEvent, runTurn, type ToolSpec } from "@agency/core";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
-import { FULL_CAPABILITIES } from "@agency/guard";
+import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@agency/providers";
 import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
 import type { Message, StopReason } from "@agency/schema";
+import { createBuiltinTools } from "@agency/tools";
 
 const BUILTIN_ADAPTERS: Record<string, ProviderAdapter> = {
   anthropic: anthropicAdapter,
@@ -49,6 +51,8 @@ export interface AgentDaemonOptions {
   /** Defaults to the real built-in adapters; tests substitute fakes here. */
   adapterFor?: (provider: string) => ProviderAdapter;
   http?: HttpClient;
+  /** Defaults to the real P4 built-in set (read/write/edit/bash/grep/glob/
+   *  fetch/todo); tests substitute a smaller fake set here. */
   tools?: ToolSpec[];
   identity?: CallerIdentity;
   capabilities?: Capabilities;
@@ -75,10 +79,22 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       return adapter;
     });
   const http = options.http ?? createHttpClient();
-  const tools = options.tools ?? [];
   const identity = options.identity ?? { type: "user" as const };
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
+
+  // Snapshot storage location is provisional: P5 formalizes the real
+  // per-OS storage layout (R9's storage spec). This just needs somewhere
+  // real to live until then.
+  const builtins = options.tools
+    ? undefined
+    : createBuiltinTools({
+        deps: { identity, capabilities, sandbox: new SandboxBoundary(options.workspaceRoot) },
+        http,
+        workspaceRoot: options.workspaceRoot,
+        snapshotDir: join(options.workspaceRoot, ".agency", "snapshots"),
+      });
+  const tools = options.tools ?? builtins?.tools ?? [];
 
   const scheduler = new Scheduler();
   const activeControllers = new Map<string, AbortController>();
@@ -146,6 +162,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     server,
     async stop() {
       clearTimeout(idleTimer);
+      builtins?.processManager.killAll();
       await server.close();
     },
   };

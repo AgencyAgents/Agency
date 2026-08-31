@@ -75,6 +75,12 @@ describe("requirePathScope", () => {
     const winCaps: Capabilities = { tools: "*", pathScopes: ["C:\\Users\\pixel\\agency"], network: "none" };
     expect(() => requirePathScope(user, winCaps, "C:\\Users\\pixel\\agency\\src\\index.ts")).not.toThrow();
   });
+
+  test("'*' allows any path, including a Windows drive-letter path a POSIX-style prefix would miss", () => {
+    const wildcard: Capabilities = { tools: "*", pathScopes: "*", network: "none" };
+    expect(() => requirePathScope(user, wildcard, "C:\\Users\\pixel\\agency\\src\\index.ts")).not.toThrow();
+    expect(() => requirePathScope(user, wildcard, "/home/user/anything")).not.toThrow();
+  });
 });
 
 describe("requireNetwork", () => {

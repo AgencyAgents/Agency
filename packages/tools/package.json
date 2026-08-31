@@ -1,5 +1,5 @@
 {
-  "name": "@agency/cli",
+  "name": "@agency/tools",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,12 +7,9 @@
   "types": "./src/index.ts",
   "dependencies": {
     "@agency/schema": "workspace:*",
-    "@agency/core": "workspace:*",
-    "@agency/net": "workspace:*",
     "@agency/guard": "workspace:*",
-    "@agency/providers": "workspace:*",
-    "@agency/rpc": "workspace:*",
-    "@agency/tools": "workspace:*"
+    "@agency/net": "workspace:*",
+    "zod": "^4"
   },
   "scripts": {
     "typecheck": "tsc --build",

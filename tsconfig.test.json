@@ -8,6 +8,7 @@
     { "path": "packages/guard/tsconfig.test.json" },
     { "path": "packages/providers/tsconfig.test.json" },
     { "path": "packages/rpc/tsconfig.test.json" },
+    { "path": "packages/tools/tsconfig.test.json" },
     { "path": "packages/cli/tsconfig.test.json" }
   ]
 }

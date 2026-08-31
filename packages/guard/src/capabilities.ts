@@ -24,14 +24,19 @@ export function callerLabel(identity: CallerIdentity): string {
 export interface Capabilities {
   /** Tool names this caller may invoke, or "*" for unrestricted. */
   tools: readonly string[] | "*";
-  /** Directory prefixes this caller may read or write within. */
-  pathScopes: readonly string[];
+  /**
+   * Directory prefixes this caller may read or write within, or "*" for
+   * unrestricted. A literal "/" is deliberately not a wildcard sentinel here:
+   * on Windows every resolved path is drive-letter-rooted (`C:/...`), so a
+   * POSIX-style "/" prefix match would silently deny everything.
+   */
+  pathScopes: readonly string[] | "*";
   /** Hosts this caller's tools may reach, "*" for any, or "none" to block network entirely. */
   network: readonly string[] | "*" | "none";
 }
 
 export const NO_CAPABILITIES: Capabilities = { tools: [], pathScopes: [], network: "none" };
-export const FULL_CAPABILITIES: Capabilities = { tools: "*", pathScopes: ["/"], network: "*" };
+export const FULL_CAPABILITIES: Capabilities = { tools: "*", pathScopes: "*", network: "*" };
 
 function deny(caller: CallerIdentity, detail: string): never {
   throw new AgencyError(ErrorCode.PERMISSION_DENIED, detail, {
@@ -53,6 +58,8 @@ export function requirePathScope(
   capabilities: Capabilities,
   absolutePath: string,
 ): void {
+  if (capabilities.pathScopes === "*") return;
+
   const normalized = absolutePath.replace(/\\/g, "/");
   const inScope = capabilities.pathScopes.some((scope) => {
     const normalizedScope = scope.replace(/\\/g, "/").replace(/\/$/, "");
