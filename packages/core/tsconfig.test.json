@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": ["bun"]
+  },
+  "include": ["src", "test"],
+  "references": [{ "path": "../schema" }, { "path": "../i18n" }]
+}

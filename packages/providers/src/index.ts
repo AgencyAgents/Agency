@@ -4,6 +4,7 @@ export * from "./scheduler.ts";
 export * from "./registry.ts";
 export * from "./presets.ts";
 export * from "./tokenizers/index.ts";
+export * from "./auth/index.ts";
 export { anthropicAdapter } from "./adapters/anthropic.ts";
 export { openaiAdapter } from "./adapters/openai.ts";
 export { googleAdapter } from "./adapters/google.ts";

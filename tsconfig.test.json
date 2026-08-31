@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/schema/tsconfig.test.json" },
+    { "path": "packages/i18n/tsconfig.test.json" },
+    { "path": "packages/core/tsconfig.test.json" },
+    { "path": "packages/net/tsconfig.test.json" },
+    { "path": "packages/guard/tsconfig.test.json" },
+    { "path": "packages/providers/tsconfig.test.json" }
+  ]
+}

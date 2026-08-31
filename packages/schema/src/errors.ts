@@ -13,6 +13,7 @@ export const ErrorCode = {
   TRANSIENT: "transient",
   REFUSAL: "refusal",
   TOOL_ERROR: "tool_error",
+  PERMISSION_DENIED: "permission_denied",
   INTERNAL: "internal",
 } as const;
 
@@ -36,6 +37,7 @@ const RETRY_CLASS: Record<ErrorCode, RetryClass> = {
   [ErrorCode.TRANSIENT]: "retryable",
   [ErrorCode.REFUSAL]: "fatal",
   [ErrorCode.TOOL_ERROR]: "fatal",
+  [ErrorCode.PERMISSION_DENIED]: "fatal",
   [ErrorCode.INTERNAL]: "fatal",
 };
 
@@ -50,6 +52,7 @@ const MESSAGE_KEY: Record<ErrorCode, string> = {
   [ErrorCode.TRANSIENT]: "error.transient",
   [ErrorCode.REFUSAL]: "error.refusal",
   [ErrorCode.TOOL_ERROR]: "error.tool_error",
+  [ErrorCode.PERMISSION_DENIED]: "error.permission_denied",
   [ErrorCode.INTERNAL]: "error.internal",
 };
 

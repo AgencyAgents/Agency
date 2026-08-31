@@ -13,6 +13,7 @@ export const en = {
   "error.transient": "{source} had a temporary problem. Retrying automatically.",
   "error.refusal": "{source} declined to complete this request.",
   "error.tool_error": "The {source} tool failed: {detail}",
+  "error.permission_denied": "{source} isn't allowed to do that: {detail}",
   "error.internal": "Something went wrong inside Agency. Run `agency debug` to file a report.",
 
   "config.invalid": "Config at {path} is invalid: {detail}",

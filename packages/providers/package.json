@@ -10,6 +10,10 @@
     "@agency/schema": "workspace:*",
     "gpt-tokenizer": "^2"
   },
+  "devDependencies": {
+    "@agency/core": "workspace:*",
+    "@agency/guard": "workspace:*"
+  },
   "scripts": {
     "typecheck": "tsc --build",
     "test": "bun test"

@@ -19,6 +19,13 @@
         "zod": "^4",
       },
     },
+    "packages/guard": {
+      "name": "@agency/guard",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/schema": "workspace:*",
+      },
+    },
     "packages/i18n": {
       "name": "@agency/i18n",
       "version": "0.1.0",
@@ -41,6 +48,10 @@
         "@agency/schema": "workspace:*",
         "gpt-tokenizer": "^2",
       },
+      "devDependencies": {
+        "@agency/core": "workspace:*",
+        "@agency/guard": "workspace:*",
+      },
     },
     "packages/schema": {
       "name": "@agency/schema",
@@ -52,6 +63,8 @@
   },
   "packages": {
     "@agency/core": ["@agency/core@workspace:packages/core"],
+
+    "@agency/guard": ["@agency/guard@workspace:packages/guard"],
 
     "@agency/i18n": ["@agency/i18n@workspace:packages/i18n"],
 

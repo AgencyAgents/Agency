@@ -19,5 +19,6 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun x tsc --build tsconfig.json
+      - run: bun run typecheck
+      - run: bun run typecheck:test
       - run: bun test

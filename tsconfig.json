@@ -5,6 +5,7 @@
     { "path": "packages/i18n" },
     { "path": "packages/core" },
     { "path": "packages/net" },
+    { "path": "packages/guard" },
     { "path": "packages/providers" }
   ]
 }
