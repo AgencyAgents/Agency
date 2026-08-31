@@ -25,7 +25,7 @@ export interface ModelInfo {
 }
 
 /**
- * A small, hand-maintained snapshot — provider catalogs move fast enough that
+ * A small, hand-maintained snapshot: provider catalogs move fast enough that
  * this is a starting point, not a source of truth. `refresh()` reconciles it
  * against each family's live models endpoint.
  */

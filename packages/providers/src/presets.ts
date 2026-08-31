@@ -1,6 +1,6 @@
 import { anthropicAdapter } from "./adapters/anthropic.ts";
-import { openaiAdapter } from "./adapters/openai.ts";
 import { googleAdapter } from "./adapters/google.ts";
+import { openaiAdapter } from "./adapters/openai.ts";
 import { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible.ts";
 import type { ProviderAdapter } from "./types.ts";
 

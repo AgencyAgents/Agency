@@ -4,7 +4,7 @@ import { createAgentDaemon } from "./daemon.ts";
 /**
  * The actual process `ensureDaemon`'s spawnDaemon callback starts. Parses its
  * own argv rather than receiving options directly, because it runs as a
- * separate OS process — nothing in memory crosses that boundary.
+ * separate OS process, and nothing in memory crosses that boundary.
  */
 function parseArgs(argv: string[]): { workspaceRoot: string; instanceFile: string; idleLingerMs?: number } {
   const get = (flag: string): string | undefined => {

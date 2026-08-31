@@ -1,6 +1,6 @@
 /**
  * The single source of user-facing English strings. No package outside @agency/i18n
- * writes a string literal a user will see — everything routes through a key here.
+ * writes a string literal a user will see: everything routes through a key here.
  * `{placeholder}` tokens are filled by `t()`.
  */
 export const en = {
@@ -17,7 +17,7 @@ export const en = {
   "error.internal": "Something went wrong inside Agency. Run `agency debug` to file a report.",
 
   "config.invalid": "Config at {path} is invalid: {detail}",
-  "config.unknown_provider": "Provider \"{name}\" is not configured. Run `agency auth login`.",
+  "config.unknown_provider": 'Provider "{name}" is not configured. Run `agency auth login`.',
 
   "trust.prompt": "Agency hasn't run in {path} before. Trust this directory and load its instructions?",
   "trust.denied": "This directory isn't trusted, so its AGENTS.md and config were not loaded.",

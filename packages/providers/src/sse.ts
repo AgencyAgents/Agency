@@ -20,12 +20,13 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncIterable
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      let boundary: number;
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
         const rawEvent = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
         const parsed = parseEvent(rawEvent);
         if (parsed) yield parsed;
+        boundary = buffer.indexOf("\n\n");
       }
     }
 

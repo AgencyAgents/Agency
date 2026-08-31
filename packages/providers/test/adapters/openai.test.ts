@@ -72,10 +72,9 @@ describe("openaiAdapter", () => {
 
   test("maps a context_length_exceeded error code to CONTEXT_OVERFLOW", async () => {
     const http = fakeHttp(
-      new Response(
-        JSON.stringify({ error: { message: "too long", code: "context_length_exceeded" } }),
-        { status: 400 },
-      ),
+      new Response(JSON.stringify({ error: { message: "too long", code: "context_length_exceeded" } }), {
+        status: 400,
+      }),
     );
 
     const err = await collect(openaiAdapter.stream(baseRequest, http)).catch((e) => e);

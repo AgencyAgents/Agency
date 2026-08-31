@@ -34,7 +34,7 @@ function ruleMatches(rule: PolicyRule, request: PolicyRequest): boolean {
 
 /**
  * First-match-wins over a precedence-ordered rule list (most specific /
- * highest-priority source first — callers assemble that order from layered
+ * highest-priority source first, the way callers assemble that order from layered
  * config the same way P0's config loader does). Falls back to `defaultDecision`
  * when nothing matches, so an unconfigured tool doesn't silently run.
  */

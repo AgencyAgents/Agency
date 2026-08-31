@@ -111,9 +111,7 @@ describe("anthropicAdapter", () => {
       },
     };
 
-    await collect(
-      anthropicAdapter.stream({ ...baseRequest, system: "You are a coding agent." }, http),
-    );
+    await collect(anthropicAdapter.stream({ ...baseRequest, system: "You are a coding agent." }, http));
 
     const body = JSON.parse(capturedBody!);
     expect(body.system).toEqual([

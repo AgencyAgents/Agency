@@ -1,13 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseJsonc } from "jsonc-parser";
 import { migrate, type VersionedRecord } from "@agency/schema";
+import { parse as parseJsonc } from "jsonc-parser";
 import { configDir } from "../paths.ts";
-import { CONFIG_SCHEMA_VERSION, ConfigSchema, configMigrations, defaultConfig, type Config } from "./schema.ts";
+import {
+  CONFIG_SCHEMA_VERSION,
+  type Config,
+  ConfigSchema,
+  configMigrations,
+  defaultConfig,
+} from "./schema.ts";
 
 /**
  * Precedence, lowest to highest. `managed` is admin/org policy and wins over
- * everything below it, including CLI flags — that's the point of a managed layer.
+ * everything below it, including CLI flags: that's the point of a managed layer.
  */
 export interface ConfigSources {
   globalDir?: string;

@@ -1,12 +1,13 @@
-import type { ContentBlock, Message, StopReason } from "@agency/schema";
-import type { HttpClient } from "@agency/net";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import { requireTool } from "@agency/guard";
-import type { ProviderAdapter, Scheduler, ThinkingLevel, Usage, ToolDefinition } from "@agency/providers";
+import type { HttpClient } from "@agency/net";
+import type { ProviderAdapter, Scheduler, ThinkingLevel, ToolDefinition, Usage } from "@agency/providers";
+import type { ContentBlock, Message, StopReason } from "@agency/schema";
 
-export interface ToolHandler {
-  (input: Record<string, unknown>, ctx: { signal: AbortSignal }): Promise<{ content: string; isError?: boolean }>;
-}
+export type ToolHandler = (
+  input: Record<string, unknown>,
+  ctx: { signal: AbortSignal },
+) => Promise<{ content: string; isError?: boolean }>;
 
 export interface ToolSpec extends ToolDefinition {
   handler: ToolHandler;
@@ -42,7 +43,7 @@ export interface RunTurnOptions {
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
-  /** Caps tool-calling round-trips even when nothing else stops the run —
+  /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
   signal?: AbortSignal;
@@ -61,7 +62,7 @@ export interface RunTurnResult {
 /**
  * The R4 seam: no globals, every dependency passed in, so a second concurrent
  * loop (a future teammate agent) is additive rather than a rewrite. One call
- * drives a full turn — including any tool-calling round-trips it takes to
+ * drives a full turn, including any tool-calling round-trips it takes to
  * reach a non-tool_use stop reason, a budget breach, or the iteration cap.
  */
 export async function runTurn(
@@ -84,16 +85,21 @@ export async function runTurn(
 
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     const turn = await scheduler.schedule(() =>
-      collectTurn(adapter, http, {
-        model: options.model,
-        apiKey: options.apiKey,
-        system: options.systemPrompt,
-        messages,
-        tools: toolDefs,
-        maxTokens: options.maxTokensPerRequest ?? 8192,
-        thinkingLevel: options.thinkingLevel,
-        signal: options.signal,
-      }, options.onEvent),
+      collectTurn(
+        adapter,
+        http,
+        {
+          model: options.model,
+          apiKey: options.apiKey,
+          system: options.systemPrompt,
+          messages,
+          tools: toolDefs,
+          maxTokens: options.maxTokensPerRequest ?? 8192,
+          thinkingLevel: options.thinkingLevel,
+          signal: options.signal,
+        },
+        options.onEvent,
+      ),
     );
 
     messages.push({ role: "assistant", content: turn.content });
@@ -109,7 +115,9 @@ export async function runTurn(
 
     if (stopReason !== "tool_use" || options.signal?.aborted) break;
 
-    const toolCalls = turn.content.filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call");
+    const toolCalls = turn.content.filter(
+      (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
+    );
     const results = await runTools(toolCalls, options, options.signal);
     messages.push({ role: "user", content: results });
   }
@@ -128,7 +136,12 @@ async function runTools(
     const spec = options.tools.find((t) => t.name === call.name);
     const result = await executeOne(spec, call, options, signal);
     options.onEvent?.({ type: "tool_result", id: call.id, content: result.content, isError: result.isError });
-    results.push({ type: "tool_result", toolCallId: call.id, content: result.content, isError: result.isError });
+    results.push({
+      type: "tool_result",
+      toolCallId: call.id,
+      content: result.content,
+      isError: result.isError,
+    });
   }
 
   return results;

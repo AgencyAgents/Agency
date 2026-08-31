@@ -1,6 +1,6 @@
-import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, encodeFrame, FrameDecoder, type RpcMessage } from "./protocol.ts";
+import { createConnection, type Socket } from "node:net";
+import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type RpcMessage } from "./protocol.ts";
 
 export interface DaemonClient {
   call(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
@@ -16,7 +16,7 @@ interface Pending {
 
 /**
  * Connects to a running daemon and performs the version handshake before
- * returning — a client that can't confirm compatibility never gets a
+ * returning. A client that can't confirm compatibility never gets a
  * usable connection (R12: refuse rather than risk corrupting state).
  */
 export async function connectToDaemon(port: number, host = "127.0.0.1"): Promise<DaemonClient> {
@@ -32,7 +32,7 @@ export async function connectToDaemon(port: number, host = "127.0.0.1"): Promise
     socket.write(encodeFrame(message));
   }
 
-  // Handshake first, with its own one-shot listener — the steady-state
+  // Handshake first, with its own one-shot listener. The steady-state
   // dispatcher below only attaches once we know we're talking to a
   // compatible daemon, so there's never more than one consumer of `decoder`
   // at a time (it's stateful; two simultaneous consumers would double-feed it).

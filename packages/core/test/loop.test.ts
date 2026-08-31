@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { FULL_CAPABILITIES, NO_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent, Usage } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
-import { FULL_CAPABILITIES, NO_CAPABILITIES } from "@agency/guard";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -63,7 +63,10 @@ describe("runTurn", () => {
 
     expect(result.stopReason).toBe("end_turn");
     expect(result.messages).toHaveLength(1);
-    expect(result.messages[0]).toEqual({ role: "assistant", content: [{ type: "text", text: "hello there" }] });
+    expect(result.messages[0]).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "hello there" }],
+    });
     expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 5, cachedInputTokens: 0 });
   });
 
@@ -94,8 +97,16 @@ describe("runTurn", () => {
     expect(result.stopReason).toBe("end_turn");
     // assistant(tool_call) -> user(tool_result) -> assistant(text)
     expect(result.messages).toHaveLength(3);
-    expect(result.messages[0]!.content[0]).toMatchObject({ type: "tool_call", name: "read", input: { path: "a.ts" } });
-    expect(result.messages[1]!.content[0]).toMatchObject({ type: "tool_result", content: "file contents", isError: false });
+    expect(result.messages[0]!.content[0]).toMatchObject({
+      type: "tool_call",
+      name: "read",
+      input: { path: "a.ts" },
+    });
+    expect(result.messages[1]!.content[0]).toMatchObject({
+      type: "tool_result",
+      content: "file contents",
+      isError: false,
+    });
     expect(result.messages[2]!.content[0]).toMatchObject({ type: "text", text: "done" });
   });
 

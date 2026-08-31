@@ -1,7 +1,7 @@
-import { describe, expect, test, afterEach } from "bun:test";
-import { startDaemonServer, type DaemonServer } from "../src/server.ts";
+import { afterEach, describe, expect, test } from "bun:test";
 import { connectToDaemon, type DaemonClient } from "../src/client.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
 let server: DaemonServer | undefined;
 const clients: DaemonClient[] = [];

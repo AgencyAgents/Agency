@@ -41,7 +41,7 @@ describe("parseSse", () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encoder.encode('data: {"partial":'));
-        controller.enqueue(encoder.encode('true}\n\n'));
+        controller.enqueue(encoder.encode("true}\n\n"));
         controller.close();
       },
     });

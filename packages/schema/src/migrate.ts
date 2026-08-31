@@ -1,7 +1,7 @@
 /**
  * Generic forward-migration framework for anything Agency persists (config, sessions).
  * A migration only touches the fields it cares about; every other key on the record
- * passes through untouched (R5 — an older migration must never drop a newer client's field).
+ * passes through untouched (R5: an older migration must never drop a newer client's field).
  */
 
 export type VersionedRecord = { schemaVersion: number } & Record<string, unknown>;

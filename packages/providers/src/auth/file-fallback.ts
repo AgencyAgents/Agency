@@ -1,6 +1,6 @@
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import type { KeychainBackend } from "./types.ts";
 
 const ALGORITHM = "aes-256-gcm";
@@ -21,7 +21,7 @@ function loadOrCreateKey(keyPath: string): Buffer {
 /**
  * Last-resort backend for a platform with no native secret store reachable
  * (no `security`, no `secret-tool`, DPAPI unavailable). Encrypts with a
- * locally generated key restricted to the owner (0600) — real protection
+ * locally generated key restricted to the owner (0600): real protection
  * against another user or a casual file read, but not against an attacker
  * who already has this account's own file-read access. That's the honest
  * ceiling of any keychain-less fallback, not a workaround for it.
@@ -44,7 +44,11 @@ export function createFileFallbackBackend(storeDir: string): KeychainBackend {
       const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
       const authTag = cipher.getAuthTag();
 
-      const payload = { iv: iv.toString("hex"), authTag: authTag.toString("hex"), data: ciphertext.toString("hex") };
+      const payload = {
+        iv: iv.toString("hex"),
+        authTag: authTag.toString("hex"),
+        data: ciphertext.toString("hex"),
+      };
       writeFileSync(accountFile(storeDir, account), JSON.stringify(payload), { mode: 0o600 });
     },
 

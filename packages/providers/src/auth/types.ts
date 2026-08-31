@@ -6,7 +6,7 @@ export interface KeychainBackend {
   delete(account: string): Promise<void>;
 }
 
-/** Runs an external command and captures output — injectable so backends are
+/** Runs an external command and captures output, injectable so backends are
  *  unit-testable without actually shelling out to `security`/`secret-tool`. */
 export type SpawnFn = (
   command: readonly string[],

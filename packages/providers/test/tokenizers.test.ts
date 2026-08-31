@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createOpenAiTokenizer, createApproximateTokenizer, tokenizerFor } from "../src/tokenizers/index.ts";
+import { createApproximateTokenizer, createOpenAiTokenizer, tokenizerFor } from "../src/tokenizers/index.ts";
 
 describe("createOpenAiTokenizer", () => {
   test("produces an exact BPE count for known text", () => {

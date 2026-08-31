@@ -1,6 +1,6 @@
 /**
  * Common provider API key shapes, redacted even if a secret was never
- * explicitly registered — defense in depth for a key that leaked into a log
+ * explicitly registered: defense in depth for a key that leaked into a log
  * line some other way (e.g. echoed back inside a tool's stdout).
  */
 const KNOWN_KEY_PATTERNS: RegExp[] = [
@@ -13,13 +13,13 @@ const PLACEHOLDER = "[REDACTED]";
 
 /**
  * The one chokepoint every log line, telemetry payload, and crash bundle
- * passes through (R11) — secrets are scrubbed once here, not re-implemented
+ * passes through (R11): secrets are scrubbed once here, not re-implemented
  * at each call site.
  */
 export class Redactor {
   private readonly secrets = new Set<string>();
 
-  /** Call this the moment a secret is loaded (keychain, env, flag) — before
+  /** Call this the moment a secret is loaded (keychain, env, flag), before
    *  it's ever used, so nothing can log it unredacted in between. */
   registerSecret(secret: string): void {
     if (secret.length >= 4) this.secrets.add(secret);

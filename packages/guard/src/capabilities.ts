@@ -3,7 +3,7 @@ import { AgencyError, ErrorCode } from "@agency/schema";
 /**
  * Who's asking. `user` is the person at the keyboard; `agent`/`plugin` exist
  * now so the capability model doesn't need reshaping when P2's single caller
- * becomes many in a later phase (R2/R4) — nothing in v1 issues those yet.
+ * becomes many in a later phase (R2/R4); nothing in v1 issues those yet.
  */
 export type CallerIdentity =
   | { type: "user" }
@@ -48,7 +48,11 @@ export function requireTool(identity: CallerIdentity, capabilities: Capabilities
 }
 
 /** Throws PERMISSION_DENIED when `absolutePath` falls outside every allowed scope. */
-export function requirePathScope(identity: CallerIdentity, capabilities: Capabilities, absolutePath: string): void {
+export function requirePathScope(
+  identity: CallerIdentity,
+  capabilities: Capabilities,
+  absolutePath: string,
+): void {
   const normalized = absolutePath.replace(/\\/g, "/");
   const inScope = capabilities.pathScopes.some((scope) => {
     const normalizedScope = scope.replace(/\\/g, "/").replace(/\/$/, "");

@@ -4,14 +4,14 @@ import { AgencyError, ErrorCode } from "@agency/schema";
 export interface CommandPolicy {
   /** If set, a command must match at least one pattern to be allowed. */
   allow?: readonly RegExp[];
-  /** Checked first — a match here is always denied, even if also allowlisted. */
+  /** Checked first: a match here is always denied, even if also allowlisted. */
   deny?: readonly RegExp[];
 }
 
 /**
  * Bounds where tool execution is allowed to touch: a resolved-path scope and
- * a command allow/deny policy. This is a software boundary, not OS isolation —
- * it's the seam future work (containers, namespaces) plugs into without any
+ * a command allow/deny policy. This is a software boundary, not OS isolation.
+ * It's the seam future work (containers, namespaces) plugs into without any
  * caller changing (R2).
  */
 export class SandboxBoundary {

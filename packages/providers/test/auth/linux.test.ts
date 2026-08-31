@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { SpawnFn } from "../../src/auth/types.ts";
 import { createLinuxKeychainBackend } from "../../src/auth/linux.ts";
+import type { SpawnFn } from "../../src/auth/types.ts";
 
 function recordingSpawn(response: { stdout?: string; stderr?: string; exitCode?: number }) {
   const calls: { command: string[]; stdin?: string }[] = [];

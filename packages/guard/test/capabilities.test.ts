@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import {
-  requireTool,
-  requirePathScope,
-  requireNetwork,
-  callerLabel,
-  NO_CAPABILITIES,
-  FULL_CAPABILITIES,
   type Capabilities,
+  callerLabel,
+  FULL_CAPABILITIES,
+  NO_CAPABILITIES,
+  requireNetwork,
+  requirePathScope,
+  requireTool,
 } from "../src/capabilities.ts";
 
 const user = { type: "user" as const };
@@ -79,9 +79,9 @@ describe("requirePathScope", () => {
 
 describe("requireNetwork", () => {
   test("'none' denies every host", () => {
-    expect(() => requireNetwork(user, { tools: [], pathScopes: [], network: "none" }, "api.anthropic.com")).toThrow(
-      AgencyError,
-    );
+    expect(() =>
+      requireNetwork(user, { tools: [], pathScopes: [], network: "none" }, "api.anthropic.com"),
+    ).toThrow(AgencyError);
   });
 
   test("'*' allows any host", () => {

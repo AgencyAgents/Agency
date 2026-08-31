@@ -1,12 +1,12 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
-import { createAgentDaemon, type AgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
-import type { ToolSpec } from "@agency/core";
+import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 

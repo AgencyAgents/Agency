@@ -1,9 +1,9 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpawnFn } from "../../src/auth/types.ts";
 import { createKeychain } from "../../src/auth/keychain.ts";
+import type { SpawnFn } from "../../src/auth/types.ts";
 
 const cleanup: string[] = [];
 afterEach(() => {

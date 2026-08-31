@@ -35,7 +35,7 @@ describe("resolved API keys stay out of logs", () => {
       env: { AGENCY_ANTHROPIC_API_KEY: "sk-ant-api03-never-registered-1234567890" },
     });
 
-    // Simulates a bug where the caller forgot to register the secret —
+    // Simulates a bug where the caller forgot to register the secret:
     // pattern-based redaction is the safety net, not the primary mechanism.
     const redactor = new Redactor();
     const lines: string[] = [];

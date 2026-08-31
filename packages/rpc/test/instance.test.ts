@@ -1,10 +1,10 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureDaemon, hashWorkspaceRoot, writeInstanceFile } from "../src/instance.ts";
-import { startDaemonServer, type DaemonServer } from "../src/server.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
 const servers: DaemonServer[] = [];
 const dirs: string[] = [];
@@ -20,7 +20,7 @@ function tempDir(): string {
   return dir;
 }
 
-/** Stands in for "spawn a real OS process" — starts an in-process daemon and
+/** Stands in for "spawn a real OS process": starts an in-process daemon and
  *  writes its own instance file, exactly as a real spawned daemon would. */
 function fakeSpawnDaemon(instanceFile: string) {
   startDaemonServer({ handlers: { ping: async () => "pong" } }).then((server) => {
@@ -83,7 +83,12 @@ describe("ensureDaemon", () => {
     const staleFile = join(instanceDir, `${hashWorkspaceRoot("/repo/project-c")}.json`);
     writeFileSync(
       staleFile,
-      JSON.stringify({ port: 1, pid: 999999, startedAt: new Date().toISOString(), version: PROTOCOL_VERSION }),
+      JSON.stringify({
+        port: 1,
+        pid: 999999,
+        startedAt: new Date().toISOString(),
+        version: PROTOCOL_VERSION,
+      }),
     );
 
     let spawnCalled = false;

@@ -1,5 +1,5 @@
-import type { Message, StopReason } from "@agency/schema";
 import type { HttpClient } from "@agency/net";
+import type { Message, StopReason } from "@agency/schema";
 
 /** Unified across every provider's native reasoning-effort knob (Pi's scale). */
 export const ThinkingLevel = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;

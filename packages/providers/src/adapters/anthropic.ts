@@ -1,5 +1,5 @@
-import { AgencyError, ErrorCode, type ContentBlock, type StopReason } from "@agency/schema";
 import type { HttpClient } from "@agency/net";
+import { AgencyError, type ContentBlock, ErrorCode, type StopReason } from "@agency/schema";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
@@ -59,8 +59,8 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   };
 
   if (request.system) {
-    // Marked cacheable: the system prompt is Agency's stable prefix (R9/cache policy) —
-    // it changes far less often than the growing message tail, so it's the first
+    // Marked cacheable: the system prompt is Agency's stable prefix (R9/cache policy).
+    // It changes far less often than the growing message tail, so it's the first
     // thing worth a cache breakpoint.
     body.system = [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }];
   }
@@ -83,7 +83,9 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
 }
 
 async function toAgencyError(res: Response): Promise<AgencyError> {
-  const body = await res.json().catch(() => undefined) as { error?: { type?: string; message?: string } } | undefined;
+  const body = (await res.json().catch(() => undefined)) as
+    | { error?: { type?: string; message?: string } }
+    | undefined;
   const message = body?.error?.message ?? res.statusText;
   const context = { status: res.status, source: "anthropic" };
 
@@ -123,7 +125,7 @@ export const anthropicAdapter: ProviderAdapter = {
 
     // index -> tool_call id, so content_block_delta/stop can address the right call
     const toolCallIndex = new Map<number, string>();
-    let usage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 };
+    const usage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
 
     for await (const frame of parseSse(res.body)) {
@@ -146,7 +148,12 @@ export const anthropicAdapter: ProviderAdapter = {
           break;
         }
         case "content_block_delta": {
-          const delta = payload.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
+          const delta = payload.delta as {
+            type: string;
+            text?: string;
+            thinking?: string;
+            partial_json?: string;
+          };
           const index = payload.index as number;
           if (delta.type === "text_delta" && delta.text) {
             yield { type: "text_delta", text: delta.text };

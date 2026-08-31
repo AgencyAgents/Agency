@@ -1,6 +1,6 @@
 /**
  * The stable hook surface (R7). Emitted from day one even though nothing consumes
- * it yet in v1 — the TUI listens now, plugins listen later, without touching emitters.
+ * it yet in v1; the TUI listens now, plugins listen later, without touching emitters.
  */
 export interface AgencyEvents {
   "config.loaded": { config: unknown };

@@ -1,7 +1,7 @@
 import { encode } from "gpt-tokenizer";
 
 export interface Tokenizer {
-  /** True BPE count vs. a calibrated approximation — callers use this to decide
+  /** True BPE count vs. a calibrated approximation; callers use this to decide
    *  how much safety margin to leave before a context-window limit. */
   readonly precise: boolean;
   count(text: string): number;
@@ -22,7 +22,7 @@ export function createOpenAiTokenizer(): Tokenizer {
 }
 
 /**
- * Neither Anthropic nor Google ship an offline tokenizer — the only precise
+ * Neither Anthropic nor Google ship an offline tokenizer: the only precise
  * count comes from their live count-tokens endpoints. This is a calibrated
  * characters-per-token approximation for offline/budget use (compaction
  * thresholds, cost estimates before a request is sent), not exact usage.

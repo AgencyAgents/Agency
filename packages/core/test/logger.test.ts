@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { Logger, withTrace, currentTraceId } from "../src/logger.ts";
 import { EventBus } from "../src/events.ts";
+import { currentTraceId, Logger, withTrace } from "../src/logger.ts";
 
 describe("Logger", () => {
   test("writes structured JSON lines with level and message", () => {

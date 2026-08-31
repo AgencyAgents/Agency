@@ -41,7 +41,10 @@ describe("PolicyEngine", () => {
   });
 
   test("commandPattern is a real regex, not a plain substring", () => {
-    const engine = new PolicyEngine([{ tool: "bash", commandPattern: "^git (status|diff)", decision: "allow" }], "ask");
+    const engine = new PolicyEngine(
+      [{ tool: "bash", commandPattern: "^git (status|diff)", decision: "allow" }],
+      "ask",
+    );
     expect(engine.evaluate({ tool: "bash", command: "git status" })).toBe("allow");
     expect(engine.evaluate({ tool: "bash", command: "echo 'git status'" })).toBe("ask");
   });

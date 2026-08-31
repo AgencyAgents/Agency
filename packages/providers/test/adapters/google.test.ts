@@ -50,10 +50,9 @@ describe("googleAdapter", () => {
 
   test("maps RESOURCE_EXHAUSTED to a retryable RATE_LIMIT error even on a non-429 status", async () => {
     const http = fakeHttp(
-      new Response(
-        JSON.stringify({ error: { message: "quota exceeded", status: "RESOURCE_EXHAUSTED" } }),
-        { status: 400 },
-      ),
+      new Response(JSON.stringify({ error: { message: "quota exceeded", status: "RESOURCE_EXHAUSTED" } }), {
+        status: 400,
+      }),
     );
 
     const err = await collect(googleAdapter.stream(baseRequest, http)).catch((e) => e);

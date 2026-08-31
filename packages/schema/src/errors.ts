@@ -57,7 +57,7 @@ const MESSAGE_KEY: Record<ErrorCode, string> = {
 };
 
 export interface AgencyErrorOptions {
-  /** Provider or subsystem name that raised this, for logs — never shown to the user. */
+  /** Provider or subsystem name that raised this, for logs; never shown to the user. */
   source: string;
   /** Underlying error, chained for debug bundles. */
   cause?: unknown;

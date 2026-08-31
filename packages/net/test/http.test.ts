@@ -1,13 +1,13 @@
-import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { createHttpClient } from "../src/http.ts";
 
 // Bun reads HTTP_PROXY/HTTPS_PROXY once at process startup, not per request,
-// so these tests need the process itself launched without them set — true in
-// CI and on a normal dev machine. If your shell exports an ambient proxy,
+// so these tests need the process itself launched without them set (true
+// in CI and on a normal dev machine). If your shell exports an ambient proxy,
 // run this file as: env -u HTTP_PROXY -u HTTPS_PROXY bun test packages/net
 
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -54,7 +54,7 @@ describe("createHttpClient", () => {
     const client = createHttpClient({ proxy: "http://127.0.0.1:1", timeoutMs: 2_000 });
 
     // The origin (example.invalid) is unreachable directly, but a real client
-    // only ever talks to the configured proxy — the failure comes from the
+    // only ever talks to the configured proxy: the failure comes from the
     // proxy connection itself, not from resolving example.invalid.
     const err = await client.fetch("http://example.invalid/").catch((e) => e);
     expect(err).toBeInstanceOf(AgencyError);

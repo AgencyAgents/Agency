@@ -1,12 +1,12 @@
-import { AgencyError, ErrorCode, type ContentBlock, type Message, type StopReason } from "@agency/schema";
 import type { HttpClient } from "@agency/net";
+import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
 /**
  * OpenAI's reasoning_effort only has four tiers, coarser than Agency's unified
  * seven-level scale. The extra levels compress onto the nearest tier rather
- * than erroring — losing precision here is better than refusing to run.
+ * than erroring: losing precision here is better than refusing to run.
  */
 const REASONING_EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
   minimal: "minimal",
@@ -127,7 +127,7 @@ export function createOpenAiCompatibleAdapter(family: string, baseUrl: string): 
         throw await toAgencyError(res, family);
       }
 
-      // OpenAI addresses parallel tool calls by delta index, not id — the id only
+      // OpenAI addresses parallel tool calls by delta index, not id: the id only
       // appears once, on the first delta for that index.
       const toolCallIdByIndex = new Map<number, string>();
       let usage = { inputTokens: 0, outputTokens: 0 };
@@ -137,7 +137,14 @@ export function createOpenAiCompatibleAdapter(family: string, baseUrl: string): 
         if (frame.data === "[DONE]") continue;
         const payload = JSON.parse(frame.data) as {
           choices: Array<{
-            delta: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> };
+            delta: {
+              content?: string;
+              tool_calls?: Array<{
+                index: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
             finish_reason: string | null;
           }>;
           usage?: { prompt_tokens: number; completion_tokens: number };

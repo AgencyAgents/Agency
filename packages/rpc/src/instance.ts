@@ -11,7 +11,7 @@ export interface InstanceInfo {
   version: number;
 }
 
-/** Stable, filesystem-safe id for a workspace root — one daemon per root (R1). */
+/** Stable, filesystem-safe id for a workspace root: one daemon per root (R1). */
 export function hashWorkspaceRoot(workspaceRoot: string): string {
   return createHash("sha256").update(resolve(workspaceRoot)).digest("hex").slice(0, 16);
 }
@@ -42,17 +42,19 @@ export interface EnsureDaemonOptions {
   spawnDaemon: (instanceFile: string) => void;
   pollIntervalMs?: number;
   spawnTimeoutMs?: number;
-  /** Injectable for tests — production callers never need to pass this. */
+  /** Injectable for tests; production callers never need to pass this. */
   connect?: typeof connectToDaemon;
 }
 
 /**
  * Finds or starts the one daemon for this workspace root. A stale instance
  * file (daemon crashed without cleanup) is detected by a failed connection
- * and cleared before spawning a replacement — so a dead daemon never
+ * and cleared before spawning a replacement, so a dead daemon never
  * silently strands new clients.
  */
-export async function ensureDaemon(options: EnsureDaemonOptions): Promise<{ port: number; client: DaemonClient }> {
+export async function ensureDaemon(
+  options: EnsureDaemonOptions,
+): Promise<{ port: number; client: DaemonClient }> {
   const connect = options.connect ?? connectToDaemon;
   const instanceFile = instanceFilePath(options.instanceDir, options.workspaceRoot);
 

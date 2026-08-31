@@ -7,10 +7,5 @@
     "types": ["bun"]
   },
   "include": ["src", "test"],
-  "references": [
-    { "path": "../schema" },
-    { "path": "../net" },
-    { "path": "../core" },
-    { "path": "../guard" }
-  ]
+  "references": [{ "path": "../schema" }, { "path": "../net" }, { "path": "../core" }, { "path": "../guard" }]
 }

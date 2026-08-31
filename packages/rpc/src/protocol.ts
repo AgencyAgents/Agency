@@ -1,6 +1,6 @@
 /**
  * Bumped whenever a wire-incompatible change lands (R12). A client refuses to
- * talk to a daemon on a different version rather than risk corrupting state —
+ * talk to a daemon on a different version rather than risk corrupting state;
  * see the hello handshake in server.ts/client.ts.
  */
 export const PROTOCOL_VERSION = 1;
@@ -20,7 +20,7 @@ export function encodeFrame(message: RpcMessage): string {
 
 /**
  * Buffers arbitrary chunk boundaries and yields one parsed message per
- * complete line — the same "don't assume a frame arrives whole" discipline
+ * complete line: the same "don't assume a frame arrives whole" discipline
  * as the SSE parser, just for NDJSON instead of text/event-stream.
  */
 export class FrameDecoder {
@@ -31,11 +31,12 @@ export class FrameDecoder {
     this.buffer += chunk;
     const messages: RpcMessage[] = [];
 
-    let newline: number;
-    while ((newline = this.buffer.indexOf("\n")) !== -1) {
+    let newline = this.buffer.indexOf("\n");
+    while (newline !== -1) {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       if (line.trim()) messages.push(JSON.parse(line) as RpcMessage);
+      newline = this.buffer.indexOf("\n");
     }
 
     return messages;

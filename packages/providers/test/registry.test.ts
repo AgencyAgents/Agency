@@ -25,7 +25,9 @@ describe("ModelRegistry", () => {
     const registry = new ModelRegistry();
     const http: HttpClient = {
       fetch: async () =>
-        new Response(JSON.stringify({ data: [{ id: "gpt-5.2" }, { id: "gpt-5.3-preview" }] }), { status: 200 }),
+        new Response(JSON.stringify({ data: [{ id: "gpt-5.2" }, { id: "gpt-5.3-preview" }] }), {
+          status: 200,
+        }),
     };
 
     await registry.refresh("openai", http, "sk-test");

@@ -5,7 +5,7 @@ const SERVICE = "agency";
 
 /**
  * Shells out to `secret-tool` (libsecret-tools), the CLI for the same
- * keyring GNOME/KDE apps use. Not present on every Linux install — headless
+ * keyring GNOME/KDE apps use. Not present on every Linux install: headless
  * servers commonly lack it, which is exactly why the encrypted-file fallback
  * exists.
  */

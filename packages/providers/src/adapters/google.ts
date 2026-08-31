@@ -1,5 +1,5 @@
-import { AgencyError, ErrorCode, type ContentBlock, type Message, type StopReason } from "@agency/schema";
 import type { HttpClient } from "@agency/net";
+import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
@@ -7,7 +7,7 @@ const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /**
  * Gemini's thinkingBudget is a raw token count, with -1 meaning "let the model
- * decide" rather than a fixed ceiling — that's the natural home for our `max`.
+ * decide" rather than a fixed ceiling, which is the natural home for our `max`.
  */
 const THINKING_BUDGET: Record<ThinkingLevel, number> = {
   off: 0,
@@ -143,7 +143,7 @@ export const googleAdapter: ProviderAdapter = {
       for (const part of candidate?.content?.parts ?? []) {
         if (part.functionCall) {
           sawFunctionCall = true;
-          // Gemini sends the whole call in one shot — there's no incremental
+          // Gemini sends the whole call in one shot: there's no incremental
           // arguments stream the way Anthropic/OpenAI have, so start/delta/end
           // collapse into one immediate sequence per call.
           const id = `call_${toolCallSeq++}`;

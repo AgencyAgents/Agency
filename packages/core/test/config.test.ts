@@ -1,5 +1,5 @@
-import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config/loader.ts";
@@ -29,7 +29,10 @@ describe("loadConfig", () => {
 
     writeFileSync(join(globalDir, "config.jsonc"), `{ "schemaVersion": 1, "logLevel": "warn" }`);
     mkdirSync(join(projectRoot, ".agency"));
-    writeFileSync(join(projectRoot, ".agency", "config.jsonc"), `{ "schemaVersion": 1, "logLevel": "debug" }`);
+    writeFileSync(
+      join(projectRoot, ".agency", "config.jsonc"),
+      `{ "schemaVersion": 1, "logLevel": "debug" }`,
+    );
 
     const config = loadConfig({ globalDir, projectRoot, env: {} });
     expect(config.logLevel).toBe("debug");
@@ -41,7 +44,10 @@ describe("loadConfig", () => {
     cleanup.push(globalDir, projectRoot);
 
     mkdirSync(join(projectRoot, ".agency"));
-    writeFileSync(join(projectRoot, ".agency", "config.jsonc"), `{ "schemaVersion": 1, "logLevel": "debug" }`);
+    writeFileSync(
+      join(projectRoot, ".agency", "config.jsonc"),
+      `{ "schemaVersion": 1, "logLevel": "debug" }`,
+    );
 
     const config = loadConfig({
       globalDir,

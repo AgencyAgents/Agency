@@ -1,19 +1,19 @@
-import type { Message, StopReason } from "@agency/schema";
+import { type Budget, type LoopEvent, runTurn, type ToolSpec } from "@agency/core";
+import type { CallerIdentity, Capabilities } from "@agency/guard";
+import { FULL_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
-import type { Capabilities, CallerIdentity } from "@agency/guard";
-import { FULL_CAPABILITIES } from "@agency/guard";
 import {
-  Scheduler,
   anthropicAdapter,
-  openaiAdapter,
   googleAdapter,
+  openaiAdapter,
   type ProviderAdapter,
+  Scheduler,
   type ThinkingLevel,
   type Usage,
 } from "@agency/providers";
-import { runTurn, type ToolSpec, type Budget, type LoopEvent } from "@agency/core";
-import { startDaemonServer, writeInstanceFile, PROTOCOL_VERSION, type DaemonServer } from "@agency/rpc";
+import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
+import type { Message, StopReason } from "@agency/schema";
 
 const BUILTIN_ADAPTERS: Record<string, ProviderAdapter> = {
   anthropic: anthropicAdapter,
@@ -67,11 +67,13 @@ export interface AgentDaemon {
  * by every client (TUI, headless, SDK) that attaches to this workspace root.
  */
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
-  const adapterFor = options.adapterFor ?? ((provider) => {
-    const adapter = BUILTIN_ADAPTERS[provider];
-    if (!adapter) throw new Error(`unknown provider: ${provider}`);
-    return adapter;
-  });
+  const adapterFor =
+    options.adapterFor ??
+    ((provider) => {
+      const adapter = BUILTIN_ADAPTERS[provider];
+      if (!adapter) throw new Error(`unknown provider: ${provider}`);
+      return adapter;
+    });
   const http = options.http ?? createHttpClient();
   const tools = options.tools ?? [];
   const identity = options.identity ?? { type: "user" as const };

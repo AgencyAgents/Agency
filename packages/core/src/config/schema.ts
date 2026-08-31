@@ -1,5 +1,5 @@
-import { z } from "zod";
 import type { Migration } from "@agency/schema";
+import { z } from "zod";
 
 export const CONFIG_SCHEMA_VERSION = 1;
 

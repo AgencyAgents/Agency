@@ -1,5 +1,5 @@
-import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileFallbackBackend } from "../../src/auth/file-fallback.ts";

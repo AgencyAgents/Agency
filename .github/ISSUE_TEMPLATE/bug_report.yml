@@ -1,0 +1,30 @@
+name: Bug report
+description: Something's broken
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: what happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: repro steps
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11 / macOS 15 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: bun-version
+    attributes:
+      label: bun version
+      placeholder: output of `bun --version`
+    validations:
+      required: false

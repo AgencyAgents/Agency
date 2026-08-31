@@ -6,7 +6,7 @@ export interface ResolveApiKeyOptions {
   flag?: string;
   env?: NodeJS.ProcessEnv;
   keychain?: KeychainBackend;
-  /** A key set directly in a config file — lowest precedence, mainly for local dev. */
+  /** A key set directly in a config file, lowest precedence, mainly for local dev. */
   config?: string;
 }
 
@@ -17,7 +17,7 @@ function envKey(provider: string): string {
 /**
  * flag -> env -> keychain -> config, matching every other layered-resolution
  * surface in Agency. The caller MUST register whatever this returns with a
- * Redactor before it's used anywhere — resolution and redaction are kept as
+ * Redactor before it's used anywhere. Resolution and redaction are kept as
  * separate concerns, but the pairing is the point of R11 and skipping it
  * defeats the whole mechanism.
  */

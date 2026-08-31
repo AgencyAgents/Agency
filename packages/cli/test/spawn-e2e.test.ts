@@ -1,8 +1,8 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureDaemon, hashWorkspaceRoot, PROTOCOL_VERSION, type DaemonClient } from "@agency/rpc";
+import { type DaemonClient, ensureDaemon, hashWorkspaceRoot, PROTOCOL_VERSION } from "@agency/rpc";
 
 const DAEMON_ENTRY = join(import.meta.dir, "..", "src", "daemon-entry.ts");
 
@@ -24,7 +24,17 @@ function tempDir(): string {
 
 function spawnDaemonEntry(workspaceRoot: string, instanceFile: string) {
   const proc = Bun.spawn(
-    ["bun", "run", DAEMON_ENTRY, "--workspace", workspaceRoot, "--instance-file", instanceFile, "--idle-linger-ms", "60000"],
+    [
+      "bun",
+      "run",
+      DAEMON_ENTRY,
+      "--workspace",
+      workspaceRoot,
+      "--instance-file",
+      instanceFile,
+      "--idle-linger-ms",
+      "60000",
+    ],
     { stdio: ["ignore", "ignore", "ignore"] },
   );
   spawned.push(proc);
@@ -43,7 +53,7 @@ describe("daemon-entry.ts as a real spawned process", () => {
     });
     clients.push(client);
 
-    // No API key needed — cancel_turn on a nonexistent turn just proves the
+    // No API key needed: cancel_turn on a nonexistent turn just proves the
     // real spawned process is alive and speaking the RPC protocol correctly.
     expect(await client.call("cancel_turn", { turnId: "nope" })).toEqual({ cancelled: false });
   }, 20_000);
@@ -98,11 +108,16 @@ describe("daemon-entry.ts as a real spawned process", () => {
   test("a stale instance file (dead process) is detected and a fresh daemon replaces it", async () => {
     const instanceDir = tempDir();
     const instanceFile = join(instanceDir, `${hashWorkspaceRoot("/repo/spawn-e2e-d")}.json`);
-    // Points at a port nothing is listening on — simulates a daemon that
+    // Points at a port nothing is listening on: simulates a daemon that
     // crashed without cleaning up its instance file.
     writeFileSync(
       instanceFile,
-      JSON.stringify({ port: 1, pid: 999999, startedAt: new Date().toISOString(), version: PROTOCOL_VERSION }),
+      JSON.stringify({
+        port: 1,
+        pid: 999999,
+        startedAt: new Date().toISOString(),
+        version: PROTOCOL_VERSION,
+      }),
     );
 
     let spawnCalled = false;

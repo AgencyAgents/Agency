@@ -9,9 +9,7 @@ describe("t", () => {
   });
 
   test("leaves an unmatched placeholder token untouched", () => {
-    expect(t("error.tool_error", { source: "bash" })).toBe(
-      "The bash tool failed: {detail}",
-    );
+    expect(t("error.tool_error", { source: "bash" })).toBe("The bash tool failed: {detail}");
   });
 
   test("every schema error code has a corresponding catalog entry", async () => {

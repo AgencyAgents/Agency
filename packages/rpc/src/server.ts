@@ -1,5 +1,5 @@
 import { createServer, type Socket } from "node:net";
-import { PROTOCOL_VERSION, encodeFrame, FrameDecoder, type RpcMessage } from "./protocol.ts";
+import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type RpcMessage } from "./protocol.ts";
 
 export type MethodHandler = (params: unknown) => Promise<unknown>;
 
@@ -21,7 +21,7 @@ export interface DaemonServer {
  * and pushes events, over TCP loopback rather than a Unix socket/named pipe.
  * Loopback TCP behaves identically on Windows/macOS/Linux with no
  * platform-specific path handling, at the cost of binding a local port
- * instead of a filesystem/pipe handle — an acceptable trade for a
+ * instead of a filesystem/pipe handle, an acceptable trade for a
  * localhost-only daemon that already refuses non-loopback connections.
  */
 export async function startDaemonServer(options: DaemonServerOptions): Promise<DaemonServer> {
@@ -79,7 +79,8 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
           handler(message.params)
             .then((result) => send({ type: "response", id: message.id, result }))
             .catch((error: unknown) => {
-              const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+              const code =
+                error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
               const errMessage = error instanceof Error ? error.message : String(error);
               send({ type: "response_error", id: message.id, error: { message: errMessage, code } });
             });

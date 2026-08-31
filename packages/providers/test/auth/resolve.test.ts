@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { KeychainBackend } from "../../src/auth/types.ts";
 import { resolveApiKey } from "../../src/auth/resolve.ts";
+import type { KeychainBackend } from "../../src/auth/types.ts";
 
 function fakeKeychain(stored?: string): KeychainBackend {
   return {

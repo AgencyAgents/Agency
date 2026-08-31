@@ -3,7 +3,7 @@ import { AgencyError, ErrorCode } from "@agency/schema";
 export interface HttpClientOptions {
   /**
    * Explicit proxy URL, an Agency-config-level override. When unset, the
-   * runtime's own ambient HTTP_PROXY/HTTPS_PROXY/NO_PROXY handling applies —
+   * runtime's own ambient HTTP_PROXY/HTTPS_PROXY/NO_PROXY handling applies.
    * Bun's fetch already implements that correctly, so this package doesn't
    * duplicate it; it only adds an override on top when Agency's own config
    * asks for one, itself still exempting NO_PROXY-listed hosts.

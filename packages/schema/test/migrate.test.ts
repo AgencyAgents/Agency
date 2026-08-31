@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { migrate, MigrationError, type Migration, type VersionedRecord } from "../src/migrate.ts";
+import { type Migration, MigrationError, migrate, type VersionedRecord } from "../src/migrate.ts";
 
 // v0 shipped `model` as a bare string. v1 splits it into provider + model.
 const v0ToV1: Migration = {
@@ -58,7 +58,12 @@ describe("migrate", () => {
   });
 
   test("is a no-op when already at the target version", () => {
-    const v2: VersionedRecord = { schemaVersion: 2, provider: "anthropic", model: "opus", thinkingLevel: "high" };
+    const v2: VersionedRecord = {
+      schemaVersion: 2,
+      provider: "anthropic",
+      model: "opus",
+      thinkingLevel: "high",
+    };
     expect(migrate(v2, migrations, 2)).toEqual(v2);
   });
 

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { Message } from "@agency/schema";
 import type { ThinkingLevel } from "@agency/providers";
-import { ensureDaemon, type DaemonClient } from "@agency/rpc";
+import { type DaemonClient, ensureDaemon } from "@agency/rpc";
+import type { Message } from "@agency/schema";
 import type { RunTurnParams, RunTurnRpcResult } from "./daemon.ts";
 
 export interface RunHeadlessOptions {
@@ -15,7 +15,7 @@ export interface RunHeadlessOptions {
   prompt: string;
   thinkingLevel?: ThinkingLevel;
   onEvent?: (event: unknown) => void;
-  /** Injectable for tests — production callers never pass this. */
+  /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
 }
 
@@ -23,7 +23,7 @@ const DEFAULT_DAEMON_ENTRY = join(import.meta.dir, "daemon-entry.ts");
 
 /**
  * The non-interactive client: finds or starts this workspace's daemon, runs
- * one turn, and returns. This is the "headless/print client" P3 delivers —
+ * one turn, and returns. This is the "headless/print client" P3 delivers;
  * the TUI is a different client over the same RPC surface, not a
  * prerequisite for this one to work.
  */
@@ -33,7 +33,15 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
     instanceDir: options.instanceDir,
     spawnDaemon: (instanceFile) => {
       Bun.spawn(
-        ["bun", "run", options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY, "--workspace", options.workspaceRoot, "--instance-file", instanceFile],
+        [
+          "bun",
+          "run",
+          options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY,
+          "--workspace",
+          options.workspaceRoot,
+          "--instance-file",
+          instanceFile,
+        ],
         { stdio: ["ignore", "ignore", "ignore"] },
       );
     },
@@ -60,6 +68,10 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
   }
 }
 
-function subscribeToTurn(client: DaemonClient, turnId: string, onEvent: (event: unknown) => void): () => void {
+function subscribeToTurn(
+  client: DaemonClient,
+  turnId: string,
+  onEvent: (event: unknown) => void,
+): () => void {
   return client.on(`turn.${turnId}`, onEvent);
 }

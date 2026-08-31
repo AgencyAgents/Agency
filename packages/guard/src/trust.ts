@@ -10,7 +10,7 @@ export interface TrustStore {
 
 /**
  * Persists trust decisions as a flat JSON list on disk. A directory is
- * untrusted until explicitly confirmed — repo-provided instructions and
+ * untrusted until explicitly confirmed: repo-provided instructions and
  * config must not load before that (R2/trust gate: AGENTS.md is an
  * injection surface).
  */

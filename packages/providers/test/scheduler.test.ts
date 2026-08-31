@@ -113,7 +113,7 @@ describe("Scheduler concurrency", () => {
 
 describe("Scheduler rate limiting", () => {
   test("paces requests against requestsPerMinute once burst capacity is spent", async () => {
-    // capacity ~= ceil(rpm/10); at rpm=600 that's 60 tokens of burst — use a
+    // capacity ~= ceil(rpm/10); at rpm=600 that's 60 tokens of burst, so use a
     // tiny rpm so the burst is exhausted almost immediately and pacing kicks in.
     const scheduler = new Scheduler({ requestsPerMinute: 60, maxConcurrent: 10 });
     const start = Date.now();

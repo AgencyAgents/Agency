@@ -9,7 +9,7 @@ function accountFile(dir: string, account: string): string {
 }
 
 /**
- * Resolved by absolute path rather than PATH lookup — some shells (minimal
+ * Resolved by absolute path rather than PATH lookup: some shells (minimal
  * CI runners, restricted containers) don't have System32 on PATH at all,
  * and Windows PowerShell 5.1 always lives at this fixed location on every
  * supported Windows version.
@@ -20,13 +20,16 @@ function powershellExecutable(): string {
 }
 
 /**
- * Windows has no CLI for reading Credential Manager entries back out — only
+ * Windows has no CLI for reading Credential Manager entries back out; only
  * native Win32 APIs expose that. DPAPI via PowerShell's
  * ConvertTo/FromSecureString gives the same guarantee Credential Manager
  * does (encryption tied to the current Windows user account) without a
  * native addon, so the ciphertext is stored in a plain file here instead.
  */
-export function createWindowsKeychainBackend(storeDir: string, spawn: SpawnFn = defaultSpawn): KeychainBackend {
+export function createWindowsKeychainBackend(
+  storeDir: string,
+  spawn: SpawnFn = defaultSpawn,
+): KeychainBackend {
   return {
     name: "windows-dpapi",
 
@@ -43,7 +46,9 @@ export function createWindowsKeychainBackend(storeDir: string, spawn: SpawnFn = 
         "ConvertFrom-SecureString -SecureString $secure",
       ].join("; ");
 
-      const result = await spawn([powershellExecutable(), "-NoProfile", "-Command", script], { stdin: `${secret}\n` });
+      const result = await spawn([powershellExecutable(), "-NoProfile", "-Command", script], {
+        stdin: `${secret}\n`,
+      });
       if (result.exitCode !== 0) {
         throw new Error(`failed to encrypt credential via DPAPI: ${result.stderr}`);
       }

@@ -1,0 +1,16 @@
+name: Feature request
+description: Something's missing
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: what problem does this solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: proposed approach
+    validations:
+      required: false
