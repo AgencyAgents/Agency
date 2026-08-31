@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/schema" },
+    { "path": "packages/i18n" },
+    { "path": "packages/core" }
+  ]
+}
