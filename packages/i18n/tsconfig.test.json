@@ -3,6 +3,7 @@
   "compilerOptions": {
     "composite": false,
     "noEmit": true,
+    "rewriteRelativeImportExtensions": false,
     "types": ["bun"]
   },
   "include": ["src", "test"],

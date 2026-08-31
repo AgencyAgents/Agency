@@ -9,11 +9,26 @@
         "typescript": "^7",
       },
     },
+    "packages/cli": {
+      "name": "@agency/cli",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/core": "workspace:*",
+        "@agency/guard": "workspace:*",
+        "@agency/net": "workspace:*",
+        "@agency/providers": "workspace:*",
+        "@agency/rpc": "workspace:*",
+        "@agency/schema": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@agency/core",
       "version": "0.1.0",
       "dependencies": {
+        "@agency/guard": "workspace:*",
         "@agency/i18n": "workspace:*",
+        "@agency/net": "workspace:*",
+        "@agency/providers": "workspace:*",
         "@agency/schema": "workspace:*",
         "jsonc-parser": "^3",
         "zod": "^4",
@@ -53,6 +68,13 @@
         "@agency/guard": "workspace:*",
       },
     },
+    "packages/rpc": {
+      "name": "@agency/rpc",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/schema": "workspace:*",
+      },
+    },
     "packages/schema": {
       "name": "@agency/schema",
       "version": "0.1.0",
@@ -62,6 +84,8 @@
     },
   },
   "packages": {
+    "@agency/cli": ["@agency/cli@workspace:packages/cli"],
+
     "@agency/core": ["@agency/core@workspace:packages/core"],
 
     "@agency/guard": ["@agency/guard@workspace:packages/guard"],
@@ -71,6 +95,8 @@
     "@agency/net": ["@agency/net@workspace:packages/net"],
 
     "@agency/providers": ["@agency/providers@workspace:packages/providers"],
+
+    "@agency/rpc": ["@agency/rpc@workspace:packages/rpc"],
 
     "@agency/schema": ["@agency/schema@workspace:packages/schema"],
 

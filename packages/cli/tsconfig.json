@@ -7,9 +7,10 @@
   "include": ["src"],
   "references": [
     { "path": "../schema" },
-    { "path": "../i18n" },
+    { "path": "../core" },
     { "path": "../net" },
     { "path": "../guard" },
-    { "path": "../providers" }
+    { "path": "../providers" },
+    { "path": "../rpc" }
   ]
 }

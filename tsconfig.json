@@ -6,6 +6,8 @@
     { "path": "packages/core" },
     { "path": "packages/net" },
     { "path": "packages/guard" },
-    { "path": "packages/providers" }
+    { "path": "packages/providers" },
+    { "path": "packages/rpc" },
+    { "path": "packages/cli" }
   ]
 }
