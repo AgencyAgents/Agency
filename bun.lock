@@ -26,6 +26,22 @@
         "@agency/schema": "workspace:*",
       },
     },
+    "packages/net": {
+      "name": "@agency/net",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/schema": "workspace:*",
+      },
+    },
+    "packages/providers": {
+      "name": "@agency/providers",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/net": "workspace:*",
+        "@agency/schema": "workspace:*",
+        "gpt-tokenizer": "^2",
+      },
+    },
     "packages/schema": {
       "name": "@agency/schema",
       "version": "0.1.0",
@@ -38,6 +54,10 @@
     "@agency/core": ["@agency/core@workspace:packages/core"],
 
     "@agency/i18n": ["@agency/i18n@workspace:packages/i18n"],
+
+    "@agency/net": ["@agency/net@workspace:packages/net"],
+
+    "@agency/providers": ["@agency/providers@workspace:packages/providers"],
 
     "@agency/schema": ["@agency/schema@workspace:packages/schema"],
 
@@ -86,6 +106,8 @@
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+
+    "gpt-tokenizer": ["gpt-tokenizer@2.9.0", "", {}, "sha512-YSpexBL/k4bfliAzMrRqn3M6+it02LutVyhVpDeMKrC/O9+pCe/5s8U2hYKa2vFLD5/vHhsKc8sOn/qGqII8Kg=="],
 
     "jsonc-parser": ["jsonc-parser@3.3.1", "", {}, "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ=="],
 
