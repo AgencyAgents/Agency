@@ -54,6 +54,20 @@ export const en = {
   "tui.connect.unverified": "Couldn't reach {provider} to verify the key; stored it anyway.",
 
   "tui.catalog.refreshed": "Model catalog refreshed: {count} models from {source}.",
+
+  "tui.diff.summary": "+{added} -{removed} {path}",
+  "tui.browser.empty": "(no sessions)",
+  "tui.palette.empty": "(no commands)",
+  "tui.help.empty": "(no help)",
+  "tui.status.model": "Model: {model}",
+  "tui.status.thinking": "Thinking: {level}",
+  "tui.status.context": "Context: {used}/{total}",
+  "tui.status.cost": "Cost: {cost}",
+  "tui.empty.first_run": "Welcome to Agency. Run /connect to add a provider.",
+  "tui.empty.no_credentials": "No credentials found. Press Ctrl+L to connect.",
+  "tui.error.offline": "Offline. Check your connection.",
+  "tui.error.rate_limited": "Rate limited. Retrying automatically.",
+  "tui.error.cancelled": "Cancelled.",
 } as const;
 
 export type MessageKey = keyof typeof en;

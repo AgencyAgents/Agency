@@ -2,6 +2,9 @@
   "name": "agency",
   "private": true,
   "type": "module",
+  "bin": {
+    "agency": "./packages/cli/src/entrypoint.ts"
+  },
   "workspaces": [
     "packages/*"
   ],

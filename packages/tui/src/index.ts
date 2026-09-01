@@ -1,3 +1,4 @@
+export { CommandPalette, type PaletteCommand, type PaletteEntry } from "./command-palette.ts";
 export {
   ConnectError,
   type ConnectErrorCode,
@@ -10,6 +11,10 @@ export {
   isValidProviderId,
   runConnectFlow,
 } from "./connect.ts";
+export { DiffViewer, diffLines, diffStats, formatUnifiedDiff, inlineDiffSummary } from "./diff-viewer.ts";
+export { type EmptyState, EmptyStateView, type ErrorState } from "./empty.ts";
+export { type HelpEntry, HelpSystem, type PanelId } from "./help.ts";
+export { type KeybindEntry, type KeybindPreset, KeybindRegistry } from "./keybinds.ts";
 export {
   buildPickerSections,
   formatContextWindow,
@@ -34,6 +39,13 @@ export {
   visibleWidth,
 } from "./renderer.ts";
 export {
+  type BrowserEntry,
+  type BrowserFilter,
+  type BrowserNode,
+  SessionBrowser,
+} from "./session-browser.ts";
+export { type StatusInfo, StatusLine } from "./status.ts";
+export {
   type Cue,
   createTheme,
   DEFAULT_PALETTE,
@@ -42,6 +54,7 @@ export {
   type StyleKind,
   type Theme,
 } from "./theme.ts";
+export { getTheme, THEMES, type ThemeDefinition, themeNames } from "./themes.ts";
 export {
   THINKING_COMMAND_NAMES,
   type ThinkingCommand,
