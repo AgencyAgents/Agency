@@ -43,7 +43,7 @@ export function createBashTool(
       const wrapped = shell.wrapCommand(input.command);
       const argv = [shell.command, ...shell.buildArgs(wrapped)];
       const proc = Bun.spawn(argv, { cwd: state.cwd, stdout: "pipe", stderr: "pipe" });
-      const onAbort = () => proc.kill();
+      const onAbort = () => proc.kill("SIGKILL");
       ctx.signal.addEventListener("abort", onAbort);
 
       try {
