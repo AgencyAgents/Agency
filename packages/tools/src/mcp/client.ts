@@ -4,12 +4,17 @@ import type { McpTransport } from "./transport.ts";
 export class McpClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private onToolListChanged?: () => void;
 
   constructor(
     private readonly name: string,
     private readonly transport: McpTransport,
   ) {
     this.transport.onMessage((msg) => this.handleMessage(msg));
+  }
+
+  onListChanged(cb: () => void): void {
+    this.onToolListChanged = cb;
   }
 
   async initialize(): Promise<void> {
@@ -52,6 +57,12 @@ export class McpClient {
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
+    if (typeof msg.method === "string") {
+      if (msg.method === "notifications/tools/list_changed") {
+        this.onToolListChanged?.();
+      }
+      return;
+    }
     const id = msg.id as number | undefined;
     if (typeof id !== "number") return;
     const entry = this.pending.get(id);
