@@ -4,3 +4,6 @@ export * from "./events.ts";
 export * from "./logger.ts";
 export * from "./loop.ts";
 export * from "./paths.ts";
+export * from "./prompt/index.ts";
+export * from "./sessions/index.ts";
+export * from "./storage.ts";

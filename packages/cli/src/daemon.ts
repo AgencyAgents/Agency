@@ -1,5 +1,4 @@
-import { join } from "node:path";
-import { type Budget, type LoopEvent, runTurn, type ToolSpec } from "@agency/core";
+import { type Budget, type LoopEvent, runTurn, storagePaths, type ToolSpec } from "@agency/core";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
@@ -83,16 +82,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
 
-  // Snapshot storage location is provisional: P5 formalizes the real
-  // per-OS storage layout (R9's storage spec). This just needs somewhere
-  // real to live until then.
   const builtins = options.tools
     ? undefined
     : createBuiltinTools({
         deps: { identity, capabilities, sandbox: new SandboxBoundary(options.workspaceRoot) },
         http,
         workspaceRoot: options.workspaceRoot,
-        snapshotDir: join(options.workspaceRoot, ".agency", "snapshots"),
+        snapshotDir: storagePaths(options.workspaceRoot).snapshotsDir,
       });
   const tools = options.tools ?? builtins?.tools ?? [];
 
