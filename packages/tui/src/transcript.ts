@@ -129,6 +129,26 @@ export class Transcript {
         });
         break;
       }
+      case "error": {
+        this.blocks.push({
+          kind: "status",
+          style: "error",
+          text: t("tui.error.message", { code: event.code, message: event.message }),
+        });
+        break;
+      }
+      case "retry": {
+        let text = t("tui.retry.message", { attempt: event.attempt, message: event.message });
+        if (event.next !== undefined) {
+          text += t("tui.retry.next", { next: new Date(event.next).toLocaleTimeString() });
+        }
+        this.blocks.push({
+          kind: "status",
+          style: "warning",
+          text,
+        });
+        break;
+      }
     }
   }
 
