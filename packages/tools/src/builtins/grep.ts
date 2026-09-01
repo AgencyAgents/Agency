@@ -15,7 +15,7 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
   const spec: ToolSpec<{ pattern: string; path?: string; glob?: string }> = {
     name: "grep",
     description:
-      "Searches file contents for a regex pattern using ripgrep, returning matching lines with line numbers.",
+      "Searches file contents for a regex pattern (ripgrep if available, otherwise grep), returning matching lines with line numbers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32,14 +32,35 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
       const searchRoot = deps.sandbox.resolvePath(input.path ?? ".");
       requirePathScope(deps.identity, deps.capabilities, searchRoot);
 
-      const args = ["rg", "--line-number", "--no-heading", "--color", "never", "-m", String(MAX_MATCHES)];
-      if (input.glob) args.push("--glob", input.glob);
-      args.push(input.pattern, searchRoot);
+      let proc = trySpawn([
+        "rg",
+        "--line-number",
+        "--no-heading",
+        "--color=never",
+        "-m",
+        String(MAX_MATCHES),
+        ...(input.glob ? ["--glob", input.glob] : []),
+        input.pattern,
+        searchRoot,
+      ]);
 
-      const proc = trySpawn(args);
+      // grep -rn matches rg's `path:line:content` output and exit-1-on-no-matches semantics.
+      if (!proc) {
+        proc = trySpawn([
+          "grep",
+          "-rn",
+          "--color=never",
+          "-m",
+          String(MAX_MATCHES),
+          ...(input.glob ? ["--include", input.glob] : []),
+          input.pattern,
+          searchRoot,
+        ]);
+      }
+
       if (!proc) {
         return {
-          content: "ripgrep (rg) is not installed or not on PATH; grep requires it",
+          content: "neither ripgrep (rg) nor grep is installed or on PATH",
           isError: true,
         };
       }
@@ -50,10 +71,10 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
         const stdout = await new Response(proc.stdout).text();
         await proc.exited;
 
-        // rg exits 1 for "no matches", which is a normal, non-error result here.
+        // Both rg and grep exit 1 for "no matches", a normal, non-error result here.
         if (proc.exitCode !== 0 && proc.exitCode !== 1) {
           const stderr = await new Response(proc.stderr).text();
-          return { content: stderr || `rg exited with code ${proc.exitCode}`, isError: true };
+          return { content: stderr || `search exited with code ${proc.exitCode}`, isError: true };
         }
 
         return { content: stdout.trim() || "no matches" };

@@ -4,7 +4,13 @@ import { AgencyError, ErrorCode } from "@agency/schema";
 import { SandboxBoundary } from "../src/sandbox.ts";
 
 describe("SandboxBoundary.resolvePath", () => {
-  const root = join("C:", "repo", "project");
+  // "C:" is a relative folder name on POSIX, so absolute paths must be per-platform.
+  const isWin = process.platform === "win32";
+  const root = isWin ? join("C:", "repo", "project") : join("/", "repo", "project");
+  const outsideAbsolute = isWin ? join("C:", "Windows", "System32") : join("/", "etc", "passwd");
+  const sibling = isWin
+    ? join("C:", "repo", "project-evil", "file")
+    : join("/", "repo", "project-evil", "file");
   const boundary = new SandboxBoundary(root);
 
   test("allows a path inside the root", () => {
@@ -20,11 +26,11 @@ describe("SandboxBoundary.resolvePath", () => {
   });
 
   test("rejects an absolute path outside the root", () => {
-    expect(() => boundary.resolvePath(join("C:", "Windows", "System32"))).toThrow(AgencyError);
+    expect(() => boundary.resolvePath(outsideAbsolute)).toThrow(AgencyError);
   });
 
   test("rejects a sibling directory that merely shares a prefix", () => {
-    expect(() => boundary.resolvePath(join("C:", "repo", "project-evil", "file"))).toThrow(AgencyError);
+    expect(() => boundary.resolvePath(sibling)).toThrow(AgencyError);
   });
 
   test("the thrown error carries PERMISSION_DENIED", () => {

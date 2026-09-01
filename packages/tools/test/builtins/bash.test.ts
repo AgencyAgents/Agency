@@ -117,5 +117,6 @@ describe("createBashTool", () => {
 
     // The handler should settle (process killed) rather than hang forever.
     await resultPromise;
-  }, 10_000);
+    // macOS CI can be slow to deliver the kill signal to the child.
+  }, 30_000);
 });

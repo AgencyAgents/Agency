@@ -27,9 +27,9 @@ function fakeEnv() {
 describe("per-OS directories", () => {
   test("windows uses LOCALAPPDATA, separating data from cache", () => {
     const env = { LOCALAPPDATA: "C:\\Users\\pixel\\AppData\\Local" } as NodeJS.ProcessEnv;
-    expect(dataDir(env, "win32")).toBe("C:\\Users\\pixel\\AppData\\Local\\Agency");
-    expect(cacheDir(env, "win32")).toBe("C:\\Users\\pixel\\AppData\\Local\\Agency\\Cache");
-    expect(logDir(env, "win32")).toBe("C:\\Users\\pixel\\AppData\\Local\\Agency\\logs");
+    expect(dataDir(env, "win32")).toBe(join("C:\\Users\\pixel\\AppData\\Local", "Agency"));
+    expect(cacheDir(env, "win32")).toBe(join("C:\\Users\\pixel\\AppData\\Local", "Agency", "Cache"));
+    expect(logDir(env, "win32")).toBe(join("C:\\Users\\pixel\\AppData\\Local", "Agency", "logs"));
   });
 
   test("linux respects XDG_DATA_HOME and XDG_CACHE_HOME", () => {

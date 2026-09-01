@@ -85,6 +85,9 @@ describe("buildDebugBundle", () => {
       env: {},
       platform: "darwin",
       listSessions: () => [{ id: "abc", bytes: 120, entries: 3 }],
+      // Inject an empty log tail: on a real macOS/Linux machine the platform
+      // log dir may exist with content from other tests, making "(empty)" flaky.
+      readLogTail: () => "",
     });
 
     const report = formatDebugBundle(bundle);
