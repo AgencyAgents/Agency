@@ -69,7 +69,7 @@ export async function runSessionTurn(
     message: { role: "user", content: [{ type: "text", text: options.userText }] },
   });
 
-  const history = options.store.messagesFor(options.store.load(options.sessionId), userEntry.id);
+  let history = options.store.messagesFor(options.store.load(options.sessionId), userEntry.id);
 
   const turnId = randomUUID();
   const unsubscribe = options.onEvent ? client.on(`turn.${turnId}`, options.onEvent) : undefined;
@@ -85,7 +85,24 @@ export async function runSessionTurn(
       session: history,
       budget: options.budget,
     };
-    const result = (await client.call("run_turn", params)) as RunTurnRpcResult;
+    let result = (await client.call("run_turn", params)) as RunTurnRpcResult;
+
+    // Compacting from userEntry.id, not the pre-turn tip: the overflowed
+    // request included the user message, and the failed turn appended nothing,
+    // so the append loop below stays correct against the rebuilt history.
+    if (result.needsCompaction && options.compaction) {
+      const outcome = await compact(
+        options.store,
+        options.sessionId,
+        userEntry.id,
+        options.compaction.tokenizer,
+        options.compaction.threshold,
+        options.compaction.summarize,
+      );
+      history = options.store.messagesFor(options.store.load(options.sessionId), outcome.tipId);
+      params.session = history;
+      result = (await client.call("run_turn", params)) as RunTurnRpcResult;
+    }
 
     let parentId = userEntry.id;
     for (const message of result.messages.slice(history.length)) {

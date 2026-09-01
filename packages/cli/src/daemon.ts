@@ -28,7 +28,7 @@ import {
   type Usage,
 } from "@agency/providers";
 import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
-import type { Message, StopReason } from "@agency/schema";
+import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
 import { createBuiltinTools } from "@agency/tools";
 import { listProviders } from "./providers-list.ts";
@@ -56,6 +56,10 @@ export interface RunTurnRpcResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Set when the turn failed with CONTEXT_OVERFLOW: the daemon produced no
+   *  assistant messages, so the caller (which owns the SessionStore) can
+   *  compact the session and retry the turn. */
+  needsCompaction?: boolean;
 }
 
 /**
@@ -235,6 +239,26 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             const response: RunTurnRpcResult = { ...result, cancelled: controller.signal.aborted };
             return response;
           } catch (error) {
+            if (error instanceof AgencyError && error.code === ErrorCode.CONTEXT_OVERFLOW) {
+              // The loop throws before pushing any assistant message, so the
+              // input session is the full message list. Report the overflow as
+              // a result instead of an RPC error: the caller owns the
+              // SessionStore and is the one who can compact and retry.
+              logger.warn("context overflow — client should compact and retry", {
+                turnId: params.turnId,
+                provider: params.provider,
+                model: params.model,
+              });
+              const response: RunTurnRpcResult = {
+                messages: params.session,
+                stopReason: "error",
+                usage: { inputTokens: 0, outputTokens: 0 },
+                budgetExceeded: false,
+                cancelled: controller.signal.aborted,
+                needsCompaction: true,
+              };
+              return response;
+            }
             logger.error("turn failed", {
               turnId: params.turnId,
               error: error instanceof Error ? error.message : String(error),
