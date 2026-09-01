@@ -9,6 +9,7 @@
     { "path": "packages/providers" },
     { "path": "packages/rpc" },
     { "path": "packages/tools" },
-    { "path": "packages/cli" }
+    { "path": "packages/cli" },
+    { "path": "packages/tui" }
   ]
 }

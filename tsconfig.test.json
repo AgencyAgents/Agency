@@ -9,6 +9,7 @@
     { "path": "packages/providers/tsconfig.test.json" },
     { "path": "packages/rpc/tsconfig.test.json" },
     { "path": "packages/tools/tsconfig.test.json" },
-    { "path": "packages/cli/tsconfig.test.json" }
+    { "path": "packages/cli/tsconfig.test.json" },
+    { "path": "packages/tui/tsconfig.test.json" }
   ]
 }

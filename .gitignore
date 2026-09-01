@@ -1,7 +1,13 @@
+CLAUDE.md
 CLAUDE.local.md
+AGENTS.md
+AGENTS.local.md
+HANDOFF.local.md
 
 node_modules/
 dist/
 *.tsbuildinfo
 *.log
 .DS_Store
+.omo/
+.claude/

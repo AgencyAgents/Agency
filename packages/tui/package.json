@@ -1,0 +1,16 @@
+{
+  "name": "@agency/tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/core": "workspace:*",
+    "@agency/i18n": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

@@ -21,6 +21,19 @@ export const en = {
 
   "trust.prompt": "Agency hasn't run in {path} before. Trust this directory and load its instructions?",
   "trust.denied": "This directory isn't trusted, so its AGENTS.md and config were not loaded.",
+
+  "tui.thinking.label": "Thinking",
+  "tui.thinking.collapsed": "Thinking ({chars} chars, collapsed)",
+  "tui.tool.call": "Tool: {name}",
+  "tui.tool.result": "Tool {name} finished",
+  "tui.tool.error": "Tool {name} failed",
+  "tui.turn.complete": "Turn complete ({reason}, {tokens} tokens)",
+  "tui.budget.exceeded": "Budget exceeded: {tokens} tokens, {cost} USD spent",
+  "tui.cue.accent": "note",
+  "tui.cue.dim": "detail",
+  "tui.cue.error": "error",
+  "tui.cue.success": "ok",
+  "tui.cue.warning": "warn",
 } as const;
 
 export type MessageKey = keyof typeof en;
