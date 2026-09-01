@@ -84,6 +84,19 @@ export class ProcessManager {
     return true;
   }
 
+  /** Adopt an externally spawned proc (e.g. an MCP server) so it is reaped with the session. */
+  adopt(proc: { pid?: number; kill: () => void }, command: string): string {
+    const id = randomUUID();
+    this.entries.set(id, {
+      proc: proc as ReturnType<typeof Bun.spawn>,
+      command,
+      startedAt: new Date().toISOString(),
+      log: "",
+      exited: false,
+    });
+    return id;
+  }
+
   /** Called on session end so nothing this manager started outlives it. */
   killAll(): void {
     for (const entry of this.entries.values()) entry.proc.kill();
