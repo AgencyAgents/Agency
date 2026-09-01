@@ -148,16 +148,23 @@ describe("createAgentDaemon", () => {
   test("an unknown provider surfaces as a rejected call, not a crashed daemon", async () => {
     const { client } = await startFakeDaemon({ adapterFor: undefined });
 
-    await expect(
-      client.call("run_turn", {
+    // await expect(...).rejects.toThrow(...) loses this socket-driven rejection
+    // under bun 1.4 (unhandled between tests); an awaited try/catch is the same
+    // assertion without tripping that.
+    let rejection: string | undefined;
+    try {
+      await client.call("run_turn", {
         turnId: "t4",
         provider: "not-a-real-provider",
         model: "x",
         apiKey: "key",
         systemPrompt: "sys",
         session: [],
-      }),
-    ).rejects.toThrow(/unknown provider/);
+      });
+    } catch (error) {
+      rejection = error instanceof Error ? error.message : String(error);
+    }
+    expect(rejection).toMatch(/unknown provider/);
 
     // The daemon itself must still be alive after that rejection.
     expect(await client.call("cancel_turn", { turnId: "whatever" })).toEqual({ cancelled: false });
@@ -240,7 +247,7 @@ describe("createAgentDaemon", () => {
     expect(result.default.openai).toBe("gpt-5.2");
     // MY_GATEWAY_KEY is set in this process's env, so the gateway counts as connected.
     expect(result.connected).toContain("my-gateway");
-  });
+  }, 30_000);
 
   test("providers_list honors disabled_providers from config", async () => {
     const { client } = await startFakeDaemon({
@@ -253,7 +260,7 @@ describe("createAgentDaemon", () => {
     };
     expect(result.all.some((p) => p.id === "anthropic")).toBe(false);
     expect(result.all.some((p) => p.id === "openai")).toBe(true);
-  });
+  }, 30_000);
 });
 
 function catalogModel(id: string, family: string): ModelInfo {

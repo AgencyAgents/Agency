@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { applyEdit } from "../src/edit-engine.ts";
+import { applyEdit, applyEditVerified, errorDiagnostics } from "../src/edit-engine.ts";
 
 describe("applyEdit", () => {
   test("replaces a uniquely-occurring region", () => {
@@ -60,5 +60,37 @@ describe("applyEdit", () => {
     const content = "line1\n  line2\nline3";
     const result = applyEdit(content, { oldText: "line2", newText: "replaced" });
     expect(result).toBe("line1\n  replaced\nline3");
+  });
+});
+
+describe("errorDiagnostics", () => {
+  test("keeps only error-severity diagnostics, formatted 1-based", () => {
+    const warnings = errorDiagnostics([
+      { severity: 1, message: "boom", line: 2, character: 4 },
+      { severity: 2, message: "meh", line: 0, character: 0 },
+      { severity: 1, message: "also boom", line: 9, character: 0 },
+    ]);
+    expect(warnings).toEqual(["3:5 boom", "10:1 also boom"]);
+  });
+});
+
+describe("applyEditVerified", () => {
+  test("applies the edit and surfaces error diagnostics as warnings", () => {
+    const outcome = applyEditVerified(
+      "const x = 1;\n",
+      { oldText: "1", newText: "2" },
+      {
+        path: "a.ts",
+        diagnostics: (path) =>
+          path === "a.ts" ? [{ severity: 1, message: "boom", line: 0, character: 6 }] : [],
+      },
+    );
+    expect(outcome.content).toBe("const x = 2;\n");
+    expect(outcome.warnings).toEqual(["1:7 boom"]);
+  });
+
+  test("no provider or no path means no warnings and a plain edit", () => {
+    const outcome = applyEditVerified("abc", { oldText: "b", newText: "B" });
+    expect(outcome).toEqual({ content: "aBc", warnings: [] });
   });
 });

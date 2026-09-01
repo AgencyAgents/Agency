@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify without publishing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: bun-linux-x64,bun-linux-arm64
+            sign_os: linux
+          - os: macos-latest
+            targets: bun-darwin-x64,bun-darwin-arm64
+            sign_os: darwin
+          - os: windows-latest
+            targets: bun-windows-x64
+            sign_os: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Job-level so the sign steps' `if` conditions can test presence.
+    env:
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+      WINDOWS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_THUMBPRINT }}
+      LINUX_SIGN_KEY: ${{ secrets.LINUX_SIGN_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+      - name: Derive version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(bun --print "require('./package.json').version")" >> "$GITHUB_ENV"
+          fi
+      - name: Build binaries
+        shell: bash
+        run: bun scripts/build.ts --targets "${{ matrix.targets }}" --version "$VERSION" --outdir dist
+      - name: Sign binaries (macOS)
+        if: matrix.sign_os == 'darwin' && env.MACOS_SIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          for f in dist/agency-*; do
+            bash scripts/sign.sh --os darwin --file "$f"
+          done
+      - name: Sign binaries (Windows)
+        if: matrix.sign_os == 'windows' && env.WINDOWS_SIGN_THUMBPRINT != ''
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/agency-* | ForEach-Object {
+            & scripts/sign.ps1 -Path $_.FullName
+          }
+      - name: Sign binaries (Linux)
+        if: matrix.sign_os == 'linux' && env.LINUX_SIGN_KEY != ''
+        shell: bash
+        run: |
+          echo "$LINUX_SIGN_KEY" > signing.key
+          for f in dist/agency-*; do
+            bash scripts/sign.sh --os linux --file "$f" --key signing.key
+          done
+          rm -f signing.key
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agency-${{ matrix.sign_os }}
+          path: dist/agency-*
+          if-no-files-found: error
+
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Generate SBOM
+        run: bun scripts/sbom.ts --out dist/agency.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: dist/agency.cdx.json
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum agency-* agency.cdx.json > checksums.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            artifacts/agency-* \
+            artifacts/checksums.txt \
+            artifacts/agency.cdx.json \
+            --title "Agency $GITHUB_REF_NAME" \
+            --generate-notes

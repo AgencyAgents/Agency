@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { CompactionThreshold, SessionStore } from "@agency/core";
 import { compact } from "@agency/core";
-import type { ThinkingLevel, Tokenizer } from "@agency/providers";
+import type { ModelPricing, ThinkingLevel, Tokenizer } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
+import { appendUsageEntry } from "@agency/telemetry";
 import type { RunTurnParams, RunTurnRpcResult } from "./daemon.ts";
 
 export interface CompactionOptions {
@@ -23,6 +24,9 @@ export interface RunSessionTurnOptions {
   budget?: RunTurnParams["budget"];
   compaction?: CompactionOptions;
   onEvent?: (event: unknown) => void;
+  /** When set, the turn's usage is persisted as a `usage` session entry and
+   *  accumulated here, feeding the cost/cache-hit-rate status line. */
+  usage?: { pricing?: ModelPricing };
 }
 
 export interface RunSessionTurnResult {
@@ -87,6 +91,14 @@ export async function runSessionTurn(
     for (const message of result.messages.slice(history.length)) {
       const appended = options.store.append(options.sessionId, { type: "message", parentId, message });
       parentId = appended.id;
+    }
+
+    if (options.usage) {
+      parentId = appendUsageEntry(options.store, options.sessionId, parentId, {
+        usage: result.usage,
+        model: options.model,
+        pricing: options.usage.pricing,
+      });
     }
 
     return { result, tipId: parentId };

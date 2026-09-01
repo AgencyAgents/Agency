@@ -10,8 +10,11 @@
     { "path": "../core" },
     { "path": "../net" },
     { "path": "../guard" },
+    { "path": "../i18n" },
     { "path": "../providers" },
     { "path": "../rpc" },
-    { "path": "../tools" }
+    { "path": "../telemetry" },
+    { "path": "../tools" },
+    { "path": "../tui" }
   ]
 }

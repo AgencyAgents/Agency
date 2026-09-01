@@ -2,12 +2,12 @@ import type { CallerIdentity, Capabilities } from "@agency/guard";
 import { requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, Scheduler, ThinkingLevel, ToolDefinition, Usage } from "@agency/providers";
-import type { ContentBlock, Message, StopReason } from "@agency/schema";
+import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
 
 export type ToolHandler = (
   input: Record<string, unknown>,
   ctx: { signal: AbortSignal },
-) => Promise<{ content: string; isError?: boolean }>;
+) => Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
 
 export interface ToolSpec extends ToolDefinition {
   handler: ToolHandler;
@@ -27,7 +27,7 @@ export type LoopEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string }
-  | { type: "tool_result"; id: string; content: string; isError: boolean }
+  | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
   | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number };
 
@@ -135,12 +135,19 @@ async function runTools(
   for (const call of calls) {
     const spec = options.tools.find((t) => t.name === call.name);
     const result = await executeOne(spec, call, options, signal);
-    options.onEvent?.({ type: "tool_result", id: call.id, content: result.content, isError: result.isError });
+    options.onEvent?.({
+      type: "tool_result",
+      id: call.id,
+      content: result.content,
+      isError: result.isError,
+      images: result.images,
+    });
     results.push({
       type: "tool_result",
       toolCallId: call.id,
       content: result.content,
       isError: result.isError,
+      ...(result.images?.length ? { images: result.images } : {}),
     });
   }
 
@@ -152,7 +159,7 @@ async function executeOne(
   call: Extract<ContentBlock, { type: "tool_call" }>,
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
-): Promise<{ content: string; isError: boolean }> {
+): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
   if (!spec) {
     return { content: `no such tool: "${call.name}"`, isError: true };
   }
@@ -166,7 +173,7 @@ async function executeOne(
   const toolSignal = signal ?? NEVER_ABORTED;
   try {
     const result = await spec.handler(call.input, { signal: toolSignal });
-    return { content: result.content, isError: result.isError ?? false };
+    return { content: result.content, isError: result.isError ?? false, images: result.images };
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };
   }

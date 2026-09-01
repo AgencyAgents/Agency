@@ -16,6 +16,8 @@ export { createWriteTool } from "./builtins/write.ts";
 export * from "./contract.ts";
 export * from "./edit-engine.ts";
 export * from "./formatter.ts";
+export * from "./lsp/index.ts";
+export * from "./mcp/index.ts";
 export * from "./process-manager.ts";
 export * from "./shell.ts";
 export * from "./snapshot.ts";

@@ -10,9 +10,12 @@
     "@agency/core": "workspace:*",
     "@agency/net": "workspace:*",
     "@agency/guard": "workspace:*",
+    "@agency/i18n": "workspace:*",
     "@agency/providers": "workspace:*",
     "@agency/rpc": "workspace:*",
-    "@agency/tools": "workspace:*"
+    "@agency/telemetry": "workspace:*",
+    "@agency/tools": "workspace:*",
+    "@agency/tui": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --build",

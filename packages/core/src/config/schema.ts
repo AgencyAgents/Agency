@@ -71,6 +71,10 @@ export const ConfigSchema = z.object({
   schemaVersion: z.literal(CONFIG_SCHEMA_VERSION),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   locale: z.string().default("en"),
+  /** Opt-in anonymous usage metrics; off by default, nothing recorded until set. */
+  telemetryEnabled: z.boolean().default(false),
+  /** Opt-in local crash reports feeding `agency debug`; off by default. */
+  crashReportsEnabled: z.boolean().default(false),
   /** Config-defined providers, merged over the models.dev catalog. */
   provider: z.record(z.string(), ProviderConfigSchema).default({}),
   /** Default model as "provider/model"; the model id may itself contain "/". */
@@ -79,6 +83,12 @@ export const ConfigSchema = z.object({
   small_model: z.string().optional(),
   disabled_providers: z.array(z.string()).default([]),
   enabled_providers: z.array(z.string()).optional(),
+  /**
+   * External MCP servers, name -> {command, args, env} or {url}. Kept as a
+   * loose record here so the MCP config grammar evolves in @agency/tools,
+   * which re-validates it via parseMcpServers at startup.
+   */
+  mcpServers: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;

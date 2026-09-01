@@ -1,5 +1,6 @@
 {
   "name": "agency",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -11,10 +12,13 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.11",
     "@types/bun": "latest",
+    "jsonc-parser": "^3.3.1",
     "typescript": "^7"
   },
   "scripts": {
     "build": "bun run --filter='*' build",
+    "build:bin": "bun scripts/build.ts",
+    "sbom": "bun scripts/sbom.ts --out dist/agency.cdx.json",
     "test": "bun test",
     "typecheck": "bun x tsc --build tsconfig.json",
     "typecheck:test": "bun x tsc --build tsconfig.test.json",

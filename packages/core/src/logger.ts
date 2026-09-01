@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { Redactor } from "@agency/guard";
 import type { EventBus } from "./events.ts";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -37,6 +38,21 @@ export interface LoggerOptions {
   level?: LogLevel;
   sink?: (line: string) => void;
   bus?: EventBus;
+  /** When set, every message and field value is scrubbed through it before
+   *  it reaches the sink or the bus (R11: redaction at the boundary, not at
+   *  call sites). */
+  redactor?: Redactor;
+}
+
+/** Recursively redacts string values so a secret nested in a field object
+ *  can't slip past the chokepoint. */
+function redactValue(value: unknown, redactor: Redactor): unknown {
+  if (typeof value === "string") return redactor.redact(value);
+  if (Array.isArray(value)) return value.map((v) => redactValue(v, redactor));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactValue(v, redactor)]));
+  }
+  return value;
 }
 
 /** Structured JSON-lines logger. One line per entry, trace-correlated, redaction-ready. */
@@ -44,26 +60,33 @@ export class Logger {
   private readonly level: LogLevel;
   private readonly sink: (line: string) => void;
   private readonly bus?: EventBus;
+  private readonly redactor?: Redactor;
 
   constructor(options: LoggerOptions = {}) {
     this.level = options.level ?? "info";
     this.sink = options.sink ?? ((line) => console.log(line));
     this.bus = options.bus;
+    this.redactor = options.redactor;
   }
 
   private write(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
     if (LEVEL_ORDER[level] < LEVEL_ORDER[this.level]) return;
 
+    const redactor = this.redactor;
+    const safeMessage = redactor ? redactor.redact(message) : message;
+    const safeFields =
+      redactor && fields ? (redactValue(fields, redactor) as Record<string, unknown>) : fields;
+
     const entry: LogEntry = {
       time: new Date().toISOString(),
       level,
-      message,
+      message: safeMessage,
       traceId: currentTraceId(),
-      ...fields,
+      ...safeFields,
     };
 
     this.sink(JSON.stringify(entry));
-    this.bus?.emit("log.entry", { level, message, traceId: entry.traceId });
+    this.bus?.emit("log.entry", { level, message: safeMessage, traceId: entry.traceId });
   }
 
   debug(message: string, fields?: Record<string, unknown>): void {

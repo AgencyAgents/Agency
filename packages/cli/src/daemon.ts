@@ -1,14 +1,19 @@
+import { join } from "node:path";
 import {
   type Budget,
+  createRotatingFileSink,
+  dataDir,
+  Logger,
   type LoopEvent,
   loadConfig,
   type ProviderConfig,
   runTurn,
   storagePaths,
   type ToolSpec,
+  withTrace,
 } from "@agency/core";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
-import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
+import { FULL_CAPABILITIES, Redactor, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
@@ -24,8 +29,14 @@ import {
 } from "@agency/providers";
 import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
 import type { Message, StopReason } from "@agency/schema";
+import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
 import { createBuiltinTools } from "@agency/tools";
 import { listProviders } from "./providers-list.ts";
+
+function createRotatingSink(logsDir: string): (line: string) => void {
+  const sink = createRotatingFileSink({ dir: logsDir });
+  return (line) => sink.write(line);
+}
 
 export interface RunTurnParams {
   turnId: string;
@@ -107,6 +118,11 @@ export interface AgentDaemonOptions {
   configDir?: string;
   /** Pre-loaded catalog models for providers_list; skips the models.dev fetch. */
   catalog?: readonly ModelInfo[];
+  /** When set, structured logs persist here (rotated JSONL); the real daemon
+   *  passes logDir(). Tests omit it and get a console sink. */
+  logsDir?: string;
+  /** Overrides where telemetry events land; defaults to dataDir()/telemetry. */
+  telemetryDir?: string;
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
 }
@@ -125,19 +141,43 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
   const providers = config.provider;
 
+  // R11 wiring: every key that resolves anywhere in this process is registered
+  // here, and the logger scrubs every line through the same redactor.
+  const redactor = new Redactor();
+  for (const providerConfig of Object.values(providers)) {
+    if (providerConfig.apiKey) redactor.registerSecret(providerConfig.apiKey);
+  }
+  for (const [envKey, value] of Object.entries(process.env)) {
+    if (envKey.startsWith("AGENCY_") && envKey.endsWith("_API_KEY") && value) {
+      redactor.registerSecret(value);
+    }
+  }
+
+  const sink = options.logsDir ? createRotatingSink(options.logsDir) : (line: string) => console.log(line);
+  const logger = new Logger({ level: config.logLevel, sink, redactor });
+  const telemetry = new Telemetry({
+    enabled: config.telemetryEnabled,
+    crashReports: { enabled: config.crashReportsEnabled },
+    redactor,
+    sink: createFileTelemetrySink(join(options.telemetryDir ?? dataDir(), "telemetry", "events.jsonl")),
+  });
+
   const adapterFor = options.adapterFor ?? ((provider: string) => resolveAdapter(provider, providers));
   const http = options.http ?? createHttpClient();
   const identity = options.identity ?? { type: "user" as const };
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
 
+  logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
+
   const builtins = options.tools
     ? undefined
-    : createBuiltinTools({
+    : await createBuiltinTools({
         deps: { identity, capabilities, sandbox: new SandboxBoundary(options.workspaceRoot) },
         http,
         workspaceRoot: options.workspaceRoot,
         snapshotDir: storagePaths(options.workspaceRoot).snapshotsDir,
+        mcpServers: config.mcpServers,
       });
   const tools = options.tools ?? builtins?.tools ?? [];
 
@@ -152,27 +192,59 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         const controller = new AbortController();
         activeControllers.set(params.turnId, controller);
 
-        try {
-          const result = await runTurn(adapterFor(params.provider), scheduler, http, {
-            identity,
-            capabilities,
-            systemPrompt: params.systemPrompt,
-            tools,
-            model: params.model,
-            apiKey: params.apiKey,
-            thinkingLevel: params.thinkingLevel,
-            session: params.session,
-            budget: params.budget,
-            maxToolIterations: params.maxToolIterations,
-            signal: controller.signal,
-            onEvent: (event: LoopEvent) => server.broadcast(`turn.${params.turnId}`, event),
-          });
+        // R10 wiring: the whole turn — provider requests and tool calls —
+        // correlates under one trace ID in the logs.
+        return withTrace(async () => {
+          try {
+            redactor.registerSecret(params.apiKey);
+            logger.info("turn started", {
+              turnId: params.turnId,
+              provider: params.provider,
+              model: params.model,
+            });
+            const result = await runTurn(adapterFor(params.provider), scheduler, http, {
+              identity,
+              capabilities,
+              systemPrompt: params.systemPrompt,
+              tools,
+              model: params.model,
+              apiKey: params.apiKey,
+              thinkingLevel: params.thinkingLevel,
+              session: params.session,
+              budget: params.budget,
+              maxToolIterations: params.maxToolIterations,
+              signal: controller.signal,
+              onEvent: (event: LoopEvent) => server.broadcast(`turn.${params.turnId}`, event),
+            });
 
-          const response: RunTurnRpcResult = { ...result, cancelled: controller.signal.aborted };
-          return response;
-        } finally {
-          activeControllers.delete(params.turnId);
-        }
+            logger.info("turn finished", {
+              turnId: params.turnId,
+              stopReason: result.stopReason,
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              cachedInputTokens: result.usage.cachedInputTokens ?? null,
+            });
+            telemetry.record("turn_complete", {
+              provider: params.provider,
+              stopReason: result.stopReason,
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              cachedInputTokens: result.usage.cachedInputTokens ?? null,
+            });
+
+            const response: RunTurnRpcResult = { ...result, cancelled: controller.signal.aborted };
+            return response;
+          } catch (error) {
+            logger.error("turn failed", {
+              turnId: params.turnId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            telemetry.recordCrash("run_turn", error);
+            throw error;
+          } finally {
+            activeControllers.delete(params.turnId);
+          }
+        });
       },
 
       async cancel_turn(rawParams) {
@@ -212,6 +284,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     async stop() {
       clearTimeout(idleTimer);
       builtins?.processManager.killAll();
+      await builtins?.dispose();
       await server.close();
     },
   };

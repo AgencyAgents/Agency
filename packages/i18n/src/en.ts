@@ -68,6 +68,30 @@ export const en = {
   "tui.error.offline": "Offline. Check your connection.",
   "tui.error.rate_limited": "Rate limited. Retrying automatically.",
   "tui.error.cancelled": "Cancelled.",
+
+  "lsp.server.start_failed": "Language server for {language} failed to start: {detail}",
+  "lsp.diagnostics.warning": "Language server reports {count} error(s) in {path}: {summary}",
+  "lsp.request.timeout": "Language server request {method} timed out after {ms}ms.",
+
+  "image.read.attached": "Attached image {path} ({mime}, {bytes} bytes).",
+  "image.unsupported": "{path} is not a readable image (supported: {formats}).",
+
+  "onboarding.no_credentials": "No provider credentials found. Let's connect one.",
+  "onboarding.connect_done": "Connected {provider}.",
+  "onboarding.already_connected": "Already connected to {provider}.",
+  "onboarding.model_prompt": "Default model as provider/model [{suggested}]:",
+  "onboarding.model_stored": "Default model set to {model}.",
+  "onboarding.trust_prompt": "Trust {path} and load its instructions?",
+  "onboarding.trust_denied": "Not trusted: AGENTS.md and project config won't load here.",
+  "onboarding.ready": "Ready. Run `agency` to start a session.",
+  "onboarding.aborted": "Onboarding cancelled; nothing was stored.",
+
+  "telemetry.consent.prompt":
+    "Enable anonymous usage metrics and crash reports? Counts and error codes only — no prompt or code content, secrets redacted, off by default.",
+  "telemetry.consent.enabled": "Telemetry enabled. Thank you.",
+  "telemetry.consent.disabled": "Telemetry stays off.",
+
+  "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;
 
 export type MessageKey = keyof typeof en;

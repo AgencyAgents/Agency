@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { migrate, type VersionedRecord } from "@agency/schema";
 import { parse as parseJsonc } from "jsonc-parser";
 import { configDir } from "../paths.ts";
@@ -82,4 +82,21 @@ export function loadConfig(sources: ConfigSources = {}): Config {
   }
 
   return ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+}
+
+/**
+ * Persists a config change (onboarding's model/telemetry decisions) to the
+ * global layer. The managed layer always wins on next load, so this can't
+ * override policy. Note: an existing file's JSONC comments are not preserved.
+ */
+export function updateGlobalConfig(
+  patch: Partial<Config>,
+  sources: { globalDir?: string; env?: NodeJS.ProcessEnv } = {},
+): Config {
+  const globalPath = join(sources.globalDir ?? configDir(sources.env ?? process.env), "config.jsonc");
+  const current = readLayer(globalPath);
+  const merged = { ...(current ?? {}), ...patch, schemaVersion: CONFIG_SCHEMA_VERSION };
+  mkdirSync(dirname(globalPath), { recursive: true });
+  writeFileSync(globalPath, `${JSON.stringify(merged, null, 2)}\n`);
+  return loadConfig({ globalDir: sources.globalDir, env: sources.env });
 }

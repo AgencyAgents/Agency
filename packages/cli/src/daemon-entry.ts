@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { logDir } from "@agency/core";
 import { createAgentDaemon } from "./daemon.ts";
 
 /**
@@ -29,6 +30,7 @@ if (import.meta.main) {
     workspaceRoot,
     instanceFile,
     idleLingerMs,
+    logsDir: logDir(),
     onIdleShutdown: () => process.exit(0),
   });
 

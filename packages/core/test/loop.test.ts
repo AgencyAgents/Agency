@@ -239,6 +239,63 @@ describe("runTurn", () => {
     expect(result.stopReason).toBe("tool_use"); // capped mid-loop, never reached a natural stop
   });
 
+  test("a tool result carrying images lands on the tool_result block and the event", async () => {
+    const image = { type: "image" as const, mimeType: "image/png", data: "aGk=" };
+    const events: unknown[] = [];
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads",
+      inputSchema: {},
+      handler: async () => ({ content: "attached", images: [image] }),
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(toolThenDoneAdapter("read", {}), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      onEvent: (e) => events.push(e),
+    });
+
+    const toolResult = result.messages[1]!.content[0] as {
+      type: string;
+      content: string;
+      images?: unknown[];
+    };
+    expect(toolResult.images).toEqual([image]);
+    const event = events.find((e) => (e as { type: string }).type === "tool_result") as {
+      images?: unknown[];
+    };
+    expect(event.images).toEqual([image]);
+  });
+
+  test("a text-only tool result carries no images key", async () => {
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads",
+      inputSchema: {},
+      handler: async () => ({ content: "plain" }),
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(toolThenDoneAdapter("read", {}), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    const toolResult = result.messages[1]!.content[0] as { images?: unknown[] };
+    expect("images" in toolResult).toBe(false);
+  });
+
   test("emits streaming events as the turn progresses", async () => {
     const events: string[] = [];
     const scheduler = new Scheduler();

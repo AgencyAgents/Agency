@@ -8,6 +8,53 @@ export interface EditRequest {
   replaceAll?: boolean;
 }
 
+/** One language-server diagnostic, narrowed to what edit verification reports. */
+export interface EditDiagnostic {
+  /** LSP severity: 1=Error 2=Warning 3=Information 4=Hint. */
+  severity: number;
+  message: string;
+  /** 0-based line. */
+  line: number;
+  /** 0-based character. */
+  character: number;
+}
+
+/**
+ * The LSP seam (P7): a sync read of the diagnostics a language server has
+ * already pushed for `path`. Push-based publishDiagnostics means the cached
+ * read IS the query; an empty result (no server, no diagnostics) never blocks
+ * or fails an edit.
+ */
+export type DiagnosticsProvider = (path: string) => readonly EditDiagnostic[];
+
+export interface EditVerificationResult {
+  content: string;
+  /** Error-severity diagnostics the language server reports for the file. */
+  warnings: string[];
+}
+
+export function errorDiagnostics(diagnostics: readonly EditDiagnostic[]): string[] {
+  return diagnostics
+    .filter((d) => d.severity === 1)
+    .map((d) => `${d.line + 1}:${d.character + 1} ${d.message}`);
+}
+
+/**
+ * applyEdit plus the LSP verification hook: diagnostics are read before the
+ * edit is applied and error-severity ones ride along as warnings. The edit
+ * itself is never blocked by them (or by a missing server); surfacing them is
+ * the model's cue to re-check its work.
+ */
+export function applyEditVerified(
+  content: string,
+  request: EditRequest,
+  options?: { path?: string; diagnostics?: DiagnosticsProvider },
+): EditVerificationResult {
+  const updated = applyEdit(content, request);
+  const diagnostics = options?.path && options.diagnostics ? options.diagnostics(options.path) : [];
+  return { content: updated, warnings: errorDiagnostics(diagnostics) };
+}
+
 function countOccurrences(content: string, needle: string): number {
   if (needle.length === 0) return 0;
   let count = 0;

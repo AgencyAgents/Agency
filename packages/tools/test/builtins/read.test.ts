@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
-import { createReadTool } from "../../src/builtins/read.ts";
+import { createReadTool, imageMimeFor } from "../../src/builtins/read.ts";
 import type { ToolDeps } from "../../src/contract.ts";
 
 const dirs: string[] = [];
@@ -47,5 +47,38 @@ describe("createReadTool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("grep");
+  });
+
+  test("attaches png/jpg/webp files as base64 ImageBlocks", async () => {
+    const { deps, root } = tempDeps();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(join(root, "shot.png"), bytes);
+    writeFileSync(join(root, "photo.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+    writeFileSync(join(root, "pic.webp"), Buffer.from("RIFF"));
+
+    const tool = createReadTool(deps);
+
+    const png = await tool.handler({ path: "shot.png" }, { signal });
+    expect(png.content).toContain("image/png");
+    expect(png.images).toEqual([{ type: "image", mimeType: "image/png", data: bytes.toString("base64") }]);
+
+    const jpg = await tool.handler({ path: "photo.jpg" }, { signal });
+    expect(jpg.images?.[0]?.mimeType).toBe("image/jpeg");
+
+    const webp = await tool.handler({ path: "pic.webp" }, { signal });
+    expect(webp.images?.[0]?.mimeType).toBe("image/webp");
+  });
+
+  test("uppercase extensions and .jpeg map too; unknown extensions stay text", async () => {
+    expect(imageMimeFor("A.PNG")).toBe("image/png");
+    expect(imageMimeFor("a.JPEG")).toBe("image/jpeg");
+    expect(imageMimeFor("a.txt")).toBeUndefined();
+    expect(imageMimeFor("noext")).toBeUndefined();
+
+    const { deps, root } = tempDeps();
+    writeFileSync(join(root, "data.bin"), Buffer.from([0, 1, 2]));
+    const tool = createReadTool(deps);
+    const result = await tool.handler({ path: "data.bin" }, { signal });
+    expect(result.images).toBeUndefined();
   });
 });

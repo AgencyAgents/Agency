@@ -9,6 +9,7 @@
     "@agency/schema": "workspace:*",
     "@agency/guard": "workspace:*",
     "@agency/net": "workspace:*",
+    "@agency/i18n": "workspace:*",
     "zod": "^4"
   },
   "scripts": {

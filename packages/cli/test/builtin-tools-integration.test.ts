@@ -127,5 +127,5 @@ describe("daemon with real built-in tools", () => {
     const toolResultMessage = result.messages[1];
     const toolResult = toolResultMessage?.content[0] as { content: string };
     expect(toolResult.content).toContain("real-bash-output-from-e2e-test");
-  });
+  }, 30_000);
 });

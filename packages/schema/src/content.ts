@@ -20,17 +20,19 @@ export const ToolCallBlock = z.object({
   input: z.record(z.string(), z.unknown()),
 });
 
+export const ImageBlock = z.object({
+  type: z.literal("image"),
+  mimeType: z.string(),
+  data: z.string(), // base64
+});
+
 export const ToolResultBlock = z.object({
   type: z.literal("tool_result"),
   toolCallId: z.string(),
   content: z.string(),
   isError: z.boolean().default(false),
-});
-
-export const ImageBlock = z.object({
-  type: z.literal("image"),
-  mimeType: z.string(),
-  data: z.string(), // base64
+  /** Images the tool read (P7 image input); replayed to vision-capable models. */
+  images: z.array(ImageBlock).optional(),
 });
 
 export const ContentBlock = z.discriminatedUnion("type", [

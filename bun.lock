@@ -10,6 +10,7 @@
       "devDependencies": {
         "@biomejs/biome": "^2.5.11",
         "@types/bun": "latest",
+        "jsonc-parser": "^3.3.1",
         "typescript": "^7",
       },
     },
@@ -19,11 +20,14 @@
       "dependencies": {
         "@agency/core": "workspace:*",
         "@agency/guard": "workspace:*",
+        "@agency/i18n": "workspace:*",
         "@agency/net": "workspace:*",
         "@agency/providers": "workspace:*",
         "@agency/rpc": "workspace:*",
         "@agency/schema": "workspace:*",
+        "@agency/telemetry": "workspace:*",
         "@agency/tools": "workspace:*",
+        "@agency/tui": "workspace:*",
       },
     },
     "packages/core": {
@@ -88,11 +92,30 @@
         "zod": "^4",
       },
     },
+    "packages/sdk": {
+      "name": "@agency/sdk",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/rpc": "workspace:*",
+        "@agency/schema": "workspace:*",
+      },
+    },
+    "packages/telemetry": {
+      "name": "@agency/telemetry",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/core": "workspace:*",
+        "@agency/guard": "workspace:*",
+        "@agency/providers": "workspace:*",
+        "@agency/schema": "workspace:*",
+      },
+    },
     "packages/tools": {
       "name": "@agency/tools",
       "version": "0.1.0",
       "dependencies": {
         "@agency/guard": "workspace:*",
+        "@agency/i18n": "workspace:*",
         "@agency/net": "workspace:*",
         "@agency/schema": "workspace:*",
         "zod": "^4",
@@ -123,6 +146,10 @@
     "@agency/rpc": ["@agency/rpc@workspace:packages/rpc"],
 
     "@agency/schema": ["@agency/schema@workspace:packages/schema"],
+
+    "@agency/sdk": ["@agency/sdk@workspace:packages/sdk"],
+
+    "@agency/telemetry": ["@agency/telemetry@workspace:packages/telemetry"],
 
     "@agency/tools": ["@agency/tools@workspace:packages/tools"],
 

@@ -1,4 +1,5 @@
 import type { CallerIdentity, Capabilities, SandboxBoundary } from "@agency/guard";
+import type { ImageBlock } from "@agency/schema";
 
 export type RiskTier = "safe" | "moderate" | "dangerous";
 
@@ -9,6 +10,12 @@ export interface ToolContext {
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /**
+   * Images to attach alongside the text content (P7 image input): the loop
+   * turns these into ImageBlocks on the tool_result message so vision models
+   * see what the tool read. Absent for text-only results.
+   */
+  images?: ImageBlock[];
 }
 
 /**

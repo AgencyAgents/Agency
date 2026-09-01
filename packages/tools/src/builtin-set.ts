@@ -9,6 +9,7 @@ import { createTodoReadTool, createTodoWriteTool, TodoStore } from "./builtins/t
 import { createWriteTool } from "./builtins/write.ts";
 import type { ToolDeps, ToolSpec } from "./contract.ts";
 import type { FormatterConfig } from "./formatter.ts";
+import { type McpManager, type McpManagerOptions, startMcpServersFromRaw } from "./mcp/manager.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { resolveShell, type WindowsShellKind } from "./shell.ts";
 import { SnapshotStore } from "./snapshot.ts";
@@ -20,6 +21,10 @@ export interface BuiltinToolsOptions {
   snapshotDir: string;
   formatter?: FormatterConfig;
   windowsShell?: WindowsShellKind;
+  /** Raw `mcpServers` config; parsed and started when present. */
+  mcpServers?: unknown;
+  /** Test seam: overrides MCP transport creation. */
+  mcpTransportFor?: McpManagerOptions["transportFor"];
 }
 
 export interface BuiltinTools {
@@ -27,12 +32,17 @@ export interface BuiltinTools {
   processManager: ProcessManager;
   todos: TodoStore;
   bashState: BashState;
+  /** MCP servers that failed to start, by name (start failures never abort the set). */
+  mcpFailures: ReadonlyMap<string, string>;
+  /** Stops every MCP server; idempotent. */
+  dispose(): Promise<void>;
 }
 
-/** Assembles the full P4 built-in set: read, write, edit, bash, grep, glob,
- *  fetch, todo_read, todo_write, wired to shared state (snapshots, todos,
- *  bash cwd, process manager) scoped to one session. */
-export function createBuiltinTools(options: BuiltinToolsOptions): BuiltinTools {
+/** Assembles the full built-in set: read, write, edit, bash, grep, glob,
+ *  fetch, todo_read, todo_write, plus any configured MCP servers' tools,
+ *  wired to shared state (snapshots, todos, bash cwd, process manager)
+ *  scoped to one session. */
+export async function createBuiltinTools(options: BuiltinToolsOptions): Promise<BuiltinTools> {
   const snapshots = new SnapshotStore(options.snapshotDir);
   const formatter = options.formatter ?? {};
   const shell = resolveShell(process.platform, options.windowsShell);
@@ -52,5 +62,24 @@ export function createBuiltinTools(options: BuiltinToolsOptions): BuiltinTools {
     createTodoWriteTool(todos),
   ];
 
-  return { tools, processManager, todos, bashState };
+  let mcp: McpManager | undefined;
+  if (options.mcpServers !== undefined) {
+    mcp = await startMcpServersFromRaw(options.mcpServers, {
+      capabilities: options.deps.capabilities,
+      processManager,
+      transportFor: options.mcpTransportFor,
+    });
+    tools.push(...mcp.tools);
+  }
+
+  return {
+    tools,
+    processManager,
+    todos,
+    bashState,
+    mcpFailures: mcp?.failures ?? new Map(),
+    async dispose() {
+      await mcp?.dispose();
+    },
+  };
 }
