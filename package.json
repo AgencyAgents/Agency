@@ -17,5 +17,8 @@
     "typecheck:test": "bun x tsc --build tsconfig.test.json",
     "lint": "bun x biome check .",
     "lint:fix": "bun x biome check --write ."
+  },
+  "dependencies": {
+    "fuzzysort": "^4.0.2"
   }
 }

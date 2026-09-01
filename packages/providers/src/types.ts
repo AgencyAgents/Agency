@@ -20,6 +20,10 @@ export interface ProviderRequest {
   maxTokens: number;
   temperature?: number;
   thinkingLevel?: ThinkingLevel;
+  /** Overrides the adapter's native endpoint: gateways, proxies, self-hosted. */
+  baseUrl?: string;
+  /** Extra headers merged over the adapter's own (auth headers stay). */
+  headers?: Record<string, string>;
   signal?: AbortSignal;
 }
 

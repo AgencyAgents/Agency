@@ -51,4 +51,59 @@ describe("createOpenAiCompatibleAdapter", () => {
 
     expect((err as { source: string }).source).toBe("groq");
   });
+
+  test("a per-request baseUrl overrides the adapter's configured endpoint", async () => {
+    let capturedUrl = "";
+    const http: HttpClient = {
+      fetch: async (url) => {
+        capturedUrl = url;
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    };
+
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+    for await (const _ of adapter.stream({ ...baseRequest, baseUrl: "https://gateway.internal/v1" }, http)) {
+      // drain
+    }
+
+    expect(capturedUrl).toBe("https://gateway.internal/v1/chat/completions");
+  });
+
+  test("per-request headers merge over the adapter's own, which keep auth", async () => {
+    let capturedHeaders: Record<string, unknown> = {};
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        capturedHeaders = init?.headers as Record<string, unknown>;
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    };
+
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+    for await (const _ of adapter.stream(
+      { ...baseRequest, headers: { "x-team": "core", authorization: "Bearer override" } },
+      http,
+    )) {
+      // drain
+    }
+
+    expect(capturedHeaders["content-type"]).toBe("application/json");
+    expect(capturedHeaders["x-team"]).toBe("core");
+    expect(capturedHeaders.authorization).toBe("Bearer override");
+  });
 });

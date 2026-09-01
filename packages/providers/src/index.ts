@@ -3,6 +3,7 @@ export { googleAdapter } from "./adapters/google.ts";
 export { openaiAdapter } from "./adapters/openai.ts";
 export { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible.ts";
 export * from "./auth/index.ts";
+export * from "./catalog/index.ts";
 export * from "./catalog-cache.ts";
 export * from "./presets.ts";
 export * from "./registry.ts";

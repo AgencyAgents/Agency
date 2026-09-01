@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter, StreamEvent } from "@agency/providers";
+import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
-import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
+import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult, resolveAdapter } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 
@@ -186,5 +186,124 @@ describe("createAgentDaemon", () => {
 
     await new Promise((r) => setTimeout(r, 100));
     expect(shutdownCalled).toBe(false);
+  });
+
+  test("providers_list returns catalog groups, defaults, and connected ids over RPC", async () => {
+    const catalog: ModelInfo[] = [
+      {
+        id: "gpt-5.2",
+        family: "openai",
+        name: "GPT-5.2",
+        providerName: "OpenAI",
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        pricing: { inputPerMTok: 5, outputPerMTok: 20 },
+        capabilities: { tools: true, vision: true, thinking: true },
+        releaseDate: "2026-04-01",
+      },
+      {
+        id: "free-model",
+        family: "my-gateway",
+        name: "Free Model",
+        providerName: "My Gateway",
+        contextWindow: 128_000,
+        maxOutputTokens: 8_000,
+        pricing: { inputPerMTok: 0, outputPerMTok: 0 },
+        capabilities: { tools: false, vision: false, thinking: false },
+      },
+    ];
+
+    const { client } = await startFakeDaemon({
+      catalog,
+      configDir: writeConfigDir({
+        provider: { "my-gateway": { env: ["MY_GATEWAY_KEY"] } },
+      }),
+    });
+
+    const previousKey = process.env.MY_GATEWAY_KEY;
+    process.env.MY_GATEWAY_KEY = "test-key-123";
+    let result: {
+      all: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>;
+      default: Record<string, string>;
+      connected: string[];
+    };
+    try {
+      result = (await client.call("providers_list", {})) as typeof result;
+    } finally {
+      if (previousKey === undefined) delete process.env.MY_GATEWAY_KEY;
+      else process.env.MY_GATEWAY_KEY = previousKey;
+    }
+
+    const gateway = result.all.find((p) => p.id === "my-gateway");
+    expect(gateway?.name).toBe("My Gateway");
+    expect(gateway?.models.map((m) => m.id)).toContain("free-model");
+    expect(result.default.openai).toBe("gpt-5.2");
+    // MY_GATEWAY_KEY is set in this process's env, so the gateway counts as connected.
+    expect(result.connected).toContain("my-gateway");
+  });
+
+  test("providers_list honors disabled_providers from config", async () => {
+    const { client } = await startFakeDaemon({
+      catalog: [catalogModel("gpt-5.2", "openai"), catalogModel("claude-opus-5", "anthropic")],
+      configDir: writeConfigDir({ disabled_providers: ["anthropic"] }),
+    });
+
+    const result = (await client.call("providers_list", {})) as {
+      all: Array<{ id: string }>;
+    };
+    expect(result.all.some((p) => p.id === "anthropic")).toBe(false);
+    expect(result.all.some((p) => p.id === "openai")).toBe(true);
+  });
+});
+
+function catalogModel(id: string, family: string): ModelInfo {
+  return {
+    id,
+    family,
+    name: id,
+    providerName: family,
+    contextWindow: 100_000,
+    maxOutputTokens: 8_000,
+    pricing: { inputPerMTok: 1, outputPerMTok: 2 },
+    capabilities: { tools: true, vision: false, thinking: false },
+  };
+}
+
+function writeConfigDir(config: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-daemon-config-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ schemaVersion: 2, ...config }));
+  return dir;
+}
+
+describe("resolveAdapter", () => {
+  test("builtin family ids resolve to their native adapters", () => {
+    expect(resolveAdapter("anthropic", {}).family).toBe("anthropic");
+    expect(resolveAdapter("openai", {}).family).toBe("openai");
+    expect(resolveAdapter("google", {}).family).toBe("google");
+  });
+
+  test("a config provider defaults to the openai-compatible adapter at its baseUrl", () => {
+    const adapter = resolveAdapter("my-gateway", {
+      "my-gateway": { family: "openai-compatible", baseUrl: "http://localhost:8080/v1" },
+    });
+    expect(adapter.family).toBe("my-gateway");
+  });
+
+  test("a config provider can declare a native family instead", () => {
+    expect(resolveAdapter("anthropic", { anthropic: { family: "anthropic" } }).family).toBe("anthropic");
+  });
+
+  test("a config openai-compatible provider without any baseUrl throws", () => {
+    expect(() => resolveAdapter("my-gateway", { "my-gateway": {} })).toThrow(/baseUrl/);
+  });
+
+  test("an unknown provider with a catalog base URL gets the compatible adapter", () => {
+    const adapter = resolveAdapter("together", {}, { together: "https://api.together.xyz/v1" });
+    expect(adapter.family).toBe("together");
+  });
+
+  test("a fully unknown provider still throws", () => {
+    expect(() => resolveAdapter("not-real", {})).toThrow(/unknown provider/);
   });
 });

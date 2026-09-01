@@ -113,11 +113,13 @@ export function createOpenAiCompatibleAdapter(family: string, baseUrl: string): 
     family,
 
     async *stream(request, http: HttpClient): AsyncIterable<StreamEvent> {
-      const res = await http.fetch(`${baseUrl}/chat/completions`, {
+      const effectiveBaseUrl = request.baseUrl ?? baseUrl;
+      const res = await http.fetch(`${effectiveBaseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${request.apiKey}`,
+          ...request.headers,
         },
         body: JSON.stringify(buildRequestBody(request)),
         signal: request.signal,

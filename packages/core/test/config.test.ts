@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config/loader.ts";
+import { parseModelRef } from "../src/config/schema.ts";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "agency-config-test-"));
@@ -91,9 +92,63 @@ describe("loadConfig", () => {
     writeFileSync(join(globalDir, "config.jsonc"), `{ "logLevel": "warn" }`);
 
     const config = loadConfig({ globalDir, env: {} });
-    expect(config.schemaVersion).toBe(1);
+    expect(config.schemaVersion).toBe(2);
     expect(config.locale).toBe("en");
     expect(config.logLevel).toBe("warn");
+  });
+
+  test("migrates a v1 config to v2, materializing the provider collections", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    writeFileSync(join(globalDir, "config.jsonc"), `{ "schemaVersion": 1, "logLevel": "debug" }`);
+
+    const config = loadConfig({ globalDir, env: {} });
+    expect(config.schemaVersion).toBe(2);
+    expect(config.provider).toEqual({});
+    expect(config.disabled_providers).toEqual([]);
+    expect(config.logLevel).toBe("debug");
+  });
+
+  test("parses v2 provider config with model overrides and provider sets", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    writeFileSync(
+      join(globalDir, "config.jsonc"),
+      `{
+        "schemaVersion": 2,
+        "provider": {
+          "openai": { "baseUrl": "https://gateway.internal/v1", "headers": { "x-team": "core" } },
+          "my-gateway": {
+            "family": "openai-compatible",
+            "baseUrl": "http://localhost:8080/v1",
+            "models": { "llama-4": { "name": "Llama 4", "contextWindow": 128000 } }
+          }
+        },
+        "model": "openai/gpt-5.2",
+        "small_model": "anthropic/claude-haiku-4",
+        "disabled_providers": ["google"],
+        "enabled_providers": ["openai", "my-gateway"]
+      }`,
+    );
+
+    const config = loadConfig({ globalDir, env: {} });
+    expect(config.provider.openai?.baseUrl).toBe("https://gateway.internal/v1");
+    expect(config.provider.openai?.headers).toEqual({ "x-team": "core" });
+    expect(config.provider["my-gateway"]?.models?.["llama-4"]?.contextWindow).toBe(128000);
+    expect(config.model).toBe("openai/gpt-5.2");
+    expect(config.small_model).toBe("anthropic/claude-haiku-4");
+    expect(config.disabled_providers).toEqual(["google"]);
+    expect(config.enabled_providers).toEqual(["openai", "my-gateway"]);
+  });
+
+  test("parseModelRef splits on the first slash only", () => {
+    expect(parseModelRef("openai/gpt-5.2")).toEqual({ provider: "openai", model: "gpt-5.2" });
+    expect(parseModelRef("openrouter/openai/gpt-5.2")).toEqual({
+      provider: "openrouter",
+      model: "openai/gpt-5.2",
+    });
+    expect(parseModelRef("no-slash")).toBeUndefined();
+    expect(parseModelRef("/leading")).toBeUndefined();
   });
 
   test("tolerates JSONC comments", () => {

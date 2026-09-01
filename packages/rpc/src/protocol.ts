@@ -5,6 +5,13 @@
  */
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * Named RPC methods the daemon answers. The transport itself stays generic
+ * (any method string dispatches through server.ts); this constant is the
+ * shared spelling so clients and the daemon can't drift apart.
+ */
+export const PROVIDERS_LIST_METHOD = "providers_list";
+
 export type RpcMessage =
   | { type: "hello"; version: number }
   | { type: "hello_ack"; version: number; compatible: boolean }

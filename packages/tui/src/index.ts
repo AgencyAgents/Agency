@@ -1,4 +1,30 @@
 export {
+  ConnectError,
+  type ConnectErrorCode,
+  type ConnectFlowOptions,
+  type ConnectOutcome,
+  type ConnectPrompter,
+  createHttpValidator,
+  createScriptedPrompter,
+  createTerminalPrompter,
+  isValidProviderId,
+  runConnectFlow,
+} from "./connect.ts";
+export {
+  buildPickerSections,
+  formatContextWindow,
+  isGated,
+  type ModelPickerState,
+  ModelPickerStore,
+  modelBadges,
+  modelKey,
+  type PickerModel,
+  type PickerProvider,
+  type PickerSection,
+  parseModelKey,
+  sortModelOptions,
+} from "./models-picker.ts";
+export {
   type DetectOptions,
   DifferentialRenderer,
   type DifferentialRendererOptions,

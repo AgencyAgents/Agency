@@ -34,6 +34,26 @@ export const en = {
   "tui.cue.error": "error",
   "tui.cue.success": "ok",
   "tui.cue.warning": "warn",
+
+  "tui.picker.results": "Results",
+  "tui.picker.favorites": "Favorites",
+  "tui.picker.recent": "Recent",
+  "tui.picker.free": "Free",
+  "tui.picker.empty": 'No models match "{query}"',
+  "tui.picker.gated_hidden": "{count} experimental or deprecated models hidden",
+  "tui.picker.connect_hint": "Press {key} to connect a provider",
+
+  "tui.connect.provider_prompt": "Provider to connect{suggestions}:",
+  "tui.connect.key_prompt": "API key for {provider}:",
+  "tui.connect.invalid_id":
+    '"{id}" isn\'t a valid provider id (lowercase letters, digits, dash, underscore).',
+  "tui.connect.no_key": "No key entered; nothing was stored.",
+  "tui.connect.rejected": "{provider} rejected that key.",
+  "tui.connect.aborted": "Connect cancelled; nothing was stored.",
+  "tui.connect.stored": "Key for {provider} stored in the {backend}.",
+  "tui.connect.unverified": "Couldn't reach {provider} to verify the key; stored it anyway.",
+
+  "tui.catalog.refreshed": "Model catalog refreshed: {count} models from {source}.",
 } as const;
 
 export type MessageKey = keyof typeof en;

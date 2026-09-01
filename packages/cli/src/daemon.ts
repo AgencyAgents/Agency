@@ -1,11 +1,21 @@
-import { type Budget, type LoopEvent, runTurn, storagePaths, type ToolSpec } from "@agency/core";
+import {
+  type Budget,
+  type LoopEvent,
+  loadConfig,
+  type ProviderConfig,
+  runTurn,
+  storagePaths,
+  type ToolSpec,
+} from "@agency/core";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
   anthropicAdapter,
+  createOpenAiCompatibleAdapter,
   googleAdapter,
+  type ModelInfo,
   openaiAdapter,
   type ProviderAdapter,
   Scheduler,
@@ -15,12 +25,7 @@ import {
 import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
 import type { Message, StopReason } from "@agency/schema";
 import { createBuiltinTools } from "@agency/tools";
-
-const BUILTIN_ADAPTERS: Record<string, ProviderAdapter> = {
-  anthropic: anthropicAdapter,
-  openai: openaiAdapter,
-  google: googleAdapter,
-};
+import { listProviders } from "./providers-list.ts";
 
 export interface RunTurnParams {
   turnId: string;
@@ -42,6 +47,49 @@ export interface RunTurnRpcResult {
   cancelled: boolean;
 }
 
+/**
+ * Adapter resolution over the merged provider set: a config-defined provider
+ * speaks its declared family's wire format (defaulting to openai-compatible,
+ * which makes any OpenAI-shaped gateway work with zero adapter code), a
+ * builtin family id falls back to its native adapter, and a catalog provider
+ * with a known API base URL gets the openai-compatible adapter pointed there.
+ * Unknown ids still throw, but only after every layer had its chance.
+ */
+export function resolveAdapter(
+  providerId: string,
+  providers: Record<string, ProviderConfig>,
+  catalogBaseUrls: Record<string, string> = {},
+): ProviderAdapter {
+  const config = providers[providerId];
+  if (config) {
+    const family = config.family ?? "openai-compatible";
+    if (family === "openai-compatible") {
+      const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
+      if (!baseUrl) {
+        throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
+      }
+      return createOpenAiCompatibleAdapter(providerId, baseUrl);
+    }
+    if (family === "openai") return openaiAdapter;
+    if (family === "anthropic") return anthropicAdapter;
+    return googleAdapter;
+  }
+
+  switch (providerId) {
+    case "anthropic":
+      return anthropicAdapter;
+    case "openai":
+      return openaiAdapter;
+    case "google":
+      return googleAdapter;
+    default: {
+      const catalogBaseUrl = catalogBaseUrls[providerId];
+      if (catalogBaseUrl) return createOpenAiCompatibleAdapter(providerId, catalogBaseUrl);
+      throw new Error(`unknown provider: ${providerId}`);
+    }
+  }
+}
+
 export interface AgentDaemonOptions {
   workspaceRoot: string;
   instanceFile: string;
@@ -55,6 +103,10 @@ export interface AgentDaemonOptions {
   tools?: ToolSpec[];
   identity?: CallerIdentity;
   capabilities?: Capabilities;
+  /** Overrides the on-disk config; tests inject a minimal layer here. */
+  configDir?: string;
+  /** Pre-loaded catalog models for providers_list; skips the models.dev fetch. */
+  catalog?: readonly ModelInfo[];
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
 }
@@ -70,13 +122,10 @@ export interface AgentDaemon {
  * by every client (TUI, headless, SDK) that attaches to this workspace root.
  */
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
-  const adapterFor =
-    options.adapterFor ??
-    ((provider) => {
-      const adapter = BUILTIN_ADAPTERS[provider];
-      if (!adapter) throw new Error(`unknown provider: ${provider}`);
-      return adapter;
-    });
+  const config = loadConfig({ globalDir: options.configDir, env: process.env });
+  const providers = config.provider;
+
+  const adapterFor = options.adapterFor ?? ((provider: string) => resolveAdapter(provider, providers));
   const http = options.http ?? createHttpClient();
   const identity = options.identity ?? { type: "user" as const };
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
@@ -132,6 +181,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         if (!controller) return { cancelled: false };
         controller.abort();
         return { cancelled: true };
+      },
+
+      async providers_list() {
+        return listProviders({ config, http, catalog: options.catalog });
       },
     },
 
