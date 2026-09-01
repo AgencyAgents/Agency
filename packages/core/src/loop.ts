@@ -3,6 +3,7 @@ import { requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, Scheduler, ThinkingLevel, ToolDefinition, Usage } from "@agency/providers";
 import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
+import { truncateToolResults } from "./truncate.ts";
 
 export type ToolHandler = (
   input: Record<string, unknown>,
@@ -29,7 +30,9 @@ export type LoopEvent =
   | { type: "tool_start"; id: string; name: string }
   | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
   | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
-  | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number };
+  | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
+  | { type: "error"; code: string; message: string }
+  | { type: "retry"; attempt: number; message: string; next?: number };
 
 export interface RunTurnOptions {
   identity: CallerIdentity;
@@ -84,45 +87,65 @@ export async function runTurn(
   let stopReason: StopReason = "end_turn";
 
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
-    const turn = await scheduler.schedule(() =>
-      collectTurn(
-        adapter,
-        http,
-        {
-          model: options.model,
-          apiKey: options.apiKey,
-          system: options.systemPrompt,
-          messages,
-          tools: toolDefs,
-          maxTokens: options.maxTokensPerRequest ?? 8192,
-          thinkingLevel: options.thinkingLevel,
-          signal: options.signal,
-        },
-        options.onEvent,
-      ),
-    );
+    try {
+      const turn = await scheduler.schedule(() =>
+        collectTurn(
+          adapter,
+          http,
+          {
+            model: options.model,
+            apiKey: options.apiKey,
+            system: options.systemPrompt,
+            messages,
+            tools: toolDefs,
+            maxTokens: options.maxTokensPerRequest ?? 8192,
+            thinkingLevel: options.thinkingLevel,
+            signal: options.signal,
+          },
+          options.onEvent,
+        ),
+      );
 
-    messages.push({ role: "assistant", content: turn.content });
-    cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
-    spentCostUsd += costOf(turn.usage, options.pricePerMTok);
-    stopReason = turn.stopReason;
-    options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
+      messages.push({ role: "assistant", content: turn.content });
+      cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
+      spentCostUsd += costOf(turn.usage, options.pricePerMTok);
+      stopReason = turn.stopReason;
+      options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
 
-    if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
-      options.onEvent?.({ type: "budget_exceeded", spentTokens: totalTokens(cumulativeUsage), spentCostUsd });
-      return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
+      if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
+        options.onEvent?.({
+          type: "budget_exceeded",
+          spentTokens: totalTokens(cumulativeUsage),
+          spentCostUsd,
+        });
+        return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
+      }
+
+      if (stopReason !== "tool_use" || options.signal?.aborted) break;
+
+      const toolCalls = turn.content.filter(
+        (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
+      );
+      const results = await runTools(toolCalls, options, options.signal);
+      messages.push({ role: "user", content: results });
+    } catch (error) {
+      // Terminal for the turn: visible on the event stream (TUI/transcript), then rethrown to the caller.
+      emitErrorEvent(error, options.onEvent);
+      throw error;
     }
-
-    if (stopReason !== "tool_use" || options.signal?.aborted) break;
-
-    const toolCalls = turn.content.filter(
-      (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
-    );
-    const results = await runTools(toolCalls, options, options.signal);
-    messages.push({ role: "user", content: results });
   }
 
   return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: false };
+}
+
+/** AgencyError-like errors carry a string `code`; anything else is reported as internal. */
+function emitErrorEvent(error: unknown, onEvent?: (event: LoopEvent) => void): void {
+  if (error instanceof Error) {
+    const code = "code" in error && typeof error.code === "string" ? error.code : "internal";
+    onEvent?.({ type: "error", code, message: error.message });
+    return;
+  }
+  onEvent?.({ type: "error", code: "internal", message: String(error) });
 }
 
 async function runTools(
@@ -130,7 +153,7 @@ async function runTools(
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
 ): Promise<ContentBlock[]> {
-  const results: ContentBlock[] = [];
+  const results: Array<Extract<ContentBlock, { type: "tool_result" }>> = [];
 
   for (const call of calls) {
     const spec = options.tools.find((t) => t.name === call.name);
@@ -151,7 +174,8 @@ async function runTools(
     });
   }
 
-  return results;
+  // The event above streams full content to the TUI; only the conversation is capped.
+  return truncateToolResults(results);
 }
 
 async function executeOne(
@@ -160,19 +184,26 @@ async function executeOne(
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
-  if (!spec) {
-    return { content: `no such tool: "${call.name}"`, isError: true };
+  let resolved = spec;
+  if (!resolved) {
+    // Tool-call repair: providers occasionally mangle tool-name casing; fall back to a
+    // case-insensitive match. Mismatch repair for "${call.name}" is silent by design (no log dependency).
+    resolved = options.tools.find((t) => t.name.toLowerCase() === call.name.toLowerCase());
+  }
+  if (!resolved) {
+    const available = options.tools.map((t) => t.name).join(", ");
+    return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
   }
 
   try {
-    requireTool(options.identity, options.capabilities, call.name);
+    requireTool(options.identity, options.capabilities, resolved.name);
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };
   }
 
   const toolSignal = signal ?? NEVER_ABORTED;
   try {
-    const result = await spec.handler(call.input, { signal: toolSignal });
+    const result = await resolved.handler(call.input, { signal: toolSignal });
     return { content: result.content, isError: result.isError ?? false, images: result.images };
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };

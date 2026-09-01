@@ -351,4 +351,29 @@ describe("runTurn", () => {
     await resultPromise;
     expect(processExited).toBe(true);
   }, 10_000);
+
+  test("an oversized tool result is truncated before it enters the conversation", async () => {
+    const spec: ToolSpec = {
+      name: "dump",
+      description: "dumps far more than the cap",
+      inputSchema: {},
+      handler: async () => ({ content: "z".repeat(60_000) }),
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(toolThenDoneAdapter("dump", {}), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    const toolResult = result.messages[1]!.content[0] as { type: string; content: string };
+    expect(toolResult.type).toBe("tool_result");
+    expect(toolResult.content).toContain("[Output truncated at 50000 bytes]");
+    expect(toolResult.content.length).toBeLessThan(60_000);
+  });
 });

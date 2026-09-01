@@ -8,3 +8,4 @@ export * from "./paths.ts";
 export * from "./prompt/index.ts";
 export * from "./sessions/index.ts";
 export * from "./storage.ts";
+export * from "./truncate.ts";
