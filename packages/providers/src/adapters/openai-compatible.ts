@@ -23,6 +23,23 @@ const FINISH_REASON: Record<string, StopReason> = {
   length: "max_tokens",
 };
 
+function toOpenAiContent(content: ContentBlock[]): string | Record<string, unknown>[] {
+  const parts: Record<string, unknown>[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      parts.push({ type: "text", text: block.text });
+    } else if (block.type === "image") {
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:${block.mimeType};base64,${block.data}` },
+      });
+    }
+  }
+  if (parts.length === 0) return "";
+  if (parts.length === 1 && parts[0]?.type === "text") return String(parts[0].text);
+  return parts;
+}
+
 function textOf(content: ContentBlock[]): string {
   return content
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
@@ -56,7 +73,7 @@ function toOpenAiMessages(messages: Message[], system?: string): Record<string, 
     }
     if (toolResults.length > 0) continue;
 
-    out.push({ role: m.role, content: textOf(m.content) });
+    out.push({ role: m.role, content: toOpenAiContent(m.content) });
   }
 
   return out;
