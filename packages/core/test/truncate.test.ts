@@ -56,9 +56,9 @@ describe("truncateToolResults", () => {
   });
 
   test("truncates oversized successful results with the standard notice", () => {
-    const [result] = truncateToolResults([{ content: "y".repeat(TRUNCATE_MAX_BYTES + 1) }]);
+    const [result] = truncateToolResults([{ content: "y".repeat(TRUNCATE_MAX_BYTES + 1), isError: false }]);
     expect(result!.content).toContain("[Output truncated at 50000 bytes]");
-    expect(result!.isError).toBeUndefined();
+    expect(result!.isError).toBe(false);
   });
 
   test("truncates oversized error results with the error notice instead", () => {

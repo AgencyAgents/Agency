@@ -88,23 +88,32 @@ export async function runTurn(
 
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     try {
-      const turn = await scheduler.schedule(() =>
-        collectTurn(
-          adapter,
-          http,
-          {
-            model: options.model,
-            apiKey: options.apiKey,
-            system: options.systemPrompt,
-            messages,
-            tools: toolDefs,
-            maxTokens: options.maxTokensPerRequest ?? 8192,
-            thinkingLevel: options.thinkingLevel,
-            signal: options.signal,
-          },
-          options.onEvent,
-        ),
-      );
+      const prevOnRetry = scheduler.onRetry;
+      scheduler.onRetry = (attempt, message, next) => {
+        options.onEvent?.({ type: "retry", attempt, message, next });
+      };
+      let turn: CollectedTurn;
+      try {
+        turn = await scheduler.schedule(() =>
+          collectTurn(
+            adapter,
+            http,
+            {
+              model: options.model,
+              apiKey: options.apiKey,
+              system: options.systemPrompt,
+              messages,
+              tools: toolDefs,
+              maxTokens: options.maxTokensPerRequest ?? 8192,
+              thinkingLevel: options.thinkingLevel,
+              signal: options.signal,
+            },
+            options.onEvent,
+          ),
+        );
+      } finally {
+        scheduler.onRetry = prevOnRetry;
+      }
 
       messages.push({ role: "assistant", content: turn.content });
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);

@@ -77,6 +77,9 @@ export class Scheduler {
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
 
+  /** Optional retry observer: fired before each backoff sleep. `next` is the epoch ms the retry fires at. */
+  onRetry?: (attempt: number, message: string, next?: number) => void;
+
   constructor(options: SchedulerOptions = {}) {
     this.semaphore = new Semaphore(options.maxConcurrent ?? 4);
     const rpm = options.requestsPerMinute ?? 60;
@@ -110,6 +113,11 @@ export class Scheduler {
         if (!shouldRetry) throw error;
 
         const retryAfterMs = error instanceof AgencyError ? extractRetryAfterMs(error) : undefined;
+        this.onRetry?.(
+          attempt,
+          error.message,
+          retryAfterMs !== undefined ? Date.now() + retryAfterMs : undefined,
+        );
         await sleep(retryAfterMs ?? this.backoffDelay(attempt));
       }
     }

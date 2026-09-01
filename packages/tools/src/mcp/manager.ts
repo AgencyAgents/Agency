@@ -45,6 +45,9 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
               : undefined,
           });
       const client = new McpClient(name, transport);
+      client.onListChanged(() => {
+        failures.set(name, "tool list changed — refresh not yet implemented");
+      });
       await transport.start();
       await client.initialize();
       const defs = await client.listTools();

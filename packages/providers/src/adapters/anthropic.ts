@@ -1,5 +1,6 @@
 import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type StopReason } from "@agency/schema";
+import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
@@ -52,9 +53,11 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
       content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
     }));
 
-  // The conversation tail re-caches from the last user message each turn.
+  // The conversation tail re-caches from the last content block of the last
+  // user message each turn (cache_control on content blocks per Anthropic API).
   const lastUser = messages.findLast((m) => m.role === "user");
-  if (lastUser) lastUser.cache_control = { type: "ephemeral" };
+  const tailBlock = lastUser?.content.at(-1);
+  if (tailBlock) tailBlock.cache_control = { type: "ephemeral" };
 
   const body: Record<string, unknown> = {
     model: request.model,
@@ -92,16 +95,6 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   return body;
 }
 
-/** `Retry-After` in seconds or as an HTTP-date, normalized to milliseconds. */
-function retryAfterMs(res: Response): number | undefined {
-  const raw = res.headers.get("retry-after");
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const date = Date.parse(raw);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
-}
-
 async function toAgencyError(res: Response): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
     | { error?: { type?: string; message?: string } }
@@ -113,7 +106,7 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
     return new AgencyError(ErrorCode.AUTH, message, { source: "anthropic", context });
   }
   if (res.status === 429) {
-    const retryAfterMsValue = retryAfterMs(res);
+    const retryAfterMsValue = parseRetryAfterMs(res);
     return new AgencyError(ErrorCode.RATE_LIMIT, message, {
       source: "anthropic",
       context: retryAfterMsValue === undefined ? context : { ...context, retryAfterMs: retryAfterMsValue },

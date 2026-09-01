@@ -1,5 +1,6 @@
 import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
@@ -72,22 +73,6 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   }
 
   return body;
-}
-
-/**
- * Rate-limit responses carry a Retry-After header in either delta-seconds or
- * HTTP-date form; convert either to milliseconds from now so the scheduler can
- * honor it. Anything unparseable yields undefined so the scheduler falls back
- * to its default backoff.
- */
-function parseRetryAfterMs(res: Response): number | undefined {
-  const raw = res.headers.get("retry-after");
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
-  const date = Date.parse(raw);
-  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
-  return undefined;
 }
 
 async function toAgencyError(res: Response): Promise<AgencyError> {
