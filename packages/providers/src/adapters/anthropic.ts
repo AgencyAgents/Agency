@@ -46,10 +46,15 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
 }
 
 function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
-  const messages = request.messages.map((m) => ({
-    role: m.role === "system" ? "user" : m.role,
-    content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
-  }));
+  const messages: { role: string; content: Record<string, unknown>[]; cache_control?: unknown }[] =
+    request.messages.map((m) => ({
+      role: m.role === "system" ? "user" : m.role,
+      content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
+    }));
+
+  // The conversation tail re-caches from the last user message each turn.
+  const lastUser = messages.findLast((m) => m.role === "user");
+  if (lastUser) lastUser.cache_control = { type: "ephemeral" };
 
   const body: Record<string, unknown> = {
     model: request.model,
@@ -66,11 +71,16 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   }
 
   if (request.tools?.length) {
-    body.tools = request.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema,
-    }));
+    const tools: { name: string; description?: string; input_schema: unknown; cache_control?: unknown }[] =
+      request.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.inputSchema,
+      }));
+    // Tool schemas are stable across turns — worth a cache breakpoint.
+    const lastTool = tools.at(-1);
+    if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+    body.tools = tools;
   }
 
   if (request.temperature !== undefined) body.temperature = request.temperature;
@@ -80,6 +90,16 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   }
 
   return body;
+}
+
+/** `Retry-After` in seconds or as an HTTP-date, normalized to milliseconds. */
+function retryAfterMs(res: Response): number | undefined {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
 async function toAgencyError(res: Response): Promise<AgencyError> {
@@ -93,7 +113,11 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
     return new AgencyError(ErrorCode.AUTH, message, { source: "anthropic", context });
   }
   if (res.status === 429) {
-    return new AgencyError(ErrorCode.RATE_LIMIT, message, { source: "anthropic", context });
+    const retryAfterMsValue = retryAfterMs(res);
+    return new AgencyError(ErrorCode.RATE_LIMIT, message, {
+      source: "anthropic",
+      context: retryAfterMsValue === undefined ? context : { ...context, retryAfterMs: retryAfterMsValue },
+    });
   }
   if (res.status === 529) {
     return new AgencyError(ErrorCode.OVERLOAD, message, { source: "anthropic", context });
@@ -125,7 +149,10 @@ export const anthropicAdapter: ProviderAdapter = {
 
     // index -> tool_call id, so content_block_delta/stop can address the right call
     const toolCallIndex = new Map<number, string>();
-    const usage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 };
+    const usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } = {
+      inputTokens: 0,
+      outputTokens: 0,
+    };
     let stopReason: StopReason = "end_turn";
 
     for await (const frame of parseSse(res.body)) {
@@ -134,8 +161,15 @@ export const anthropicAdapter: ProviderAdapter = {
 
       switch (payload.type) {
         case "message_start": {
-          const msgUsage = (payload.message as { usage?: { input_tokens?: number } })?.usage;
+          const msgUsage = (
+            payload.message as {
+              usage?: { input_tokens?: number; cache_read_input_tokens?: number };
+            }
+          )?.usage;
           usage.inputTokens = msgUsage?.input_tokens ?? 0;
+          if (msgUsage?.cache_read_input_tokens !== undefined) {
+            usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
+          }
           break;
         }
         case "content_block_start": {

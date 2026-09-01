@@ -74,6 +74,22 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   return body;
 }
 
+/**
+ * Rate-limit responses carry a Retry-After header in either delta-seconds or
+ * HTTP-date form; convert either to milliseconds from now so the scheduler can
+ * honor it. Anything unparseable yields undefined so the scheduler falls back
+ * to its default backoff.
+ */
+function parseRetryAfterMs(res: Response): number | undefined {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const date = Date.parse(raw);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
 async function toAgencyError(res: Response): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
     | { error?: { message?: string; status?: string } }
@@ -86,7 +102,11 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
     return new AgencyError(ErrorCode.AUTH, message, { source: "google", context });
   }
   if (res.status === 429 || googleStatus === "RESOURCE_EXHAUSTED") {
-    return new AgencyError(ErrorCode.RATE_LIMIT, message, { source: "google", context });
+    const retryAfterMs = parseRetryAfterMs(res);
+    return new AgencyError(ErrorCode.RATE_LIMIT, message, {
+      source: "google",
+      context: retryAfterMs === undefined ? context : { ...context, retryAfterMs },
+    });
   }
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: "google", context });
@@ -105,7 +125,11 @@ interface GeminiChunk {
     content?: { parts?: GeminiPart[] };
     finishReason?: string;
   }>;
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    cachedTokenCount?: number;
+  };
 }
 
 export const googleAdapter: ProviderAdapter = {
@@ -124,7 +148,11 @@ export const googleAdapter: ProviderAdapter = {
       throw await toAgencyError(res);
     }
 
-    let usage = { inputTokens: 0, outputTokens: 0 };
+    let usage: {
+      inputTokens: number;
+      outputTokens: number;
+      cachedInputTokens?: number;
+    } = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
     let sawFunctionCall = false;
     let toolCallSeq = 0;
@@ -137,6 +165,9 @@ export const googleAdapter: ProviderAdapter = {
         usage = {
           inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
           outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
+          ...(chunk.usageMetadata.cachedTokenCount !== undefined
+            ? { cachedInputTokens: chunk.usageMetadata.cachedTokenCount }
+            : {}),
         };
       }
 

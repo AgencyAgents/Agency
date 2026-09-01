@@ -103,6 +103,21 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   return body;
 }
 
+/**
+ * Retry-After is either delay-seconds ("5") or an HTTP-date. Both resolve to
+ * milliseconds from now; anything unparseable yields undefined so the
+ * scheduler falls back to its default backoff.
+ */
+function parseRetryAfterMs(res: Response): number | undefined {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const date = Date.parse(raw);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
 async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
     | { error?: { message?: string; code?: string; type?: string } }
@@ -114,7 +129,11 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
     return new AgencyError(ErrorCode.AUTH, message, { source: family, context });
   }
   if (res.status === 429) {
-    return new AgencyError(ErrorCode.RATE_LIMIT, message, { source: family, context });
+    const retryAfterMs = parseRetryAfterMs(res);
+    return new AgencyError(ErrorCode.RATE_LIMIT, message, {
+      source: family,
+      context: retryAfterMs === undefined ? context : { ...context, retryAfterMs },
+    });
   }
   if (body?.error?.code === "context_length_exceeded") {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: family, context });
@@ -149,7 +168,11 @@ export function createOpenAiCompatibleAdapter(family: string, baseUrl: string): 
       // OpenAI addresses parallel tool calls by delta index, not id: the id only
       // appears once, on the first delta for that index.
       const toolCallIdByIndex = new Map<number, string>();
-      let usage = { inputTokens: 0, outputTokens: 0 };
+      let usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens?: number;
+      } = { inputTokens: 0, outputTokens: 0 };
       let stopReason: StopReason = "end_turn";
 
       for await (const frame of parseSse(res.body)) {
@@ -166,11 +189,20 @@ export function createOpenAiCompatibleAdapter(family: string, baseUrl: string): 
             };
             finish_reason: string | null;
           }>;
-          usage?: { prompt_tokens: number; completion_tokens: number };
+          usage?: {
+            prompt_tokens: number;
+            completion_tokens: number;
+            prompt_tokens_details?: { cached_tokens?: number };
+          };
         };
 
         if (payload.usage) {
-          usage = { inputTokens: payload.usage.prompt_tokens, outputTokens: payload.usage.completion_tokens };
+          const cachedTokens = payload.usage.prompt_tokens_details?.cached_tokens;
+          usage = {
+            inputTokens: payload.usage.prompt_tokens,
+            outputTokens: payload.usage.completion_tokens,
+            ...(cachedTokens === undefined ? {} : { cachedInputTokens: cachedTokens }),
+          };
         }
 
         const choice = payload.choices[0];
