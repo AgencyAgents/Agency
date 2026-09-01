@@ -43,14 +43,27 @@ export function createBashTool(
       const wrapped = shell.wrapCommand(input.command);
       const argv = [shell.command, ...shell.buildArgs(wrapped)];
       const proc = Bun.spawn(argv, { cwd: state.cwd, stdout: "pipe", stderr: "pipe" });
-      const onAbort = () => proc.kill("SIGKILL");
+      const onAbort = () => {
+        try {
+          proc.kill(9);
+        } catch {}
+      };
       ctx.signal.addEventListener("abort", onAbort);
+      // Race the abort signal against the process exit: on macOS CI the kill
+      // signal may not reach the shell wrapper's child, so we settle the
+      // promise either way once the user cancels.
+      const abortSettled = new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) return resolve();
+        ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
 
       try {
-        const [stdout, stderr] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
+        const [stdout, stderr] = await Promise.race([
+          Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]),
+          abortSettled.then(() => {
+            proc.kill(9);
+            return ["", "", undefined] as const;
+          }),
         ]);
 
         const { output, cwd, exitCode } = parseShellOutput(stdout, state.cwd);
