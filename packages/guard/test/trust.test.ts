@@ -65,3 +65,27 @@ describe("requireTrust", () => {
     expect(() => requireTrust(store, "/repo/project")).not.toThrow();
   });
 });
+
+describe("TrustStore subdirectory inheritance (A5)", () => {
+  test("trusting a parent covers its subdirectories", () => {
+    const path = tempStorePath();
+    const store = createFileTrustStore(path);
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/src")).toBe(true);
+    expect(store.isTrusted("/repo/project/src/deep/file.ts")).toBe(true);
+  });
+
+  test("an untrusted sibling sharing a prefix stays untrusted", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project-evil")).toBe(false);
+    expect(store.isTrusted("/repo/project/../project-evil")).toBe(false);
+  });
+
+  test("trailing separators cannot fool the prefix match", () => {
+    const path = tempStorePath();
+    createFileTrustStore(path).trust("/repo/project/");
+    expect(createFileTrustStore(path).isTrusted("/repo/project/src")).toBe(true);
+    expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+});

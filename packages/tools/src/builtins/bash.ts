@@ -159,9 +159,22 @@ export function createBashTool(
         const { output, cwd, exitCode } = parseShellOutput(outcome.stdout, state.cwd);
         // A cancelled command keeps no cwd side-effect: its wrapper may not
         // even have run to completion, so the marker cannot be trusted.
-        if (!outcome.aborted) state.cwd = cwd;
+        // The sandbox bound is what makes a persisted cwd safe to keep: a
+        // `cd` that walks out of the workspace (or through a symlink) is
+        // refused and the previous directory retained, otherwise every later
+        // command would silently run — and write — outside containment.
+        let cwdNotice: string | undefined;
+        if (!outcome.aborted) {
+          try {
+            deps.sandbox.resolvePath(cwd);
+            state.cwd = cwd;
+          } catch {
+            cwdNotice = `\n[cwd kept: ${cwd} resolves outside the workspace]`;
+          }
+        }
 
         let combined = outcome.stderr ? `${output}\n[stderr]\n${outcome.stderr}` : output;
+        if (cwdNotice) combined += cwdNotice;
         if (outcome.aborted) {
           // Cancellation must not read as a silent success with exit code 0.
           combined = combined

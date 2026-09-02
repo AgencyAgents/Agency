@@ -29,7 +29,10 @@ export function createWriteTool(
       result.isError ? `write failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input, ctx) {
-      const resolved = deps.sandbox.resolvePath(input.path);
+      const resolved = await deps.sandbox.resolvePathGated(input.path, {
+        tool: "write",
+        ask: ctx.requestApproval,
+      });
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
       if (existsSync(resolved)) {

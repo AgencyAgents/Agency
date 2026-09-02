@@ -67,6 +67,23 @@ const ProviderConfigSchema = z.object({
   blacklist: z.array(z.string()).optional(),
 });
 
+/**
+ * One tool's permission entry (opencode's model): either a bare
+ * `allow | ask | deny` — a bare `deny` removes the tool from the list offered
+ * to the model entirely — or a per-subject pattern map evaluated with
+ * LAST-matching-rule-wins, e.g. `{"bash": {"*": "ask", "git *": "allow",
+ * "rm *": "deny"}}` (command subjects) or `{"write": {"*": "deny",
+ * ".agency/plans/**": "allow"}}` (path subjects, workspace-relative).
+ */
+export const ToolPermissionSchema = z.union([
+  z.enum(["allow", "ask", "deny"]),
+  z.record(z.string(), z.enum(["allow", "ask", "deny"])),
+]);
+export type ToolPermission = z.infer<typeof ToolPermissionSchema>;
+
+/** Tool name (or `external_directory`) -> bare decision or pattern map. */
+export type PermissionsConfig = Record<string, ToolPermission>;
+
 export const ConfigSchema = z.object({
   schemaVersion: z.literal(CONFIG_SCHEMA_VERSION),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -94,6 +111,21 @@ export const ConfigSchema = z.object({
    * which re-validates it via parseMcpServers at startup.
    */
   mcpServers: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
+   * `external_directory` key gating out-of-workspace access. Unlisted tools
+   * default by risk tier: `safe` tools run freely, everything else asks.
+   */
+  permissions: z.record(z.string(), ToolPermissionSchema).default({}),
+  /** Trust behavior: when `required`, tools above the `safe` risk tier refuse to run in an untrusted workspace. */
+  trust: z.object({ required: z.boolean().default(false) }).default({ required: false }),
+  /** Sandbox-adjacent knobs beyond the permission maps. */
+  sandbox: z
+    .object({
+      /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
+      forecastCostUsd: z.number().optional(),
+    })
+    .optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;

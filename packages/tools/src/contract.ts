@@ -1,13 +1,28 @@
-import type { CallerIdentity, Capabilities, SandboxBoundary } from "@agency/guard";
+import type { ApprovalRequest, CallerIdentity, Capabilities, SandboxBoundary } from "@agency/guard";
 import type { ImageBlock } from "@agency/schema";
 
 export type RiskTier = "safe" | "moderate" | "dangerous";
+
+/** What the user answered when a tool (or the gate) asked for approval. */
+export type ApprovalResponse = "once" | "always" | "reject";
 
 export interface ToolContext {
   signal: AbortSignal;
   /** Turn that invoked the tool (absent when the caller doesn't track one);
    *  file-mutating tools index their snapshots under it for undo. */
   turnId?: string;
+  /** Workspace directory the tool runs in; relative path arguments resolve against it. */
+  cwd?: string;
+  /** Session this tool call belongs to (session-scoped grants key off it). */
+  sessionId?: string;
+  /** The provider's tool-call id; correlates asks and results with the call. */
+  toolCallId?: string;
+  /**
+   * Ask the user to approve something this handler wants to do (an out-of-workspace
+   * path, a costly dispatch, ...). Resolves once/always/reject; absent when the
+   * caller has no approval surface, in which case a tool must fail closed.
+   */
+  requestApproval?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
 }
 
 export interface ToolResult {

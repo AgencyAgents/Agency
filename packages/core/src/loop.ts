@@ -1,5 +1,5 @@
-import type { CallerIdentity, Capabilities } from "@agency/guard";
-import { requireTool } from "@agency/guard";
+import type { CallerIdentity, Capabilities, RequestApproval, RiskTier, ToolPolicy } from "@agency/guard";
+import { isCommandPatternTool, isPathPatternTool, requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
   type ProviderAdapter,
@@ -14,11 +14,22 @@ import { truncateToolResults } from "./truncate.ts";
 
 export type ToolHandler = (
   input: Record<string, unknown>,
-  ctx: { signal: AbortSignal },
+  ctx: {
+    signal: AbortSignal;
+    turnId?: string;
+    cwd?: string;
+    sessionId?: string;
+    toolCallId?: string;
+    requestApproval?: RequestApproval;
+  },
 ) => Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
 
 export interface ToolSpec extends ToolDefinition {
   handler: ToolHandler;
+  /** How risky this tool is by nature; the permission gate and the trust
+   *  gate both consume it (`safe` runs freely, the rest asks and needs a
+   *  trusted workspace). Unclassified tools are treated as ungated. */
+  riskTier?: RiskTier;
 }
 
 export interface Budget {
@@ -57,6 +68,22 @@ export interface RunTurnOptions {
   /** Correlates tool invocations with the turn that caused them (snapshot
    *  journaling for undo); passed through to tool handler contexts. */
   turnId?: string;
+  /** Session this turn belongs to; threaded into tool contexts so session-scoped
+   *  approvals (the "always" grants) can be attributed. */
+  sessionId?: string;
+  /** Workspace directory, threaded into tool contexts for path resolution. */
+  cwd?: string;
+  /**
+   * Approval surface for `ask` decisions and tool-initiated requests. Absent
+   * means every ask fails closed (deny) — a headless run never self-approves.
+   */
+  requestApproval?: RequestApproval;
+  /**
+   * The permissions gate consulted before each tool handler runs: `deny`
+   * produces a per-call error without invoking the handler, `ask` routes
+   * through `requestApproval`. Absent = no permission enforcement.
+   */
+  toolPolicy?: ToolPolicy;
   /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
@@ -246,14 +273,133 @@ async function executeOne(
     return { content: error instanceof Error ? error.message : String(error), isError: true };
   }
 
+  // Validate the model's arguments against the tool's declared schema BEFORE
+  // anything runs: `{path: 123}` must die as a clean per-call error here, not
+  // surface later as a raw TypeError out of a file operation.
+  const validationError = validateToolInput(resolved.inputSchema, call.input);
+  if (validationError) {
+    return { content: validationError, isError: true };
+  }
+
+  // Permission gate: deny (or a rejected ask) becomes a per-call error result;
+  // the handler never runs. A tool absent from the caller's capability set is
+  // already refused above; this layer is the per-subject policy.
+  if (options.toolPolicy) {
+    const subject: { command?: string; path?: string } = {};
+    if (typeof call.input.command === "string" && isCommandPatternTool(resolved.name)) {
+      subject.command = call.input.command;
+    }
+    if (typeof call.input.path === "string" && isPathPatternTool(resolved.name)) {
+      subject.path = call.input.path;
+    }
+    try {
+      const verdict = await options.toolPolicy.check(
+        { tool: resolved.name, riskTier: resolved.riskTier, ...subject },
+        options.requestApproval,
+      );
+      if (verdict === "deny") {
+        return {
+          content: `permission denied: ${resolved.name} is not permitted by the current permissions policy`,
+          isError: true,
+        };
+      }
+    } catch (error) {
+      return { content: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
+
   const toolSignal = signal ?? NEVER_ABORTED;
-  const toolCtx = { signal: toolSignal, turnId: options.turnId };
+  const toolCtx = {
+    signal: toolSignal,
+    turnId: options.turnId,
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+    toolCallId: call.id,
+    requestApproval: options.requestApproval,
+  };
   try {
     const result = await resolved.handler(call.input, toolCtx);
     return { content: result.content, isError: result.isError ?? false, images: result.images };
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };
   }
+}
+
+const SIMPLE_TYPES: Record<string, (value: unknown) => boolean> = {
+  string: (v) => typeof v === "string",
+  number: (v) => typeof v === "number" && Number.isFinite(v),
+  integer: (v) => typeof v === "number" && Number.isInteger(v),
+  boolean: (v) => typeof v === "boolean",
+  object: (v) => typeof v === "object" && v !== null && !Array.isArray(v),
+  array: (v) => Array.isArray(v),
+  null: (v) => v === null,
+};
+
+/**
+ * Minimal JSON-Schema validation over the subset tool `inputSchema`s use
+ * (object root, `properties` with `type`/`enum`, `required`, shallow `items`).
+ * Deliberately permissive: unknown keywords and untyped properties pass — the
+ * goal is catching `{path: 123}`-shaped garbage with an actionable message,
+ * not reimplementing a spec-complete validator.
+ */
+export function validateToolInput(schema: Record<string, unknown>, input: unknown): string | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  if (schema.type === "object" && (typeof input !== "object" || input === null || Array.isArray(input))) {
+    return `invalid input: expected an object, got ${describeType(input)}`;
+  }
+  if (typeof input !== "object" || input === null) return undefined;
+
+  const properties = schema.properties;
+  const required = schema.required;
+  if (Array.isArray(required)) {
+    for (const name of required) {
+      if (typeof name === "string" && !(name in input)) {
+        return `invalid input: missing required property "${name}"`;
+      }
+    }
+  }
+  if (!properties || typeof properties !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+
+  for (const [name, rawSpec] of Object.entries(properties as Record<string, unknown>)) {
+    if (!(name in record)) continue;
+    const value = record[name];
+    if (!(rawSpec && typeof rawSpec === "object")) continue;
+    const propSchema = rawSpec as Record<string, unknown>;
+
+    if (typeof propSchema.type === "string") {
+      const check = SIMPLE_TYPES[propSchema.type];
+      if (check && !check(value)) {
+        return `invalid input: "${name}" must be ${propSchema.type}, got ${describeType(value)}`;
+      }
+    }
+    if (Array.isArray(propSchema.enum) && !propSchema.enum.some((option) => option === value)) {
+      return `invalid input: "${name}" must be one of ${JSON.stringify(propSchema.enum)}`;
+    }
+    if (propSchema.type === "array" && Array.isArray(value)) {
+      const itemSpec = propSchema.items;
+      if (
+        itemSpec &&
+        typeof itemSpec === "object" &&
+        typeof (itemSpec as Record<string, unknown>).type === "string"
+      ) {
+        const itemCheck = SIMPLE_TYPES[(itemSpec as Record<string, unknown>).type as string];
+        if (itemCheck) {
+          const bad = value.findIndex((item) => !itemCheck(item));
+          if (bad !== -1) {
+            return `invalid input: "${name}[${bad}]" must be ${(itemSpec as Record<string, unknown>).type}, got ${describeType(value[bad])}`;
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function describeType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 interface CollectedTurn {

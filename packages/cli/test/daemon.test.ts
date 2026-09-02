@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
@@ -525,5 +525,273 @@ describe("resolveAdapter", () => {
 
   test("a fully unknown provider still throws", () => {
     expect(() => resolveAdapter("not-real", {})).toThrow(/unknown provider/);
+  });
+});
+
+// --- A5: permissions, approvals, capabilities, plans, trust ---
+
+function toolCallingAdapter(toolName: string, input: Record<string, unknown>): ProviderAdapter {
+  let call = 0;
+  return {
+    family: "fake",
+    async *stream(): AsyncIterable<StreamEvent> {
+      call += 1;
+      if (call === 1) {
+        yield { type: "tool_call_start", id: "c1", name: toolName };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify(input) };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      } else {
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      }
+    },
+  };
+}
+
+function capturingToolsAdapter(
+  toolName: string,
+  input: Record<string, unknown>,
+  seenTools: Array<Array<{ name: string }>>,
+): ProviderAdapter {
+  let call = 0;
+  return {
+    family: "fake",
+    async *stream(request) {
+      seenTools.push((request.tools ?? []).map((t) => ({ name: t.name })));
+      call += 1;
+      if (call === 1) {
+        yield { type: "tool_call_start", id: "c1", name: toolName };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify(input) };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      } else {
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      }
+    },
+  };
+}
+
+const dangerousTool: ToolSpec = {
+  name: "fakebash",
+  description: "fake dangerous tool",
+  inputSchema: { type: "object", properties: { command: { type: "string" } } },
+  riskTier: "dangerous",
+  handler: async (input) => ({ content: `ran ${String((input as { command?: string }).command)}` }),
+};
+
+describe("A5 permissions and sandbox", () => {
+  test("a narrowed per-turn capability set denies a tool the daemon could otherwise run", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
+      tools: [dangerousTool],
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "caps-1",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+      capabilities: { tools: ["other-tool"], pathScopes: "*", network: "*" },
+    })) as RunTurnRpcResult;
+
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toMatchObject({ type: "tool_result", isError: true });
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toContain("allowed tools");
+    }
+  });
+
+  test("a bare deny in the permissions config filters the tool from the request entirely", async () => {
+    const seenTools: Array<Array<{ name: string }>> = [];
+    const { client } = await startFakeDaemon({
+      adapterFor: () => capturingToolsAdapter("fakebash", { command: "x" }, seenTools),
+      tools: [dangerousTool],
+      configDir: writeConfigDir({ permissions: { fakebash: "deny" } }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "deny-1",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    expect(seenTools[0]?.map((t) => t.name)).not.toContain("fakebash");
+    const toolResult = result.messages[1]?.content[0];
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.isError).toBe(true);
+      // A filtered tool was never offered: the model's call to it is refused
+      // as unknown, not run and not merely policy-rejected after the fact.
+      expect(toolResult.content).toContain("no such tool");
+    }
+  });
+
+  test("a deny pattern in a permissions map blocks the command with a clean error", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("bash", { command: "rm -rf build" }),
+      tools: [
+        {
+          ...dangerousTool,
+          name: "bash",
+          handler: async (input) => ({
+            content: `SHOULD NOT RUN ${String((input as { command?: string }).command)}`,
+          }),
+        },
+      ],
+      configDir: writeConfigDir({
+        permissions: { bash: { "*": "allow", "rm *": "deny" } },
+      }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "deny-2",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toMatchObject({ type: "tool_result", isError: true });
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toContain("permission denied");
+      expect(toolResult.content).not.toContain("SHOULD NOT RUN");
+    }
+  });
+
+  test("an unconfigured dangerous tool asks; once runs it, and always persists for the session", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
+      tools: [dangerousTool],
+    });
+
+    // Turn 1: an approval request is broadcast; answering once runs the tool.
+    const events1: Array<{ type: string; requestId?: string }> = [];
+    client.on("turn.ask-1", (payload) => events1.push(payload as { type: string }));
+    const run1 = client.call("run_turn", {
+      turnId: "ask-1",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const ask = events1.find((e) => e.type === "approval_requested");
+    expect(ask?.requestId).toBeTruthy();
+    const responded = await client.call("approval_respond", {
+      requestId: ask?.requestId,
+      decision: "once",
+    });
+    expect(responded).toMatchObject({ resolved: true });
+    const result1 = (await run1) as RunTurnRpcResult;
+    const toolResult1 = result1.messages[1]?.content[0];
+    if (toolResult1?.type === "tool_result") {
+      expect(toolResult1.isError).toBe(false);
+      expect(toolResult1.content).toContain("ran rm -rf build");
+    }
+
+    // Turn 2: still asks (once granted nothing durable).
+    const events2: Array<{ type: string; requestId?: string }> = [];
+    client.on("turn.ask-2", (payload) => events2.push(payload as { type: string }));
+    const run2 = client.call("run_turn", {
+      turnId: "ask-2",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const ask2 = events2.find((e) => e.type === "approval_requested");
+    expect(ask2?.requestId).toBeTruthy();
+    await client.call("approval_respond", { requestId: ask2?.requestId, decision: "always" });
+    await run2;
+
+    // Turn 3: the session-scoped "always" grant answers without a new ask.
+    const events3: Array<{ type: string }> = [];
+    client.on("turn.ask-3", (payload) => events3.push(payload as { type: string }));
+    await client.call("run_turn", {
+      turnId: "ask-3",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(events3.find((e) => e.type === "approval_requested")).toBeUndefined();
+  }, 30_000);
+
+  test("an untrusted workspace denies mutating tools when trust is required, safe tools still run", async () => {
+    const trustStorePath = join(tempInstanceFile(), "..", "trust.json");
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "anything" }),
+      tools: [dangerousTool],
+      trustStorePath,
+      configDir: writeConfigDir({ trust: { required: true } }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "trust-1",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toMatchObject({ type: "tool_result", isError: true });
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toContain("permission denied");
+    }
+  });
+
+  test("plan_approve writes the approval record and refuses plans with unresolved comments", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agency-daemon-plan-"));
+    dirs.push(workspace);
+    mkdirSync(join(workspace, ".agency", "plans"), { recursive: true });
+    const planPath = join(workspace, ".agency", "plans", "my-plan.md");
+    writeFileSync(planPath, "# plan\n\n- [ ] step one\n");
+
+    const { client } = await startFakeDaemon({ workspaceRoot: workspace });
+
+    const noApproval = await client.call("plan_approve", { path: planPath });
+    expect(noApproval).toMatchObject({ record: { approvedBy: "user" } });
+    expect(readFileSync(`${planPath}.approval.json`, "utf8")).toContain('"hash"');
+
+    // Unresolved comments block approval.
+    writeFileSync(
+      `${planPath}.comments.json`,
+      JSON.stringify({ comments: [{ text: "step 1 is wrong", resolved: false }] }),
+    );
+    let rejection: string | undefined;
+    try {
+      await client.call("plan_approve", { path: planPath });
+    } catch (error) {
+      rejection = error instanceof Error ? error.message : String(error);
+    }
+    expect(rejection).toContain("unresolved comment");
+  });
+
+  test("plan_approve refuses paths outside the workspace", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agency-daemon-plan2-"));
+    dirs.push(workspace);
+    const { client } = await startFakeDaemon({ workspaceRoot: workspace });
+
+    let rejection: string | undefined;
+    try {
+      await client.call("plan_approve", { path: "/definitely/outside/plan.md" });
+    } catch (error) {
+      rejection = error instanceof Error ? error.message : String(error);
+    }
+    expect(rejection).toContain("outside the sandbox root");
   });
 });

@@ -20,8 +20,18 @@ import {
   withSystemReminders,
   withTrace,
 } from "@agency/core";
-import type { CallerIdentity, Capabilities } from "@agency/guard";
-import { FULL_CAPABILITIES, Redactor, SandboxBoundary } from "@agency/guard";
+import {
+  ApprovalManager,
+  type CallerIdentity,
+  type Capabilities,
+  createFileTrustStore,
+  globToRegExpSource,
+  PermissionsGate,
+  Redactor,
+  type RequestApproval,
+  SandboxBoundary,
+  type TrustStore,
+} from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
@@ -50,7 +60,7 @@ import {
 } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
-import { createBuiltinTools } from "@agency/tools";
+import { createBuiltinTools, writeApprovalRecord } from "@agency/tools";
 import { listProviders } from "./providers-list.ts";
 
 export const DEFAULT_SYSTEM_PROMPT =
@@ -99,6 +109,17 @@ export interface RunTurnParams {
   session: Message[];
   budget?: Budget;
   maxToolIterations?: number;
+  /**
+   * Session this turn belongs to: scopes the "always allow" approval grants
+   * (they persist across the session's turns, never beyond the daemon
+   * process) and is threaded into tool contexts.
+   */
+  sessionId?: string;
+  /**
+   * Per-turn capability override (A5): narrows what THIS turn may do, instead
+   * of the daemon-wide set. Absent = the daemon-derived set from config.
+   */
+  capabilities?: Capabilities;
 }
 
 export interface ResolveSystemPromptOptions {
@@ -231,6 +252,11 @@ export interface AgentDaemonOptions {
    * user-only), which is the only place clients can learn it.
    */
   authToken?: string;
+  /**
+   * Overrides the trust store location; defaults to dataDir()/trust.json.
+   * Tests point this at a temp file so trust decisions never leak between runs.
+   */
+  trustStorePath?: string;
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
 }
@@ -238,6 +264,26 @@ export interface AgentDaemonOptions {
 export interface AgentDaemon {
   server: DaemonServer;
   stop(): Promise<void>;
+}
+
+/**
+ * Builds the sandbox's hard command backstop from the permissions config:
+ * every `bash` pattern mapped to `deny` becomes an anchored deny regex, so a
+ * deny-listed command is refused at the sandbox even if a caller bypasses the
+ * interactive gate. Allowlists aren't derived — `ask`/`allow` ordering is the
+ * gate's job, the sandbox only ever vetoes.
+ */
+export function commandPolicyFromPermissions(
+  permissions: Record<string, unknown>,
+): { deny: RegExp[] } {
+  const bash = (permissions as { bash?: unknown }).bash;
+  const deny: RegExp[] = [];
+  if (bash && typeof bash === "object" && !Array.isArray(bash)) {
+    for (const [pattern, decision] of Object.entries(bash as Record<string, unknown>)) {
+      if (decision === "deny") deny.push(new RegExp(globToRegExpSource(pattern, "command")));
+    }
+  }
+  return { deny };
 }
 
 /**
@@ -290,9 +336,33 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const identity = options.identity ?? { type: "user" as const };
-  const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
   const authToken = options.authToken ?? newInstanceToken();
+
+  // A5: the security stack is built from config, not constants. The gate owns
+  // the permissions maps (allow/ask/deny, last-match-wins) and the trust
+  // check; the sandbox gets the deny-pattern command policy and the
+  // external_directory decision, so containment and policy are real.
+  const trustStore: TrustStore = createFileTrustStore(
+    options.trustStorePath ?? join(dataDir(), "trust.json"),
+  );
+  const gate = new PermissionsGate({
+    permissions: config.permissions,
+    workspaceRoot: options.workspaceRoot,
+    trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
+  });
+  const commandPolicy = commandPolicyFromPermissions(config.permissions);
+  const sandbox = new SandboxBoundary(options.workspaceRoot, commandPolicy, (resolved) =>
+    gate.externalDirectoryDecision(resolved),
+  );
+
+  // Two-level policy: a tool the permissions config bare-denies (or, under a
+  // per-agent policy, omits) is not in the list the model ever sees. When
+  // nothing is filtered, tools stay "*" so requireTool keeps its fast path.
+  const sessionTools = () => {
+    const offered = tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+    return offered.length === tools.length ? ("*" as const) : offered.map((t) => t.name);
+  };
 
   // A3: API keys resolve daemon-side (this process has keychain access), so
   // the keychain is created lazily on the first keyless run_turn and reused.
@@ -307,13 +377,33 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const builtins = options.tools
     ? undefined
     : await createBuiltinTools({
-        deps: { identity, capabilities, sandbox: new SandboxBoundary(options.workspaceRoot) },
+        // Per-turn capabilities gate requireTool in the loop; the deps set only
+        // feeds requirePathScope/requireNetwork inside handlers, unrestricted
+        // here because path containment is the sandbox's job.
+        deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
         http,
         workspaceRoot: options.workspaceRoot,
         snapshotDir: storagePaths(options.workspaceRoot).snapshotsDir,
         mcpServers: config.mcpServers,
       });
   const tools = options.tools ?? builtins?.tools ?? [];
+  const defaultCapabilities: Capabilities = options.capabilities ?? {
+    tools: sessionTools(),
+    pathScopes: "*",
+    network: "*",
+  };
+
+  // Session-scoped "always allow" grants: one manager per session id, alive
+  // as long as the daemon process — never beyond it.
+  const approvalManagers = new Map<string, ApprovalManager>();
+  const approvalsFor = (sessionId: string): ApprovalManager => {
+    let manager = approvalManagers.get(sessionId);
+    if (!manager) {
+      manager = new ApprovalManager();
+      approvalManagers.set(sessionId, manager);
+    }
+    return manager;
+  };
 
   // One scheduler per provider: a single shared bucket would pace all
   // providers against one 60-rpm ceiling and one concurrency cap, so a slow
@@ -381,14 +471,29 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               model: params.model,
             });
             const modelInfo = catalogModel(params.provider, params.model);
+            const sessionId = params.sessionId ?? "default";
+            const approvals = approvalsFor(sessionId);
+            // Approval asks broadcast on the turn stream (the requesting
+            // client) and, when the client named a session, the session
+            // stream (every surface attached to the room).
+            const requestApproval: RequestApproval = async (request) => {
+              if (approvals.hasAlways(request)) return "once";
+              const { id, promise } = approvals.createPending(request, params.turnId);
+              const payload = { type: "approval_requested" as const, requestId: id, request };
+              server.broadcast(eventStream, payload);
+              if (params.sessionId !== undefined) server.broadcast(`session.${sessionId}`, payload);
+              return await promise;
+            };
             const result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
               identity,
-              capabilities,
+              capabilities: params.capabilities ?? defaultCapabilities,
+              toolPolicy: gate,
+              requestApproval,
               systemPrompt: resolveSystemPrompt(params, {
                 workspaceRoot: options.workspaceRoot,
                 mcpFailures: builtins?.mcpFailures,
               }),
-              tools,
+              tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
               model: params.model,
               apiKey,
               thinkingLevel: params.thinkingLevel,
@@ -402,6 +507,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 : undefined,
               maxTokensPerRequest: modelInfo?.maxOutputTokens,
               turnId: params.turnId,
+              sessionId: params.sessionId,
+              cwd: options.workspaceRoot,
               maxToolIterations: params.maxToolIterations,
               signal: controller.signal,
               onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
@@ -453,6 +560,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             throw error;
           } finally {
             clearInterval(turnHeartbeat);
+            // A turn that died (abort, disconnect, error) must not leave asks
+            // pending forever: reject anything it was waiting on.
+            approvalsFor(params.sessionId ?? "default").rejectTurn(params.turnId);
             activeControllers.delete(params.turnId);
             turnOwners.delete(params.turnId);
           }
@@ -465,6 +575,51 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         if (!controller) return { cancelled: false };
         controller.abort();
         return { cancelled: true };
+      },
+
+      // The other half of the approval gate: the UI's once/always/reject
+      // answer lands here. "always" records a session-scoped grant inside the
+      // ApprovalManager and retroactively resolves matching pending asks.
+      async approval_respond(rawParams) {
+        const { requestId, decision, sessionId } = rawParams as {
+          requestId: string;
+          decision: "once" | "always" | "reject";
+          sessionId?: string;
+        };
+        if (decision !== "once" && decision !== "always" && decision !== "reject") {
+          throw new AgencyError(ErrorCode.INTERNAL, `invalid approval decision: ${String(decision)}`, {
+            source: "approval",
+          });
+        }
+        const managers = sessionId ? [approvalManagers.get(sessionId)] : [...approvalManagers.values()];
+        for (const manager of managers) {
+          const outcome = manager?.respond(requestId, decision);
+          if (outcome?.resolved) return outcome;
+        }
+        return { resolved: false, retroactive: 0 };
+      },
+
+      // Plan mode's approve half: writes the plan_approval companion record
+      // (path + content hash + approver) after refusing plans with
+      // unresolved comments. execute_plan refuses to run without it.
+      async plan_approve(rawParams) {
+        const { path, approvedBy } = rawParams as { path: string; approvedBy?: string };
+        if (typeof path !== "string" || path.length === 0) {
+          throw new AgencyError(ErrorCode.INTERNAL, "plan_approve requires a plan path", {
+            source: "plan",
+          });
+        }
+        const resolved = sandbox.resolvePath(path);
+        try {
+          const record = writeApprovalRecord(resolved, { approvedBy });
+          return { record };
+        } catch (error) {
+          throw new AgencyError(
+            ErrorCode.TOOL_ERROR,
+            error instanceof Error ? error.message : String(error),
+            { source: "plan", context: { path } },
+          );
+        }
       },
 
       // File undo/redo over the write/edit snapshot journal. The daemon owns
@@ -523,6 +678,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       clearTimeout(idleTimer);
       builtins?.processManager.killAll();
       await builtins?.dispose();
+      // Shutdown must not leave any client's approval promise hanging.
+      for (const manager of approvalManagers.values()) manager.rejectAll();
       await server.close();
       // Graceful shutdown clears its own instance file: clients probing the
       // old port refuse fast instead of timing out against a dead pid.

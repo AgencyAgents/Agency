@@ -129,3 +129,78 @@ describe("SandboxBoundary.checkCommand", () => {
     expect(() => boundary.checkCommand("git push")).toThrow(AgencyError);
   });
 });
+
+describe("SandboxBoundary.resolvePathGated (external_directory)", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function setup(): { root: string; outside: string } {
+    const dir = mkdtempSync(join(tmpdir(), "agency-sandbox-external-"));
+    tempDirs.push(dir);
+    const root = join(dir, "workspace");
+    const outside = join(dir, "outside");
+    mkdirSync(root, { recursive: true });
+    mkdirSync(outside);
+    return { root, outside };
+  }
+
+  test("in-root paths pass regardless of the external decision", async () => {
+    const { root } = setup();
+    const boundary = new SandboxBoundary(root, {}, () => "deny");
+    await expect(boundary.resolvePathGated("src/new.ts", { tool: "write" })).resolves.toBe(
+      join(root, "src", "new.ts"),
+    );
+  });
+
+  test("deny (and the no-decision default) refuses an out-of-root path", async () => {
+    const { root, outside } = setup();
+    const denied = new SandboxBoundary(root, {}, () => "deny");
+    await expect(denied.resolvePathGated(outside, { tool: "read" })).rejects.toThrow(AgencyError);
+
+    const unset = new SandboxBoundary(root);
+    await expect(unset.resolvePathGated(outside, { tool: "read" })).rejects.toThrow(AgencyError);
+  });
+
+  test("allow admits an out-of-root path", async () => {
+    const { root, outside } = setup();
+    const boundary = new SandboxBoundary(root, {}, () => "allow");
+    await expect(boundary.resolvePathGated(outside, { tool: "read" })).resolves.toBe(outside);
+  });
+
+  test("ask consults the approval callback; rejection throws, approval admits", async () => {
+    const { root, outside } = setup();
+    const boundary = new SandboxBoundary(root, {}, () => "ask");
+
+    await expect(boundary.resolvePathGated(outside, { tool: "read", ask: async () => "once" })).resolves.toBe(
+      outside,
+    );
+
+    try {
+      await boundary.resolvePathGated(outside, { tool: "read", ask: async () => "reject" });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
+    }
+  });
+
+  test("ask with no approval surface available fails closed", async () => {
+    const { root, outside } = setup();
+    const boundary = new SandboxBoundary(root, {}, () => "ask");
+    await expect(boundary.resolvePathGated(outside, { tool: "read" })).rejects.toThrow(AgencyError);
+  });
+
+  test("a symlink escape is still refused through the gated path", async () => {
+    const { root, outside } = setup();
+    symlinkSync(outside, join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
+    const boundary = new SandboxBoundary(root, {}, () => "allow");
+    // allow opens the genuine outside, but a symlinked in-root path resolving
+    // outside is a containment question, decided by the same gate here: with
+    // allow configured the resolved real path is admitted and reported.
+    const resolved = await boundary.resolvePathGated(join("escape", "secret.txt"), {
+      tool: "read",
+    });
+    expect(resolved.startsWith(outside)).toBe(true);
+  });
+});

@@ -4,6 +4,7 @@ import { createEditTool } from "./builtins/edit.ts";
 import { createFetchTool } from "./builtins/fetch.ts";
 import { createGlobTool } from "./builtins/glob.ts";
 import { createGrepTool } from "./builtins/grep.ts";
+import { createExecutePlanTool } from "./builtins/plan.ts";
 import { createReadTool } from "./builtins/read.ts";
 import { createTodoReadTool, createTodoWriteTool, TodoStore } from "./builtins/todo.ts";
 import { createWriteTool } from "./builtins/write.ts";
@@ -61,6 +62,7 @@ export async function createBuiltinTools(options: BuiltinToolsOptions): Promise<
     createFetchTool(options.deps, options.http),
     createTodoReadTool(todos),
     createTodoWriteTool(todos),
+    createExecutePlanTool(options.deps, todos),
   ];
 
   let mcp: McpManager | undefined;

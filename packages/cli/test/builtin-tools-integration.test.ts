@@ -24,6 +24,19 @@ function tempRepo(): string {
   return dir;
 }
 
+/**
+ * These tests assert file/bash EFFECTS, not permission policy, so each daemon
+ * config explicitly allows the tools it exercises — under A5 the unconfigured
+ * defaults ask for approval on every mutating tool call, which would hang a
+ * scripted turn with no approval surface attached.
+ */
+function configAllowing(permissions: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-tools-e2e-cfg-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ schemaVersion: 2, permissions }));
+  return dir;
+}
+
 /** A fake model that calls a real tool once, then stops: proves the daemon's
  *  default built-in tool set actually runs, not just a mocked stand-in. */
 function scriptedToolCallAdapter(toolName: string, input: Record<string, unknown>): ProviderAdapter {
@@ -54,6 +67,7 @@ describe("daemon with real built-in tools", () => {
       adapterFor: () =>
         scriptedToolCallAdapter("write", { path: "hello.ts", content: "export const x = 1;\n" }),
       http: noopHttp,
+      configDir: configAllowing({ write: "allow" }),
     });
     daemons.push(daemon);
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
@@ -86,6 +100,7 @@ describe("daemon with real built-in tools", () => {
           newText: "const x = 2;",
         }),
       http: noopHttp,
+      configDir: configAllowing({ edit: "allow" }),
     });
     daemons.push(daemon);
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
@@ -110,6 +125,7 @@ describe("daemon with real built-in tools", () => {
       instanceFile: join(root, ".agency", "instance.json"),
       adapterFor: () => scriptedToolCallAdapter("bash", { command: "echo real-bash-output-from-e2e-test" }),
       http: noopHttp,
+      configDir: configAllowing({ bash: "allow" }),
     });
     daemons.push(daemon);
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
@@ -138,6 +154,7 @@ describe("daemon with real built-in tools", () => {
       instanceFile: join(root, ".agency", "instance.json"),
       adapterFor: () => scriptedToolCallAdapter("write", { path: "undo-me.ts", content: "overwritten" }),
       http: noopHttp,
+      configDir: configAllowing({ write: "allow" }),
     });
     daemons.push(daemon);
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -214,5 +214,29 @@ describe("createBashTool", () => {
 
     expect(added).toBeGreaterThan(0);
     expect(added).toBe(removed);
+  }, 30_000);
+});
+
+describe("createBashTool cwd containment (A5: bash calls resolvePath)", () => {
+  const signal = new AbortController().signal;
+
+  test("a cd that leaves the workspace is refused and the previous cwd kept", async () => {
+    const { tool, state, root } = setup();
+    const result = await tool.handler({ command: "cd .." }, { signal });
+
+    expect(state.cwd).toBe(root);
+    expect(result.content).toContain("resolves outside the workspace");
+  }, 30_000);
+
+  test("a cd to a symlinked directory pointing outside is refused too", async () => {
+    const { tool, state, root } = setup();
+    const parent = join(root, "..");
+    const linkName = process.platform === "win32" ? "escape-link" : "escape-link";
+    const linkPath = join(root, linkName);
+    symlinkSync(parent, linkPath, process.platform === "win32" ? "junction" : "dir");
+
+    const result = await tool.handler({ command: `cd ${linkName}` }, { signal });
+    expect(state.cwd).toBe(root);
+    expect(result.content).toContain("resolves outside the workspace");
   }, 30_000);
 });

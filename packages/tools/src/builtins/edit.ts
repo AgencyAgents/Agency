@@ -34,7 +34,10 @@ export function createEditTool(
       result.isError ? `edit failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input, ctx) {
-      const resolved = deps.sandbox.resolvePath(input.path);
+      const resolved = await deps.sandbox.resolvePathGated(input.path, {
+        tool: "edit",
+        ask: ctx.requestApproval,
+      });
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
       let current: string;

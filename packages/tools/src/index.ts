@@ -4,6 +4,18 @@ export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";
 export { createGlobTool } from "./builtins/glob.ts";
 export { createGrepTool } from "./builtins/grep.ts";
+export {
+  approvalRecordPath,
+  commentsPath,
+  countUnresolvedComments,
+  createExecutePlanTool,
+  type PlanApprovalRecord,
+  type PlanStep,
+  parsePlanSteps,
+  planContentHash,
+  readApprovalRecord,
+  writeApprovalRecord,
+} from "./builtins/plan.ts";
 export { createReadTool } from "./builtins/read.ts";
 export {
   createTodoReadTool,

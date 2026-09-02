@@ -41,8 +41,11 @@ export function createReadTool(deps: ToolDeps): ToolSpec {
       return `${label}: ${lineCount(result.content)} lines`;
     },
 
-    async handler(input) {
-      const resolved = deps.sandbox.resolvePath(input.path);
+    async handler(input, ctx) {
+      const resolved = await deps.sandbox.resolvePathGated(input.path, {
+        tool: "read",
+        ask: ctx.requestApproval,
+      });
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
       const stat = statSync(resolved);

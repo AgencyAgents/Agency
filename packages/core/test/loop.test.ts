@@ -3,7 +3,7 @@ import { FULL_CAPABILITIES, NO_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent, Usage } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
-import { runTurn, type ToolSpec } from "../src/loop.ts";
+import { runTurn, type ToolSpec, validateToolInput } from "../src/loop.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const user = { type: "user" as const };
@@ -647,5 +647,169 @@ describe("runTurn", () => {
     expect(result.stopReason).toBe("error");
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]).toEqual({ role: "assistant", content: [{ type: "text", text: "partial" }] });
+  });
+});
+
+describe("A5: input validation and permissions gating", () => {
+  const user = { type: "user" as const };
+
+  test("malformed tool input produces a clean per-call error, not a handler invocation or crash", async () => {
+    let handlerRan = false;
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads a file",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+      handler: async () => {
+        handlerRan = true;
+        return { content: "should not get here" };
+      },
+    };
+
+    const result = await runTurn(toolThenDoneAdapter("read", { path: 123 }), new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "m",
+      apiKey: "k",
+      session: [],
+    });
+
+    expect(handlerRan).toBe(false);
+    expect(result.stopReason).toBe("end_turn");
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toMatchObject({ type: "tool_result", isError: true });
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toContain('invalid input: "path" must be string, got number');
+    }
+  });
+
+  test("missing required properties and bad enums are caught with actionable messages", async () => {
+    const schema = {
+      type: "object",
+      properties: { mode: { type: "string", enum: ["fast", "slow"] } },
+      required: ["mode"],
+    };
+    expect(validateToolInput(schema, {})).toContain('missing required property "mode"');
+    expect(validateToolInput(schema, { mode: "sideways" })).toContain("must be one of");
+    expect(validateToolInput(schema, { mode: "fast" })).toBeUndefined();
+    expect(validateToolInput({}, { anything: 1 })).toBeUndefined();
+  });
+
+  test("a deny decision blocks the handler with a clean permission error", async () => {
+    let handlerRan = false;
+    const spec: ToolSpec = {
+      name: "bash",
+      description: "runs a command",
+      inputSchema: { type: "object", properties: { command: { type: "string" } } },
+      riskTier: "dangerous",
+      handler: async () => {
+        handlerRan = true;
+        return { content: "ran" };
+      },
+    };
+    const toolPolicy = {
+      check: async () => "deny" as const,
+    };
+
+    const result = await runTurn(
+      toolThenDoneAdapter("bash", { command: "rm -rf /" }),
+      new Scheduler(),
+      noopHttp,
+      {
+        identity: user,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [spec],
+        model: "m",
+        apiKey: "k",
+        session: [],
+        toolPolicy,
+      },
+    );
+
+    expect(handlerRan).toBe(false);
+    const toolResult = result.messages[1]?.content[0];
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toContain("permission denied");
+      expect(toolResult.isError).toBe(true);
+    }
+  });
+
+  test("an ask decision routes through requestApproval; once runs, reject refuses", async () => {
+    const spec: ToolSpec = {
+      name: "bash",
+      description: "runs a command",
+      inputSchema: { type: "object", properties: { command: { type: "string" } } },
+      riskTier: "dangerous",
+      handler: async (_input, ctx) => ({ content: `ran with ${ctx.toolCallId}` }),
+    };
+    const toolPolicy = {
+      check: async (
+        _request: unknown,
+        ask: ((r: { tool: string; title: string }) => Promise<"once" | "always" | "reject">) | undefined,
+      ) =>
+        (await ask?.({ tool: "bash", title: "cmd" })) === "reject" ? ("deny" as const) : ("allow" as const),
+    };
+    const decisions: Array<"once" | "reject"> = ["once", "reject"];
+    let decisionIndex = 0;
+
+    const result = await runTurn(
+      toolThenDoneAdapter("bash", { command: "bun test" }),
+      new Scheduler(),
+      noopHttp,
+      {
+        identity: user,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [spec],
+        model: "m",
+        apiKey: "k",
+        session: [],
+        toolPolicy,
+        requestApproval: async () => decisions[decisionIndex++] ?? "reject",
+      },
+    );
+
+    const toolResult = result.messages[1]?.content[0];
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.isError).toBe(false);
+      expect(toolResult.content).toContain("ran with call_1");
+    }
+    expect(decisionIndex).toBe(1);
+  });
+
+  test("tool contexts carry cwd, sessionId, toolCallId, and the approval callback", async () => {
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads a file",
+      inputSchema: { type: "object", properties: { path: { type: "string" } } },
+      handler: async (_input, ctx) => ({
+        content: `${ctx.cwd}|${ctx.sessionId}|${ctx.toolCallId}|${typeof ctx.requestApproval}|${ctx.turnId}`,
+      }),
+    };
+
+    const result = await runTurn(toolThenDoneAdapter("read", { path: "a.ts" }), new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "m",
+      apiKey: "k",
+      session: [],
+      turnId: "turn-9",
+      sessionId: "ses-1",
+      cwd: "/repo",
+      requestApproval: async () => "once",
+    });
+
+    const toolResult = result.messages[1]?.content[0];
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.content).toBe("/repo|ses-1|call_1|function|turn-9");
+    }
   });
 });
