@@ -6,7 +6,15 @@ import type { ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
-import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult, resolveAdapter } from "../src/daemon.ts";
+import type { RunTurnParams } from "../src/daemon.ts";
+import {
+  type AgentDaemon,
+  createAgentDaemon,
+  DEFAULT_SYSTEM_PROMPT,
+  type RunTurnRpcResult,
+  resolveAdapter,
+  resolveSystemPrompt,
+} from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 
@@ -26,10 +34,11 @@ function tempInstanceFile(): string {
   return join(dir, "instance.json");
 }
 
-function textAdapter(text: string): ProviderAdapter {
+function textAdapter(text: string, capture?: { systems: string[] }): ProviderAdapter {
   return {
     family: "fake",
-    async *stream(): AsyncIterable<StreamEvent> {
+    async *stream(request) {
+      capture?.systems.push(request.system ?? "");
       yield { type: "text_delta", text };
       yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 2 } };
     },
@@ -45,7 +54,7 @@ async function startFakeDaemon(overrides: Partial<Parameters<typeof createAgentD
     ...overrides,
   });
   daemons.push(daemon);
-  const client = await connectToDaemon(daemon.server.port);
+  const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
   clients.push(client);
   return { daemon, client };
 }
@@ -261,6 +270,146 @@ describe("createAgentDaemon", () => {
     expect(result.all.some((p) => p.id === "anthropic")).toBe(false);
     expect(result.all.some((p) => p.id === "openai")).toBe(true);
   }, 30_000);
+});
+
+describe("system prompt composition", () => {
+  test("a plain systemPrompt string is used as the base, with the environment block appended", async () => {
+    const capture = { systems: [] as string[] };
+    const { client } = await startFakeDaemon({ adapterFor: () => textAdapter("ok", capture) });
+
+    await client.call("run_turn", {
+      turnId: "sys-1",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+
+    expect(capture.systems).toHaveLength(1);
+    const system = capture.systems[0] ?? "";
+    expect(system.startsWith("sys\n\n")).toBe(true);
+    expect(system).toContain("<environment>");
+    expect(system).toContain("cwd: /repo/fake");
+    expect(system).toContain("date: ");
+    expect(system).not.toContain("git: branch");
+  });
+
+  test("systemPromptParts compose identity, role, instructions, and context in order", async () => {
+    const capture = { systems: [] as string[] };
+    const { client } = await startFakeDaemon({ adapterFor: () => textAdapter("ok", capture) });
+
+    await client.call("run_turn", {
+      turnId: "sys-2",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "raw-string-ignored",
+      systemPromptParts: {
+        identity: "IDENTITY",
+        role: "ROLE",
+        instructions: ["INSTR1", "INSTR2"],
+      },
+      session: [],
+    });
+
+    const system = capture.systems[0] ?? "";
+    const order = [
+      system.indexOf("IDENTITY"),
+      system.indexOf("ROLE"),
+      system.indexOf("INSTR1"),
+      system.indexOf("<environment>"),
+    ];
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(system).not.toContain("raw-string-ignored");
+  });
+
+  test("systemReminders apply only on the turn that sends them", async () => {
+    const capture = { systems: [] as string[] };
+    const { client } = await startFakeDaemon({ adapterFor: () => textAdapter("ok", capture) });
+
+    const baseParams = {
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    };
+    await client.call("run_turn", { ...baseParams, turnId: "rem-1" });
+    await client.call("run_turn", {
+      ...baseParams,
+      turnId: "rem-2",
+      systemReminders: [{ kind: "file_changed", text: "src/x.ts changed on disk" }],
+    });
+
+    expect(capture.systems).toHaveLength(2);
+    expect(capture.systems[0]).not.toContain("<system-reminder>");
+    expect(capture.systems[1]).toContain(
+      "<system-reminder>\n- [file_changed] src/x.ts changed on disk\n</system-reminder>",
+    );
+  });
+
+  test("parts.context=false omits the environment block", async () => {
+    const capture = { systems: [] as string[] };
+    const { client } = await startFakeDaemon({ adapterFor: () => textAdapter("ok", capture) });
+
+    await client.call("run_turn", {
+      turnId: "sys-3",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      systemPromptParts: { context: false },
+      session: [],
+    });
+
+    expect(capture.systems[0]).toBe("sys");
+  });
+});
+
+describe("resolveSystemPrompt", () => {
+  const params = (overrides: Partial<RunTurnParams> = {}): RunTurnParams => ({
+    turnId: "t",
+    provider: "p",
+    model: "m",
+    apiKey: "k",
+    systemPrompt: "sys",
+    session: [],
+    ...overrides,
+  });
+
+  test("no reminders and no mcp failures means no reminder block", () => {
+    const system = resolveSystemPrompt(params(), {
+      workspaceRoot: "/repo/fake",
+      git: () => null,
+    });
+    expect(system).not.toContain("<system-reminder>");
+  });
+
+  test("mcp start failures become mcp_server_down reminders", () => {
+    const system = resolveSystemPrompt(params(), {
+      workspaceRoot: "/repo/fake",
+      git: () => null,
+      mcpFailures: new Map([["fs", "spawn failed"]]),
+    });
+    expect(system).toContain('- [mcp_server_down] MCP server "fs" is unavailable: spawn failed');
+  });
+
+  test("the git seam feeds branch and dirty state into the environment block", () => {
+    const system = resolveSystemPrompt(params(), {
+      workspaceRoot: "/repo/fake",
+      git: (_cwd, args) => (args.includes("status") ? "## main...origin/main\n M a.ts\n" : null),
+    });
+    expect(system).toContain("git: branch main (dirty, 1 changed file)");
+  });
+
+  test("identity falls back to the shared default when parts omit it", () => {
+    const system = resolveSystemPrompt(params({ systemPromptParts: { role: "ROLE" } }), {
+      workspaceRoot: "/repo/fake",
+      git: () => null,
+    });
+    expect(system.startsWith(`${DEFAULT_SYSTEM_PROMPT}\n\nROLE\n\n<environment>`)).toBe(true);
+  });
 });
 
 function catalogModel(id: string, family: string): ModelInfo {

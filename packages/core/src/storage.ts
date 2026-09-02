@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { configDir } from "./paths.ts";
@@ -63,12 +64,25 @@ export function storagePaths(
   };
 }
 
-function dirSizeBytes(dir: string): number {
-  if (!existsSync(dir)) return 0;
+/**
+ * Recursive size walk, async (A3: this can traverse tens of thousands of
+ * files under dataDir; statSync-per-entry stalls whichever loop runs it).
+ */
+async function dirSizeBytes(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0; // missing or unreadable dir counts as empty
+  }
   let total = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of entries) {
     const full = join(dir, entry.name);
-    total += entry.isDirectory() ? dirSizeBytes(full) : statSync(full).size;
+    if (entry.isDirectory()) {
+      total += await dirSizeBytes(full);
+    } else {
+      total += (await stat(full)).size;
+    }
   }
   return total;
 }
@@ -84,20 +98,20 @@ export interface StorageReport {
 
 /** `agency storage`: size accounting by category, so users can see what's
  *  actually on disk before deciding to prune. */
-export function reportStorage(
+export async function reportStorage(
   env: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
-): StorageReport {
+): Promise<StorageReport> {
   const data = dataDir(env, platform);
   const cache = cacheDir(env, platform);
   const logs = logDir(env, platform);
   return {
     dataDir: data,
-    dataBytes: dirSizeBytes(data),
+    dataBytes: await dirSizeBytes(data),
     cacheDir: cache,
-    cacheBytes: dirSizeBytes(cache),
+    cacheBytes: await dirSizeBytes(cache),
     logsDir: logs,
-    logsBytes: dirSizeBytes(logs),
+    logsBytes: await dirSizeBytes(logs),
   };
 }
 

@@ -56,7 +56,7 @@ describe("daemon with real built-in tools", () => {
       http: noopHttp,
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     const result = (await client.call("run_turn", {
@@ -88,7 +88,7 @@ describe("daemon with real built-in tools", () => {
       http: noopHttp,
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     await client.call("run_turn", {
@@ -112,7 +112,7 @@ describe("daemon with real built-in tools", () => {
       http: noopHttp,
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     const result = (await client.call("run_turn", {

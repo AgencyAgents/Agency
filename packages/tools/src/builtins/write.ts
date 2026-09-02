@@ -4,6 +4,7 @@ import { requirePathScope } from "@agency/guard";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { FormatterConfig } from "../formatter.ts";
 import { runFormatter } from "../formatter.ts";
+import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
 
 export function createWriteTool(
@@ -23,7 +24,9 @@ export function createWriteTool(
       required: ["path", "content"],
     },
     riskTier: "moderate",
-    renderCall: (input) => `write ${input.path}`,
+    renderCall: (input) => `write ${str(input.path)}`,
+    renderResult: (result) =>
+      result.isError ? `write failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input) {
       const resolved = deps.sandbox.resolvePath(input.path);

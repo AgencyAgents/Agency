@@ -47,11 +47,11 @@ describe("usage accounting", () => {
     expect(summary.cacheHitRate).toBeCloseTo(0.4, 6);
   });
 
-  test("usageEntry and appendUsageEntry persist an additive session entry", () => {
+  test("usageEntry and appendUsageEntry persist an additive session entry", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agency-usage-test-"));
     const store = new SessionStore(dir);
     store.create("s1");
-    const user = store.append("s1", {
+    const user = await store.append("s1", {
       type: "message",
       parentId: null,
       message: { role: "user", content: [{ type: "text", text: "hi" }] },
@@ -62,7 +62,7 @@ describe("usage accounting", () => {
       model: "m",
       pricing: PRICING,
     };
-    const usageId = appendUsageEntry(store, "s1", user.id, turn);
+    const usageId = await appendUsageEntry(store, "s1", user.id, turn);
 
     const entries = store.load("s1");
     expect(entries).toHaveLength(2);

@@ -57,7 +57,7 @@ describe("storagePaths", () => {
 });
 
 describe("reportStorage and pruneCache", () => {
-  test("reports sizes by category, and pruning cache empties it without touching data", () => {
+  test("reports sizes by category, and pruning cache empties it without touching data", async () => {
     const { home } = fakeEnv();
     const env = {
       XDG_DATA_HOME: join(home, "data"),
@@ -69,12 +69,12 @@ describe("reportStorage and pruneCache", () => {
     mkdirSync(join(home, "cache", "agency"), { recursive: true });
     writeFileSync(join(home, "cache", "agency", "catalog.json"), "y".repeat(50));
 
-    const before = reportStorage(env, "linux");
+    const before = await reportStorage(env, "linux");
     expect(before.dataBytes).toBeGreaterThanOrEqual(100);
     expect(before.cacheBytes).toBeGreaterThanOrEqual(50);
 
     pruneCache(env, "linux");
-    const after = reportStorage(env, "linux");
+    const after = await reportStorage(env, "linux");
     expect(after.cacheBytes).toBe(0);
     expect(after.dataBytes).toBeGreaterThanOrEqual(100);
     expect(existsSync(cacheDir(env, "linux"))).toBe(true);

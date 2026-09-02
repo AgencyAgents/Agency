@@ -54,7 +54,13 @@ export {
   type StyleKind,
   type Theme,
 } from "./theme.ts";
-export { getTheme, THEMES, type ThemeDefinition, themeNames } from "./themes.ts";
+export {
+  getTheme,
+  resolveTheme,
+  THEMES,
+  type ThemeDefinition,
+  themeNames,
+} from "./themes.ts";
 export {
   THINKING_COMMAND_NAMES,
   type ThinkingCommand,
@@ -63,8 +69,11 @@ export {
   ThinkingController,
 } from "./thinking.ts";
 export {
+  consumeRpcEvent,
   type EventContext,
+  eventContextOf,
   type ToolPresentation,
+  toolPresentations,
   Transcript,
   type TranscriptOptions,
 } from "./transcript.ts";

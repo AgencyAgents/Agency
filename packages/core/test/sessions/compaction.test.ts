@@ -55,16 +55,16 @@ describe("compact", () => {
     const tokenizer = createApproximateTokenizer(1); // 1 char/token, so thresholds are easy to hit deterministically
 
     let parentId: string | null = null;
-    const append = (entry: { type: string } & Record<string, unknown>) => {
-      const e = store.append(meta.id, { ...entry, parentId });
+    const append = async (entry: { type: string } & Record<string, unknown>) => {
+      const e = await store.append(meta.id, { ...entry, parentId });
       parentId = e.id;
       return e;
     };
 
-    append({ type: "message", message: userMsg("x".repeat(50)) });
-    append({ type: "todo_state", todos: [{ id: "t1", content: "do the thing", status: "pending" }] });
-    append({ type: "message", message: userMsg("y".repeat(50)) });
-    const lastMessage = append({ type: "message", message: userMsg("z".repeat(50)) });
+    await append({ type: "message", message: userMsg("x".repeat(50)) });
+    await append({ type: "todo_state", todos: [{ id: "t1", content: "do the thing", status: "pending" }] });
+    await append({ type: "message", message: userMsg("y".repeat(50)) });
+    const lastMessage = await append({ type: "message", message: userMsg("z".repeat(50)) });
 
     const summaries: string[] = [];
     const result = await compact(
@@ -99,7 +99,7 @@ describe("compact", () => {
   test("does nothing when under threshold", async () => {
     const store = setup();
     const meta = store.create("s1");
-    const entry = store.append(meta.id, { type: "message", parentId: null, message: userMsg("short") });
+    const entry = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("short") });
     const tokenizer = createApproximateTokenizer(3.5);
 
     const result = await compact(

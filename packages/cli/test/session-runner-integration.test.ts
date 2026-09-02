@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,15 @@ const noopHttp: HttpClient = { fetch: async () => new Response() };
 const daemons: AgentDaemon[] = [];
 const clients: DaemonClient[] = [];
 const dirs: string[] = [];
+
+// runSessionTurn no longer sends a key over the wire (A3): the daemon
+// resolves it from env/keychain, so give it one to find.
+const previousEnvKey = process.env.AGENCY_ANTHROPIC_API_KEY;
+process.env.AGENCY_ANTHROPIC_API_KEY = "test-key-daemon-side";
+afterAll(() => {
+  if (previousEnvKey === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+  else process.env.AGENCY_ANTHROPIC_API_KEY = previousEnvKey;
+});
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
@@ -48,7 +57,7 @@ async function connectedDaemon(workspaceRoot: string, adapter: ProviderAdapter) 
     tools: [],
   });
   daemons.push(daemon);
-  const client = await connectToDaemon(daemon.server.port);
+  const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
   clients.push(client);
   return client;
 }
@@ -66,7 +75,6 @@ describe("runSessionTurn", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "hello",
     });
@@ -82,7 +90,6 @@ describe("runSessionTurn", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "again",
     });
@@ -102,7 +109,6 @@ describe("runSessionTurn", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "before restart",
     });
@@ -125,17 +131,17 @@ describe("runSessionTurn", () => {
 
     // Build up a session that's already over threshold before the next turn.
     let parentId: string | null = null;
-    const append = (entry: { type: string } & Record<string, unknown>) => {
-      const e = store.append("s1", { ...entry, parentId });
+    const append = async (entry: { type: string } & Record<string, unknown>) => {
+      const e = await store.append("s1", { ...entry, parentId });
       parentId = e.id;
       return e;
     };
-    append({
+    await append({
       type: "message",
       message: { role: "user", content: [{ type: "text", text: "x".repeat(200) }] },
     });
-    append({ type: "todo_state", todos: [{ id: "t1", content: "ship P5", status: "in_progress" }] });
-    append({
+    await append({ type: "todo_state", todos: [{ id: "t1", content: "ship P5", status: "in_progress" }] });
+    await append({
       type: "message",
       message: { role: "assistant", content: [{ type: "text", text: "y".repeat(200) }] },
     });
@@ -146,7 +152,6 @@ describe("runSessionTurn", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "continue",
       compaction: {

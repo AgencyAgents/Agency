@@ -27,7 +27,7 @@ export interface PricePerMTok {
 export type LoopEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
-  | { type: "tool_start"; id: string; name: string }
+  | { type: "tool_start"; id: string; name: string; input?: Record<string, unknown> }
   | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
   | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
@@ -274,7 +274,6 @@ async function collectTurn(
       case "tool_call_start":
         nameByToolId.set(event.id, event.name);
         jsonByToolId.set(event.id, "");
-        onEvent?.({ type: "tool_start", id: event.id, name: event.name });
         break;
       case "tool_call_delta":
         jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
@@ -301,7 +300,11 @@ async function collectTurn(
             }
           }
         }
+        // The tool_start event fires once the streamed arguments are parsed
+        // (not at tool_call_start): the TUI's renderCall needs the input, and
+        // nothing else can run between here and the provider round-trip.
         content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+        onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
         break;
       }
       case "message_stop":

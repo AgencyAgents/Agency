@@ -3,6 +3,7 @@ import { requirePathScope } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ImageBlock } from "@agency/schema";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
+import { lineCount, str, summarize } from "../render.ts";
 
 const MAX_READ_BYTES = 1_000_000; // ~1MB; bigger files should be grepped, not fully read into context
 
@@ -32,7 +33,13 @@ export function createReadTool(deps: ToolDeps): ToolSpec {
       required: ["path"],
     },
     riskTier: "safe",
-    renderCall: (input) => `read ${input.path}`,
+    renderCall: (input) => `read ${str(input.path)}`,
+    renderResult: (result) => {
+      const path = str(result.input?.path);
+      const label = path ? `read ${path}` : "read";
+      if (result.isError) return `${label} failed: ${summarize(result.content)}`;
+      return `${label}: ${lineCount(result.content)} lines`;
+    },
 
     async handler(input) {
       const resolved = deps.sandbox.resolvePath(input.path);

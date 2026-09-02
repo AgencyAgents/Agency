@@ -26,13 +26,38 @@ function parseArgs(argv: string[]): { workspaceRoot: string; instanceFile: strin
 if (import.meta.main) {
   const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(process.argv.slice(2));
 
-  await createAgentDaemon({
+  const daemon = await createAgentDaemon({
     workspaceRoot,
     instanceFile,
     idleLingerMs,
     logsDir: logDir(),
-    onIdleShutdown: () => process.exit(0),
+    // Idle shutdown must leave through stop() — a bare process.exit(0)
+    // orphans MCP servers and dev servers exactly like a missing signal
+    // handler does.
+    onIdleShutdown: () => {
+      void shutdown();
+    },
   });
+
+  let stopping = false;
+  async function shutdown() {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await daemon.stop();
+    } catch {
+      // best effort; fall through to exit
+    }
+    process.exit(0);
+  }
+
+  // In production nothing ever called stop(): SIGTERM/SIGINT killed the
+  // process with MCP servers and dev servers still running as orphans.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      void shutdown();
+    });
+  }
 
   // Keep the process alive; startDaemonServer's socket listener does that on
   // its own, but state this explicitly rather than relying on an implicit

@@ -33,8 +33,8 @@ function formatBytes(bytes: number): string {
 }
 
 /** `agency storage`: size accounting by category. */
-export function storageCommand(env: NodeJS.ProcessEnv = process.env): string {
-  const report = reportStorage(env);
+export async function storageCommand(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const report = await reportStorage(env);
   return [
     `data:   ${formatBytes(report.dataBytes)}  (${report.dataDir})`,
     `cache:  ${formatBytes(report.cacheBytes)}  (${report.cacheDir}, safe to delete)`,

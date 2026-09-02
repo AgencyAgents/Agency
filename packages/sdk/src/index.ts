@@ -31,7 +31,12 @@ export interface RunTurnParams {
   turnId?: string;
   provider: string;
   model: string;
-  apiKey: string;
+  /**
+   * Optional (A3): the daemon resolves the key from its own env/keychain, so
+   * credentials no longer need to cross the wire. Send one explicitly only
+   * for keys the daemon cannot see (rare).
+   */
+  apiKey?: string;
   systemPrompt: string;
   thinkingLevel?: ThinkingLevel;
   session: Message[];
@@ -50,7 +55,7 @@ export interface RunTurnResult {
 export type TurnEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
-  | { type: "tool_start"; id: string; name: string }
+  | { type: "tool_start"; id: string; name: string; input?: Record<string, unknown> }
   | {
       type: "tool_result";
       id: string;
@@ -97,6 +102,9 @@ export function createAgencyClient(client: DaemonClient): AgencyClient {
   return {
     async runTurn(params, onEvent) {
       const turnId = params.turnId ?? randomUUID();
+      // Subscribe before the request so the turn's events (and their
+      // deadline-refreshing activity) reach this client from the first delta.
+      client.subscribe(`turn.${turnId}`);
       const unsubscribe = onEvent
         ? client.on(`turn.${turnId}`, (payload) => onEvent(payload as TurnEvent))
         : undefined;
@@ -104,6 +112,7 @@ export function createAgencyClient(client: DaemonClient): AgencyClient {
         return (await client.call("run_turn", { ...params, turnId })) as RunTurnResult;
       } finally {
         unsubscribe?.();
+        client.unsubscribe(`turn.${turnId}`);
       }
     },
 

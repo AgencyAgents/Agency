@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,15 @@ const noopHttp: HttpClient = { fetch: async () => new Response() };
 const daemons: AgentDaemon[] = [];
 const clients: DaemonClient[] = [];
 const dirs: string[] = [];
+
+// runSessionTurn no longer sends a key over the wire (A3): the daemon
+// resolves it from env/keychain, so give it one to find.
+const previousEnvKey = process.env.AGENCY_ANTHROPIC_API_KEY;
+process.env.AGENCY_ANTHROPIC_API_KEY = "test-key-daemon-side";
+afterAll(() => {
+  if (previousEnvKey === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+  else process.env.AGENCY_ANTHROPIC_API_KEY = previousEnvKey;
+});
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
@@ -58,7 +67,7 @@ describe("session usage persistence", () => {
       tools: [],
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     const tracker = new SessionUsageTracker();
@@ -67,7 +76,6 @@ describe("session usage persistence", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "hello",
       usage: { pricing: PRICING },
@@ -77,7 +85,6 @@ describe("session usage persistence", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "again",
       usage: { pricing: PRICING },
@@ -117,7 +124,7 @@ describe("session usage persistence", () => {
       tools: [],
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     await runSessionTurn(client, {
@@ -125,7 +132,6 @@ describe("session usage persistence", () => {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
-      apiKey: "key",
       systemPrompt: "sys",
       userText: "hello",
     });

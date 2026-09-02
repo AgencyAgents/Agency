@@ -1,5 +1,6 @@
 import { requirePathScope } from "@agency/guard";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
+import { clip, lineCount, str, summarize } from "../render.ts";
 
 const MAX_RESULTS = 500;
 
@@ -16,7 +17,16 @@ export function createGlobTool(deps: ToolDeps): ToolSpec {
       required: ["pattern"],
     },
     riskTier: "safe",
-    renderCall: (input) => `glob ${input.pattern}`,
+    renderCall: (input) => `glob ${summarize(str(input.pattern))}`,
+    renderResult: (result) => {
+      const pattern = str(result.input?.pattern);
+      const label = pattern ? `glob ${pattern}` : "glob";
+      if (result.isError) return `${label} failed: ${summarize(result.content)}`;
+      const trimmed = result.content.trim();
+      if (trimmed === "" || trimmed === "no files matched") return `${label}: no files matched`;
+      const files = lineCount(result.content);
+      return `${label}: ${files} ${files === 1 ? "file" : "files"} (${clip(result.content)})`;
+    },
 
     async handler(input) {
       const searchRoot = deps.sandbox.resolvePath(input.path ?? ".");

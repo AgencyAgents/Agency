@@ -5,6 +5,7 @@ import type { ToolDeps, ToolSpec } from "../contract.ts";
 import { applyEdit } from "../edit-engine.ts";
 import type { FormatterConfig } from "../formatter.ts";
 import { runFormatter } from "../formatter.ts";
+import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
 
 export function createEditTool(
@@ -28,7 +29,9 @@ export function createEditTool(
       required: ["path", "oldText", "newText"],
     },
     riskTier: "moderate",
-    renderCall: (input) => `edit ${input.path}`,
+    renderCall: (input) => `edit ${str(input.path)}`,
+    renderResult: (result) =>
+      result.isError ? `edit failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input) {
       const resolved = deps.sandbox.resolvePath(input.path);

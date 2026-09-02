@@ -78,6 +78,8 @@ function fakeClient(result: RunTurnRpcResult = TURN_RESULT) {
       return result;
     },
     on: () => () => {},
+    subscribe: () => {},
+    unsubscribe: () => {},
     close: async () => {},
   };
   return { calls, client };
@@ -241,7 +243,7 @@ describe("session commands", () => {
   test("session delete removes the file and rejects unknown ids", async () => {
     const sessionsDir = tempDir("agency-ep-sessions-");
     const store = new SessionStore(sessionsDir);
-    store.append("gone-soon", { type: "message", parentId: null, message: { role: "user", content: [] } });
+    await store.append("gone-soon", { type: "message", parentId: null, message: { role: "user", content: [] } });
 
     const ok = capture();
     expect(await runEntrypoint(["session", "delete", "gone-soon"], { sessionsDir, ...ok.deps })).toBe(0);
@@ -336,7 +338,8 @@ describe("-p headless mode", () => {
     const call = fake.calls[0]!;
     expect(call.provider).toBe("openai");
     expect(call.model).toBe("fake-1");
-    expect(call.apiKey).toBe("sk-test");
+    // A3: the key no longer travels to the daemon; it resolves it itself.
+    expect(call.apiKey).toBeUndefined();
     expect(call.prompt).toBe("hello");
     expect(call.systemPrompt.length).toBeGreaterThan(0);
   });

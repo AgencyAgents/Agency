@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "../src/renderer.ts";
-import { Transcript } from "../src/transcript.ts";
+import { consumeRpcEvent, eventContextOf, toolPresentations, Transcript } from "../src/transcript.ts";
 
 function plainTranscript(width = 80): Transcript {
   return new Transcript({ colorEnabled: false, width });
@@ -98,6 +98,180 @@ describe("Transcript tool rendering", () => {
     const transcript = plainTranscript();
     transcript.consume({ type: "tool_result", id: "ghost", content: "x", isError: false });
     expect(transcript.frame()).toEqual([]);
+  });
+
+  test("tool_start input from the event itself drives renderCall without a context", () => {
+    const transcript = new Transcript({
+      colorEnabled: false,
+      width: 80,
+      tools: [{ name: "edit", renderCall: (input) => `Editing ${String(input.path)}` }],
+    });
+    transcript.consume({ type: "tool_start", id: "c1", name: "edit", input: { path: "wire.ts" } });
+    expect(transcript.frame()).toEqual(["> Editing wire.ts"]);
+  });
+
+  test("an explicit context toolInput wins over the event's own input", () => {
+    const transcript = new Transcript({
+      colorEnabled: false,
+      width: 80,
+      tools: [{ name: "edit", renderCall: (input) => `Editing ${String(input.path)}` }],
+    });
+    transcript.consume(
+      { type: "tool_start", id: "c1", name: "edit", input: { path: "wire.ts" } },
+      { toolInput: { path: "context.ts" } },
+    );
+    expect(transcript.frame()).toEqual(["> Editing context.ts"]);
+  });
+
+  test("renderResult receives the call input captured from the event", () => {
+    const transcript = new Transcript({
+      colorEnabled: false,
+      width: 80,
+      tools: [
+        {
+          name: "read",
+          renderResult: (result) => `read ${String(result.input?.path)}: ${result.content}`,
+        },
+      ],
+    });
+    transcript.consume({ type: "tool_start", id: "c1", name: "read", input: { path: "a.ts" } });
+    transcript.consume({ type: "tool_result", id: "c1", content: "3 lines", isError: false });
+    expect(transcript.frame()).toEqual(["+ read a.ts: 3 lines"]);
+  });
+
+  test("a tool_result context fills the input when tool_start carried none", () => {
+    const transcript = new Transcript({
+      colorEnabled: false,
+      width: 80,
+      tools: [
+        {
+          name: "read",
+          renderResult: (result) => `read ${String(result.input?.path)}: ${result.content}`,
+        },
+      ],
+    });
+    transcript.consume({ type: "tool_start", id: "c1", name: "read" });
+    transcript.consume(
+      { type: "tool_result", id: "c1", content: "ok", isError: false },
+      { toolInput: { path: "late.ts" } },
+    );
+    expect(transcript.frame()).toEqual(["+ read late.ts: ok"]);
+  });
+});
+
+describe("Transcript RPC bridge", () => {
+  test("eventContextOf extracts toolInput from tool_start payloads", () => {
+    expect(eventContextOf({ type: "tool_start", id: "c1", name: "bash", input: { command: "ls" } })).toEqual({
+      toolInput: { command: "ls" },
+    });
+    expect(eventContextOf({ type: "tool_start", id: "c1", name: "bash" })).toBeUndefined();
+    expect(eventContextOf({ type: "text_delta", text: "x" })).toBeUndefined();
+  });
+
+  test("consumeRpcEvent renders built-in calls from wire events with no explicit context", () => {
+    const transcript = new Transcript({
+      colorEnabled: false,
+      width: 80,
+      tools: [{ name: "bash", renderCall: (input) => `bash ${String(input.command)}` }],
+    });
+    consumeRpcEvent(transcript, {
+      type: "tool_start",
+      id: "c1",
+      name: "bash",
+      input: { command: "bun test" },
+    });
+    expect(transcript.frame()).toEqual(["> bash bun test"]);
+  });
+
+  test("toolPresentations adapts tool specs to the structural subset", () => {
+    const specs = [
+      {
+        name: "bash",
+        renderCall: (input: { command: string }) => `bash ${input.command}`,
+        renderResult: (result: { content: string }) => result.content,
+      },
+      { name: "plain" },
+    ];
+    const presentations = toolPresentations(specs);
+    expect(presentations.map((p) => p.name)).toEqual(["bash", "plain"]);
+    const transcript = new Transcript({ colorEnabled: false, tools: presentations });
+    transcript.consume({ type: "tool_start", id: "c1", name: "bash", input: { command: "ls" } });
+    expect(transcript.frame()).toEqual(["> bash ls"]);
+  });
+});
+
+describe("Transcript incremental frames and scrollback cap", () => {
+  test("incremental caching renders identically to a fresh full replay", () => {
+    const events: Parameters<Transcript["consume"]>[0][] = [
+      { type: "thinking_delta", text: "pondering " },
+      { type: "thinking_delta", text: "deeply" },
+      { type: "text_delta", text: "Answer part one. " },
+      { type: "tool_start", id: "t1", name: "bash", input: { command: "ls" } },
+      { type: "tool_result", id: "t1", content: "a.ts\nb.ts", isError: false },
+      { type: "text_delta", text: "part two" },
+      { type: "thinking_delta", text: "more" },
+      { type: "retry", attempt: 2, message: "rate limited" },
+      { type: "text_delta", text: "final" },
+    ];
+    const warmed = plainTranscript(40);
+    for (const event of events) warmed.consume(event);
+    warmed.toggleThinking();
+    warmed.frame();
+
+    const fresh = plainTranscript(40);
+    for (const event of events) fresh.consume(event);
+    fresh.toggleThinking();
+
+    expect(warmed.frame()).toEqual(fresh.frame());
+  });
+
+  test("frames reflect mutations after being built once (cache invalidation)", () => {
+    const transcript = plainTranscript();
+    transcript.consume({ type: "text_delta", text: "before" });
+    expect(transcript.frame()).toEqual(["before"]);
+    transcript.consume({ type: "text_delta", text: " and after" });
+    expect(transcript.frame()[0]).toBe("before and after");
+    transcript.consume({ type: "thinking_delta", text: "hidden" });
+    expect(transcript.frame().length).toBe(2);
+    const id = transcript.thinkingIds()[0]!;
+    transcript.expandThinking(id);
+    expect(transcript.frame().join("\n")).toContain("hidden");
+  });
+
+  test("scrollback cap drops the oldest blocks beyond maxBlocks", () => {
+    const transcript = plainTranscript();
+    for (let i = 0; i < 1005; i++) {
+      transcript.consume({ type: "tool_start", id: `call_${i}`, name: `tool${i}` });
+    }
+    const frame = transcript.frame();
+    expect(frame.length).toBe(1000);
+    expect(frame[0]).toContain("tool5");
+    expect(frame[999]).toContain("tool1004");
+  });
+
+  test("a tool_result for a dropped (scrolled-out) block is ignored without crashing", () => {
+    const transcript = new Transcript({ colorEnabled: false, width: 80, maxBlocks: 10 });
+    transcript.consume({ type: "tool_start", id: "first", name: "bash" });
+    for (let i = 0; i < 15; i++) {
+      transcript.consume({ type: "tool_start", id: `later_${i}`, name: `tool${i}` });
+    }
+    transcript.consume({ type: "tool_result", id: "first", content: "boom", isError: true });
+    const frame = transcript.frame();
+    expect(frame.length).toBe(10);
+    expect(frame[0]).toContain("tool5");
+    expect(frame[0]).not.toContain("Tool: bash");
+  });
+
+  test("a single streaming block is capped, so frames stay bounded", () => {
+    const transcript = plainTranscript(80);
+    transcript.consume({ type: "text_delta", text: "a".repeat(250_000) });
+    const frame = transcript.frame();
+    const total = frame.join("").length;
+    expect(frame.length).toBeGreaterThan(0);
+    expect(total).toBeLessThan(110_000);
+    for (const line of frame) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+    }
   });
 });
 

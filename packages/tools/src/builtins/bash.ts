@@ -1,5 +1,6 @@
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
+import { str, summarize } from "../render.ts";
 import { parseShellOutput, type ShellConfig } from "../shell.ts";
 
 /**
@@ -72,7 +73,11 @@ export function createBashTool(
       required: ["command"],
     },
     riskTier: "dangerous",
-    renderCall: (input) => input.command,
+    renderCall: (input) => `bash ${summarize(str(input.command))}`,
+    renderResult: (result) =>
+      result.isError
+        ? `bash failed: ${summarize(result.content)}`
+        : `bash: ${summarize(result.content) || "(no output)"}`,
 
     async handler(input, ctx) {
       deps.sandbox.checkCommand(input.command);

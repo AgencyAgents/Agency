@@ -12,8 +12,8 @@ describe("whereCommand", () => {
 });
 
 describe("storageCommand", () => {
-  test("reports sizes for every category", () => {
-    const output = storageCommand();
+  test("reports sizes for every category", async () => {
+    const output = await storageCommand();
     expect(output).toContain("data:");
     expect(output).toContain("cache:");
     expect(output).toContain("safe to delete");

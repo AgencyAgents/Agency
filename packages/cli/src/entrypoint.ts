@@ -14,7 +14,7 @@ import { t } from "@agency/i18n";
 import { createKeychain, type KeychainBackend, resolveApiKey } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { Message } from "@agency/schema";
-import type { RunTurnRpcResult } from "./daemon.ts";
+import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
@@ -239,10 +239,11 @@ function resolveModelRef(config: Config, parsed: ParsedArgv): { provider: string
   return ref;
 }
 
-/** API key for the turn: declared provider env names first, then
- *  flag -> env -> keychain -> config via resolveApiKey. The key is never
- *  printed here; the daemon registers it with its Redactor on arrival. */
-async function resolveTurnKey(provider: string, config: Config, deps: EntrypointDeps): Promise<string> {
+/** Pre-flight credential check: declared provider env names first, then
+ *  flag -> env -> keychain -> config via resolveApiKey. Since A3 the key is
+ *  NOT sent to the daemon (it resolves the same layers itself) — this exists
+ *  only to fail fast with a clear message before any daemon work. */
+async function validateTurnKey(provider: string, config: Config, deps: EntrypointDeps): Promise<void> {
   const env = envOf(deps);
   const keychain = deps.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
   const providerConfig = config.provider[provider];
@@ -250,7 +251,6 @@ async function resolveTurnKey(provider: string, config: Config, deps: Entrypoint
   const key =
     fromDeclaredEnv ?? (await resolveApiKey({ provider, env, keychain, config: providerConfig?.apiKey }));
   if (key === undefined) throw new Error(t("cli.error.no_key", { provider }));
-  return key;
 }
 
 /** Assistant text blocks joined by newlines: what `-p` prints in text mode. */
@@ -282,9 +282,6 @@ function latestSessionId(store: SessionStore): string | undefined {
   return latest?.id;
 }
 
-const DEFAULT_SYSTEM_PROMPT =
-  "You are Agency, a coding agent working in the user's project. Be direct and precise.";
-
 /** `-p` headless mode. Without --continue/--session the turn is one-shot
  *  (runHeadless, nothing persisted); with them, the turn runs against a
  *  persisted session via runSessionTurn. Either way the process exits once
@@ -303,7 +300,7 @@ async function runPrintMode(
   const env = envOf(deps);
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
-  const apiKey = await resolveTurnKey(provider, config, deps);
+  await validateTurnKey(provider, config, deps);
 
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir);
@@ -326,7 +323,6 @@ async function runPrintMode(
         sessionId,
         provider,
         model,
-        apiKey,
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
         userText: prompt,
       });
@@ -342,7 +338,6 @@ async function runPrintMode(
     instanceDir: deps.instanceDir,
     provider,
     model,
-    apiKey,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     prompt,
   });
@@ -359,7 +354,7 @@ function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): numb
   return 0;
 }
 
-function storageCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {
+async function storageCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): Promise<number> {
   const env = envOf(deps);
   if (parsed.subcommand === "prune") {
     const output = pruneCommand(parsed.retention, env);
@@ -370,8 +365,8 @@ function storageCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): nu
   if (parsed.subcommand !== undefined) {
     throw new Error(t("cli.error.unknown_command", { command: `storage ${parsed.subcommand}` }));
   }
-  if (parsed.format === "json") out(JSON.stringify(reportStorage(env), null, 2));
-  else out(storageCommand(env));
+  if (parsed.format === "json") out(JSON.stringify(await reportStorage(env), null, 2));
+  else out(await storageCommand(env));
   return 0;
 }
 

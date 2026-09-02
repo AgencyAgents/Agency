@@ -72,13 +72,13 @@ export function isUsageEntry(entry: { type: string }): entry is { type: "usage" 
 
 /** Appends one turn's usage as a session entry, chained after `parentId`.
  *  Returns the new entry id so callers can keep the branch tip moving. */
-export function appendUsageEntry(
+export async function appendUsageEntry(
   store: SessionStore,
   sessionId: string,
   parentId: string | null,
   turn: UsageTurn,
-): string {
-  return store.append(sessionId, { parentId, ...usageEntry(turn) }).id;
+): Promise<string> {
+  return (await store.append(sessionId, { parentId, ...usageEntry(turn) })).id;
 }
 
 /** Accumulates a session's turns in memory and totals them on demand. */

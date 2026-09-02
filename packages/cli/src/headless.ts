@@ -4,7 +4,7 @@ import { dataDir } from "@agency/core";
 import type { ThinkingLevel } from "@agency/providers";
 import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
 import type { Message } from "@agency/schema";
-import type { RunTurnParams, RunTurnRpcResult } from "./daemon.ts";
+import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
 export interface RunHeadlessOptions {
   workspaceRoot: string;
@@ -12,8 +12,9 @@ export interface RunHeadlessOptions {
   instanceDir?: string;
   provider: string;
   model: string;
-  apiKey: string;
   systemPrompt: string;
+  /** Forwarded to the daemon: compose the prompt from parts there instead. */
+  systemPromptParts?: SystemPromptParts;
   prompt: string;
   thinkingLevel?: ThinkingLevel;
   onEvent?: (event: unknown) => void;
@@ -75,7 +76,11 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
   const { client } = await connectHeadlessClient(options);
 
   const turnId = randomUUID();
-  const unsubscribe = options.onEvent ? subscribeToTurn(client, turnId, options.onEvent) : undefined;
+  // Subscribe unconditionally: per-client fanout (A3) delivers this turn's
+  // deltas/heartbeats only to subscribed streams, and those arriving frames
+  // are what keep the heartbeat-aware call deadline alive.
+  client.subscribe(`turn.${turnId}`);
+  const unsubscribe = options.onEvent ? client.on(`turn.${turnId}`, options.onEvent) : undefined;
 
   try {
     const session: Message[] = [{ role: "user", content: [{ type: "text", text: options.prompt }] }];
@@ -83,22 +88,15 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       turnId,
       provider: options.provider,
       model: options.model,
-      apiKey: options.apiKey,
       systemPrompt: options.systemPrompt,
+      systemPromptParts: options.systemPromptParts,
       thinkingLevel: options.thinkingLevel,
       session,
     };
     return (await client.call("run_turn", params)) as RunTurnRpcResult;
   } finally {
     unsubscribe?.();
+    client.unsubscribe(`turn.${turnId}`);
     await client.close();
   }
-}
-
-function subscribeToTurn(
-  client: DaemonClient,
-  turnId: string,
-  onEvent: (event: unknown) => void,
-): () => void {
-  return client.on(`turn.${turnId}`, onEvent);
 }

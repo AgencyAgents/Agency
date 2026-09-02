@@ -53,7 +53,7 @@ describe("daemon observability", () => {
       logsDir,
     });
     daemons.push(daemon);
-    const client = await connectToDaemon(daemon.server.port);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
     await client.call("run_turn", {
@@ -64,6 +64,11 @@ describe("daemon observability", () => {
       systemPrompt: "sys",
       session: [],
     });
+
+    // The log sink writes asynchronously; stop() flushes it, so the full
+    // turn's lines are on disk before the assertions read the file.
+    await daemon.stop();
+    daemons.splice(daemons.indexOf(daemon), 1);
 
     const logPath = join(logsDir, "agency.log");
     expect(existsSync(logPath)).toBe(true);
@@ -96,7 +101,7 @@ describe("daemon observability", () => {
       telemetryDir,
     });
     daemons.push(off);
-    const offClient = await connectToDaemon(off.server.port);
+    const offClient = await connectToDaemon(off.server.port, "127.0.0.1", { token: off.server.token });
     clients.push(offClient);
     await offClient.call("run_turn", {
       turnId: "obs-off",
@@ -119,7 +124,7 @@ describe("daemon observability", () => {
       configDir,
     });
     daemons.push(on);
-    const onClient = await connectToDaemon(on.server.port);
+    const onClient = await connectToDaemon(on.server.port, "127.0.0.1", { token: on.server.token });
     clients.push(onClient);
     await onClient.call("run_turn", {
       turnId: "obs-on",

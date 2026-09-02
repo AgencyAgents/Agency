@@ -1,6 +1,7 @@
 import { requireNetwork } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
+import { clip, str, summarize } from "../render.ts";
 
 const MAX_FETCH_CHARS = 50_000;
 
@@ -14,7 +15,14 @@ export function createFetchTool(deps: ToolDeps, http: HttpClient): ToolSpec {
       required: ["url"],
     },
     riskTier: "moderate",
-    renderCall: (input) => `fetch ${input.url}`,
+    renderCall: (input) => `fetch ${summarize(str(input.url))}`,
+    renderResult: (result) => {
+      const url = str(result.input?.url);
+      const label = url ? `fetch ${url}` : "fetch";
+      if (result.isError) return `${label} failed: ${summarize(result.content)}`;
+      const body = clip(result.content) || "(empty body)";
+      return `${label}: ${result.content.length} chars (${body})`;
+    },
 
     async handler(input) {
       const host = new URL(input.url).hostname;

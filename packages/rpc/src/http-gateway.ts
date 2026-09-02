@@ -1,3 +1,4 @@
+import { matchesSubscription } from "./protocol.ts";
 import type { MethodHandler } from "./server.ts";
 
 /**
@@ -61,11 +62,6 @@ interface SseClient {
   close: () => void;
 }
 
-function matchesSubscription(streams: string[], event: string): boolean {
-  if (streams.length === 0) return true;
-  return streams.some((stream) => stream === event || event === `turn.${stream}`);
-}
-
 function errorPayload(error: unknown): { message: string; code?: string } {
   const code =
     error && typeof error === "object" && "code" in error
@@ -127,7 +123,7 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
     }
 
     try {
-      const result = await handler(params);
+      const result = await handler(params, { clientId: "http" });
       return json(200, { id: id ?? null, result });
     } catch (error: unknown) {
       return json(500, { id: id ?? null, error: errorPayload(error) });

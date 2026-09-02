@@ -1,15 +1,23 @@
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Budget,
+  buildEnvironmentBlock,
+  composeSystemPrompt,
   createRotatingFileSink,
   dataDir,
+  type GitRunner,
+  gatherEnvironmentInfo,
   Logger,
   type LoopEvent,
   loadConfig,
+  mcpServerDownReminder,
   type ProviderConfig,
   runTurn,
+  type SystemReminder,
   storagePaths,
   type ToolSpec,
+  withSystemReminders,
   withTrace,
 } from "@agency/core";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
@@ -18,36 +26,123 @@ import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
   anthropicAdapter,
+  createKeychain,
   createOpenAiCompatibleAdapter,
   googleAdapter,
+  type KeychainBackend,
   type ModelInfo,
   openaiAdapter,
   type ProviderAdapter,
+  resolveApiKey,
   Scheduler,
   type ThinkingLevel,
   type Usage,
 } from "@agency/providers";
-import { type DaemonServer, PROTOCOL_VERSION, startDaemonServer, writeInstanceFile } from "@agency/rpc";
+import {
+  type DaemonServer,
+  newInstanceToken,
+  PROTOCOL_VERSION,
+  startDaemonServer,
+  writeInstanceFile,
+} from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
 import { createBuiltinTools } from "@agency/tools";
 import { listProviders } from "./providers-list.ts";
 
-function createRotatingSink(logsDir: string): (line: string) => void {
-  const sink = createRotatingFileSink({ dir: logsDir });
-  return (line) => sink.write(line);
+export const DEFAULT_SYSTEM_PROMPT =
+  "You are Agency, a coding agent working in the user's project. Be direct and precise.";
+
+/**
+ * Composable alternative to a pre-built `systemPrompt` string. When any of
+ * `identity`/`role`/`instructions` is present, the daemon composes the prompt
+ * via `composeSystemPrompt` (identity -> role -> instructions) and appends the
+ * environment block it assembles itself from the workspace. Fields are
+ * optional individually so a client can add just a role overlay, or just
+ * instructions, on top of the default identity.
+ */
+export interface SystemPromptParts {
+  /** Who the agent is; defaults to `DEFAULT_SYSTEM_PROMPT` when other parts are set. */
+  identity?: string;
+  /** Mode/family overlay (e.g. plan-mode framing) joined after the identity. */
+  role?: string;
+  /** Project instructions, nearest-directory-first (loadInstructions' order). */
+  instructions?: string[];
+  /** Set false to omit the daemon-built environment block. */
+  context?: boolean;
 }
 
 export interface RunTurnParams {
   turnId: string;
   provider: string;
   model: string;
-  apiKey: string;
+  /**
+   * Optional (A3): the daemon resolves the key itself — env -> keychain ->
+   * config, the same layered precedence as every other surface — so keys no
+   * longer travel the wire on every run_turn. An explicit value still wins,
+   * for SDK callers and explicit-flag keys the daemon can't see.
+   */
+  apiKey?: string;
+  /** Pre-composed system prompt. Used verbatim as the base section unless
+   *  `systemPromptParts` overrides composition; kept required so every
+   *  existing client over the wire stays exactly compatible. */
   systemPrompt: string;
+  /** Compose from parts instead of using `systemPrompt` verbatim. */
+  systemPromptParts?: SystemPromptParts;
+  /** Dynamic notices active on THIS turn only (plan mode, changed files, dead
+   *  MCP servers); rendered as one <system-reminder> block, absent otherwise. */
+  systemReminders?: SystemReminder[];
   thinkingLevel?: ThinkingLevel;
   session: Message[];
   budget?: Budget;
   maxToolIterations?: number;
+}
+
+export interface ResolveSystemPromptOptions {
+  workspaceRoot: string;
+  /** MCP servers that failed to start; each becomes an mcp_server_down
+   *  reminder for as long as the failure map is non-empty. */
+  mcpFailures?: ReadonlyMap<string, string>;
+  now?: Date;
+  /** Test seam over git execution; defaults to `defaultGitRunner`. */
+  git?: GitRunner;
+}
+
+/**
+ * The daemon's single system-prompt path: the client's `systemPrompt` (or the
+ * parts it sent) becomes the stable base, the daemon appends the environment
+ * block it owns (it runs in the workspace and sees the real fs/git state), and
+ * per-turn reminders are appended only when the turn actually has any. The
+ * base sections are identical across turns, so the provider's prompt-cache
+ * prefix survives; only the dynamic tail changes.
+ */
+export function resolveSystemPrompt(params: RunTurnParams, options: ResolveSystemPromptOptions): string {
+  const parts = params.systemPromptParts;
+  const identity = parts?.identity;
+  const role = parts?.role;
+  const instructions = parts?.instructions;
+  const composeFromParts = identity !== undefined || role !== undefined || instructions !== undefined;
+
+  const context =
+    parts?.context === false
+      ? undefined
+      : buildEnvironmentBlock(
+          gatherEnvironmentInfo({ cwd: options.workspaceRoot, now: options.now, git: options.git }),
+        );
+
+  const composed = composeSystemPrompt({
+    base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
+    familyPresetOverlay: composeFromParts ? role : undefined,
+    instructions: composeFromParts ? (instructions ?? []) : [],
+    toolDescriptions: [],
+    context,
+  });
+
+  const reminders: SystemReminder[] = [...(params.systemReminders ?? [])];
+  if (options.mcpFailures) {
+    for (const [name, reason] of options.mcpFailures) reminders.push(mcpServerDownReminder(name, reason));
+  }
+  return withSystemReminders(composed, reminders).text;
 }
 
 export interface RunTurnRpcResult {
@@ -127,6 +222,12 @@ export interface AgentDaemonOptions {
   logsDir?: string;
   /** Overrides where telemetry events land; defaults to dataDir()/telemetry. */
   telemetryDir?: string;
+  /**
+   * Overrides the per-instance TCP auth token; defaults to a fresh 256-bit
+   * random token per daemon. The token lands in the instance file (written
+   * user-only), which is the only place clients can learn it.
+   */
+  authToken?: string;
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
 }
@@ -157,7 +258,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
   }
 
-  const sink = options.logsDir ? createRotatingSink(options.logsDir) : (line: string) => console.log(line);
+  const rotatingSink = options.logsDir ? createRotatingFileSink({ dir: options.logsDir }) : undefined;
+  const sink = rotatingSink
+    ? (line: string) => rotatingSink.write(line)
+    : (line: string) => console.log(line);
   const logger = new Logger({ level: config.logLevel, sink, redactor });
   const telemetry = new Telemetry({
     enabled: config.telemetryEnabled,
@@ -171,6 +275,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const identity = options.identity ?? { type: "user" as const };
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
+  const authToken = options.authToken ?? newInstanceToken();
+
+  // A3: API keys resolve daemon-side (this process has keychain access), so
+  // the keychain is created lazily on the first keyless run_turn and reused.
+  let keychainPromise: Promise<KeychainBackend> | undefined;
+  const getKeychain = () => {
+    keychainPromise ??= createKeychain(process.platform, join(dataDir(), "keys"));
+    return keychainPromise;
+  };
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
 
@@ -187,20 +300,53 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   const scheduler = new Scheduler();
   const activeControllers = new Map<string, AbortController>();
+  /** Which client connection owns each in-flight turn: its disconnect (A3)
+   *  cancels the turn, so a dead TUI stops the daemon burning tokens. */
+  const turnOwners = new Map<string, string>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
 
   const server = await startDaemonServer({
+    token: authToken,
     handlers: {
-      async run_turn(rawParams) {
+      async run_turn(rawParams, context) {
         const params = rawParams as RunTurnParams;
         const controller = new AbortController();
         activeControllers.set(params.turnId, controller);
+        turnOwners.set(params.turnId, context.clientId);
+        const eventStream = `turn.${params.turnId}`;
 
         // R10 wiring: the whole turn — provider requests and tool calls —
         // correlates under one trace ID in the logs.
         return withTrace(async () => {
+          // Turn heartbeats keep heartbeat-aware clients' deadlines alive
+          // through silent stretches (a long tool call emits no deltas).
+          const turnHeartbeat = setInterval(() => {
+            server.broadcast(eventStream, { type: "heartbeat" });
+          }, 10_000);
           try {
-            redactor.registerSecret(params.apiKey);
+            const apiKey =
+              params.apiKey ??
+              (await (async () => {
+                let keychain: KeychainBackend | undefined;
+                try {
+                  keychain = await getKeychain();
+                } catch {
+                  // No usable keychain: env/config resolution still applies.
+                }
+                return resolveApiKey({
+                  provider: params.provider,
+                  env: process.env,
+                  keychain,
+                  config: providers[params.provider]?.apiKey,
+                });
+              })());
+            if (apiKey === undefined) {
+              throw new Error(
+                `no API key for provider "${params.provider}": set AGENCY_${params.provider.toUpperCase()}_API_KEY or run \`agency auth login ${params.provider}\``,
+              );
+            }
+            redactor.registerSecret(apiKey);
             logger.info("turn started", {
               turnId: params.turnId,
               provider: params.provider,
@@ -209,16 +355,19 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             const result = await runTurn(adapterFor(params.provider), scheduler, http, {
               identity,
               capabilities,
-              systemPrompt: params.systemPrompt,
+              systemPrompt: resolveSystemPrompt(params, {
+                workspaceRoot: options.workspaceRoot,
+                mcpFailures: builtins?.mcpFailures,
+              }),
               tools,
               model: params.model,
-              apiKey: params.apiKey,
+              apiKey,
               thinkingLevel: params.thinkingLevel,
               session: params.session,
               budget: params.budget,
               maxToolIterations: params.maxToolIterations,
               signal: controller.signal,
-              onEvent: (event: LoopEvent) => server.broadcast(`turn.${params.turnId}`, event),
+              onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
             });
 
             logger.info("turn finished", {
@@ -266,7 +415,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             telemetry.recordCrash("run_turn", error);
             throw error;
           } finally {
+            clearInterval(turnHeartbeat);
             activeControllers.delete(params.turnId);
+            turnOwners.delete(params.turnId);
           }
         });
       },
@@ -294,6 +445,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         options.onIdleShutdown?.();
       }, idleLingerMs);
     },
+
+    onClientDisconnect(clientId) {
+      for (const [turnId, owner] of turnOwners) {
+        if (owner !== clientId) continue;
+        turnOwners.delete(turnId);
+        activeControllers.get(turnId)?.abort();
+      }
+    },
   });
 
   writeInstanceFile(options.instanceFile, {
@@ -301,15 +460,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pid: process.pid,
     startedAt: new Date().toISOString(),
     version: PROTOCOL_VERSION,
+    token: authToken,
   });
 
   return {
     server,
     async stop() {
+      if (stopped) return;
+      stopped = true;
       clearTimeout(idleTimer);
       builtins?.processManager.killAll();
       await builtins?.dispose();
       await server.close();
+      // Graceful shutdown clears its own instance file: clients probing the
+      // old port refuse fast instead of timing out against a dead pid.
+      rmSync(options.instanceFile, { force: true });
+      // Async log sink: flush queued lines so the shutdown record survives.
+      await rotatingSink?.flush();
     },
   };
 }

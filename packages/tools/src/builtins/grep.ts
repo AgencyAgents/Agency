@@ -1,5 +1,6 @@
 import { requirePathScope } from "@agency/guard";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
+import { clip, lineCount, str, summarize } from "../render.ts";
 
 const MAX_MATCHES = 200;
 
@@ -26,7 +27,16 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
       required: ["pattern"],
     },
     riskTier: "safe",
-    renderCall: (input) => `grep ${input.pattern}${input.path ? ` ${input.path}` : ""}`,
+    renderCall: (input) => `grep ${summarize(str(input.pattern))}${input.path ? ` ${str(input.path)}` : ""}`,
+    renderResult: (result) => {
+      const pattern = str(result.input?.pattern);
+      const label = pattern ? `grep ${pattern}` : "grep";
+      if (result.isError) return `${label} failed: ${summarize(result.content)}`;
+      const trimmed = result.content.trim();
+      if (trimmed === "" || trimmed === "no matches") return `${label}: no matches`;
+      const matches = lineCount(result.content);
+      return `${label}: ${matches} ${matches === 1 ? "match" : "matches"} (${clip(result.content)})`;
+    },
 
     async handler(input, ctx) {
       const searchRoot = deps.sandbox.resolvePath(input.path ?? ".");

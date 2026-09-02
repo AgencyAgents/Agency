@@ -91,7 +91,7 @@ export async function compact(
   }
 
   const summaryText = await summarize(plan.summarize.map((e) => JSON.stringify(e.message)).join("\n"));
-  const summaryEntry = store.append(sessionId, {
+  const summaryEntry = await store.append(sessionId, {
     type: "compaction_summary",
     parentId: null,
     summary: summaryText,
@@ -107,7 +107,7 @@ export async function compact(
       schemaVersion: _schemaVersion,
       ...rest
     } = entry;
-    const appended = store.append(sessionId, { ...rest, parentId });
+    const appended = await store.append(sessionId, { ...rest, parentId });
     parentId = appended.id;
   }
 

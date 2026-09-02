@@ -81,6 +81,11 @@ export const ConfigSchema = z.object({
   model: z.string().optional(),
   /** Cheap model for background work (titles, compaction). */
   small_model: z.string().optional(),
+  /**
+   * TUI palette name (dark, light, high-contrast). Validated at render time:
+   * an unknown name falls back to the default palette instead of erroring.
+   */
+  theme: z.string().optional(),
   disabled_providers: z.array(z.string()).default([]),
   enabled_providers: z.array(z.string()).optional(),
   /**

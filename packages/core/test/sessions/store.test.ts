@@ -35,20 +35,34 @@ function captureWarnings() {
 }
 
 describe("SessionStore", () => {
-  test("appends and loads entries in order", () => {
+  test("appends and loads entries in order", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const e1 = store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
-    const e2 = store.append(meta.id, { type: "message", parentId: e1.id, message: userMsg("again") });
+    const e1 = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
+    const e2 = await store.append(meta.id, { type: "message", parentId: e1.id, message: userMsg("again") });
 
     const loaded = store.load(meta.id);
     expect(loaded.map((e) => e.id)).toEqual([e1.id, e2.id]);
   });
 
-  test("crash recovery: a truncated trailing line is discarded with a warning, earlier entries survive", () => {
+  test("an awaited append is fully on disk before load sees it", async () => {
+    const { store } = setup();
+    const meta = store.create("s1");
+    const entry = await store.append(meta.id, {
+      type: "message",
+      parentId: null,
+      message: userMsg("persisted"),
+    });
+
+    const loaded = store.load(meta.id);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.id).toBe(entry.id);
+  });
+
+  test("crash recovery: a truncated trailing line is discarded with a warning, earlier entries survive", async () => {
     const { store, dir } = setup();
     const meta = store.create("s1");
-    const e1 = store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
+    const e1 = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
     const path = join(dir, `${meta.id}.jsonl`);
     appendFileSync(path, '{"id":"broken","parentId":null,"type":"message","schemaVers'); // cut mid-write, no newline
 
@@ -62,13 +76,13 @@ describe("SessionStore", () => {
     }
   });
 
-  test("a corrupt mid-file line is skipped with a warning; valid entries around it survive", () => {
+  test("a corrupt mid-file line is skipped with a warning; valid entries around it survive", async () => {
     const { store, dir } = setup();
     const meta = store.create("s1");
-    const e1 = store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
+    const e1 = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
     const path = join(dir, `${meta.id}.jsonl`);
     appendFileSync(path, '{"id":"mangled","parentId":null,"type":"message",\n');
-    const e2 = store.append(meta.id, {
+    const e2 = await store.append(meta.id, {
       type: "message",
       parentId: e1.id,
       message: userMsg("after corruption"),
@@ -84,10 +98,10 @@ describe("SessionStore", () => {
     }
   });
 
-  test("a parseable line that is not a session entry is skipped with a warning", () => {
+  test("a parseable line that is not a session entry is skipped with a warning", async () => {
     const { store, dir } = setup();
     const meta = store.create("s1");
-    const e1 = store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
+    const e1 = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
     const path = join(dir, `${meta.id}.jsonl`);
     appendFileSync(path, '"just a string"\n');
 
@@ -101,12 +115,12 @@ describe("SessionStore", () => {
     }
   });
 
-  test("latestTip breaks same-millisecond ties by creation order, deterministically", () => {
+  test("latestTip breaks same-millisecond ties by creation order, deterministically", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const root = store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
-    const a = store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("a") });
-    const b = store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("b") });
+    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
+    const a = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("a") });
+    const b = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("b") });
 
     const sameMillisecond = new Date("2026-01-01T00:00:00.000Z").toISOString();
     const entries = store
@@ -117,10 +131,10 @@ describe("SessionStore", () => {
     expect(store.latestTip([...entries].reverse())).toBe(a.id);
   });
 
-  test("unknown entry types round-trip verbatim (R5)", () => {
+  test("unknown entry types round-trip verbatim (R5)", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const entry = store.append(meta.id, {
+    const entry = await store.append(meta.id, {
       type: "future_entry_kind",
       parentId: null,
       someField: 42,
@@ -133,29 +147,29 @@ describe("SessionStore", () => {
     expect(loaded[0]?.someField).toBe(42);
   });
 
-  test("tips finds every leaf, and latestTip picks the most recently created one", () => {
+  test("tips finds every leaf, and latestTip picks the most recently created one", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const root = store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
-    const a = store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch a") });
-    const b = store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch b") });
+    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
+    const a = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch a") });
+    const b = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch b") });
 
     const entries = store.load(meta.id);
     expect(new Set(store.tips(entries))).toEqual(new Set([a.id, b.id]));
     expect(store.latestTip(entries)).toBe(b.id);
   });
 
-  test("messagesFor walks the chain to a tip and renders a compaction_summary as a synthetic message", () => {
+  test("messagesFor walks the chain to a tip and renders a compaction_summary as a synthetic message", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const root = store.append(meta.id, { type: "message", parentId: null, message: userMsg("old stuff") });
-    const summary = store.append(meta.id, {
+    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("old stuff") });
+    const summary = await store.append(meta.id, {
       type: "compaction_summary",
       parentId: null,
       summary: "the user asked about X",
       replacedEntryIds: [root.id],
     });
-    const tail = store.append(meta.id, {
+    const tail = await store.append(meta.id, {
       type: "message",
       parentId: summary.id,
       message: userMsg("new stuff"),
@@ -170,13 +184,13 @@ describe("SessionStore", () => {
     expect(messages[1]).toEqual(userMsg("new stuff"));
   });
 
-  test("clone copies a session under a new id, independent of the original afterward", () => {
+  test("clone copies a session under a new id, independent of the original afterward", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
+    await store.append(meta.id, { type: "message", parentId: null, message: userMsg("hi") });
 
     const cloned = store.clone(meta.id, "s2");
-    store.append(meta.id, { type: "message", parentId: null, message: userMsg("only in original") });
+    await store.append(meta.id, { type: "message", parentId: null, message: userMsg("only in original") });
 
     expect(store.load(cloned.id)).toHaveLength(1);
     expect(store.load(meta.id)).toHaveLength(2);

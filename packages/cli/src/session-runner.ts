@@ -4,7 +4,7 @@ import { compact } from "@agency/core";
 import type { ModelPricing, ThinkingLevel, Tokenizer } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import { appendUsageEntry } from "@agency/telemetry";
-import type { RunTurnParams, RunTurnRpcResult } from "./daemon.ts";
+import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
 export interface CompactionOptions {
   tokenizer: Tokenizer;
@@ -17,8 +17,9 @@ export interface RunSessionTurnOptions {
   sessionId: string;
   provider: string;
   model: string;
-  apiKey: string;
   systemPrompt: string;
+  /** Forwarded to the daemon: compose the prompt from parts there instead. */
+  systemPromptParts?: SystemPromptParts;
   userText: string;
   thinkingLevel?: ThinkingLevel;
   budget?: RunTurnParams["budget"];
@@ -63,7 +64,7 @@ export async function runSessionTurn(
     tipId = outcome.tipId;
   }
 
-  const userEntry = options.store.append(options.sessionId, {
+  const userEntry = await options.store.append(options.sessionId, {
     type: "message",
     parentId: tipId,
     message: { role: "user", content: [{ type: "text", text: options.userText }] },
@@ -72,6 +73,10 @@ export async function runSessionTurn(
   let history = options.store.messagesFor(options.store.load(options.sessionId), userEntry.id);
 
   const turnId = randomUUID();
+  // Subscribe before the request: with per-client fanout (A3) this is what
+  // makes the turn's events — deltas and heartbeats — reach THIS client, and
+  // arriving frames are what keep the heartbeat-aware call deadline alive.
+  client.subscribe(`turn.${turnId}`);
   const unsubscribe = options.onEvent ? client.on(`turn.${turnId}`, options.onEvent) : undefined;
 
   try {
@@ -79,8 +84,8 @@ export async function runSessionTurn(
       turnId,
       provider: options.provider,
       model: options.model,
-      apiKey: options.apiKey,
       systemPrompt: options.systemPrompt,
+      systemPromptParts: options.systemPromptParts,
       thinkingLevel: options.thinkingLevel,
       session: history,
       budget: options.budget,
@@ -106,12 +111,12 @@ export async function runSessionTurn(
 
     let parentId = userEntry.id;
     for (const message of result.messages.slice(history.length)) {
-      const appended = options.store.append(options.sessionId, { type: "message", parentId, message });
+      const appended = await options.store.append(options.sessionId, { type: "message", parentId, message });
       parentId = appended.id;
     }
 
     if (options.usage) {
-      parentId = appendUsageEntry(options.store, options.sessionId, parentId, {
+      parentId = await appendUsageEntry(options.store, options.sessionId, parentId, {
         usage: result.usage,
         model: options.model,
         pricing: options.usage.pricing,
@@ -121,5 +126,6 @@ export async function runSessionTurn(
     return { result, tipId: parentId };
   } finally {
     unsubscribe?.();
+    client.unsubscribe(`turn.${turnId}`);
   }
 }

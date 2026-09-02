@@ -1,4 +1,5 @@
 import type { ToolSpec } from "../contract.ts";
+import { clip, itemCount, lineCount, summarize } from "../render.ts";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -22,6 +23,12 @@ export function createTodoReadTool(store: TodoStore): ToolSpec {
     inputSchema: { type: "object", properties: {} },
     riskTier: "safe",
     renderCall: () => "todo_read",
+    renderResult: (result) => {
+      if (result.isError) return `todo_read failed: ${summarize(result.content)}`;
+      const trimmed = result.content.trim();
+      if (trimmed === "" || trimmed === "(empty)") return "todo list is empty";
+      return `todos: ${lineCount(result.content)} (${clip(result.content)})`;
+    },
 
     async handler() {
       if (store.items.length === 0) return { content: "(empty)" };
@@ -55,7 +62,9 @@ export function createTodoWriteTool(store: TodoStore): ToolSpec {
       required: ["items"],
     },
     riskTier: "safe",
-    renderCall: (input) => `todo_write (${input.items.length} items)`,
+    renderCall: (input) => `todo_write (${itemCount(input.items)} items)`,
+    renderResult: (result) =>
+      result.isError ? `todo_write failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input) {
       store.items = input.items;

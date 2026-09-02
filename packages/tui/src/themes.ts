@@ -1,4 +1,4 @@
-import type { Palette } from "./theme.ts";
+import { createTheme, DEFAULT_PALETTE, type Palette, type Theme } from "./theme.ts";
 
 export interface ThemeDefinition {
   name: string;
@@ -27,4 +27,14 @@ export function themeNames(): string[] {
 
 export function getTheme(name: string): ThemeDefinition | undefined {
   return THEMES[name];
+}
+
+/**
+ * Builds the Theme a surface renders with from a config-selected name
+ * (the "theme" config key). Unknown or absent names degrade to the default
+ * palette rather than throwing: a typo in config must never take down the UI.
+ */
+export function resolveTheme(name?: string): Theme {
+  const definition = name !== undefined && name !== "" ? getTheme(name) : undefined;
+  return createTheme(definition?.palette ?? DEFAULT_PALETTE);
 }

@@ -23,6 +23,8 @@ interface PendingEntry {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Kept so refresh() can re-arm the timeout with the same wording. */
+  makeTimeoutError: () => Error;
 }
 
 export class PendingRequestManager<ID extends string | number = number> {
@@ -59,9 +61,26 @@ export class PendingRequestManager<ID extends string | number = number> {
         this.pending.delete(id);
         reject(makeTimeoutError());
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, makeTimeoutError });
     });
     return { id, promise };
+  }
+
+  /**
+   * Re-arms a pending request's timeout to fire `timeoutMs` from NOW, using
+   * the register-time error factory. Heartbeat-aware clients call this on
+   * every inbound activity so a deadline only expires when the connection
+   * has actually gone quiet (A3). Returns false when nothing is pending.
+   */
+  refresh(id: ID, timeoutMs: number): boolean {
+    const entry = this.pending.get(id);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      this.pending.delete(id);
+      entry.reject(entry.makeTimeoutError());
+    }, timeoutMs);
+    return true;
   }
 
   /** Resolves the request with a result. Returns false when nothing is pending. */

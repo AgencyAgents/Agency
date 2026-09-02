@@ -24,6 +24,9 @@ export interface ToolResult {
  * they're optional so a bare handler is still a valid tool. `handler`'s
  * signature matches what the agent loop already calls (input, {signal}) so
  * these compose directly as the loop's ToolSpec without any adapter shim.
+ * renderResult receives the call's parsed arguments alongside the result so a
+ * renderer can name what produced the output; both must return a single line
+ * (transcript frames are line-based), so multi-line content needs collapsing.
  */
 export interface ToolSpec<Input = Record<string, unknown>> {
   name: string;
@@ -32,7 +35,7 @@ export interface ToolSpec<Input = Record<string, unknown>> {
   riskTier: RiskTier;
   handler: (input: Input, ctx: ToolContext) => Promise<ToolResult>;
   renderCall?: (input: Input) => string;
-  renderResult?: (result: ToolResult) => string;
+  renderResult?: (result: ToolResult & { input?: Record<string, unknown> }) => string;
 }
 
 /** Dependencies every built-in factory closes over, bound once per session/daemon. */

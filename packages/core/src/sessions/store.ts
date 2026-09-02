@@ -1,12 +1,5 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Message } from "@agency/schema";
 import type { CompactionSummaryEntry, SessionEntry } from "./entry.ts";
@@ -34,7 +27,8 @@ function sessionPath(sessionsDir: string, sessionId: string): string {
  * so multiple branches can coexist in one file without ever rewriting it.
  *
  * Crash recovery falls out of the write granularity for free: each append is
- * one complete, synchronously flushed line, so a process killed mid-write can
+ * one complete line (written without blocking the event loop since A3; the
+ * awaited promise is the ordering point), so a process killed mid-write can
  * only ever leave one line truncated, never mangle an earlier one. `load()`
  * warns on and skips any line it can't parse or shape-check; lines are
  * independently flushed, so a corrupt line doesn't vouch for its neighbors and
@@ -50,18 +44,26 @@ export class SessionStore {
     return { id: sessionId, createdAt: new Date().toISOString() };
   }
 
-  append(
+  /**
+   * Appends one entry as its own flushed JSONL line. Async (A3: no blocking
+   * I/O on an interactive event loop), and order-preserving under
+   * await-sequential use: each append is a complete line, so a crash can
+   * only ever leave the tail line truncated. Callers that need entry A
+   * ordered before entry B must await A before starting B — the returned
+   * promise is the ordering point.
+   */
+  async append(
     sessionId: string,
     entry: { type: string; parentId: string | null } & Record<string, unknown>,
-  ): SessionEntry {
-    mkdirSync(this.sessionsDir, { recursive: true });
+  ): Promise<SessionEntry> {
+    await mkdir(this.sessionsDir, { recursive: true });
     const full: SessionEntry = {
       id: newEntryId(),
       schemaVersion: SESSION_SCHEMA_VERSION,
       createdAt: new Date().toISOString(),
       ...entry,
     };
-    appendFileSync(sessionPath(this.sessionsDir, sessionId), `${JSON.stringify(full)}\n`);
+    await appendFile(sessionPath(this.sessionsDir, sessionId), `${JSON.stringify(full)}\n`);
     return full;
   }
 

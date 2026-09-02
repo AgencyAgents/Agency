@@ -130,6 +130,31 @@ describe("runTurn", () => {
     expect(result.messages[2]!.content[0]).toMatchObject({ type: "text", text: "done" });
   });
 
+  test("tool_start events carry the parsed call input for the TUI's renderCall", async () => {
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads a file",
+      inputSchema: {},
+      handler: async () => ({ content: "contents" }),
+    };
+    const events: unknown[] = [];
+
+    const scheduler = new Scheduler();
+    await runTurn(toolThenDoneAdapter("read", { path: "a.ts" }), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      onEvent: (e) => events.push(e),
+    });
+
+    const starts = events.filter((e) => (e as { type: string }).type === "tool_start");
+    expect(starts).toEqual([{ type: "tool_start", id: "call_1", name: "read", input: { path: "a.ts" } }]);
+  });
+
   test("a capability denial produces a tool_result error without invoking the handler", async () => {
     let handlerCalled = false;
     const spec: ToolSpec = {
