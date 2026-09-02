@@ -32,7 +32,49 @@ export interface ConfigSources {
 const ENV_KEYS: Record<string, keyof Config> = {
   AGENCY_LOG_LEVEL: "logLevel",
   AGENCY_LOCALE: "locale",
+  AGENCY_MODEL: "model",
+  AGENCY_SMALL_MODEL: "small_model",
+  AGENCY_THEME: "theme",
 };
+
+const TRUTHY = new Set(["1", "true", "yes", "on"]);
+
+function envBoolean(value: string): boolean {
+  return TRUTHY.has(value.trim().toLowerCase());
+}
+
+function envList(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merges `overlay` over `base`, recursing into plain objects so a layer that
+ * sets one key of a record (e.g. a project config's `provider.<id>`) extends
+ * the lower layer's record instead of replacing it wholesale. Arrays and
+ * scalars always replace: a layer's list is that layer's whole intent.
+ */
+function deepMergeLayer(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    const current = merged[key];
+    if (isPlainObject(current) && isPlainObject(value)) {
+      merged[key] = deepMergeLayer(current, value);
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
 
 function readLayer(path: string): Record<string, unknown> | undefined {
   if (!existsSync(path)) return undefined;
@@ -59,6 +101,16 @@ function envOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   for (const [envKey, configKey] of Object.entries(ENV_KEYS)) {
     const value = env[envKey];
     if (value !== undefined) out[configKey] = value;
+  }
+  if (env.AGENCY_TELEMETRY !== undefined) out.telemetryEnabled = envBoolean(env.AGENCY_TELEMETRY);
+  if (env.AGENCY_CRASH_REPORTS !== undefined) {
+    out.crashReportsEnabled = envBoolean(env.AGENCY_CRASH_REPORTS);
+  }
+  if (env.AGENCY_DISABLED_PROVIDERS !== undefined) {
+    out.disabled_providers = envList(env.AGENCY_DISABLED_PROVIDERS);
+  }
+  if (env.AGENCY_ENABLED_PROVIDERS !== undefined) {
+    out.enabled_providers = envList(env.AGENCY_ENABLED_PROVIDERS);
   }
   return out;
 }
@@ -88,22 +140,22 @@ export function loadConfig(sources: ConfigSources = {}): Config {
 
   const globalPath = join(sources.globalDir ?? configDir(env), "config.jsonc");
   const globalLayer = readLayer(globalPath);
-  if (globalLayer) merged = { ...merged, ...migrateLayer(globalLayer) };
+  if (globalLayer) merged = deepMergeLayer(merged, migrateLayer(globalLayer));
 
   if (sources.projectRoot) {
     const projectLayer = readLayer(join(sources.projectRoot, ".agency", "config.jsonc"));
-    if (projectLayer) merged = { ...merged, ...migrateLayer(projectLayer) };
+    if (projectLayer) merged = deepMergeLayer(merged, migrateLayer(projectLayer));
   }
 
-  merged = { ...merged, ...envOverrides(env) };
+  merged = deepMergeLayer(merged, envOverrides(env));
 
   if (sources.flags) {
-    merged = { ...merged, ...configFlags(sources.flags) };
+    merged = deepMergeLayer(merged, configFlags(sources.flags) as Record<string, unknown>);
   }
 
   if (sources.managedPath) {
     const managedLayer = readLayer(sources.managedPath);
-    if (managedLayer) merged = { ...merged, ...migrateLayer(managedLayer) };
+    if (managedLayer) merged = deepMergeLayer(merged, migrateLayer(managedLayer));
   }
 
   return ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });

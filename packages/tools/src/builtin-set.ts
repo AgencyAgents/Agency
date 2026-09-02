@@ -13,7 +13,6 @@ import { type McpManager, type McpManagerOptions, startMcpServersFromRaw } from 
 import { ProcessManager } from "./process-manager.ts";
 import { resolveShell, type WindowsShellKind } from "./shell.ts";
 import { SnapshotStore } from "./snapshot.ts";
-
 export interface BuiltinToolsOptions {
   deps: ToolDeps;
   http: HttpClient;
@@ -32,6 +31,8 @@ export interface BuiltinTools {
   processManager: ProcessManager;
   todos: TodoStore;
   bashState: BashState;
+  /** File-write journal backing undo/redo; entries are indexed per turn. */
+  snapshots: SnapshotStore;
   /** MCP servers that failed to start, by name (start failures never abort the set). */
   mcpFailures: ReadonlyMap<string, string>;
   /** Stops every MCP server; idempotent. */
@@ -77,6 +78,7 @@ export async function createBuiltinTools(options: BuiltinToolsOptions): Promise<
     processManager,
     todos,
     bashState,
+    snapshots,
     mcpFailures: mcp?.failures ?? new Map(),
     async dispose() {
       await mcp?.dispose();

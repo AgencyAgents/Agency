@@ -172,4 +172,44 @@ describe("runSessionTurn", () => {
     expect(chain.some((e) => e.type === "todo_state")).toBe(true);
     expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
   });
+
+  test("proactive compaction fires by default when the session approaches the context window", async () => {
+    const workspaceRoot = tempDir("agency-session-ws-");
+    const sessionsDir = tempDir("agency-session-store-");
+    const store = new SessionStore(sessionsDir);
+    store.create("s1");
+    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"));
+
+    // 8 × ~1k chars ≈ 2.3k tokens with the approximate tokenizer; a 2k window
+    // at the default 0.8 ratio triggers compaction without any explicit
+    // compaction option being passed.
+    let parentId: string | null = null;
+    for (let i = 0; i < 8; i++) {
+      const e = await store.append("s1", {
+        type: "message",
+        parentId,
+        message: { role: "user", content: [{ type: "text", text: `turn ${i}: ${"x".repeat(1000)}` }] },
+      });
+      parentId = e.id;
+    }
+
+    await runSessionTurn(client, {
+      store,
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "continue",
+      contextWindow: 2000,
+    });
+
+    const entries = store.load("s1");
+    const tip = store.latestTip(entries) as string;
+    const chain = store.chainFor(entries, tip);
+    expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
+    // The fresh user message still made it onto the new branch, after the summary.
+    expect(chain.some((e) => e.type === "message" && JSON.stringify(e.message).includes("continue"))).toBe(
+      true,
+    );
+  });
 });

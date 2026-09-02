@@ -31,6 +31,9 @@ function toGeminiPart(block: ContentBlock): Record<string, unknown> | undefined 
     case "tool_result":
       return { functionResponse: { name: block.toolCallId, response: { content: block.content } } };
     case "thinking":
+    case "redacted_thinking":
+      // Gemini rebuilds its own reasoning context; only the signed summary
+      // parts it emitted matter, and those ride on the function-call parts.
       return undefined;
   }
 }
@@ -57,6 +60,9 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   };
 
   if (request.system) {
+    // Gemini has no per-request cache marker; its implicit caching keys off
+    // the same stable prefix (system instruction, then tools), so the order
+    // here is the cache-relevant part.
     body.systemInstruction = { parts: [{ text: request.system }] };
   }
 
@@ -73,6 +79,28 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   }
 
   return body;
+}
+
+const FINISH_REASON: Record<string, StopReason> = {
+  STOP: "end_turn",
+  MAX_TOKENS: "max_tokens",
+  SAFETY: "refusal",
+  RECITATION: "refusal",
+  BLOCKLIST: "refusal",
+  PROHIBITED_CONTENT: "refusal",
+  SPII: "refusal",
+  MALFORMED_FUNCTION_CALL: "error",
+};
+
+/** Gemini phrases oversized inputs as a 400 INVALID_ARGUMENT (or 413). */
+function isInputTooLong(status: number, message: string): boolean {
+  return (
+    status === 413 ||
+    (status === 400 &&
+      /(exceeds the maximum number of tokens|input token count|token limit|too many tokens|request too large)/i.test(
+        message,
+      ))
+  );
 }
 
 async function toAgencyError(res: Response): Promise<AgencyError> {
@@ -96,12 +124,16 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: "google", context });
   }
+  if (isInputTooLong(res.status, message)) {
+    return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "google", context });
+  }
   return new AgencyError(ErrorCode.INTERNAL, message, { source: "google", context });
 }
 
 interface GeminiPart {
   text?: string;
   thought?: boolean;
+  thoughtSignature?: string;
   functionCall?: { name: string; args: Record<string, unknown> };
 }
 
@@ -117,66 +149,72 @@ interface GeminiChunk {
   };
 }
 
+async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
+  const url = `${BASE_URL}/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
+  const res = await http.fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(buildRequestBody(request)),
+    signal: request.signal,
+  });
+
+  if (!res.ok || !res.body) {
+    throw await toAgencyError(res);
+  }
+
+  let usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+  } = { inputTokens: 0, outputTokens: 0 };
+  let stopReason: StopReason = "end_turn";
+  let sawFunctionCall = false;
+  let toolCallSeq = 0;
+
+  for await (const frame of parseSse(res.body)) {
+    const chunk = JSON.parse(frame.data) as GeminiChunk;
+    const candidate = chunk.candidates?.[0];
+
+    if (chunk.usageMetadata) {
+      usage = {
+        inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
+        outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
+        ...(chunk.usageMetadata.cachedTokenCount !== undefined
+          ? { cachedInputTokens: chunk.usageMetadata.cachedTokenCount }
+          : {}),
+      };
+    }
+
+    for (const part of candidate?.content?.parts ?? []) {
+      if (part.functionCall) {
+        sawFunctionCall = true;
+        // Gemini sends the whole call in one shot: there's no incremental
+        // arguments stream the way Anthropic/OpenAI have, so start/delta/end
+        // collapse into one immediate sequence per call.
+        const id = `call_${toolCallSeq++}`;
+        yield { type: "tool_call_start", id, name: part.functionCall.name };
+        yield { type: "tool_call_delta", id, inputJsonDelta: JSON.stringify(part.functionCall.args) };
+        yield { type: "tool_call_end", id };
+      } else if (part.text && part.thought) {
+        yield { type: "thinking_delta", text: part.text };
+      } else if (part.text) {
+        yield { type: "text_delta", text: part.text };
+      }
+      if (part.thoughtSignature) {
+        yield { type: "thinking_signature", signature: part.thoughtSignature };
+      }
+    }
+
+    if (candidate?.finishReason) {
+      stopReason = FINISH_REASON[candidate.finishReason] ?? "end_turn";
+    }
+  }
+
+  if (sawFunctionCall) stopReason = "tool_use";
+  yield { type: "message_stop", stopReason, usage };
+}
+
 export const googleAdapter: ProviderAdapter = {
   family: "google",
-
-  async *stream(request, http: HttpClient): AsyncIterable<StreamEvent> {
-    const url = `${BASE_URL}/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
-    const res = await http.fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildRequestBody(request)),
-      signal: request.signal,
-    });
-
-    if (!res.ok || !res.body) {
-      throw await toAgencyError(res);
-    }
-
-    let usage: {
-      inputTokens: number;
-      outputTokens: number;
-      cachedInputTokens?: number;
-    } = { inputTokens: 0, outputTokens: 0 };
-    let stopReason: StopReason = "end_turn";
-    let sawFunctionCall = false;
-    let toolCallSeq = 0;
-
-    for await (const frame of parseSse(res.body)) {
-      const chunk = JSON.parse(frame.data) as GeminiChunk;
-      const candidate = chunk.candidates?.[0];
-
-      if (chunk.usageMetadata) {
-        usage = {
-          inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
-          outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-          ...(chunk.usageMetadata.cachedTokenCount !== undefined
-            ? { cachedInputTokens: chunk.usageMetadata.cachedTokenCount }
-            : {}),
-        };
-      }
-
-      for (const part of candidate?.content?.parts ?? []) {
-        if (part.functionCall) {
-          sawFunctionCall = true;
-          // Gemini sends the whole call in one shot: there's no incremental
-          // arguments stream the way Anthropic/OpenAI have, so start/delta/end
-          // collapse into one immediate sequence per call.
-          const id = `call_${toolCallSeq++}`;
-          yield { type: "tool_call_start", id, name: part.functionCall.name };
-          yield { type: "tool_call_delta", id, inputJsonDelta: JSON.stringify(part.functionCall.args) };
-          yield { type: "tool_call_end", id };
-        } else if (part.text && part.thought) {
-          yield { type: "thinking_delta", text: part.text };
-        } else if (part.text) {
-          yield { type: "text_delta", text: part.text };
-        }
-      }
-
-      if (candidate?.finishReason === "MAX_TOKENS") stopReason = "max_tokens";
-    }
-
-    if (sawFunctionCall) stopReason = "tool_use";
-    yield { type: "message_stop", stopReason, usage };
-  },
+  stream: streamRaw,
 };

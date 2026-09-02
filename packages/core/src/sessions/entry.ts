@@ -55,6 +55,10 @@ export function isCompactionSummaryEntry(e: SessionEntry): e is SessionEntry & C
   return e.type === "compaction_summary";
 }
 
+export function isBranchSummaryEntry(e: SessionEntry): e is SessionEntry & BranchSummaryEntry {
+  return e.type === "branch_summary";
+}
+
 export function isTodoStateEntry(e: SessionEntry): e is SessionEntry & TodoStateEntry {
   return e.type === "todo_state";
 }

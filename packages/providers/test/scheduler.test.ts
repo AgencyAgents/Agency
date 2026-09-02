@@ -146,3 +146,60 @@ describe("Scheduler rate limiting", () => {
     expect(Date.now() - start).toBeGreaterThan(50);
   });
 });
+
+describe("Scheduler per-call retry observer", () => {
+  test("a per-call onRetry fires for that call's retries without touching the instance slot", async () => {
+    const scheduler = new Scheduler({ baseDelayMs: 5, maxDelayMs: 10, maxAttempts: 3 });
+    const observed: number[] = [];
+    let calls = 0;
+
+    const result = await scheduler.schedule(
+      async () => {
+        calls += 1;
+        if (calls < 3) throw rateLimited();
+        return "ok";
+      },
+      { onRetry: (attempt) => observed.push(attempt) },
+    );
+
+    expect(result).toBe("ok");
+    expect(observed).toEqual([1, 2]);
+    expect(scheduler.onRetry).toBeUndefined();
+  });
+
+  test("the instance onRetry still fires when no per-call observer is given", async () => {
+    const scheduler = new Scheduler({ baseDelayMs: 5, maxDelayMs: 10, maxAttempts: 2 });
+    const messages: string[] = [];
+    scheduler.onRetry = (_attempt, message) => messages.push(message);
+
+    await scheduler
+      .schedule(async () => {
+        throw rateLimited();
+      })
+      .catch(() => undefined);
+
+    expect(messages).toEqual(["429"]);
+  });
+
+  test("concurrent calls with different observers each see only their own retries", async () => {
+    const scheduler = new Scheduler({ baseDelayMs: 5, maxDelayMs: 10, maxAttempts: 3 });
+    const seenBy: Record<string, number> = { a: 0, b: 0 };
+
+    const failTimes = (times: number) => {
+      let calls = 0;
+      return async () => {
+        calls += 1;
+        if (calls < times) throw rateLimited();
+        return "ok";
+      };
+    };
+
+    await Promise.all([
+      scheduler.schedule(failTimes(3), { onRetry: () => void seenBy.a++ }),
+      scheduler.schedule(failTimes(2), { onRetry: () => void seenBy.b++ }),
+    ]);
+
+    expect(seenBy.a).toBe(2);
+    expect(seenBy.b).toBe(1);
+  });
+});

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { HttpClient } from "@agency/net";
+import { type AgencyError, ErrorCode } from "@agency/schema";
 import { createOpenAiCompatibleAdapter } from "../../src/adapters/openai-compatible.ts";
-import type { ProviderRequest } from "../../src/types.ts";
+import type { ProviderRequest, StreamEvent } from "../../src/types.ts";
 
 const baseRequest: ProviderRequest = {
   model: "llama3.3",
@@ -9,6 +10,12 @@ const baseRequest: ProviderRequest = {
   messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
   maxTokens: 256,
 };
+
+async function collect(events: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
+  const out: StreamEvent[] = [];
+  for await (const event of events) out.push(event);
+  return out;
+}
 
 describe("createOpenAiCompatibleAdapter", () => {
   test("targets the configured base URL, so a self-hosted endpoint works the same way", async () => {
@@ -106,4 +113,61 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(capturedHeaders["x-team"]).toBe("core");
     expect(capturedHeaders.authorization).toBe("Bearer override");
   });
+
+  test("maps context-length failures to CONTEXT_OVERFLOW by code, status, and message phrasing", async () => {
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+
+    const byCode = await collect(
+      adapter.stream(
+        baseRequest,
+        fakeError({ status: 400, body: { error: { code: "context_length_exceeded", message: "nope" } } }),
+      ),
+    ).catch((e) => e);
+    expect((byCode as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+
+    const byStatus = await collect(
+      adapter.stream(baseRequest, fakeError({ status: 413, body: { error: { message: "payload" } } })),
+    ).catch((e) => e);
+    expect((byStatus as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+
+    const byMessage = await collect(
+      adapter.stream(
+        baseRequest,
+        fakeError({
+          status: 400,
+          body: { error: { message: "This model's maximum context length is 8192 tokens" } },
+        }),
+      ),
+    ).catch((e) => e);
+    expect((byMessage as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
+  test("maps content_filter finish reasons to refusal instead of end_turn", async () => {
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+    const encoder = new TextEncoder();
+    const http: HttpClient = {
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(
+                encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'),
+              );
+              c.enqueue(encoder.encode("data: [DONE]\n\n"));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    };
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
+  });
+
+  function fakeError(options: { status: number; body: unknown }): HttpClient {
+    return {
+      fetch: async () => new Response(JSON.stringify(options.body), { status: options.status }),
+    };
+  }
 });

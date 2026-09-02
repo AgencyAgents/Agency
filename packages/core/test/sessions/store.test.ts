@@ -151,8 +151,16 @@ describe("SessionStore", () => {
     const { store } = setup();
     const meta = store.create("s1");
     const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
-    const a = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch a") });
-    const b = await store.append(meta.id, { type: "message", parentId: root.id, message: userMsg("branch b") });
+    const a = await store.append(meta.id, {
+      type: "message",
+      parentId: root.id,
+      message: userMsg("branch a"),
+    });
+    const b = await store.append(meta.id, {
+      type: "message",
+      parentId: root.id,
+      message: userMsg("branch b"),
+    });
 
     const entries = store.load(meta.id);
     expect(new Set(store.tips(entries))).toEqual(new Set([a.id, b.id]));
@@ -162,7 +170,11 @@ describe("SessionStore", () => {
   test("messagesFor walks the chain to a tip and renders a compaction_summary as a synthetic message", async () => {
     const { store } = setup();
     const meta = store.create("s1");
-    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("old stuff") });
+    const root = await store.append(meta.id, {
+      type: "message",
+      parentId: null,
+      message: userMsg("old stuff"),
+    });
     const summary = await store.append(meta.id, {
       type: "compaction_summary",
       parentId: null,
@@ -204,5 +216,96 @@ describe("SessionStore", () => {
 
     store.delete("s1");
     expect(store.list()).toEqual(["s2"]);
+  });
+
+  test("fork appends a branch_summary entry on a new branch and shares prior history", async () => {
+    const { store } = setup();
+    const meta = store.create("s1");
+    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
+    const a = await store.append(meta.id, {
+      type: "message",
+      parentId: root.id,
+      message: userMsg("branch a"),
+    });
+
+    const forkEntry = await store.fork(meta.id, { fromTipId: root.id, label: "try another approach" });
+    expect(forkEntry.type).toBe("branch_summary");
+    expect(forkEntry.parentId).toBe(root.id);
+    expect((forkEntry as { label: string }).label).toBe("try another approach");
+
+    const entries = store.load(meta.id);
+    // Both branch tips are leaves; the forked one is the newest.
+    expect(new Set(store.tips(entries))).toEqual(new Set([a.id, forkEntry.id]));
+    expect(store.latestTip(entries)).toBe(forkEntry.id);
+
+    // The fork's chain carries the full prior history.
+    const messages = store.messagesFor(entries, forkEntry.id);
+    expect(messages).toEqual([userMsg("root")]);
+  });
+
+  test("fork defaults to the latest tip and a generic label", async () => {
+    const { store } = setup();
+    const meta = store.create("s1");
+    const root = await store.append(meta.id, { type: "message", parentId: null, message: userMsg("root") });
+
+    const forkEntry = await store.fork(meta.id);
+    expect(forkEntry.parentId).toBe(root.id);
+    expect((forkEntry as { label: string }).label).toBe("forked");
+  });
+
+  test("load sees entries appended by another store instance over the same directory", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+    await store.append(meta.id, { type: "message", parentId: null, message: userMsg("first") });
+
+    // Prime the first store's cache, then append through a second instance.
+    expect(store.load(meta.id)).toHaveLength(1);
+    const other = new SessionStore(dir);
+    const second = await other.append(meta.id, {
+      type: "message",
+      parentId: null,
+      message: userMsg("from the other process"),
+    });
+
+    const loaded = store.load(meta.id);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[1]?.id).toBe(second.id);
+  });
+
+  test("concurrent appends from two store instances serialize and all entries survive", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+
+    const a = new SessionStore(dir);
+    const b = new SessionStore(dir);
+    const appendThree = (s: SessionStore, prefix: string) =>
+      Promise.all(
+        [1, 2, 3].map((n) =>
+          s.append(meta.id, { type: "message", parentId: null, message: userMsg(`${prefix}-${n}`) }),
+        ),
+      );
+
+    await Promise.all([appendThree(a, "a"), appendThree(b, "b")]);
+
+    const entries = store.load(meta.id);
+    expect(entries).toHaveLength(6);
+    expect(new Set(entries.map((e) => e.id))).toHaveLength(6);
+    expect(store.tips(entries)).toHaveLength(6);
+  });
+
+  test("line numbers in corruption warnings stay file-accurate across incremental loads", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+    await store.append(meta.id, { type: "message", parentId: null, message: userMsg("good") });
+    appendFileSync(join(dir, `${meta.id}.jsonl`), '"garbage line"\n');
+
+    const capture = captureWarnings();
+    try {
+      expect(store.load(meta.id)).toHaveLength(1);
+      expect(store.load(meta.id)).toHaveLength(1);
+      expect(capture.warnings.some((w) => w.includes("corrupt line 2"))).toBe(true);
+    } finally {
+      capture.restore();
+    }
   });
 });

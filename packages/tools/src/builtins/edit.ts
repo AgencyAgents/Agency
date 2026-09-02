@@ -33,7 +33,7 @@ export function createEditTool(
     renderResult: (result) =>
       result.isError ? `edit failed: ${summarize(result.content)}` : summarize(result.content),
 
-    async handler(input) {
+    async handler(input, ctx) {
       const resolved = deps.sandbox.resolvePath(input.path);
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
@@ -49,9 +49,10 @@ export function createEditTool(
 
       try {
         const updated = applyEdit(current, input);
-        snapshots.capture(resolved, current);
+        snapshots.capture(resolved, current, ctx.turnId);
         writeFileSync(resolved, updated, "utf8");
         await runFormatter(formatter, resolved);
+        snapshots.recordAfter(resolved);
         return { content: `edited ${input.path}` };
       } catch (error) {
         if (error instanceof AgencyError && error.code === ErrorCode.TOOL_ERROR) {

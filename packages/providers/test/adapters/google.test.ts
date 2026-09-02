@@ -85,4 +85,56 @@ describe("googleAdapter", () => {
     const body = JSON.parse(capturedBody!);
     expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: -1 });
   });
+
+  test("maps an oversized-input 400 to CONTEXT_OVERFLOW", async () => {
+    const http = fakeHttp(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "The input token count (283165) exceeds the maximum number of tokens allowed (139138).",
+            status: "INVALID_ARGUMENT",
+          },
+        }),
+        { status: 400 },
+      ),
+    );
+
+    const err = await collect(googleAdapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
+  test("maps SAFETY and MALFORMED_FUNCTION_CALL finish reasons to refusal and error", async () => {
+    const chunkFor = (finishReason: string) =>
+      sseResponse(
+        `data: ${JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "..." }] }, finishReason }],
+          usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 },
+        })}\n\n`,
+      );
+
+    const safety = await collect(googleAdapter.stream(baseRequest, fakeHttp(chunkFor("SAFETY"))));
+    expect(safety.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
+
+    const malformed = await collect(
+      googleAdapter.stream(baseRequest, fakeHttp(chunkFor("MALFORMED_FUNCTION_CALL"))),
+    );
+    expect(malformed.at(-1)).toMatchObject({ type: "message_stop", stopReason: "error" });
+
+    const recitation = await collect(googleAdapter.stream(baseRequest, fakeHttp(chunkFor("RECITATION"))));
+    expect(recitation.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
+  });
+
+  test("surfaces thought signatures as thinking_signature events", async () => {
+    const sse = sseResponse(
+      `data: ${JSON.stringify({
+        candidates: [
+          { content: { parts: [{ text: "thinking hard", thought: true, thoughtSignature: "gsig-1" }] } },
+        ],
+      })}\n\n`,
+    );
+
+    const events = await collect(googleAdapter.stream(baseRequest, fakeHttp(sse)));
+    expect(events).toContainEqual({ type: "thinking_delta", text: "thinking hard" });
+    expect(events).toContainEqual({ type: "thinking_signature", signature: "gsig-1" });
+  });
 });

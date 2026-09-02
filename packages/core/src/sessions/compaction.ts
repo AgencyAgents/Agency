@@ -16,13 +16,14 @@ export interface CompactionThreshold {
 export function countChainTokens(chain: SessionEntry[], tokenizer: Tokenizer): number {
   let total = 0;
   for (const entry of chain) {
-    if (isMessageEntry(entry)) {
-      for (const block of entry.message.content) {
-        if (block.type === "text" || block.type === "thinking") total += tokenizer.count(block.text);
-        else if (block.type === "tool_result") total += tokenizer.count(block.content);
-        else if (block.type === "tool_call") total += tokenizer.count(JSON.stringify(block.input));
-      }
-    } else if (entry.type === "compaction_summary" && typeof entry.summary === "string") {
+      if (isMessageEntry(entry)) {
+        for (const block of entry.message.content) {
+          if (block.type === "text" || block.type === "thinking") total += tokenizer.count(block.text);
+          else if (block.type === "tool_result") total += tokenizer.count(block.content);
+          else if (block.type === "tool_call") total += tokenizer.count(JSON.stringify(block.input));
+          else if (block.type === "redacted_thinking") total += tokenizer.count(block.data);
+        }
+      } else if (entry.type === "compaction_summary" && typeof entry.summary === "string") {
       total += tokenizer.count(entry.summary);
     }
   }

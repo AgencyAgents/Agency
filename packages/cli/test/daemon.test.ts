@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
@@ -270,6 +270,70 @@ describe("createAgentDaemon", () => {
     expect(result.all.some((p) => p.id === "anthropic")).toBe(false);
     expect(result.all.some((p) => p.id === "openai")).toBe(true);
   }, 30_000);
+
+  // macOS has no env override for dataDir (would hit the real one), so the
+  // catalog-cache sandbox only runs on Windows/Linux.
+  test.skipIf(process.platform === "darwin")(
+    "run_turn reads max output tokens and pricing from the model catalog, not a hardcoded default",
+    async () => {
+      const sandboxData = mkdtempSync(join(tmpdir(), "agency-daemon-data-"));
+      dirs.push(sandboxData);
+      const agencyCache = process.platform === "win32" ? join("Agency", "cache") : join("agency", "cache");
+      const cacheDirPath = join(sandboxData, agencyCache);
+      mkdirSync(cacheDirPath, { recursive: true });
+      writeFileSync(
+        join(cacheDirPath, "model-catalog.json"),
+        JSON.stringify({
+          savedAt: new Date().toISOString(),
+          models: [
+            {
+              id: "catalog-model",
+              family: "anthropic",
+              contextWindow: 200_000,
+              maxOutputTokens: 12_345,
+              pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+              capabilities: { tools: true, vision: true, thinking: true },
+            },
+          ],
+        }),
+      );
+
+      const captured: { maxTokens?: number } = {};
+      const capturingAdapter: ProviderAdapter = {
+        family: "fake",
+        async *stream(request) {
+          captured.maxTokens = request.maxTokens;
+          yield { type: "text_delta", text: "ok" };
+          yield {
+            type: "message_stop",
+            stopReason: "end_turn",
+            usage: { inputTokens: 1_000, outputTokens: 100 },
+          };
+        },
+      };
+
+      const dataEnvKey = process.platform === "win32" ? "LOCALAPPDATA" : "XDG_DATA_HOME";
+      const previous = process.env[dataEnvKey];
+      process.env[dataEnvKey] = sandboxData;
+      try {
+        const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter });
+        const result = (await client.call("run_turn", {
+          turnId: "t-catalog",
+          provider: "anthropic",
+          model: "catalog-model",
+          apiKey: "key",
+          systemPrompt: "sys",
+          session: [],
+        })) as RunTurnRpcResult;
+
+        expect(captured.maxTokens).toBe(12_345);
+        expect(result.usage).toEqual({ inputTokens: 1_000, outputTokens: 100, cachedInputTokens: 0 });
+      } finally {
+        if (previous === undefined) delete process.env[dataEnvKey];
+        else process.env[dataEnvKey] = previous;
+      }
+    },
+  );
 });
 
 describe("system prompt composition", () => {

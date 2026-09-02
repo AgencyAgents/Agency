@@ -13,6 +13,16 @@ export const ThinkingBlock = z.object({
   signature: z.string().optional(),
 });
 
+/**
+ * Providers occasionally replace reasoning with an encrypted payload they can
+ * verify later (Anthropic `redacted_thinking`): it is never displayed or
+ * interpreted, only replayed verbatim so the conversation stays resumable.
+ */
+export const RedactedThinkingBlock = z.object({
+  type: z.literal("redacted_thinking"),
+  data: z.string(),
+});
+
 export const ToolCallBlock = z.object({
   type: z.literal("tool_call"),
   id: z.string(),
@@ -38,6 +48,7 @@ export const ToolResultBlock = z.object({
 export const ContentBlock = z.discriminatedUnion("type", [
   TextBlock,
   ThinkingBlock,
+  RedactedThinkingBlock,
   ToolCallBlock,
   ToolResultBlock,
   ImageBlock,
@@ -45,6 +56,7 @@ export const ContentBlock = z.discriminatedUnion("type", [
 
 export type TextBlock = z.infer<typeof TextBlock>;
 export type ThinkingBlock = z.infer<typeof ThinkingBlock>;
+export type RedactedThinkingBlock = z.infer<typeof RedactedThinkingBlock>;
 export type ToolCallBlock = z.infer<typeof ToolCallBlock>;
 export type ToolResultBlock = z.infer<typeof ToolResultBlock>;
 export type ImageBlock = z.infer<typeof ImageBlock>;
@@ -68,6 +80,7 @@ export const StopReason = z.enum([
   "tool_use",
   "max_tokens",
   "stop_sequence",
+  "refusal",
   "cancelled",
   "error",
 ]);

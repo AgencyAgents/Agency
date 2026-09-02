@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { CompactionThreshold, SessionStore } from "@agency/core";
-import { compact } from "@agency/core";
-import type { ModelPricing, ThinkingLevel, Tokenizer } from "@agency/providers";
+import { compact, summarizeTranscript } from "@agency/core";
+import {
+  createApproximateTokenizer,
+  type ModelPricing,
+  type ThinkingLevel,
+  type Tokenizer,
+} from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import { appendUsageEntry } from "@agency/telemetry";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
@@ -10,6 +15,28 @@ export interface CompactionOptions {
   tokenizer: Tokenizer;
   threshold: CompactionThreshold;
   summarize: (text: string) => Promise<string>;
+}
+
+/**
+ * Fallback context window for proactive compaction, used until a caller with
+ * catalog knowledge passes `contextWindow`. 200k matches the current Claude
+ * and GPT flagships; a session on a smaller-window model relies on the
+ * reactive compact-and-retry path to catch the difference.
+ */
+export const DEFAULT_COMPACTION_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Proactive compaction is on by default: an approximate tokenizer, the
+ * caller's (or fallback) context window, and the offline extractive
+ * summarizer, so sessions compact as they approach the window without any
+ * caller opting in or any provider round-trip for the summary.
+ */
+export function defaultCompaction(contextWindow?: number): CompactionOptions {
+  return {
+    tokenizer: createApproximateTokenizer(),
+    threshold: { contextWindow: contextWindow ?? DEFAULT_COMPACTION_CONTEXT_WINDOW },
+    summarize: (text) => Promise.resolve(summarizeTranscript(text)),
+  };
 }
 
 export interface RunSessionTurnOptions {
@@ -23,6 +50,9 @@ export interface RunSessionTurnOptions {
   userText: string;
   thinkingLevel?: ThinkingLevel;
   budget?: RunTurnParams["budget"];
+  /** Context window of the active model (from the catalog when known);
+   *  feeds the default proactive compaction threshold. */
+  contextWindow?: number;
   compaction?: CompactionOptions;
   onEvent?: (event: unknown) => void;
   /** When set, the turn's usage is persisted as a `usage` session entry and
@@ -49,17 +79,19 @@ export async function runSessionTurn(
   client: DaemonClient,
   options: RunSessionTurnOptions,
 ): Promise<RunSessionTurnResult> {
+  const compaction = options.compaction ?? defaultCompaction(options.contextWindow);
+
   const entries = options.store.load(options.sessionId);
   let tipId = options.store.latestTip(entries) ?? null;
 
-  if (options.compaction && tipId) {
+  if (tipId) {
     const outcome = await compact(
       options.store,
       options.sessionId,
       tipId,
-      options.compaction.tokenizer,
-      options.compaction.threshold,
-      options.compaction.summarize,
+      compaction.tokenizer,
+      compaction.threshold,
+      compaction.summarize,
     );
     tipId = outcome.tipId;
   }
@@ -95,14 +127,14 @@ export async function runSessionTurn(
     // Compacting from userEntry.id, not the pre-turn tip: the overflowed
     // request included the user message, and the failed turn appended nothing,
     // so the append loop below stays correct against the rebuilt history.
-    if (result.needsCompaction && options.compaction) {
+    if (result.needsCompaction) {
       const outcome = await compact(
         options.store,
         options.sessionId,
         userEntry.id,
-        options.compaction.tokenizer,
-        options.compaction.threshold,
-        options.compaction.summarize,
+        compaction.tokenizer,
+        compaction.threshold,
+        compaction.summarize,
       );
       history = options.store.messagesFor(options.store.load(options.sessionId), outcome.tipId);
       params.session = history;

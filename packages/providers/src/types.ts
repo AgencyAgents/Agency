@@ -41,6 +41,8 @@ export interface Usage {
 export type StreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
+  | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { type: "tool_call_start"; id: string; name: string }
   | { type: "tool_call_delta"; id: string; inputJsonDelta: string }
   | { type: "tool_call_end"; id: string }

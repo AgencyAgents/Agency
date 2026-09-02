@@ -243,7 +243,11 @@ describe("session commands", () => {
   test("session delete removes the file and rejects unknown ids", async () => {
     const sessionsDir = tempDir("agency-ep-sessions-");
     const store = new SessionStore(sessionsDir);
-    await store.append("gone-soon", { type: "message", parentId: null, message: { role: "user", content: [] } });
+    await store.append("gone-soon", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [] },
+    });
 
     const ok = capture();
     expect(await runEntrypoint(["session", "delete", "gone-soon"], { sessionsDir, ...ok.deps })).toBe(0);

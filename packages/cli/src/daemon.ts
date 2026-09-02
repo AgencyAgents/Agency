@@ -26,11 +26,14 @@ import type { HttpClient } from "@agency/net";
 import { createHttpClient } from "@agency/net";
 import {
   anthropicAdapter,
+  BUILTIN_MODELS,
   createKeychain,
   createOpenAiCompatibleAdapter,
   googleAdapter,
   type KeychainBackend,
+  loadCachedCatalog,
   type ModelInfo,
+  mergeCatalogWithConfig,
   openaiAdapter,
   type ProviderAdapter,
   resolveApiKey,
@@ -272,6 +275,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   const adapterFor = options.adapterFor ?? ((provider: string) => resolveAdapter(provider, providers));
   const http = options.http ?? createHttpClient();
+
+  // Model metadata for pre-flight accounting (max output tokens, pricing):
+  // resolved offline from the on-disk catalog cache (populated by the
+  // /models picker's providers_list fetch) or the build-time snapshot, with
+  // config model overrides merged on top. The turn path never fetches.
+  let mergedCatalog: ModelInfo[] | undefined;
+  const catalogModel = (provider: string, model: string): ModelInfo | undefined => {
+    mergedCatalog ??= mergeCatalogWithConfig(
+      loadCachedCatalog(join(dataDir(), "cache"))?.models ?? BUILTIN_MODELS,
+      providers,
+    );
+    return mergedCatalog.find((m) => m.id === model && m.family === provider);
+  };
+
   const identity = options.identity ?? { type: "user" as const };
   const capabilities = options.capabilities ?? FULL_CAPABILITIES;
   const idleLingerMs = options.idleLingerMs ?? 10 * 60 * 1000;
@@ -298,7 +315,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       });
   const tools = options.tools ?? builtins?.tools ?? [];
 
-  const scheduler = new Scheduler();
+  // One scheduler per provider: a single shared bucket would pace all
+  // providers against one 60-rpm ceiling and one concurrency cap, so a slow
+  // provider's retries starve every other provider's requests.
+  const schedulers = new Map<string, Scheduler>();
+  const schedulerFor = (provider: string): Scheduler => {
+    let scheduler = schedulers.get(provider);
+    if (!scheduler) {
+      scheduler = new Scheduler();
+      schedulers.set(provider, scheduler);
+    }
+    return scheduler;
+  };
   const activeControllers = new Map<string, AbortController>();
   /** Which client connection owns each in-flight turn: its disconnect (A3)
    *  cancels the turn, so a dead TUI stops the daemon burning tokens. */
@@ -352,7 +380,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               provider: params.provider,
               model: params.model,
             });
-            const result = await runTurn(adapterFor(params.provider), scheduler, http, {
+            const modelInfo = catalogModel(params.provider, params.model);
+            const result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
               identity,
               capabilities,
               systemPrompt: resolveSystemPrompt(params, {
@@ -365,6 +394,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               thinkingLevel: params.thinkingLevel,
               session: params.session,
               budget: params.budget,
+              pricePerMTok: modelInfo
+                ? {
+                    input: modelInfo.pricing.inputPerMTok,
+                    output: modelInfo.pricing.outputPerMTok,
+                  }
+                : undefined,
+              maxTokensPerRequest: modelInfo?.maxOutputTokens,
+              turnId: params.turnId,
               maxToolIterations: params.maxToolIterations,
               signal: controller.signal,
               onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
@@ -428,6 +465,21 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         if (!controller) return { cancelled: false };
         controller.abort();
         return { cancelled: true };
+      },
+
+      // File undo/redo over the write/edit snapshot journal. The daemon owns
+      // the SnapshotStore (tools run here, not in clients), so /undo and
+      // /redo in a TUI must come through as RPC, like every other effect.
+      async undo() {
+        const snapshots = options.tools ? undefined : builtins?.snapshots;
+        const outcome = snapshots?.undo();
+        return { undone: outcome !== undefined, ...(outcome ? { path: outcome.path } : {}) };
+      },
+
+      async redo() {
+        const snapshots = options.tools ? undefined : builtins?.snapshots;
+        const outcome = snapshots?.redo();
+        return { undone: outcome !== undefined, ...(outcome ? { path: outcome.path } : {}) };
       },
 
       async providers_list() {

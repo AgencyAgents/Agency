@@ -5,6 +5,9 @@ export type RiskTier = "safe" | "moderate" | "dangerous";
 
 export interface ToolContext {
   signal: AbortSignal;
+  /** Turn that invoked the tool (absent when the caller doesn't track one);
+   *  file-mutating tools index their snapshots under it for undo. */
+  turnId?: string;
 }
 
 export interface ToolResult {

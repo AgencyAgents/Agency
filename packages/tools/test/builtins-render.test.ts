@@ -38,17 +38,7 @@ describe("built-in tool presentations", () => {
   test("all nine built-ins ship renderCall and renderResult", async () => {
     const builtins = await builtinsFor();
     try {
-      const names = [
-        "bash",
-        "read",
-        "write",
-        "edit",
-        "grep",
-        "glob",
-        "fetch",
-        "todo_read",
-        "todo_write",
-      ];
+      const names = ["bash", "read", "write", "edit", "grep", "glob", "fetch", "todo_read", "todo_write"];
       for (const name of names) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name);
         expect(tool, name).toBeDefined();
@@ -65,9 +55,9 @@ describe("built-in tool presentations", () => {
     try {
       const bash = builtins.tools.find((t: RenderableTool) => t.name === "bash")!;
       expect(bash.renderCall!({ command: "bun test" })).toBe("bash bun test");
-      expect(bash.renderResult!({ content: "ok\nmore", isError: false, input: { command: "bun test" } })).toBe(
-        "bash: ok (+1 lines)",
-      );
+      expect(
+        bash.renderResult!({ content: "ok\nmore", isError: false, input: { command: "bun test" } }),
+      ).toBe("bash: ok (+1 lines)");
       expect(bash.renderResult!({ content: "boom", isError: true })).toBe("bash failed: boom");
       expect(bash.renderResult!({ content: "", isError: false })).toBe("bash: (no output)");
     } finally {
@@ -114,9 +104,9 @@ describe("built-in tool presentations", () => {
       expect(
         glob.renderResult!({ content: "a.ts\nb.ts", isError: false, input: { pattern: "**/*.ts" } }),
       ).toBe("glob **/*.ts: 2 files (a.ts)");
-      expect(glob.renderResult!({ content: "no files matched", isError: false, input: { pattern: "x" } })).toBe(
-        "glob x: no files matched",
-      );
+      expect(
+        glob.renderResult!({ content: "no files matched", isError: false, input: { pattern: "x" } }),
+      ).toBe("glob x: no files matched");
     } finally {
       await builtins.dispose();
     }
@@ -135,18 +125,22 @@ describe("built-in tool presentations", () => {
       const fetch = builtins.tools.find((t: RenderableTool) => t.name === "fetch")!;
       expect(fetch.renderCall!({ url: "https://agency.dev" })).toBe("fetch https://agency.dev");
       expect(
-        fetch.renderResult!({ content: "<html>\nbody", isError: false, input: { url: "https://agency.dev" } }),
+        fetch.renderResult!({
+          content: "<html>\nbody",
+          isError: false,
+          input: { url: "https://agency.dev" },
+        }),
       ).toBe("fetch https://agency.dev: 11 chars (<html>)");
-      expect(fetch.renderResult!({ content: "404 Not Found: gone", isError: true, input: { url: "u" } })).toBe(
-        "fetch u failed: 404 Not Found: gone",
-      );
+      expect(
+        fetch.renderResult!({ content: "404 Not Found: gone", isError: true, input: { url: "u" } }),
+      ).toBe("fetch u failed: 404 Not Found: gone");
 
       const todoRead = builtins.tools.find((t: RenderableTool) => t.name === "todo_read")!;
       expect(todoRead.renderCall!({})).toBe("todo_read");
       expect(todoRead.renderResult!({ content: "(empty)", isError: false })).toBe("todo list is empty");
-      expect(
-        todoRead.renderResult!({ content: "[pending] ship (1)\n[done] plan (2)", isError: false }),
-      ).toBe("todos: 2 ([pending] ship (1))");
+      expect(todoRead.renderResult!({ content: "[pending] ship (1)\n[done] plan (2)", isError: false })).toBe(
+        "todos: 2 ([pending] ship (1))",
+      );
 
       const todoWrite = builtins.tools.find((t: RenderableTool) => t.name === "todo_write")!;
       expect(todoWrite.renderCall!({ items: [1, 2, 3] })).toBe("todo_write (3 items)");
@@ -163,7 +157,17 @@ describe("built-in tool presentations", () => {
     try {
       const huge = `${"x".repeat(5000)}\n${"y".repeat(5000)}`;
       const input = { command: "c", path: "p.ts", pattern: "pp", url: "https://u.dev" };
-      for (const name of ["bash", "read", "write", "edit", "grep", "glob", "fetch", "todo_read", "todo_write"]) {
+      for (const name of [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "grep",
+        "glob",
+        "fetch",
+        "todo_read",
+        "todo_write",
+      ]) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name)!;
         const call = tool.renderCall!(input);
         const result = tool.renderResult!({ content: huge, isError: false, input });
@@ -181,7 +185,17 @@ describe("built-in tool presentations", () => {
     const builtins = await builtinsFor();
     try {
       const bad = { command: 42, path: undefined, pattern: {}, url: null, items: "not-an-array" };
-      for (const name of ["bash", "read", "write", "edit", "grep", "glob", "fetch", "todo_read", "todo_write"]) {
+      for (const name of [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "grep",
+        "glob",
+        "fetch",
+        "todo_read",
+        "todo_write",
+      ]) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name)!;
         expect(() => tool.renderCall!(bad)).not.toThrow();
         expect(() => tool.renderResult!({ content: "c", isError: false, input: bad })).not.toThrow();

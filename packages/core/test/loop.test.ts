@@ -543,4 +543,109 @@ describe("runTurn", () => {
     expect(toolResult.content).toContain("[Output truncated at 50000 bytes]");
     expect(toolResult.content.length).toBeLessThan(60_000);
   });
+
+  test("a thinking signature attaches to the trailing thinking block", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "thinking_delta", text: "reasoning here" };
+        yield { type: "thinking_signature", signature: "sig-1" };
+        yield { type: "text_delta", text: "answer" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages[0]?.content).toEqual([
+      { type: "thinking", text: "reasoning here", signature: "sig-1" },
+      { type: "text", text: "answer" },
+    ]);
+  });
+
+  test("a signature with no preceding thinking creates its own block, and redacted_thinking passes through", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "redacted_thinking", data: "enc-1" };
+        yield { type: "thinking_signature", signature: "orphan-sig" };
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages[0]?.content).toEqual([
+      { type: "redacted_thinking", data: "enc-1" },
+      { type: "thinking", text: "", signature: "orphan-sig" },
+      { type: "text", text: "ok" },
+    ]);
+  });
+
+  test("tool handlers receive the run's turnId in their context", async () => {
+    let sawTurnId: string | undefined;
+    const spec: ToolSpec = {
+      name: "spy",
+      description: "records ctx",
+      inputSchema: {},
+      handler: async (_input, ctx) => {
+        sawTurnId = ctx.turnId;
+        return { content: "ok" };
+      },
+    };
+
+    await runTurn(toolThenDoneAdapter("spy", {}), new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      turnId: "turn-abc",
+    });
+
+    expect(sawTurnId).toBe("turn-abc");
+  });
+
+  test("mid-stream failure after content salvages the turn with an error stop reason", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "partial" };
+        throw new Error("connection reset");
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.stopReason).toBe("error");
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toEqual({ role: "assistant", content: [{ type: "text", text: "partial" }] });
+  });
 });

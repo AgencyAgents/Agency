@@ -128,4 +128,39 @@ describe("daemon with real built-in tools", () => {
     const toolResult = toolResultMessage?.content[0] as { content: string };
     expect(toolResult.content).toContain("real-bash-output-from-e2e-test");
   }, 30_000);
+
+  test("undo reverts a scripted write and redo re-applies it, over RPC", async () => {
+    const root = tempRepo();
+    writeFileSync(join(root, "undo-me.ts"), "original", "utf8");
+
+    const daemon = await createAgentDaemon({
+      workspaceRoot: root,
+      instanceFile: join(root, ".agency", "instance.json"),
+      adapterFor: () => scriptedToolCallAdapter("write", { path: "undo-me.ts", content: "overwritten" }),
+      http: noopHttp,
+    });
+    daemons.push(daemon);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+    clients.push(client);
+
+    await client.call("run_turn", {
+      turnId: "t4",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("overwritten");
+
+    expect(await client.call("undo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+    expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("original");
+
+    expect(await client.call("redo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+    expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("overwritten");
+
+    // Nothing left to redo, but the re-applied write can be undone again.
+    expect(await client.call("redo", {})).toEqual({ undone: false });
+    expect(await client.call("undo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+  });
 });

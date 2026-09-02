@@ -11,6 +11,16 @@ export interface SchedulerOptions {
   maxDelayMs?: number;
 }
 
+export interface ScheduleOptions {
+  /**
+   * Per-call retry observer, fired before each backoff sleep for THIS call
+   * only. The instance-level `onRetry` slot is process-global mutable state:
+   * with two providers (or two concurrent turns) racing, one caller's observer
+   * would overwrite or fire for another's retries — pass the observer here.
+   */
+  onRetry?: (attempt: number, message: string, next?: number) => void;
+}
+
 /** Classic counting semaphore: bounds how many callers run at once, FIFO order. */
 class Semaphore {
   private available: number;
@@ -90,18 +100,19 @@ export class Scheduler {
     this.maxDelayMs = options.maxDelayMs ?? 30_000;
   }
 
-  /** Runs `fn` under the concurrency/rate limits, retrying retryable failures. */
-  async schedule<T>(fn: () => Promise<T>): Promise<T> {
+  /** Runs `fn` under the concurrency/rate limits, retrying retryable failures.
+   *  The per-call observer in `options` wins over the instance's `onRetry`. */
+  async schedule<T>(fn: () => Promise<T>, options?: ScheduleOptions): Promise<T> {
     await this.semaphore.acquire();
     try {
       await this.bucket.consume();
-      return await this.runWithRetry(fn);
+      return await this.runWithRetry(fn, options?.onRetry ?? this.onRetry?.bind(this));
     } finally {
       this.semaphore.release();
     }
   }
 
-  private async runWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+  private async runWithRetry<T>(fn: () => Promise<T>, onRetry: ScheduleOptions["onRetry"]): Promise<T> {
     let attempt = 0;
     while (true) {
       attempt += 1;
@@ -119,7 +130,7 @@ export class Scheduler {
           retryAfterMs !== undefined
             ? Math.min(Math.max(retryAfterMs, 0), this.maxDelayMs)
             : this.backoffDelay(attempt);
-        this.onRetry?.(attempt, error.message, retryAfterMs !== undefined ? Date.now() + delayMs : undefined);
+        onRetry?.(attempt, error.message, retryAfterMs !== undefined ? Date.now() + delayMs : undefined);
         await sleep(delayMs);
       }
     }

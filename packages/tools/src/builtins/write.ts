@@ -28,18 +28,19 @@ export function createWriteTool(
     renderResult: (result) =>
       result.isError ? `write failed: ${summarize(result.content)}` : summarize(result.content),
 
-    async handler(input) {
+    async handler(input, ctx) {
       const resolved = deps.sandbox.resolvePath(input.path);
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
       if (existsSync(resolved)) {
-        snapshots.capture(resolved, readFileSync(resolved, "utf8"));
+        snapshots.capture(resolved, readFileSync(resolved, "utf8"), ctx.turnId);
       } else {
         mkdirSync(dirname(resolved), { recursive: true });
       }
 
       writeFileSync(resolved, input.content, "utf8");
       await runFormatter(formatter, resolved);
+      snapshots.recordAfter(resolved);
 
       return { content: `wrote ${input.content.length} bytes to ${input.path}` };
     },

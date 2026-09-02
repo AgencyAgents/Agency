@@ -22,7 +22,23 @@ const STOP_REASON: Record<string, StopReason> = {
   tool_use: "tool_use",
   max_tokens: "max_tokens",
   stop_sequence: "stop_sequence",
+  refusal: "refusal",
+  // The model paused a long-running server-side turn and expects the response
+  // replayed to continue it; Agency has no provider-driven continuation, so
+  // the turn ends with what was streamed and the user's next message resumes.
+  pause_turn: "end_turn",
 };
+
+/** Anthropic phrases oversized inputs as a 400 invalid_request_error (or 413). */
+function isInputTooLong(status: number, message: string): boolean {
+  return (
+    status === 413 ||
+    (status === 400 &&
+      /(prompt is too long|input length[^\n]*exceeds|exceeds the context|context length|too many (input )?tokens|request too large)/i.test(
+        message,
+      ))
+  );
+}
 
 function toAnthropicContent(block: ContentBlock): Record<string, unknown> | undefined {
   switch (block.type) {
@@ -40,9 +56,13 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
         is_error: block.isError || undefined,
       };
     case "thinking":
-      // Thinking blocks are Agency-side history; Anthropic only wants them replayed
-      // via the signature it issued, which is out of scope until sessions exist.
-      return undefined;
+      // Unsigned thinking can't be replayed (the API rejects it), so it only
+      // goes back when the signature the provider issued for it is present.
+      return block.signature === undefined
+        ? undefined
+        : { type: "thinking", thinking: block.text, signature: block.signature };
+    case "redacted_thinking":
+      return { type: "redacted_thinking", data: block.data };
   }
 }
 
@@ -118,105 +138,119 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: "anthropic", context });
   }
+  if (isInputTooLong(res.status, message)) {
+    return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "anthropic", context });
+  }
   return new AgencyError(ErrorCode.INTERNAL, message, { source: "anthropic", context });
+}
+
+async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
+  const res = await http.fetch(BASE_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": request.apiKey,
+      "anthropic-version": API_VERSION,
+    },
+    body: JSON.stringify(buildRequestBody(request)),
+    signal: request.signal,
+  });
+
+  if (!res.ok || !res.body) {
+    throw await toAgencyError(res);
+  }
+
+  // index -> tool_call id, so content_block_delta/stop can address the right call
+  const toolCallIndex = new Map<number, string>();
+  const usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } = {
+    inputTokens: 0,
+    outputTokens: 0,
+  };
+  let stopReason: StopReason = "end_turn";
+
+  for await (const frame of parseSse(res.body)) {
+    if (frame.data === "[DONE]") continue;
+    const payload = JSON.parse(frame.data) as Record<string, unknown>;
+
+    switch (payload.type) {
+      case "message_start": {
+        const msgUsage = (
+          payload.message as {
+            usage?: { input_tokens?: number; cache_read_input_tokens?: number };
+          }
+        )?.usage;
+        usage.inputTokens = msgUsage?.input_tokens ?? 0;
+        if (msgUsage?.cache_read_input_tokens !== undefined) {
+          usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
+        }
+        break;
+      }
+      case "content_block_start": {
+        const block = payload.content_block as {
+          type: string;
+          id?: string;
+          name?: string;
+          data?: string;
+        };
+        const index = payload.index as number;
+        if (block.type === "tool_use" && block.id && block.name) {
+          toolCallIndex.set(index, block.id);
+          yield { type: "tool_call_start", id: block.id, name: block.name };
+        } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
+          yield { type: "redacted_thinking", data: block.data };
+        }
+        break;
+      }
+      case "content_block_delta": {
+        const delta = payload.delta as {
+          type: string;
+          text?: string;
+          thinking?: string;
+          signature?: string;
+          partial_json?: string;
+        };
+        const index = payload.index as number;
+        if (delta.type === "text_delta" && delta.text) {
+          yield { type: "text_delta", text: delta.text };
+        } else if (delta.type === "thinking_delta" && delta.thinking) {
+          yield { type: "thinking_delta", text: delta.thinking };
+        } else if (delta.type === "signature_delta" && delta.signature) {
+          yield { type: "thinking_signature", signature: delta.signature };
+        } else if (delta.type === "input_json_delta") {
+          const id = toolCallIndex.get(index);
+          if (id) yield { type: "tool_call_delta", id, inputJsonDelta: delta.partial_json ?? "" };
+        }
+        break;
+      }
+      case "content_block_stop": {
+        const index = payload.index as number;
+        const id = toolCallIndex.get(index);
+        if (id) yield { type: "tool_call_end", id };
+        break;
+      }
+      case "message_delta": {
+        const delta = payload.delta as { stop_reason?: string };
+        const deltaUsage = payload.usage as { output_tokens?: number } | undefined;
+        if (delta.stop_reason) stopReason = STOP_REASON[delta.stop_reason] ?? "end_turn";
+        if (deltaUsage?.output_tokens !== undefined) usage.outputTokens = deltaUsage.output_tokens;
+        break;
+      }
+      case "message_stop": {
+        yield { type: "message_stop", stopReason, usage };
+        break;
+      }
+      case "error": {
+        const err = payload.error as { type?: string; message?: string };
+        throw new AgencyError(ErrorCode.TRANSIENT, err.message ?? "stream error", {
+          source: "anthropic",
+          context: { errorType: err.type },
+        });
+      }
+    }
+  }
 }
 
 export const anthropicAdapter: ProviderAdapter = {
   family: "anthropic",
-
-  async *stream(request, http: HttpClient): AsyncIterable<StreamEvent> {
-    const res = await http.fetch(BASE_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": request.apiKey,
-        "anthropic-version": API_VERSION,
-      },
-      body: JSON.stringify(buildRequestBody(request)),
-      signal: request.signal,
-    });
-
-    if (!res.ok || !res.body) {
-      throw await toAgencyError(res);
-    }
-
-    // index -> tool_call id, so content_block_delta/stop can address the right call
-    const toolCallIndex = new Map<number, string>();
-    const usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } = {
-      inputTokens: 0,
-      outputTokens: 0,
-    };
-    let stopReason: StopReason = "end_turn";
-
-    for await (const frame of parseSse(res.body)) {
-      if (frame.data === "[DONE]") continue;
-      const payload = JSON.parse(frame.data) as Record<string, unknown>;
-
-      switch (payload.type) {
-        case "message_start": {
-          const msgUsage = (
-            payload.message as {
-              usage?: { input_tokens?: number; cache_read_input_tokens?: number };
-            }
-          )?.usage;
-          usage.inputTokens = msgUsage?.input_tokens ?? 0;
-          if (msgUsage?.cache_read_input_tokens !== undefined) {
-            usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
-          }
-          break;
-        }
-        case "content_block_start": {
-          const block = payload.content_block as { type: string; id?: string; name?: string };
-          const index = payload.index as number;
-          if (block.type === "tool_use" && block.id && block.name) {
-            toolCallIndex.set(index, block.id);
-            yield { type: "tool_call_start", id: block.id, name: block.name };
-          }
-          break;
-        }
-        case "content_block_delta": {
-          const delta = payload.delta as {
-            type: string;
-            text?: string;
-            thinking?: string;
-            partial_json?: string;
-          };
-          const index = payload.index as number;
-          if (delta.type === "text_delta" && delta.text) {
-            yield { type: "text_delta", text: delta.text };
-          } else if (delta.type === "thinking_delta" && delta.thinking) {
-            yield { type: "thinking_delta", text: delta.thinking };
-          } else if (delta.type === "input_json_delta") {
-            const id = toolCallIndex.get(index);
-            if (id) yield { type: "tool_call_delta", id, inputJsonDelta: delta.partial_json ?? "" };
-          }
-          break;
-        }
-        case "content_block_stop": {
-          const index = payload.index as number;
-          const id = toolCallIndex.get(index);
-          if (id) yield { type: "tool_call_end", id };
-          break;
-        }
-        case "message_delta": {
-          const delta = payload.delta as { stop_reason?: string };
-          const deltaUsage = payload.usage as { output_tokens?: number } | undefined;
-          if (delta.stop_reason) stopReason = STOP_REASON[delta.stop_reason] ?? "end_turn";
-          if (deltaUsage?.output_tokens !== undefined) usage.outputTokens = deltaUsage.output_tokens;
-          break;
-        }
-        case "message_stop": {
-          yield { type: "message_stop", stopReason, usage };
-          break;
-        }
-        case "error": {
-          const err = payload.error as { type?: string; message?: string };
-          throw new AgencyError(ErrorCode.TRANSIENT, err.message ?? "stream error", {
-            source: "anthropic",
-            context: { errorType: err.type },
-          });
-        }
-      }
-    }
-  },
+  stream: streamRaw,
 };

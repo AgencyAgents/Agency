@@ -184,4 +184,82 @@ describe("loadConfig", () => {
     const config = loadConfig({ globalDir, env: {} });
     expect(config.logLevel).toBe("debug");
   });
+
+  test("a project config's provider record deep-merges over the global one instead of replacing it", () => {
+    const globalDir = tempDir();
+    const projectRoot = tempDir();
+    cleanup.push(globalDir, projectRoot);
+
+    writeFileSync(
+      join(globalDir, "config.jsonc"),
+      `{
+        "schemaVersion": 2,
+        "provider": {
+          "openai": { "baseUrl": "https://global.example/v1", "headers": { "x-team": "core" } },
+          "google": { "baseUrl": "https://google.example/v1" }
+        }
+      }`,
+    );
+    mkdirSync(join(projectRoot, ".agency"));
+    writeFileSync(
+      join(projectRoot, ".agency", "config.jsonc"),
+      `{
+        "schemaVersion": 2,
+        "provider": {
+          "openai": { "baseUrl": "https://project.example/v1" }
+        }
+      }`,
+    );
+
+    const config = loadConfig({ globalDir, projectRoot, env: {} });
+    // The project's openai override wins per-key...
+    expect(config.provider.openai?.baseUrl).toBe("https://project.example/v1");
+    // ...but the global openai headers and the whole google entry survive.
+    expect(config.provider.openai?.headers).toEqual({ "x-team": "core" });
+    expect(config.provider.google?.baseUrl).toBe("https://google.example/v1");
+  });
+
+  test("arrays in a higher layer replace lower-layer arrays wholesale", () => {
+    const globalDir = tempDir();
+    const projectRoot = tempDir();
+    cleanup.push(globalDir, projectRoot);
+
+    writeFileSync(
+      join(globalDir, "config.jsonc"),
+      `{ "schemaVersion": 2, "provider": { "openai": { "whitelist": ["gpt-5.2", "o4"] } } }`,
+    );
+    mkdirSync(join(projectRoot, ".agency"));
+    writeFileSync(
+      join(projectRoot, ".agency", "config.jsonc"),
+      `{ "schemaVersion": 2, "provider": { "openai": { "whitelist": ["gpt-5.2"] } } }`,
+    );
+
+    const config = loadConfig({ globalDir, projectRoot, env: {} });
+    expect(config.provider.openai?.whitelist).toEqual(["gpt-5.2"]);
+  });
+
+  test("maps additional env vars: model, small model, theme, telemetry, crash reports, provider sets", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+
+    const config = loadConfig({
+      globalDir,
+      env: {
+        AGENCY_MODEL: "anthropic/claude-sonnet-5",
+        AGENCY_SMALL_MODEL: "anthropic/claude-haiku-4",
+        AGENCY_THEME: "high-contrast",
+        AGENCY_TELEMETRY: "1",
+        AGENCY_CRASH_REPORTS: "false",
+        AGENCY_DISABLED_PROVIDERS: "google, my-gateway",
+        AGENCY_ENABLED_PROVIDERS: "openai",
+      },
+    });
+    expect(config.model).toBe("anthropic/claude-sonnet-5");
+    expect(config.small_model).toBe("anthropic/claude-haiku-4");
+    expect(config.theme).toBe("high-contrast");
+    expect(config.telemetryEnabled).toBe(true);
+    expect(config.crashReportsEnabled).toBe(false);
+    expect(config.disabled_providers).toEqual(["google", "my-gateway"]);
+    expect(config.enabled_providers).toEqual(["openai"]);
+  });
 });

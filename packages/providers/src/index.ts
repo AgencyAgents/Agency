@@ -9,5 +9,6 @@ export * from "./presets.ts";
 export * from "./registry.ts";
 export * from "./scheduler.ts";
 export * from "./sse.ts";
+export * from "./stream-recovery.ts";
 export * from "./tokenizers/index.ts";
 export * from "./types.ts";

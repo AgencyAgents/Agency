@@ -1,7 +1,14 @@
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import { requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter, Scheduler, ThinkingLevel, ToolDefinition, Usage } from "@agency/providers";
+import {
+  type ProviderAdapter,
+  type Scheduler,
+  type ThinkingLevel,
+  type ToolDefinition,
+  type Usage,
+  withMidStreamRecovery,
+} from "@agency/providers";
 import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -47,6 +54,9 @@ export interface RunTurnOptions {
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
+  /** Correlates tool invocations with the turn that caused them (snapshot
+   *  journaling for undo); passed through to tool handler contexts. */
+  turnId?: string;
   /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
@@ -89,13 +99,9 @@ export async function runTurn(
 
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     try {
-      const prevOnRetry = scheduler.onRetry;
-      scheduler.onRetry = (attempt, message, next) => {
-        options.onEvent?.({ type: "retry", attempt, message, next });
-      };
       let turn: CollectedTurn;
-      try {
-        turn = await scheduler.schedule(() =>
+      turn = await scheduler.schedule(
+        () =>
           collectTurn(
             adapter,
             http,
@@ -111,10 +117,14 @@ export async function runTurn(
             },
             options.onEvent,
           ),
-        );
-      } finally {
-        scheduler.onRetry = prevOnRetry;
-      }
+        // Per-call observer: the shared instance slot would cross-fire
+        // between concurrent turns on the same scheduler.
+        {
+          onRetry: (attempt, message, next) => {
+            options.onEvent?.({ type: "retry", attempt, message, next });
+          },
+        },
+      );
 
       messages.push({ role: "assistant", content: turn.content });
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
@@ -187,7 +197,12 @@ async function runTools(
     const malformed = malformedCalls.get(call.id);
     const result: { content: string; isError: boolean; images?: ImageBlock[] } = malformed
       ? { content: malformed, isError: true }
-      : await executeOne(options.tools.find((t) => t.name === call.name), call, options, signal);
+      : await executeOne(
+          options.tools.find((t) => t.name === call.name),
+          call,
+          options,
+          signal,
+        );
     options.onEvent?.({
       type: "tool_result",
       id: call.id,
@@ -232,8 +247,9 @@ async function executeOne(
   }
 
   const toolSignal = signal ?? NEVER_ABORTED;
+  const toolCtx = { signal: toolSignal, turnId: options.turnId };
   try {
-    const result = await resolved.handler(call.input, { signal: toolSignal });
+    const result = await resolved.handler(call.input, toolCtx);
     return { content: result.content, isError: result.isError ?? false, images: result.images };
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };
@@ -261,7 +277,7 @@ async function collectTurn(
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
-  for await (const event of adapter.stream(request, http)) {
+  for await (const event of withMidStreamRecovery(adapter.stream(request, http))) {
     switch (event.type) {
       case "text_delta":
         appendText(content, "text", event.text);
@@ -270,6 +286,20 @@ async function collectTurn(
       case "thinking_delta":
         appendText(content, "thinking", event.text);
         onEvent?.({ type: "thinking_delta", text: event.text });
+        break;
+      case "thinking_signature": {
+        // Attach to the trailing thinking block, creating a placeholder when
+        // the provider sent the signature without streamed thinking text.
+        const last = content[content.length - 1];
+        if (last?.type === "thinking" && last.signature === undefined) {
+          last.signature = event.signature;
+        } else if (last?.type !== "thinking") {
+          content.push({ type: "thinking", text: "", signature: event.signature });
+        }
+        break;
+      }
+      case "redacted_thinking":
+        content.push({ type: "redacted_thinking", data: event.data });
         break;
       case "tool_call_start":
         nameByToolId.set(event.id, event.name);
