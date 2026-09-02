@@ -40,11 +40,16 @@ export function createWindowsKeychainBackend(
 
     async set(account, secret) {
       mkdirSync(storeDir, { recursive: true });
+      // Use .NET ProtectedData directly (System.Security.Cryptography) instead
+      // of the PowerShell ConvertTo/ConvertFrom-SecureString cmdlets, which
+      // require the Microsoft.PowerShell.Security module that may not load
+      // reliably on some CI runners.
       const script = [
-        "Import-Module Microsoft.PowerShell.Security",
+        "Add-Type -AssemblyName System.Security",
         "$secret = [Console]::In.ReadLine()",
-        "$secure = ConvertTo-SecureString -String $secret -AsPlainText -Force",
-        "ConvertFrom-SecureString -SecureString $secure",
+        "$bytes = [System.Text.Encoding]::UTF8.GetBytes($secret)",
+        "$encrypted = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+        "[System.Convert]::ToBase64String($encrypted)",
       ].join("; ");
 
       const result = await spawn([powershellExecutable(), "-NoProfile", "-Command", script], {
@@ -62,11 +67,11 @@ export function createWindowsKeychainBackend(
       const encrypted = readFileSync(path, "utf8").trim();
 
       const script = [
-        "Import-Module Microsoft.PowerShell.Security",
+        "Add-Type -AssemblyName System.Security",
         "$encrypted = [Console]::In.ReadLine()",
-        "$secure = ConvertTo-SecureString -String $encrypted",
-        "$bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)",
-        "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)",
+        "$bytes = [System.Convert]::FromBase64String($encrypted)",
+        "$decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+        "[System.Text.Encoding]::UTF8.GetString($decrypted)",
       ].join("; ");
 
       const result = await spawn([powershellExecutable(), "-NoProfile", "-Command", script], {
