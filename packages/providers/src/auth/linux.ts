@@ -14,8 +14,12 @@ export function createLinuxKeychainBackend(spawn: SpawnFn = defaultSpawn): Keych
     name: "linux-secret-service",
 
     async isAvailable() {
-      const result = await spawn(["secret-tool", "--version"]);
-      return result.exitCode === 0;
+      try {
+        const result = await spawn(["secret-tool", "--version"]);
+        return result.exitCode === 0;
+      } catch {
+        return false;
+      }
     },
 
     async set(account, secret) {
