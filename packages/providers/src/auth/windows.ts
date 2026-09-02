@@ -41,6 +41,7 @@ export function createWindowsKeychainBackend(
     async set(account, secret) {
       mkdirSync(storeDir, { recursive: true });
       const script = [
+        "Import-Module Microsoft.PowerShell.Security",
         "$secret = [Console]::In.ReadLine()",
         "$secure = ConvertTo-SecureString -String $secret -AsPlainText -Force",
         "ConvertFrom-SecureString -SecureString $secure",
@@ -61,6 +62,7 @@ export function createWindowsKeychainBackend(
       const encrypted = readFileSync(path, "utf8").trim();
 
       const script = [
+        "Import-Module Microsoft.PowerShell.Security",
         "$encrypted = [Console]::In.ReadLine()",
         "$secure = ConvertTo-SecureString -String $encrypted",
         "$bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)",

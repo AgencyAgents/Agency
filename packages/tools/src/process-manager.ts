@@ -113,6 +113,7 @@ export class ProcessManager {
     } catch {
       // already exited — nothing to reap
     }
+    entry.exited = true;
   }
 
   /**
