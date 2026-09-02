@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { SandboxBoundary } from "../src/sandbox.ts";
@@ -43,6 +45,60 @@ describe("SandboxBoundary.resolvePath", () => {
       }
     })();
     expect((err as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
+  });
+});
+
+describe("SandboxBoundary.resolvePath symlink handling", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function setup(): { root: string; outside: string } {
+    const dir = mkdtempSync(join(tmpdir(), "agency-sandbox-symlink-"));
+    tempDirs.push(dir);
+    const root = join(dir, "workspace");
+    const outside = join(dir, "outside");
+    mkdirSync(join(root, "sub"), { recursive: true });
+    mkdirSync(outside);
+    return { root, outside };
+  }
+
+  function link(target: string, path: string): void {
+    symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+  }
+
+  test("a symlink inside the root pointing outside it is rejected", () => {
+    const { root, outside } = setup();
+    link(outside, join(root, "sub", "escape"));
+    const boundary = new SandboxBoundary(root);
+
+    expect(() => boundary.resolvePath(join("sub", "escape", "secret.txt"))).toThrow(AgencyError);
+  });
+
+  test("a symlink that points back inside the root still resolves", () => {
+    const { root } = setup();
+    link(join(root, "sub"), join(root, "alias"));
+    const boundary = new SandboxBoundary(root);
+
+    expect(boundary.resolvePath(join("alias", "file.txt"))).toBe(join(root, "sub", "file.txt"));
+  });
+
+  test("a not-yet-existing path under a symlinked parent is still caught", () => {
+    const { root, outside } = setup();
+    link(outside, join(root, "sub", "escape"));
+    const boundary = new SandboxBoundary(root);
+
+    // Neither escape/nor the file below it exists yet — the dereference must
+    // happen through the existing ancestor.
+    expect(() => boundary.resolvePath(join("sub", "escape", "new", "file.txt"))).toThrow(AgencyError);
+  });
+
+  test("a not-yet-existing path inside the root still resolves lexically", () => {
+    const { root } = setup();
+    const boundary = new SandboxBoundary(root);
+
+    expect(boundary.resolvePath(join("src", "new-file.ts"))).toBe(join(root, "src", "new-file.ts"));
   });
 });
 

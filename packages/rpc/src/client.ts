@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
+import { PendingRequestManager } from "@agency/net";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type RpcMessage } from "./protocol.ts";
 
 export interface DaemonClient {
   call(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
   on(event: string, handler: (payload: unknown) => void): () => void;
   close(): Promise<void>;
-}
-
-interface Pending {
-  resolve(value: unknown): void;
-  reject(error: Error): void;
-  timer: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -58,18 +53,14 @@ export async function connectToDaemon(port: number, host = "127.0.0.1"): Promise
     );
   }
 
-  const pending = new Map<string, Pending>();
+  const pending = new PendingRequestManager<string>({ makeId: () => randomUUID() });
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
 
   socket.on("data", (chunk) => {
     for (const message of decoder.push(chunk.toString("utf8"))) {
       if (message.type === "response" || message.type === "response_error") {
-        const entry = pending.get(message.id);
-        if (!entry) continue;
-        pending.delete(message.id);
-        clearTimeout(entry.timer);
-        if (message.type === "response") entry.resolve(message.result);
-        else entry.reject(new Error(message.error.message));
+        if (message.type === "response") pending.resolve(message.id, message.result);
+        else pending.reject(message.id, new Error(message.error.message));
       } else if (message.type === "event") {
         for (const listener of listeners.get(message.event) ?? []) listener(message.payload);
       }
@@ -77,24 +68,17 @@ export async function connectToDaemon(port: number, host = "127.0.0.1"): Promise
   });
 
   socket.on("close", () => {
-    for (const [, entry] of pending) {
-      clearTimeout(entry.timer);
-      entry.reject(new Error("connection to daemon closed"));
-    }
-    pending.clear();
+    pending.failAll(new Error("connection to daemon closed"));
   });
 
   return {
     call(method, params, timeoutMs = 30_000) {
-      const id = randomUUID();
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`RPC call "${method}" timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-        pending.set(id, { resolve, reject, timer });
-        send({ type: "request", id, method, params });
-      });
+      const { id, promise } = pending.register(
+        timeoutMs,
+        () => new Error(`RPC call "${method}" timed out after ${timeoutMs}ms`),
+      );
+      send({ type: "request", id, method, params });
+      return promise;
     },
 
     on(event, handler) {

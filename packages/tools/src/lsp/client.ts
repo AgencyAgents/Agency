@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { t } from "@agency/i18n";
+import { counterIds, PendingRequestManager } from "@agency/net";
 
 /** One language-server diagnostic, narrowed to what edit verification reports. */
 export interface LspDiagnostic {
@@ -25,12 +26,6 @@ export interface LspLocation {
   path: string;
   line: number;
   character: number;
-}
-
-interface Pending {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
 }
 
 const HEADER_SEPARATOR = Buffer.from("\r\n\r\n");
@@ -58,8 +53,7 @@ function indexOfSubsequence(haystack: Buffer, needle: Buffer, from = 0): number 
  * blocks or fails a caller.
  */
 export class LspClient {
-  private nextId = 1;
-  private readonly pending = new Map<number, Pending>();
+  private readonly pending = new PendingRequestManager({ makeId: counterIds() });
   private readonly diagnostics = new Map<string, LspDiagnostic[]>();
   private buffer = Buffer.alloc(0);
   private child: ReturnType<typeof spawn> | undefined;
@@ -81,10 +75,10 @@ export class LspClient {
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.handleChunk(chunk));
     this.child.on("error", (error) =>
-      this.failAll(new Error(`language server failed to start: ${error.message}`)),
+      this.pending.failAll(new Error(`language server failed to start: ${error.message}`)),
     );
     this.child.on("exit", () => {
-      if (!this.closed) this.failAll(new Error("language server exited unexpectedly"));
+      if (!this.closed) this.pending.failAll(new Error("language server exited unexpectedly"));
     });
 
     await this.request("initialize", {
@@ -146,19 +140,16 @@ export class LspClient {
       // A hung or crashed server still gets killed below.
     }
     this.child?.kill();
-    this.failAll(new Error("language server closed"));
+    this.pending.failAll(new Error("language server closed"));
   }
 
   private request(method: string, params: unknown, timeoutMs = this.timeoutMs): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(t("lsp.request.timeout", { method, ms: timeoutMs })));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.send({ jsonrpc: "2.0", id, method, params });
-    });
+    const { id, promise } = this.pending.register(
+      timeoutMs,
+      () => new Error(t("lsp.request.timeout", { method, ms: timeoutMs })),
+    );
+    this.send({ jsonrpc: "2.0", id, method, params });
+    return promise;
   }
 
   private notify(method: string, params: unknown): void {
@@ -203,14 +194,13 @@ export class LspClient {
       return;
     }
     if (typeof id === "number") {
-      const entry = this.pending.get(id);
-      if (!entry) return;
-      this.pending.delete(id);
-      clearTimeout(entry.timer);
       if (message.error) {
-        entry.reject(new Error(String((message.error as { message?: string }).message ?? "LSP error")));
+        this.pending.reject(
+          id,
+          new Error(String((message.error as { message?: string }).message ?? "LSP error")),
+        );
       } else {
-        entry.resolve(message.result);
+        this.pending.resolve(id, message.result);
       }
       return;
     }
@@ -221,14 +211,6 @@ export class LspClient {
       if (!params?.uri) return;
       this.diagnostics.set(params.uri, (params.diagnostics ?? []).map(toDiagnostic));
     }
-  }
-
-  private failAll(error: Error): void {
-    for (const [, entry] of this.pending) {
-      clearTimeout(entry.timer);
-      entry.reject(error);
-    }
-    this.pending.clear();
   }
 }
 

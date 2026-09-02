@@ -82,6 +82,7 @@
       "name": "@agency/rpc",
       "version": "0.1.0",
       "dependencies": {
+        "@agency/net": "workspace:*",
         "@agency/schema": "workspace:*",
       },
     },

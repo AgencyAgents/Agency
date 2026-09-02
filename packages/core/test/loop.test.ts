@@ -38,6 +38,26 @@ function toolThenDoneAdapter(toolName: string, input: Record<string, unknown>): 
   };
 }
 
+/** Adapter that streams a tool call with the given raw argument JSON, then ends the turn. */
+function rawJsonAdapter(rawJson: string): ProviderAdapter {
+  let call = 0;
+  return {
+    family: "fake",
+    async *stream(): AsyncIterable<StreamEvent> {
+      call += 1;
+      if (call === 1) {
+        yield { type: "tool_call_start", id: "call_1", name: "read" };
+        yield { type: "tool_call_delta", id: "call_1", inputJsonDelta: rawJson };
+        yield { type: "tool_call_end", id: "call_1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 5 } };
+      } else {
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } };
+      }
+    },
+  };
+}
+
 const alwaysCallsTool: ProviderAdapter = {
   family: "fake",
   async *stream(): AsyncIterable<StreamEvent> {
@@ -182,7 +202,94 @@ describe("runTurn", () => {
     expect(toolResult.content).toBe("disk full");
   });
 
-  test("stops and reports budgetExceeded once the token budget is hit, without running tools", async () => {
+  test("near-miss tool-call JSON is repaired instead of killing the turn", async () => {
+    let handlerCalled: unknown;
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads",
+      inputSchema: {},
+      handler: async (input) => {
+        handlerCalled = input;
+        return { content: "file contents" };
+      },
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(rawJsonAdapter('{path: "a.ts",}'), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    // Unquoted key + trailing comma are repaired; the tool runs normally.
+    expect(handlerCalled).toEqual({ path: "a.ts" });
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.messages).toHaveLength(3);
+  });
+
+  test("a stream cut off mid-arguments is repaired by closing the open brace", async () => {
+    let handlerCalled: unknown;
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads",
+      inputSchema: {},
+      handler: async (input) => {
+        handlerCalled = input;
+        return { content: "file contents" };
+      },
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(rawJsonAdapter('{"path": "a.ts"'), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(handlerCalled).toEqual({ path: "a.ts" });
+    expect(result.stopReason).toBe("end_turn");
+  });
+
+  test("unrepairable tool-call JSON becomes a per-call error, not a dead turn", async () => {
+    let handlerCalled = false;
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads",
+      inputSchema: {},
+      handler: async () => {
+        handlerCalled = true;
+        return { content: "should not run" };
+      },
+    };
+
+    const scheduler = new Scheduler();
+    const result = await runTurn(rawJsonAdapter('{"path": '), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(handlerCalled).toBe(false); // the handler never runs on garbage input
+    expect(result.stopReason).toBe("end_turn"); // the turn survives the malformed call
+    expect(result.messages).toHaveLength(3); // assistant tool_call, user tool_result, assistant "done"
+    const toolResult = result.messages[1]!.content[0] as { isError: boolean; content: string };
+    expect(toolResult.isError).toBe(true);
+    expect(toolResult.content).toContain("not valid JSON");
+  });
+
+  test("stops and reports budgetExceeded once the token budget is hit, after closing out pending tool calls", async () => {
     let handlerCalled = false;
     const spec: ToolSpec = {
       name: "read",
@@ -193,6 +300,7 @@ describe("runTurn", () => {
         return { content: "x" };
       },
     };
+    const events: unknown[] = [];
 
     const scheduler = new Scheduler();
     const result = await runTurn(toolThenDoneAdapter("read", {}), scheduler, noopHttp, {
@@ -204,14 +312,25 @@ describe("runTurn", () => {
       apiKey: "key",
       session: [],
       budget: { maxTokens: 10 }, // first turn's usage (10 in + 5 out = 15) already exceeds this
+      onEvent: (e) => events.push(e),
     });
 
     expect(result.budgetExceeded).toBe(true);
-    expect(handlerCalled).toBe(false);
-    expect(result.messages).toHaveLength(1); // only the assistant tool_use message, no tool round-trip
+    // The pending tool call still runs so the persisted conversation stays
+    // well-formed: every tool_call gets a matching tool_result (a dangling
+    // tool_call would make resuming the session 400 at the provider).
+    expect(handlerCalled).toBe(true);
+    expect(result.messages).toHaveLength(2); // assistant tool_use + user tool_result, no second provider round-trip
+    expect(result.messages[1]!.content[0]).toMatchObject({
+      type: "tool_result",
+      content: "x",
+      isError: false,
+    });
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types[types.length - 1]).toBe("budget_exceeded");
   });
 
-  test("maxToolIterations caps a runaway tool-calling loop", async () => {
+  test("maxToolIterations caps a runaway tool-calling loop and says so", async () => {
     let calls = 0;
     const spec: ToolSpec = {
       name: "loop_tool",
@@ -222,6 +341,7 @@ describe("runTurn", () => {
         return { content: "ok" };
       },
     };
+    const events: unknown[] = [];
 
     const scheduler = new Scheduler();
     const result = await runTurn(alwaysCallsTool, scheduler, noopHttp, {
@@ -233,10 +353,32 @@ describe("runTurn", () => {
       apiKey: "key",
       session: [],
       maxToolIterations: 3,
+      onEvent: (e) => events.push(e),
     });
 
     expect(calls).toBe(3);
     expect(result.stopReason).toBe("tool_use"); // capped mid-loop, never reached a natural stop
+    // The cap is distinguishable from a natural finish: a dedicated event lets
+    // the UI show "stopped after N steps, continue?".
+    expect(events).toContainEqual({ type: "iteration_limit", iterations: 3 });
+  });
+
+  test("a natural finish never emits the iteration_limit event", async () => {
+    const events: unknown[] = [];
+    const scheduler = new Scheduler();
+    await runTurn(textTurn("done"), scheduler, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      maxToolIterations: 3,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "iteration_limit" }));
   });
 
   test("a tool result carrying images lands on the tool_result block and the event", async () => {

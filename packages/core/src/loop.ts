@@ -31,6 +31,7 @@ export type LoopEvent =
   | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
   | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
+  | { type: "iteration_limit"; iterations: number }
   | { type: "error"; code: string; message: string }
   | { type: "retry"; attempt: number; message: string; next?: number };
 
@@ -121,7 +122,18 @@ export async function runTurn(
       stopReason = turn.stopReason;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
 
+      const toolCalls = turn.content.filter(
+        (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
+      );
+
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
+        // Close out pending tool calls before ending the turn: a tool_call
+        // without a matching tool_result makes the persisted conversation
+        // malformed, and resuming that session 400s at the provider.
+        if (toolCalls.length > 0 && !options.signal?.aborted) {
+          const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
+          messages.push({ role: "user", content: results });
+        }
         options.onEvent?.({
           type: "budget_exceeded",
           spentTokens: totalTokens(cumulativeUsage),
@@ -132,16 +144,20 @@ export async function runTurn(
 
       if (stopReason !== "tool_use" || options.signal?.aborted) break;
 
-      const toolCalls = turn.content.filter(
-        (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
-      );
-      const results = await runTools(toolCalls, options, options.signal);
+      const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
       messages.push({ role: "user", content: results });
     } catch (error) {
       // Terminal for the turn: visible on the event stream (TUI/transcript), then rethrown to the caller.
       emitErrorEvent(error, options.onEvent);
       throw error;
     }
+  }
+
+  // Reaching here means every iteration was spent with the model still asking
+  // for tools (any other exit breaks or returns above): the cap, not the
+  // model, ended this turn. Say so explicitly so the UI can offer to continue.
+  if (stopReason === "tool_use" && !options.signal?.aborted) {
+    options.onEvent?.({ type: "iteration_limit", iterations: maxToolIterations });
   }
 
   return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: false };
@@ -160,13 +176,18 @@ function emitErrorEvent(error: unknown, onEvent?: (event: LoopEvent) => void): v
 async function runTools(
   calls: Extract<ContentBlock, { type: "tool_call" }>[],
   options: RunTurnOptions,
+  malformedCalls: ReadonlyMap<string, string>,
   signal: AbortSignal | undefined,
 ): Promise<ContentBlock[]> {
   const results: Array<Extract<ContentBlock, { type: "tool_result" }>> = [];
 
   for (const call of calls) {
-    const spec = options.tools.find((t) => t.name === call.name);
-    const result = await executeOne(spec, call, options, signal);
+    // A call whose streamed arguments never parsed (even after repair) gets a
+    // per-call error instead of running the handler on garbage input.
+    const malformed = malformedCalls.get(call.id);
+    const result: { content: string; isError: boolean; images?: ImageBlock[] } = malformed
+      ? { content: malformed, isError: true }
+      : await executeOne(options.tools.find((t) => t.name === call.name), call, options, signal);
     options.onEvent?.({
       type: "tool_result",
       id: call.id,
@@ -223,6 +244,8 @@ interface CollectedTurn {
   content: ContentBlock[];
   stopReason: StopReason;
   usage: Usage;
+  /** Tool-call ids whose streamed arguments never parsed, mapped to the per-call error message. */
+  malformedCalls: Map<string, string>;
 }
 
 async function collectTurn(
@@ -234,6 +257,7 @@ async function collectTurn(
   const content: ContentBlock[] = [];
   const jsonByToolId = new Map<string, string>();
   const nameByToolId = new Map<string, string>();
+  const malformedCalls = new Map<string, string>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
@@ -256,8 +280,27 @@ async function collectTurn(
         jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
         break;
       case "tool_call_end": {
-        const raw = jsonByToolId.get(event.id) ?? "{}";
-        const input = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        const raw = jsonByToolId.get(event.id) ?? "";
+        let input: Record<string, unknown> = {};
+        if (raw.trim()) {
+          try {
+            input = JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            // One malformed delta must not kill the whole turn: attempt a
+            // repair pass, and if the arguments are beyond repair, record a
+            // per-call error (runTools turns it into an error tool_result)
+            // instead of throwing away the entire turn.
+            const repaired = repairToolJson(raw);
+            if (repaired) {
+              input = repaired;
+            } else {
+              malformedCalls.set(
+                event.id,
+                `tool arguments were not valid JSON (even after repair): ${raw.slice(0, 500)}`,
+              );
+            }
+          }
+        }
         content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
         break;
       }
@@ -268,7 +311,41 @@ async function collectTurn(
     }
   }
 
-  return { content, stopReason, usage };
+  return { content, stopReason, usage, malformedCalls };
+}
+
+/**
+ * Best-effort repair for the near-miss JSON providers stream as tool
+ * arguments: trailing commas, unquoted keys, and braces/brackets the stream
+ * cut off. Only ever called after JSON.parse already failed, so it cannot
+ * corrupt well-formed input. Returns undefined when nothing salvageable
+ * remains and the caller should fall back to a per-call error.
+ */
+function repairToolJson(raw: string): Record<string, unknown> | undefined {
+  let repaired = raw
+    .replace(/,\s*([}\]])/g, "$1") // trailing commas: {"a":1,} -> {"a":1}
+    .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3'); // unquoted keys: {a:1} -> {"a":1}
+  // Close braces/brackets the stream truncated (string literals blanked first
+  // so braces inside strings don't skew the count).
+  const stripped = repaired.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  let braces = 0;
+  let brackets = 0;
+  for (const ch of stripped) {
+    if (ch === "{") braces++;
+    else if (ch === "}") braces--;
+    else if (ch === "[") brackets++;
+    else if (ch === "]") brackets--;
+  }
+  if (braces > 0) repaired += "}".repeat(braces);
+  if (brackets > 0) repaired += "]".repeat(brackets);
+  try {
+    const parsed: unknown = JSON.parse(repaired);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function appendText(content: ContentBlock[], type: "text" | "thinking", delta: string): void {

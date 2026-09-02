@@ -15,6 +15,34 @@ export interface AdaptOptions {
   capabilities: Capabilities;
 }
 
+/**
+ * Renders an MCP `CallToolResult.content` array into the plain text the tool
+ * contract expects. MCP returns typed content blocks — `{type: "text", text}`,
+ * `{type: "resource", resource: {text}}`, images, and whatever a server
+ * invents next — so text is extracted where it lives and everything else is
+ * JSON-stringified, never collapsed into "[object Object]" by String().
+ */
+export function renderMcpContent(content: unknown): string {
+  if (content === undefined || content === null) return "";
+  const blocks = Array.isArray(content) ? content : [content];
+  return blocks.map(renderContentBlock).join("\n");
+}
+
+function renderContentBlock(block: unknown): string {
+  if (typeof block === "string") return block;
+  if (block === null || typeof block !== "object") return String(block);
+  const record = block as Record<string, unknown>;
+  if (record.type === "text" && typeof record.text === "string") return record.text;
+  if (record.type === "resource") {
+    const resource = record.resource;
+    if (resource !== null && typeof resource === "object") {
+      const text = (resource as Record<string, unknown>).text;
+      if (typeof text === "string") return text;
+    }
+  }
+  return JSON.stringify(block);
+}
+
 /** Adapts an MCP tool definition into a ToolSpec (R3). */
 export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options: AdaptOptions): ToolSpec {
   const spec: ToolSpec<Record<string, unknown>> = {
@@ -26,7 +54,7 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
     renderResult: (result) => result.content,
     async handler(input, ctx) {
       const result = await client.callTool(def.name, input, ctx.signal);
-      return { content: String(result.content ?? ""), isError: Boolean(result.isError) };
+      return { content: renderMcpContent(result.content), isError: Boolean(result.isError) };
     },
   };
   return spec as unknown as ToolSpec;

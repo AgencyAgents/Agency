@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Redactor } from "@agency/guard";
 import { EventBus } from "../src/events.ts";
 import { currentTraceId, Logger, withTrace } from "../src/logger.ts";
 
@@ -62,5 +63,45 @@ describe("Logger", () => {
     logger.error("boom");
 
     expect(seen).toEqual(["boom"]);
+  });
+
+  test("survives a self-referential field object without blowing the stack", () => {
+    const lines: string[] = [];
+    const logger = new Logger({ sink: (line) => lines.push(line), redactor: new Redactor() });
+
+    const fields: Record<string, unknown> = { name: "cycle" };
+    fields.self = fields;
+    logger.info("cyclic fields", fields);
+
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.self).toBe("[Circular]");
+  });
+
+  test("caps recursion depth on deeply nested fields", () => {
+    const lines: string[] = [];
+    const logger = new Logger({ sink: (line) => lines.push(line), redactor: new Redactor() });
+
+    let deep: Record<string, unknown> = { value: "bottom" };
+    for (let i = 0; i < 100; i += 1) deep = { nested: deep };
+    logger.info("deep fields", { root: deep });
+
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0]!);
+    let node: Record<string, unknown> = entry.root;
+    while (typeof node.nested === "object" && node.nested !== null) node = node.nested as never;
+    expect(node.nested).toBe("[Truncated]");
+  });
+
+  test("redaction still reaches strings nested inside field objects", () => {
+    const lines: string[] = [];
+    const redactor = new Redactor();
+    redactor.registerSecret("sk-hunter2-secret");
+    const logger = new Logger({ sink: (line) => lines.push(line), redactor });
+
+    logger.info("nested secret", { auth: { key: "token sk-hunter2-secret leaked" } });
+
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.auth.key).toBe("token [REDACTED] leaked");
   });
 });

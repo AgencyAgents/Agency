@@ -35,6 +35,37 @@ describe("ProcessManager", () => {
     expect(manager.kill("not-a-real-id")).toBe(false);
   });
 
+  test("a refused kill does not mark the process as exited", () => {
+    manager = new ProcessManager();
+    const id = manager.adopt(
+      {
+        kill: () => {
+          throw new Error("EPERM: operation not permitted");
+        },
+      },
+      "unkillable",
+    );
+    manager.kill(id);
+    expect(manager.list().find((p) => p.id === id)?.running).toBe(true);
+  });
+
+  test("a process confirmed gone by the OS is marked exited even if kill() throws", async () => {
+    manager = new ProcessManager();
+    const doomed = Bun.spawn(["node", "-e", "process.exit(0)"]);
+    await doomed.exited;
+    const id = manager.adopt(
+      {
+        pid: doomed.pid,
+        kill: () => {
+          throw new Error("ESRCH: no such process");
+        },
+      },
+      "already-dead",
+    );
+    manager.kill(id);
+    expect(manager.list().find((p) => p.id === id)?.running).toBe(false);
+  });
+
   test("killAll stops every tracked process", async () => {
     manager = new ProcessManager();
     const a = manager.spawn(["node", "-e", "setInterval(() => {}, 1000)"]);

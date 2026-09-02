@@ -31,10 +31,18 @@ function isExempt(url: string, env: NodeJS.ProcessEnv): boolean {
     .some((pattern) => host === pattern || host.endsWith(`.${pattern}`));
 }
 
+/** Module-level cache keyed by CA file path: the bundle is read and parsed once
+ *  per path instead of on every single request. */
+const caCache = new Map<string, string>();
+
 async function resolveCa(options: HttpClientOptions, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   const path = options.caFile ?? env.NODE_EXTRA_CA_CERTS;
   if (!path) return undefined;
-  return Bun.file(path).text();
+  const cached = caCache.get(path);
+  if (cached !== undefined) return cached;
+  const ca = await Bun.file(path).text();
+  caCache.set(path, ca);
+  return ca;
 }
 
 /**

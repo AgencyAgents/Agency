@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWindowsKeychainBackend } from "../../src/auth/windows.ts";
@@ -90,5 +90,59 @@ describe("createWindowsKeychainBackend (mocked)", () => {
       exitCode: 1,
     }));
     await expect(backend.set("anthropic", "secret")).rejects.toThrow(/DPAPI/);
+  });
+
+  test("migrates a legacy hex credential to the current format on read", async () => {
+    const dir = tempDir();
+    const scripts: string[] = [];
+    const backend = createWindowsKeychainBackend(dir, async (cmd) => {
+      const script = cmd[3] ?? "";
+      scripts.push(script);
+      // The legacy decrypt path and the current re-encrypt path are distinct scripts.
+      if (script.includes("ConvertTo-SecureString")) {
+        return { stdout: "sk-migrated-secret\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "bmV3LWNpcGhlcnRleHQ==\n", stderr: "", exitCode: 0 };
+    });
+
+    // Pre-upgrade blob: bare hex with the ConvertFrom-SecureString header.
+    writeFileSync(join(dir, "anthropic.dpapi"), "76492d1116743f0423413b16050a5345aabbccdd\n");
+
+    expect(await backend.get("anthropic")).toBe("sk-migrated-secret");
+    // The credential file has been rewritten in the current Base64 format, so
+    // the legacy decrypt path never needs to run again.
+    expect(readFileSync(join(dir, "anthropic.dpapi"), "utf8").trim()).toBe("bmV3LWNpcGhlcnRleHQ==");
+    expect(scripts).toHaveLength(2);
+  });
+
+  test("a current-format credential is not routed through the legacy path", async () => {
+    const dir = tempDir();
+    const scripts: string[] = [];
+    const backend = createWindowsKeychainBackend(dir, async (cmd) => {
+      scripts.push(cmd[3] ?? "");
+      return { stdout: "sk-plain-secret\n", stderr: "", exitCode: 0 };
+    });
+
+    writeFileSync(join(dir, "anthropic.dpapi"), "AQAAANCMnd8bfZERDj3/g==\n");
+
+    expect(await backend.get("anthropic")).toBe("sk-plain-secret");
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]).not.toContain("ConvertTo-SecureString");
+  });
+
+  test("a legacy credential that cannot be migrated reports an actionable error", async () => {
+    const dir = tempDir();
+    const backend = createWindowsKeychainBackend(dir, async () => ({
+      stdout: "",
+      stderr: "cmdlet failed",
+      exitCode: 1,
+    }));
+    writeFileSync(join(dir, "anthropic.dpapi"), "76492d1116743f0423413b16050a5345aabbccdd\n");
+
+    await expect(backend.get("anthropic")).rejects.toThrow(/pre-upgrade.*store it again/s);
+    // The unmigrated file is left untouched for a later attempt.
+    expect(readFileSync(join(dir, "anthropic.dpapi"), "utf8").trim()).toBe(
+      "76492d1116743f0423413b16050a5345aabbccdd",
+    );
   });
 });

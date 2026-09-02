@@ -36,7 +36,9 @@ const RETRY_CLASS: Record<ErrorCode, RetryClass> = {
   [ErrorCode.PROXY]: "fatal",
   [ErrorCode.TRANSIENT]: "retryable",
   [ErrorCode.REFUSAL]: "fatal",
-  [ErrorCode.TOOL_ERROR]: "fatal",
+  // Tool rejections like the edit engine's recoverable "text not found" are
+  // feedback the caller can act on, not turn-fatal failures.
+  [ErrorCode.TOOL_ERROR]: "retryable",
   [ErrorCode.PERMISSION_DENIED]: "fatal",
   [ErrorCode.INTERNAL]: "fatal",
 };

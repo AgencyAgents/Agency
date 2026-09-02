@@ -44,15 +44,32 @@ export interface LoggerOptions {
   redactor?: Redactor;
 }
 
+/** Self-referential log fields (a.config.billing = a) and runaway nesting would
+ *  otherwise recurse until the stack blows: cycles short-circuit, depth is capped. */
+const MAX_REDACT_DEPTH = 8;
+const CIRCULAR_PLACEHOLDER = "[Circular]";
+const TRUNCATED_PLACEHOLDER = "[Truncated]";
+
 /** Recursively redacts string values so a secret nested in a field object
  *  can't slip past the chokepoint. */
-function redactValue(value: unknown, redactor: Redactor): unknown {
+function redactValue(value: unknown, redactor: Redactor, depth = 0, seen = new Set<object>()): unknown {
   if (typeof value === "string") return redactor.redact(value);
-  if (Array.isArray(value)) return value.map((v) => redactValue(v, redactor));
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactValue(v, redactor)]));
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) return CIRCULAR_PLACEHOLDER;
+  if (depth >= MAX_REDACT_DEPTH) return TRUNCATED_PLACEHOLDER;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((v) => redactValue(v, redactor, depth + 1, seen));
+    }
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, redactValue(v, redactor, depth + 1, seen)]),
+    );
+  } finally {
+    // Path-scoped: a node shared by two branches (a DAG) is not a cycle, so it
+    // only counts while it's on the current recursion path.
+    seen.delete(value);
   }
-  return value;
 }
 
 /** Structured JSON-lines logger. One line per entry, trace-correlated, redaction-ready. */

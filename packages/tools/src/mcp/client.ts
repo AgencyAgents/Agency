@@ -1,9 +1,9 @@
+import { counterIds, PendingRequestManager } from "@agency/net";
 import type { McpToolDefinition } from "./adapt.ts";
 import type { McpTransport } from "./transport.ts";
 
 export class McpClient {
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private readonly pending = new PendingRequestManager({ makeId: counterIds() });
   private onToolListChanged?: () => void;
 
   constructor(
@@ -43,17 +43,17 @@ export class McpClient {
   }
 
   private request(method: string, params: unknown): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      void this.transport.send({ jsonrpc: "2.0", id, method, params });
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`MCP ${this.name} ${method} timed out`));
-        }
-      }, 10_000);
+    const { id, promise } = this.pending.register(
+      10_000,
+      () => new Error(`MCP ${this.name} ${method} timed out`),
+    );
+    // A failed write must fail the request now with the real error, not 10s
+    // from now as a generic timeout. If a response already settled the
+    // request, reject() is a no-op (so a late send failure can't clobber it).
+    this.transport.send({ jsonrpc: "2.0", id, method, params }).catch((error: unknown) => {
+      this.pending.reject(id, error instanceof Error ? error : new Error(String(error)));
     });
+    return promise;
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
@@ -65,13 +65,10 @@ export class McpClient {
     }
     const id = msg.id as number | undefined;
     if (typeof id !== "number") return;
-    const entry = this.pending.get(id);
-    if (!entry) return;
-    this.pending.delete(id);
     if (msg.error) {
-      entry.reject(new Error(String((msg.error as { message?: string })?.message ?? "MCP error")));
+      this.pending.reject(id, new Error(String((msg.error as { message?: string })?.message ?? "MCP error")));
       return;
     }
-    entry.resolve(msg.result);
+    this.pending.resolve(id, msg.result);
   }
 }

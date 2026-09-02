@@ -110,10 +110,29 @@ export class ProcessManager {
     }
     try {
       entry.proc.kill();
+      entry.exited = true;
     } catch {
-      // already exited — nothing to reap
+      // The kill was refused (or the handle is already stale). Only treat the
+      // entry as reaped once the OS confirms the pid is gone — marking it
+      // exited on any throw would leave a live process permanently unkilled.
+      if (this.pidIsGone(pid)) entry.exited = true;
     }
-    entry.exited = true;
+  }
+
+  /**
+   * Signal 0 probes for existence without delivering anything. EPERM means the
+   * process exists but refuses signals — still alive for our purposes. An
+   * unverifiable pid (absent or invalid) conservatively counts as alive so a
+   * later kill()/killAll() retries it instead of writing it off.
+   */
+  private pidIsGone(pid: number | undefined): boolean {
+    if (typeof pid !== "number" || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "EPERM";
+    }
   }
 
   /**

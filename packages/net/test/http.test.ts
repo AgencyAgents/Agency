@@ -86,4 +86,23 @@ describe("createHttpClient", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("caches the CA bundle so it is read once per path, not per request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-net-test-"));
+    const caPath = join(dir, "fake-ca.pem");
+    writeFileSync(caPath, "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n");
+    server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+
+    try {
+      const client = createHttpClient({ caFile: caPath });
+      expect((await client.fetch(`http://localhost:${server.port}/`)).status).toBe(200);
+
+      // Remove the bundle after the first request: a second request would fail
+      // to resolve the CA if the file were re-read every time.
+      rmSync(caPath);
+      expect((await client.fetch(`http://localhost:${server.port}/`)).status).toBe(200);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

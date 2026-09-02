@@ -35,8 +35,10 @@ function sessionPath(sessionsDir: string, sessionId: string): string {
  *
  * Crash recovery falls out of the write granularity for free: each append is
  * one complete, synchronously flushed line, so a process killed mid-write can
- * only ever leave the last line truncated, never an earlier one. `load()`
- * stops at the first line it can't parse and returns everything before it.
+ * only ever leave one line truncated, never mangle an earlier one. `load()`
+ * warns on and skips any line it can't parse or shape-check; lines are
+ * independently flushed, so a corrupt line doesn't vouch for its neighbors and
+ * the valid entries around it still load instead of being silently dropped.
  */
 export class SessionStore {
   constructor(private readonly sessionsDir: string) {}
@@ -66,18 +68,29 @@ export class SessionStore {
   load(sessionId: string): SessionEntry[] {
     const path = sessionPath(this.sessionsDir, sessionId);
     if (!existsSync(path)) return [];
-    const lines = readFileSync(path, "utf8")
-      .split("\n")
-      .filter((l) => l.length > 0);
+    const lines = readFileSync(path, "utf8").split("\n");
     const entries: SessionEntry[] = [];
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
+      if (line.length === 0) continue;
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
-      } catch {
-        break; // a partial write from a crash mid-append; nothing after it is trustworthy either
+      } catch (error) {
+        // crash mid-append or external corruption; lines are independently
+        // flushed, so skip this one loudly instead of silently dropping the tail
+        console.warn(
+          `[sessions] corrupt line ${index + 1} in ${sessionId}.jsonl skipped (invalid JSON): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        continue;
       }
-      if (!hasEntryShape(parsed)) break;
+      if (!hasEntryShape(parsed)) {
+        console.warn(
+          `[sessions] corrupt line ${index + 1} in ${sessionId}.jsonl skipped (not a session entry)`,
+        );
+        continue;
+      }
       entries.push(parsed);
     }
     return entries;
@@ -100,12 +113,24 @@ export class SessionStore {
     return entries.filter((e) => !parented.has(e.id)).map((e) => e.id);
   }
 
-  /** The most recently created tip: the branch `/resume` continues by default. */
+  /** The most recently created tip: the branch `/resume` continues by default.
+   *  Same-millisecond entries (identical createdAt) tie-break by position in
+   *  `entries` — file order, i.e. creation order — so the result never depends
+   *  on sort stability or locale. */
   latestTip(entries: SessionEntry[]): string | undefined {
     const tipIds = new Set(this.tips(entries));
-    const tipEntries = entries.filter((e) => tipIds.has(e.id));
-    tipEntries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return tipEntries.at(-1)?.id;
+    let latest: { id: string; createdAt: string; index: number } | undefined;
+    for (const [index, entry] of entries.entries()) {
+      if (!tipIds.has(entry.id)) continue;
+      if (
+        latest === undefined ||
+        entry.createdAt > latest.createdAt ||
+        (entry.createdAt === latest.createdAt && index > latest.index)
+      ) {
+        latest = { id: entry.id, createdAt: entry.createdAt, index };
+      }
+    }
+    return latest?.id;
   }
 
   /** Root-to-tip ancestry for `tipId`, in chronological order. */

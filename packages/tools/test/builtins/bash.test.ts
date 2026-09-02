@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -66,10 +66,23 @@ describe("createBashTool", () => {
     expect(result.content).not.toContain("__AGENCY_EXIT__");
   }, 30_000);
 
-  test("truncates output past the stated character limit", async () => {
+  test("truncates output past the stated byte limit", async () => {
     const { tool } = setup();
     const result = await tool.handler({ command: `node -e "console.log('x'.repeat(40000))"` }, { signal });
     expect(result.content).toContain("[truncated");
+    expect(result.content.length).toBeLessThan(31_000);
+  }, 30_000);
+
+  test("truncation never splits a multi-byte character", async () => {
+    const { tool } = setup();
+    // 29998 x's + newline lands the 30000-byte cut mid-emoji (4 bytes each),
+    // so a surrogate-splitting cut would surface as U+FFFD replacement chars.
+    const result = await tool.handler(
+      { command: `node -e "console.log('x'.repeat(29998) + '\\uD83C\\uDF89'.repeat(10))"` },
+      { signal },
+    );
+    expect(result.content).toContain("[truncated");
+    expect(result.content).not.toContain("\uFFFD");
     expect(result.content.length).toBeLessThan(31_000);
   }, 30_000);
 
@@ -119,4 +132,87 @@ describe("createBashTool", () => {
     await resultPromise;
     // macOS CI can be slow to deliver the kill signal to the child.
   }, 60_000);
+
+  test("aborting preserves partial output and labels the result cancelled", async () => {
+    const { tool, root } = setup();
+    const controller = new AbortController();
+    const markerPath = join(root, "abort-flushed.marker");
+    const command =
+      process.platform === "win32"
+        ? `Write-Output 'partial-output-before-abort'; Set-Content -LiteralPath '${markerPath.replace(/\\/g, "/")}' -Value done; Start-Sleep -Seconds 30`
+        : `echo partial-output-before-abort; touch '${markerPath}'; sleep 30`;
+
+    const resultPromise = tool.handler({ command }, { signal: controller.signal });
+    // Deterministic abort point: the marker file is created only after the
+    // output line was written, so partial output is already in the pipe.
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(markerPath)) {
+      if (Date.now() > deadline) throw new Error("marker file never appeared");
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    controller.abort();
+    const result = await resultPromise;
+
+    expect(result.content).toContain("partial-output-before-abort");
+    expect(result.content).toContain("[cancelled");
+    expect(result.content).not.toContain("exit code: 0");
+  }, 60_000);
+
+  test("aborting tears down the process tree via ProcessManager.killTree", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agency-bash-test-"));
+    dirs.push(root);
+    const deps: ToolDeps = {
+      identity: { type: "user" },
+      capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },
+      sandbox: new SandboxBoundary(root),
+    };
+    const state: BashState = { cwd: root };
+    const killedPids: number[] = [];
+    const manager = { killTree: (pid: number) => killedPids.push(pid) } as unknown as ProcessManager;
+    const tool = createBashTool(deps, resolveShell(process.platform), state, manager);
+    const controller = new AbortController();
+
+    const command = process.platform === "win32" ? "Start-Sleep -Seconds 30" : "sleep 30";
+    const resultPromise = tool.handler({ command }, { signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 300));
+    controller.abort();
+    const result = await resultPromise;
+
+    expect(killedPids.length).toBe(1);
+    expect(killedPids[0]).toBeGreaterThan(0);
+    expect(result.content).toContain("[cancelled");
+  }, 60_000);
+
+  test("repeated calls leave no abort listeners on the shared per-turn signal", async () => {
+    const { tool } = setup();
+    const controller = new AbortController();
+    const inner = controller.signal;
+    let added = 0;
+    let removed = 0;
+    const counting = new Proxy(inner, {
+      get(target, prop, _receiver) {
+        if (prop === "addEventListener") {
+          return (...args: Parameters<AbortSignal["addEventListener"]>) => {
+            added += 1;
+            return target.addEventListener(...args);
+          };
+        }
+        if (prop === "removeEventListener") {
+          return (...args: Parameters<AbortSignal["removeEventListener"]>) => {
+            removed += 1;
+            return target.removeEventListener(...args);
+          };
+        }
+        // target as receiver: Bun brand-checks the `aborted` getter, so it
+        // must be invoked on the real AbortSignal, not on the proxy.
+        return Reflect.get(target, prop, target);
+      },
+    }) as AbortSignal;
+
+    await tool.handler({ command: "echo one" }, { signal: counting });
+    await tool.handler({ command: "echo two" }, { signal: counting });
+
+    expect(added).toBeGreaterThan(0);
+    expect(added).toBe(removed);
+  }, 30_000);
 });

@@ -10,6 +10,12 @@ describe("AgencyError", () => {
     const auth = new AgencyError(ErrorCode.AUTH, "401", { source: "anthropic" });
     expect(auth.isRetryable).toBe(false);
     expect(auth.retryClass).toBe("fatal");
+
+    const toolError = new AgencyError(ErrorCode.TOOL_ERROR, "edit rejected: text not found", {
+      source: "edit",
+    });
+    expect(toolError.isRetryable).toBe(true);
+    expect(toolError.retryClass).toBe("retryable");
   });
 
   test("resolves a stable i18n message key, not a hardcoded string", () => {

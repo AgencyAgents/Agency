@@ -113,12 +113,14 @@ export class Scheduler {
         if (!shouldRetry) throw error;
 
         const retryAfterMs = error instanceof AgencyError ? extractRetryAfterMs(error) : undefined;
-        this.onRetry?.(
-          attempt,
-          error.message,
-          retryAfterMs !== undefined ? Date.now() + retryAfterMs : undefined,
-        );
-        await sleep(retryAfterMs ?? this.backoffDelay(attempt));
+        // Security bound: a hostile or misconfigured Retry-After must not hang a
+        // turn for a day, so the header is capped like the computed backoff is.
+        const delayMs =
+          retryAfterMs !== undefined
+            ? Math.min(Math.max(retryAfterMs, 0), this.maxDelayMs)
+            : this.backoffDelay(attempt);
+        this.onRetry?.(attempt, error.message, retryAfterMs !== undefined ? Date.now() + delayMs : undefined);
+        await sleep(delayMs);
       }
     }
   }
