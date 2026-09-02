@@ -10,12 +10,12 @@ import {
 } from "@agency/core";
 
 /** `agency where`: every path Agency reads or writes, in one place. */
-export function whereCommand(): string {
+export function whereCommand(env: NodeJS.ProcessEnv = process.env): string {
   const lines = [
-    `config:  ${configDir()}`,
-    `data:    ${dataDir()}`,
-    `cache:   ${cacheDir()}`,
-    `logs:    ${logDir()}`,
+    `config:  ${configDir(env)}`,
+    `data:    ${dataDir(env)}`,
+    `cache:   ${cacheDir(env)}`,
+    `logs:    ${logDir(env)}`,
   ];
   return lines.join("\n");
 }
@@ -33,8 +33,8 @@ function formatBytes(bytes: number): string {
 }
 
 /** `agency storage`: size accounting by category. */
-export function storageCommand(): string {
-  const report = reportStorage();
+export function storageCommand(env: NodeJS.ProcessEnv = process.env): string {
+  const report = reportStorage(env);
   return [
     `data:   ${formatBytes(report.dataBytes)}  (${report.dataDir})`,
     `cache:  ${formatBytes(report.cacheBytes)}  (${report.cacheDir}, safe to delete)`,
@@ -45,11 +45,14 @@ export function storageCommand(): string {
 /** `agency storage prune`: clears the cache outright, and applies session
  *  retention if a policy is given. Cache alone is pruned unconditionally,
  *  since deleting it is defined to never lose data. */
-export function pruneCommand(sessionRetention?: RetentionPolicy): string {
-  pruneCache();
+export function pruneCommand(
+  sessionRetention?: RetentionPolicy,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  pruneCache(env);
   const lines = ["cache: cleared"];
   if (sessionRetention) {
-    const { deleted } = pruneSessions(sessionRetention);
+    const { deleted } = pruneSessions(sessionRetention, env);
     lines.push(`sessions: deleted ${deleted.length} file(s) past retention`);
   }
   return lines.join("\n");

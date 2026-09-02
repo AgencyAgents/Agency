@@ -94,6 +94,28 @@ export const en = {
   "telemetry.consent.enabled": "Telemetry enabled. Thank you.",
   "telemetry.consent.disabled": "Telemetry stays off.",
 
+  "cli.tui.hint": "Agency TUI: run in a terminal with a TTY. Use --help for commands.",
+  "cli.error.unknown_command": 'Unknown command "{command}". Run `agency --help`.',
+  "cli.error.unknown_option": 'Unknown option "{flag}". Run `agency --help`.',
+  "cli.error.missing_value": "Option {flag} needs a value.",
+  "cli.error.invalid_format": '--format must be "text" or "json".',
+  "cli.error.invalid_number": "{flag} must be a non-negative number.",
+  "cli.error.print_with_command": "Choose either a command or -p/--print, not both.",
+  "cli.error.continue_requires_print": "--continue and --session need -p/--print to run a turn.",
+  "cli.error.session_conflict": "Use either --continue or --session, not both.",
+  "cli.error.no_model": "No model configured. Run `agency onboard` or pass --model provider/model.",
+  "cli.error.provider_without_model":
+    "No default model id to pair with {provider}. Pass --model provider/model.",
+  "cli.error.no_key": "No API key for {provider}. Run `agency auth login {provider}`.",
+  "cli.error.no_sessions": "No sessions to continue.",
+  "cli.error.unknown_session": 'Unknown session "{id}".',
+  "cli.error.session_delete_usage": "usage: agency session delete <id>",
+  "cli.error.auth_login_usage": "usage: agency auth login <provider>",
+  "cli.auth.key_prompt": "API key for {provider}:",
+  "cli.auth.connected": "{provider}: connected",
+  "cli.auth.disconnected": "{provider}: not connected",
+  "cli.session.deleted": "Deleted session {id}.",
+
   "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;
 

@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { dataDir } from "@agency/core";
 import type { ThinkingLevel } from "@agency/providers";
-import { type DaemonClient, ensureDaemon } from "@agency/rpc";
+import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import type { RunTurnParams, RunTurnRpcResult } from "./daemon.ts";
 
 export interface RunHeadlessOptions {
   workspaceRoot: string;
-  instanceDir: string;
+  /** Defaults to `defaultInstanceDir()`. */
+  instanceDir?: string;
   provider: string;
   model: string;
   apiKey: string;
@@ -21,16 +23,31 @@ export interface RunHeadlessOptions {
 
 const DEFAULT_DAEMON_ENTRY = join(import.meta.dir, "daemon-entry.ts");
 
+/** Where per-workspace daemon instance files live, alongside Agency's other data dirs. */
+export function defaultInstanceDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(dataDir(env), "instances");
+}
+
+export interface HeadlessConnectOptions {
+  workspaceRoot: string;
+  /** Defaults to `defaultInstanceDir()`. */
+  instanceDir?: string;
+  connect?: EnsureDaemonOptions["connect"];
+  /** Injectable for tests; production callers never pass this. */
+  daemonEntryPath?: string;
+}
+
 /**
- * The non-interactive client: finds or starts this workspace's daemon, runs
- * one turn, and returns. This is the "headless/print client" P3 delivers;
- * the TUI is a different client over the same RPC surface, not a
- * prerequisite for this one to work.
+ * Finds or starts this workspace's daemon (one per workspace root) and returns
+ * a handshake-complete client.
  */
-export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnRpcResult> {
-  const { client } = await ensureDaemon({
+export async function connectHeadlessClient(
+  options: HeadlessConnectOptions,
+): Promise<{ port: number; client: DaemonClient }> {
+  return ensureDaemon({
     workspaceRoot: options.workspaceRoot,
-    instanceDir: options.instanceDir,
+    instanceDir: options.instanceDir ?? defaultInstanceDir(),
+    connect: options.connect,
     spawnDaemon: (instanceFile) => {
       Bun.spawn(
         [
@@ -46,6 +63,16 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       );
     },
   });
+}
+
+/**
+ * The non-interactive client: finds or starts this workspace's daemon, runs
+ * one turn, and returns. This is the "headless/print client" P3 delivers;
+ * the TUI is a different client over the same RPC surface, not a
+ * prerequisite for this one to work.
+ */
+export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnRpcResult> {
+  const { client } = await connectHeadlessClient(options);
 
   const turnId = randomUUID();
   const unsubscribe = options.onEvent ? subscribeToTurn(client, turnId, options.onEvent) : undefined;

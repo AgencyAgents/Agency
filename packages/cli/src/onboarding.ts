@@ -126,7 +126,9 @@ export function createTerminalOnboardingPrompter(): OnboardingPrompter {
   };
 }
 
-function readSecretLine(prompt: string): Promise<string> {
+/** Reads a secret from the terminal: a raw-mode reader that echoes asterisks
+ *  and treats Ctrl+C as an empty answer. Shared with `agency auth login`. */
+export function readSecretLine(prompt: string): Promise<string> {
   process.stdout.write(prompt);
   if (!process.stdin.isTTY) {
     return Promise.resolve("");

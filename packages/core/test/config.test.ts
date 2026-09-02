@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config/loader.ts";
+import { configFlags, loadConfig } from "../src/config/loader.ts";
 import { parseModelRef } from "../src/config/schema.ts";
 
 function tempDir(): string {
@@ -68,6 +68,24 @@ describe("loadConfig", () => {
       flags: { logLevel: "debug" },
     });
     expect(config.logLevel).toBe("debug");
+  });
+
+  test("flags.model overrides the global config's model", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    writeFileSync(join(globalDir, "config.jsonc"), `{ "schemaVersion": 2, "model": "openai/gpt-5.2" }`);
+
+    const config = loadConfig({ globalDir, env: {}, flags: { model: "anthropic/claude-haiku-4" } });
+    expect(config.model).toBe("anthropic/claude-haiku-4");
+  });
+
+  test("configFlags drops unknown keys and undefined values", () => {
+    const flags = configFlags({
+      model: "openai/gpt-5.2",
+      logLevel: undefined,
+      notAConfigKey: "noise",
+    } as never);
+    expect(flags).toEqual({ model: "openai/gpt-5.2" });
   });
 
   test("managed config overrides even CLI flags", () => {

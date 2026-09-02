@@ -20,6 +20,12 @@ export interface ConfigSources {
   projectRoot?: string;
   managedPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * CLI-provided overrides (e.g. `--model`), sitting above env and below
+   * managed. Build it with `configFlags` so command-level options and absent
+   * flags can't masquerade as config. Must map onto Config keys; anything else
+   * is dropped here.
+   */
   flags?: Partial<Record<keyof Config, unknown>>;
 }
 
@@ -57,6 +63,25 @@ function envOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Normalizes CLI flag overrides into the `flags` layer: only keys that exist
+ * on the Config schema survive, and undefined values are dropped, so
+ * command-level options (`--workspace`, `--format`, ...) and flags that
+ * weren't passed can't clobber lower layers. Managed policy still wins over
+ * anything passed here.
+ */
+export function configFlags(
+  flags: Partial<Record<keyof Config, unknown>>,
+): Partial<Record<keyof Config, unknown>> {
+  const out: Partial<Record<keyof Config, unknown>> = {};
+  for (const [key, value] of Object.entries(flags)) {
+    if (key in ConfigSchema.shape && value !== undefined) {
+      out[key as keyof Config] = value;
+    }
+  }
+  return out;
+}
+
 export function loadConfig(sources: ConfigSources = {}): Config {
   const env = sources.env ?? process.env;
   let merged: Record<string, unknown> = { ...defaultConfig };
@@ -73,7 +98,7 @@ export function loadConfig(sources: ConfigSources = {}): Config {
   merged = { ...merged, ...envOverrides(env) };
 
   if (sources.flags) {
-    merged = { ...merged, ...sources.flags };
+    merged = { ...merged, ...configFlags(sources.flags) };
   }
 
   if (sources.managedPath) {
