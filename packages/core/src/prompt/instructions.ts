@@ -27,7 +27,13 @@ export function collectAgentsFiles(fromDir: string, workspaceRoot: string): stri
     if (dir === workspaceRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
+    if (dir.length < workspaceRoot.length && !workspaceRoot.startsWith(dir)) break;
     dir = parent;
+    if (dir.length < workspaceRoot.length) {
+      const cand2 = join(workspaceRoot, "AGENTS.md");
+      if (existsSync(cand2) && !found.includes(cand2)) found.push(cand2);
+      break;
+    }
   }
   return found;
 }
@@ -71,11 +77,17 @@ function readTextCapped(file: string, maxBytes: number): string {
 export function loadInstructions(
   trustStore: TrustStore,
   workspaceRoot: string,
-  fromDir: string = workspaceRoot,
+  fromDir?: string,
   options: LoadInstructionsOptions = {},
 ): string[] {
   requireTrust(trustStore, workspaceRoot);
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_INSTRUCTION_BYTES;
-  const files = [...collectAgentsFiles(fromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
+  const effectiveFromDir = fromDir ?? (() => {
+    try {
+      const cwd = process.cwd();
+      return cwd.startsWith(workspaceRoot) ? cwd : workspaceRoot;
+    } catch { return workspaceRoot; }
+  })();
+  const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
   return files.map((f) => readTextCapped(f, maxFileBytes));
 }

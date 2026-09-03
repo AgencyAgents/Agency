@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { dataDir } from "@agency/core";
 import type { ThinkingLevel } from "@agency/providers";
 import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
-import type { Message } from "@agency/schema";
+import type { ImageBlock, Message } from "@agency/schema";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
 export interface RunHeadlessOptions {
@@ -16,6 +16,7 @@ export interface RunHeadlessOptions {
   /** Forwarded to the daemon: compose the prompt from parts there instead. */
   systemPromptParts?: SystemPromptParts;
   prompt: string;
+  images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
@@ -83,7 +84,8 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
   const unsubscribe = options.onEvent ? client.on(`turn.${turnId}`, options.onEvent) : undefined;
 
   try {
-    const session: Message[] = [{ role: "user", content: [{ type: "text", text: options.prompt }] }];
+    const content: Message["content"] = [{ type: "text", text: options.prompt }, ...(options.images ?? [])];
+    const session: Message[] = [{ role: "user", content }];
     const params: RunTurnParams = {
       turnId,
       provider: options.provider,
@@ -92,6 +94,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       systemPromptParts: options.systemPromptParts,
       thinkingLevel: options.thinkingLevel,
       session,
+      ...(options.images?.length ? { images: options.images } : {}),
     };
     return (await client.call("run_turn", params)) as RunTurnRpcResult;
   } finally {

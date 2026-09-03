@@ -77,6 +77,8 @@ export interface ConnectOutcome {
   verified: boolean;
 }
 
+export const OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot"]);
+
 export interface ConnectFlowOptions {
   prompter: ConnectPrompter;
   keychain: KeyStore;
@@ -86,6 +88,8 @@ export interface ConnectFlowOptions {
   knownProviders?: readonly string[];
   /** Skip live validation (offline, or a provider with no cheap ping). */
   skipValidation?: boolean;
+  /** OAuth handler: if provided and the provider supports OAuth, the flow offers it. */
+  oauth?: (providerId: string) => Promise<{ accessToken: string; storedIn: string }>;
 }
 
 /**
@@ -103,6 +107,14 @@ export async function runConnectFlow(options: ConnectFlowOptions): Promise<Conne
   const providerId = rawId.replace(/^@ai-sdk\//, "");
   if (!isValidProviderId(providerId)) {
     throw new ConnectError("invalid_id", t("tui.connect.invalid_id", { id: providerId }));
+  }
+
+  if (OAUTH_PROVIDER_IDS.has(providerId) && options.oauth) {
+    const choice = (await options.prompter.line(`Use OAuth for ${providerId}? (type "oauth" for OAuth, Enter for API key)`)).trim().toLowerCase();
+    if (choice === "oauth" || choice === "o" || choice === "2") {
+      const oauthResult = await options.oauth(providerId);
+      return { providerId, storedIn: oauthResult.storedIn, verified: true };
+    }
   }
 
   const apiKey = await options.prompter.secret(t("tui.connect.key_prompt", { provider: providerId }));

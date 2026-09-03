@@ -1,4 +1,5 @@
 import type { SessionEntry, SessionStore } from "@agency/core";
+import { getSessionTitle } from "@agency/core";
 
 export type BrowserFilter = "all" | "bookmarks" | "recent";
 
@@ -7,6 +8,7 @@ export interface BrowserEntry {
   createdAt: string;
   messageCount: number;
   isBookmarked: boolean;
+  title?: string;
 }
 
 export interface BrowserNode {
@@ -36,6 +38,7 @@ export class SessionBrowser {
         createdAt: loaded[0]?.createdAt ?? new Date().toISOString(),
         messageCount: loaded.length,
         isBookmarked,
+        title: getSessionTitle(loaded),
       });
     }
     if (filter === "recent") {
@@ -49,7 +52,7 @@ export class SessionBrowser {
   search(query: string, filter: BrowserFilter = "all"): BrowserEntry[] {
     const needle = query.trim().toLowerCase();
     if (needle === "") return this.list(filter);
-    return this.list(filter).filter((e) => e.id.toLowerCase().includes(needle));
+    return this.list(filter).filter((e) => e.id.toLowerCase().includes(needle) || (e.title?.toLowerCase().includes(needle) ?? false));
   }
 
   bookmark(id: string): void {
@@ -95,7 +98,8 @@ export class SessionBrowser {
     if (entries.length === 0) return ["(no sessions)"];
     return entries.map((e) => {
       const mark = e.isBookmarked ? "*" : " ";
-      return `${mark} ${e.id} (${e.messageCount})`;
+      const title = e.title ? ` — ${e.title}` : "";
+      return `${mark} ${e.id} (${e.messageCount})${title}`;
     });
   }
 }

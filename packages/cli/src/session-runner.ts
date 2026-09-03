@@ -8,6 +8,7 @@ import {
   type Tokenizer,
 } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
+import type { ImageBlock } from "@agency/schema";
 import { appendUsageEntry } from "@agency/telemetry";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
@@ -48,6 +49,7 @@ export interface RunSessionTurnOptions {
   /** Forwarded to the daemon: compose the prompt from parts there instead. */
   systemPromptParts?: SystemPromptParts;
   userText: string;
+  images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
   budget?: RunTurnParams["budget"];
   /** Context window of the active model (from the catalog when known);
@@ -99,7 +101,7 @@ export async function runSessionTurn(
   const userEntry = await options.store.append(options.sessionId, {
     type: "message",
     parentId: tipId,
-    message: { role: "user", content: [{ type: "text", text: options.userText }] },
+    message: { role: "user", content: [{ type: "text", text: options.userText }, ...(options.images ?? [])] },
   });
 
   let history = options.store.messagesFor(options.store.load(options.sessionId), userEntry.id);
@@ -121,6 +123,7 @@ export async function runSessionTurn(
       thinkingLevel: options.thinkingLevel,
       session: history,
       budget: options.budget,
+      ...(options.images?.length ? { images: options.images } : {}),
     };
     let result = (await client.call("run_turn", params)) as RunTurnRpcResult;
 

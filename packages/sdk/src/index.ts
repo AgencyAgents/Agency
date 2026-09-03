@@ -42,6 +42,7 @@ export interface RunTurnParams {
   session: Message[];
   budget?: Budget;
   maxToolIterations?: number;
+  images?: import("@agency/schema").ImageBlock[];
 }
 
 export interface RunTurnResult {

@@ -145,6 +145,7 @@ export const ConfigSchema = z.object({
   websearch: z.object({ endpoint: z.string().optional() }).optional(),
   /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
   plugins: z.array(z.string()).optional(),
+  fallback_model: z.string().optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Config,
@@ -42,6 +43,8 @@ Commands:
   auth list                Show which providers have a resolvable key
   onboard                  First-run setup: connect, model, trust
   debug                    Write a redacted debug bundle for issue reports
+  update [--rollback]      Update binary from GitHub Releases (SHA-256 verified)
+  serve                    Run daemon in foreground (logging to stdout)
 
 Options:
   -p, --print <prompt>     Run a single turn headlessly and print the result
@@ -67,6 +70,7 @@ export interface ParsedArgv {
   model: string | undefined;
   provider: string | undefined;
   print: string | undefined;
+  images: string[];
   continueLast: boolean;
   session: string | undefined;
   format: "text" | "json";
@@ -118,6 +122,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     model: undefined,
     provider: undefined,
     print: undefined,
+    images: [],
     continueLast: false,
     session: undefined,
     format: "text",
@@ -187,6 +192,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--max-total-mb":
         parsed.retention ??= {};
         parsed.retention.maxTotalBytes = numberValue(name, value()) * 1024 * 1024;
+        break;
+      case "--image":
+        parsed.images.push(value());
         break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
@@ -282,6 +290,19 @@ function latestSessionId(store: SessionStore): string | undefined {
   return latest?.id;
 }
 
+function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[] {
+  const blocks: import("@agency/schema").ImageBlock[] = [];
+  for (const p of paths) {
+    try {
+      const data = readFileSync(p);
+      const ext = p.split(".").pop()?.toLowerCase() ?? "";
+      const mime = ext === "png" ? "image/png" : ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+      blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
+    } catch {}
+  }
+  return blocks;
+}
+
 /** `-p` headless mode. Without --continue/--session the turn is one-shot
  *  (runHeadless, nothing persisted); with them, the turn runs against a
  *  persisted session via runSessionTurn. Either way the process exits once
@@ -318,6 +339,7 @@ async function runPrintMode(
       ? await deps.ensureClient({ workspaceRoot, instanceDir: deps.instanceDir })
       : (await connectHeadlessClient({ workspaceRoot, instanceDir: deps.instanceDir })).client;
     try {
+      const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
       const { result, tipId } = await runSessionTurn(client, {
         store,
         sessionId,
@@ -325,6 +347,7 @@ async function runPrintMode(
         model,
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
         userText: prompt,
+        images,
       });
       printJsonOrText(out, parsed.format, { sessionId, tipId, ...result }, assistantText(result.messages));
       return result.stopReason === "error" ? 1 : 0;
@@ -333,6 +356,7 @@ async function runPrintMode(
     }
   }
 
+  const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
   const result = await (deps.runHeadless ?? runHeadless)({
     workspaceRoot,
     instanceDir: deps.instanceDir,
@@ -340,6 +364,7 @@ async function runPrintMode(
     model,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     prompt,
+    images,
   });
   printJsonOrText(out, parsed.format, result, assistantText(result.messages));
   return result.stopReason === "error" ? 1 : 0;
@@ -508,6 +533,24 @@ async function dispatch(
       return sessionCmd(parsed, deps, out, err);
     case "auth":
       return authCmd(parsed, deps, out, err);
+    case "update": {
+      const rollback = parsed.args.includes("--rollback");
+      const { runUpdate } = await import("./update.ts");
+      const msg = await runUpdate({ currentVersion: VERSION, rollback });
+      out(msg);
+      return 0;
+    }
+    case "serve": {
+      const { runServe } = await import("./serve.ts");
+      const { defaultInstanceDir } = await import("./headless.ts");
+      const workspaceRoot = workspaceRootOf(parsed, deps);
+      const instanceDir = deps.instanceDir ?? defaultInstanceDir(envOf(deps));
+      const { join } = await import("node:path");
+      const { workspaceId } = await import("@agency/core");
+      const instanceFile = join(instanceDir, `${workspaceId(workspaceRoot)}.json`);
+      await runServe({ workspaceRoot, instanceFile });
+      return 0;
+    }
     case "onboard": {
       const result = await runOnboarding({
         workspaceRoot: workspaceRootOf(parsed, deps),
@@ -532,6 +575,14 @@ export async function runEntrypoint(
 ): Promise<number> {
   const out = deps.out ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.err ?? ((line: string) => process.stderr.write(`${line}\n`));
+  if (!argv.includes("--help") && !argv.includes("-h") && !argv.includes("--version")) {
+    try {
+      const mod = await import("./update.ts");
+      mod.checkStale(VERSION).then((latest) => {
+        if (latest) out(`Update available: ${VERSION} -> ${latest} (run agency update)`);
+      }).catch(() => {});
+    } catch {}
+  }
   try {
     return await dispatch(parseArgv(argv), deps, out, err);
   } catch (error) {

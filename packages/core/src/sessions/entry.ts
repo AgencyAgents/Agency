@@ -47,6 +47,11 @@ export interface TodoStateEntry extends SessionEntryBase {
   todos: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>;
 }
 
+export interface SessionTitleEntry extends SessionEntryBase {
+  type: "session_title";
+  title: string;
+}
+
 export function isMessageEntry(e: SessionEntry): e is SessionEntry & MessageEntry {
   return e.type === "message";
 }
@@ -61,6 +66,10 @@ export function isBranchSummaryEntry(e: SessionEntry): e is SessionEntry & Branc
 
 export function isTodoStateEntry(e: SessionEntry): e is SessionEntry & TodoStateEntry {
   return e.type === "todo_state";
+}
+
+export function isSessionTitleEntry(e: SessionEntry): e is SessionEntry & SessionTitleEntry {
+  return e.type === "session_title";
 }
 
 export function newEntryId(): string {

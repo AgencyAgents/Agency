@@ -127,6 +127,7 @@ export interface RunTurnParams {
    * of the daemon-wide set. Absent = the daemon-derived set from config.
    */
   capabilities?: Capabilities;
+  images?: import("@agency/schema").ImageBlock[];
 }
 
 export interface ResolveSystemPromptOptions {
@@ -584,6 +585,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 }
               }
             }
+            if (params.images?.length) {
+              const last = params.session[params.session.length - 1];
+              if (last && last.role === "user") {
+                last.content = [...last.content, ...params.images];
+              } else {
+                params.session = [...params.session, { role: "user", content: [...params.images] }];
+              }
+            }
             if (builtins?.todos) await builtins.todos.hydrate(sessionId);
             const approvals = approvalsFor(sessionId);
             const requestApproval: RequestApproval = async (request) => {
@@ -600,36 +609,93 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               try { eventBus.emit("permission.replied", { tool: request.tool, command: request.command, path: request.path, decision }); eventBus.emit("event", { event: "permission.replied", payload: { tool: request.tool, decision } }); } catch {}
               return decision;
             };
-            const result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
-              identity,
-              capabilities: params.capabilities ?? defaultCapabilities,
-              toolPolicy: gate,
-              requestApproval,
-              eventBus,
-              systemPrompt: resolveSystemPrompt(params, {
-                workspaceRoot: options.workspaceRoot,
-                mcpFailures: builtins?.mcpFailures,
-              }),
-              tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
-              model: params.model,
-              apiKey,
-              thinkingLevel: params.thinkingLevel,
-              session: params.session,
-              budget: params.budget,
-              pricePerMTok: modelInfo
-                ? {
-                    input: modelInfo.pricing.inputPerMTok,
-                    output: modelInfo.pricing.outputPerMTok,
-                  }
-                : undefined,
-              maxTokensPerRequest: modelInfo?.maxOutputTokens,
-              turnId: params.turnId,
-              sessionId: params.sessionId,
-              cwd: options.workspaceRoot,
-              maxToolIterations: params.maxToolIterations,
-              signal: controller.signal,
-              onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
-            });
+            const fallbackRef = (() => {
+              const fm = (config as unknown as { fallback_model?: string }).fallback_model;
+              if (!fm) return undefined;
+              const slash = fm.indexOf("/");
+              if (slash <= 0) return undefined;
+              return { provider: fm.slice(0, slash), model: fm.slice(slash + 1) };
+            })();
+
+            let result: Awaited<ReturnType<typeof runTurn>>;
+            try {
+              result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
+                identity,
+                capabilities: params.capabilities ?? defaultCapabilities,
+                toolPolicy: gate,
+                requestApproval,
+                eventBus,
+                systemPrompt: resolveSystemPrompt(params, {
+                  workspaceRoot: options.workspaceRoot,
+                  mcpFailures: builtins?.mcpFailures,
+                }),
+                tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
+                model: params.model,
+                apiKey,
+                thinkingLevel: params.thinkingLevel,
+                session: params.session,
+                budget: params.budget,
+                pricePerMTok: modelInfo
+                  ? {
+                      input: modelInfo.pricing.inputPerMTok,
+                      output: modelInfo.pricing.outputPerMTok,
+                    }
+                  : undefined,
+                maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                turnId: params.turnId,
+                sessionId: params.sessionId,
+                cwd: options.workspaceRoot,
+                maxToolIterations: params.maxToolIterations,
+                signal: controller.signal,
+                onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
+              });
+            } catch (error) {
+              const isRetryable = error instanceof AgencyError && (error.code === ErrorCode.OVERLOAD || error.code === ErrorCode.TRANSIENT || error.code === ErrorCode.RATE_LIMIT);
+              if (isRetryable && fallbackRef && fallbackRef.provider !== params.provider) {
+                const fbEvent = { type: "fallback" as const, from: `${params.provider}/${params.model}`, to: `${fallbackRef.provider}/${fallbackRef.model}`, reason: error instanceof Error ? error.message : String(error) };
+                server.broadcast(eventStream, fbEvent);
+                try { eventBus.emit("model.fallback", fbEvent); } catch {}
+                const fbApiKey = await (async () => {
+                  let kc: KeychainBackend | undefined;
+                  try { kc = await getKeychain(); } catch {}
+                  const k = await resolveApiKey({ provider: fallbackRef.provider, env: process.env, keychain: kc, config: providers[fallbackRef.provider]?.apiKey });
+                  return k ?? apiKey;
+                })();
+                if (fbApiKey) redactor.registerSecret(fbApiKey);
+                result = await runTurn(adapterFor(fallbackRef.provider), schedulerFor(fallbackRef.provider), http, {
+                  identity,
+                  capabilities: params.capabilities ?? defaultCapabilities,
+                  toolPolicy: gate,
+                  requestApproval,
+                  eventBus,
+                  systemPrompt: resolveSystemPrompt(params, {
+                    workspaceRoot: options.workspaceRoot,
+                    mcpFailures: builtins?.mcpFailures,
+                  }),
+                  tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
+                  model: fallbackRef.model,
+                  apiKey: fbApiKey ?? apiKey,
+                  thinkingLevel: params.thinkingLevel,
+                  session: params.session,
+                  budget: params.budget,
+                  pricePerMTok: modelInfo
+                    ? {
+                        input: modelInfo.pricing.inputPerMTok,
+                        output: modelInfo.pricing.outputPerMTok,
+                      }
+                    : undefined,
+                  maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                  turnId: params.turnId,
+                  sessionId: params.sessionId,
+                  cwd: options.workspaceRoot,
+                  maxToolIterations: params.maxToolIterations,
+                  signal: controller.signal,
+                  onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
+                });
+              } else {
+                throw error;
+              }
+            }
             try { eventBus.emit("session.idle", { sessionId }); eventBus.emit("event", { event: "session.idle", payload: { sessionId } }); } catch {}
 
             logger.info("turn finished", {
