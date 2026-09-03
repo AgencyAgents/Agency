@@ -30,8 +30,10 @@ export function createTaskTool(deps: TaskToolDeps): ToolSpec {
     },
     riskTier: "safe",
     renderCall: (input) => `task ${summarize(input.prompt.slice(0, 80))}`,
-    renderResult: (result) =>
-      result.isError ? `task failed: ${summarize(result.content)}` : summarize(result.content),
+    renderResult: (result) => {
+      if (result.isError) return `task failed: ${summarize(result.content)}`;
+      return `◐ task · ${summarize(result.content)}`;
+    },
     async handler(input, ctx) {
       const depth = ctx.taskDepth ?? 0;
       if (depth >= maxDepth) {

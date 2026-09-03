@@ -741,8 +741,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   }
                   const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
                   await todoStore.append(childSessionId, { type: "agent_lifecycle", parentId: tip, handle: a.handle, state: "working", detail: a.brief }).catch(() => {});
+                  agentStates.set(a.handle, "working");
                   results.push(`${a.handle} dispatched at ${effort}: ${a.brief.slice(0, 80)}`);
                   try { eventBus.emit("agent.lifecycle", { handle: a.handle, state: "working" }); } catch {}
+                  if (swarmRegistry.list().length > 1) {
+                    try { server?.broadcast(`swarm.${childSessionId}`, { type: "agent_lifecycle", handle: a.handle, state: "working", detail: a.brief, sessionId: childSessionId }); } catch {}
+                    try { server?.broadcast(`swarm.shared`, { type: "agent_lifecycle", handle: a.handle, state: "working", detail: a.brief, sessionId: childSessionId }); } catch {}
+                  }
                 }
                 return { content: results.join("\n") };
               },
@@ -797,7 +802,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       : { tools: sessionToolsFor(tools), pathScopes: "*", network: "*" });
 
   const swarmRegistry = new AgentRegistry();
-  // @ts-ignore unused but reserves swarm-shared todo persistence
   const swarmTodo: SwarmTodoStore = new SwarmTodoStore({
     persist: async (todos) => {
       try {
@@ -810,6 +814,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const swarmCost = new Map<string, number>();
   let swarmTotalCost = 0;
   const agentMailboxes = new Map<string, import("@agency/schema").Message[]>();
+  const agentStates = new Map<string, "idle" | "working" | "blocked" | "failed">();
 
   const initSwarmFromConfig = () => {
     const cfg = config as unknown as { agents?: Record<string, { role: string; provider: string; model: string; effort: string }>; leader?: string };
@@ -818,10 +823,37 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       if (!swarmRegistry.has(handle)) {
         swarmRegistry.register({ handle, role: a.role, provider: a.provider, model: a.model, effort: a.effort, sessionId: `swarm-${handle}`, mailbox: [] });
         agentMailboxes.set(handle, []);
+        agentStates.set(handle, "idle");
       }
     }
   };
   try { initSwarmFromConfig(); } catch {}
+
+  function costUsdForHandle(handle: string): number {
+    const agent = swarmRegistry.get(handle);
+    if (!agent) return 0;
+    try {
+      const spans = loadTraceSpansSync(todoSessionsDir, agent.sessionId);
+      const modelSpans = spans.filter((s) => s.kind === "model");
+      if (modelSpans.length > 0) {
+        return modelSpans.reduce((sum, s) => sum + (s.attributes.cost ?? 0), 0);
+      }
+    } catch {}
+    return swarmCost.get(agent.sessionId) ?? 0;
+  }
+
+  function agentsListPayload(): Array<{ handle: string; role: string; provider: string; model: string; effort: string; state: string; sessionId: string; costUsd: number }> {
+    return swarmRegistry.list().map((a) => ({
+      handle: a.handle,
+      role: a.role,
+      provider: a.provider,
+      model: a.model,
+      effort: a.effort,
+      state: agentStates.get(a.handle) ?? "idle",
+      sessionId: a.sessionId,
+      costUsd: costUsdForHandle(a.handle),
+    }));
+  }
 
   // Session-scoped "always allow" grants: one manager per session id, alive
   // as long as the daemon process — never beyond it.
@@ -848,13 +880,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return scheduler;
   };
   const activeControllers = new Map<string, AbortController>();
-  /** Which client connection owns each in-flight turn: its disconnect (A3)
-   *  cancels the turn, so a dead TUI stops the daemon burning tokens. */
   const turnOwners = new Map<string, string>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  let server!: DaemonServer;
 
-  const server = await startDaemonServer({
+  server = await startDaemonServer({
     token: authToken,
     handlers: {
       async run_turn(rawParams, context) {
@@ -1359,6 +1390,77 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         return { delivered: true };
       },
 
+      async agents_list() {
+        return agentsListPayload();
+      },
+
+      async agent_history(rawParams) {
+        const { handle } = rawParams as { handle: string };
+        if (typeof handle !== "string" || handle.length === 0) {
+          throw new AgencyError(ErrorCode.INTERNAL, "agent_history requires handle", { source: "swarm" });
+        }
+        const agent = swarmRegistry.get(handle);
+        if (!agent) {
+          throw new AgencyError(ErrorCode.INTERNAL, `unknown handle: ${handle}`, { source: "swarm" });
+        }
+        const sid = agent.sessionId;
+        const entries = todoStore.load(sid);
+        const tip = todoStore.latestTip(entries) ?? null;
+        const messages = tip ? todoStore.messagesFor(entries, tip) : [];
+        return { handle, sessionId: sid, entries, messages };
+      },
+
+      async swarm_status() {
+        const agents = agentsListPayload();
+        const todo = swarmTodo.list();
+        const costTotal = agents.reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
+        return { agents, todo, costTotal };
+      },
+
+      async dispatch_compare(rawParams) {
+        const { handles, prompt, effort } = rawParams as { handles: string[]; prompt: string; effort?: string };
+        if (!Array.isArray(handles) || handles.length === 0) {
+          throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires handles", { source: "swarm" });
+        }
+        if (typeof prompt !== "string" || prompt.trim().length === 0) {
+          throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires prompt", { source: "swarm" });
+        }
+        const results: Array<{ handle: string; result: string }> = [];
+        for (const handle of handles) {
+          const agent = swarmRegistry.get(handle);
+          if (!agent) {
+            results.push({ handle, result: `unknown handle: ${handle}` });
+            continue;
+          }
+          const childSessionId = agent.sessionId;
+          try { todoStore.create(childSessionId); } catch {}
+          await getOrCreateScope(childSessionId);
+          const resolvedEffort = effort ?? (agent.effort === "auto" ? classifyEffortFromText(prompt) : agent.effort);
+          agentStates.set(handle, "working");
+          if (swarmRegistry.list().length > 1) {
+            try { server?.broadcast(`swarm.${childSessionId}`, { type: "agent_lifecycle", handle, state: "working", detail: prompt.slice(0, 200), effort: resolvedEffort }); } catch {}
+            try { server?.broadcast(`swarm.shared`, { type: "agent_lifecycle", handle, state: "working", detail: prompt.slice(0, 200), effort: resolvedEffort }); } catch {}
+          }
+          const detail = `${handle} (${agent.provider}/${agent.model}) · ${prompt.slice(0, 120)}`;
+          try {
+            const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
+            await todoStore.append(childSessionId, { type: "agent_lifecycle", parentId: tip, handle, state: "working", detail: prompt.slice(0, 200) }).catch(() => {});
+          } catch {}
+          results.push({ handle, result: detail });
+          agentStates.set(handle, "idle");
+          try {
+            const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
+            await todoStore.append(childSessionId, { type: "agent_lifecycle", parentId: tip2, handle, state: "idle", detail: "compare done" }).catch(() => {});
+          } catch {}
+          if (swarmRegistry.list().length > 1) {
+            try { server?.broadcast(`swarm.${childSessionId}`, { type: "agent_lifecycle", handle, state: "idle" }); } catch {}
+            try { server?.broadcast(`swarm.shared`, { type: "agent_lifecycle", handle, state: "idle" }); } catch {}
+          }
+        }
+        try { eventBus.emit("dispatch.compare", { handles, prompt }); } catch {}
+        return { results };
+      },
+
       async swarm_stop(rawParams) {
         const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
         const sid = sessionId ?? "default";
@@ -1367,6 +1469,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           const tip = todoStore.latestTip(todoStore.load(sid)) ?? null;
           for (const h of swarmRegistry.list().map((a) => a.handle)) {
             await todoStore.append(sid, { type: "agent_lifecycle", parentId: tip, handle: h, state: "idle", detail: "swarm_stop" }).catch(() => {});
+            agentStates.set(h, "idle");
+            if (swarmRegistry.list().length > 1) {
+              const agent = swarmRegistry.get(h);
+              const stream = agent ? `swarm.${agent.sessionId}` : `swarm.${sid}`;
+              try { server?.broadcast(stream, { type: "agent_lifecycle", handle: h, state: "idle" }); } catch {}
+              try { server?.broadcast(`swarm.shared`, { type: "agent_lifecycle", handle: h, state: "idle" }); } catch {}
+            }
           }
         } catch {}
         return { stopped: true };
