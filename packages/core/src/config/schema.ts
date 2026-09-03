@@ -111,6 +111,7 @@ export const ConfigSchema = z.object({
    * which re-validates it via parseMcpServers at startup.
    */
   mcpServers: z.record(z.string(), z.unknown()).optional(),
+  lspServers: z.record(z.string(), z.unknown()).optional(),
   /**
    * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
    * `external_directory` key gating out-of-workspace access. Unlisted tools

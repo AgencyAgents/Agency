@@ -408,9 +408,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const builtins = options.tools
     ? undefined
     : await createBuiltinTools({
-        // Per-turn capabilities gate requireTool in the loop; the deps set only
-        // feeds requirePathScope/requireNetwork inside handlers, unrestricted
-        // here because path containment is the sandbox's job.
         deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
         http,
         workspaceRoot: options.workspaceRoot,
@@ -420,6 +417,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
         todoPersistence,
         mcpServers: config.mcpServers,
+        lspServers: config.lspServers,
       });
   const tools = options.tools ?? builtins?.tools ?? [];
   const defaultCapabilities: Capabilities = options.capabilities ?? {
@@ -676,7 +674,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       },
 
       async providers_list() {
-        return listProviders({ config, http, catalog: options.catalog });
+        const base = await listProviders({ config, http, catalog: options.catalog });
+        const mcpFailures = builtins?.mcpFailures ? Object.fromEntries(builtins.mcpFailures) : {};
+        const lspStatuses = builtins?.lspRegistry?.statuses() ?? {};
+        return { ...base, mcpFailures, lspStatuses };
+      },
+
+      async mcp_status() {
+        return { failures: builtins?.mcpFailures ? Object.fromEntries(builtins.mcpFailures) : {} };
+      },
+
+      async lsp_status() {
+        return { statuses: builtins?.lspRegistry?.statuses() ?? {} };
       },
     },
 

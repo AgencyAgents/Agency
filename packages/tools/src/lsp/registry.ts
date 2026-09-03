@@ -8,6 +8,8 @@ export interface LspServerConfig {
   extensions: string[];
   /** Language id sent in textDocument/didOpen. */
   languageId: string;
+  /** Extra env vars for the server process. */
+  env?: Record<string, string>;
 }
 
 export interface LspRegistryOptions {
@@ -24,6 +26,8 @@ export interface LspRegistry {
   languageIdFor(path: string): string | undefined;
   all(): readonly LspClient[];
   dispose(): Promise<void>;
+  /** Snapshot of current server statuses: "running" | "failed: reason". */
+  statuses(): Record<string, string>;
 }
 
 const extension = (path: string): string => {
@@ -39,6 +43,9 @@ const extension = (path: string): string => {
  */
 export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
   const clients = new Map<number, LspClient>();
+  const configByIndex = new Map<number, LspServerConfig>();
+  const failures = new Map<number, string>();
+  for (let i = 0; i < options.servers.length; i++) configByIndex.set(i, options.servers[i]!);
 
   const clientFor = (path: string): LspClient | undefined => {
     const ext = extension(path);
@@ -53,8 +60,12 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
           command: config.command,
           args: config.args,
           cwd: options.cwd,
+          env: config.env,
         });
     clients.set(index, client);
+    client.ready.catch((err: unknown) => {
+      failures.set(index, err instanceof Error ? err.message : String(err));
+    });
     return client;
   };
 
@@ -65,6 +76,15 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
       return options.servers.find((server) => server.extensions.includes(ext))?.languageId;
     },
     all: () => [...clients.values()],
+    statuses() {
+      const out: Record<string, string> = {};
+      for (const [idx, cfg] of configByIndex) {
+        if (failures.has(idx)) out[cfg.command] = `failed: ${failures.get(idx)}`;
+        else if (clients.has(idx)) out[cfg.command] = "running";
+        else out[cfg.command] = "idle";
+      }
+      return out;
+    },
     async dispose() {
       for (const client of clients.values()) {
         try {

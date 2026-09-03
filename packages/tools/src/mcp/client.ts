@@ -2,15 +2,28 @@ import { counterIds, PendingRequestManager } from "@agency/net";
 import type { McpToolDefinition } from "./adapt.ts";
 import type { McpTransport } from "./transport.ts";
 
+export interface McpClientOptions {
+  requestTimeoutMs?: number;
+  toolCallTimeoutMs?: number;
+}
+
 export class McpClient {
   private readonly pending = new PendingRequestManager({ makeId: counterIds() });
   private onToolListChanged?: () => void;
+  private readonly requestTimeoutMs: number;
+  private readonly toolCallTimeoutMs: number;
 
   constructor(
     private readonly name: string,
     private readonly transport: McpTransport,
+    options: McpClientOptions = {},
   ) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
+    this.toolCallTimeoutMs = options.toolCallTimeoutMs ?? options.requestTimeoutMs ?? 10_000;
     this.transport.onMessage((msg) => this.handleMessage(msg));
+    this.transport.onClose?.(() => {
+      this.pending.failAll(new Error(`MCP ${this.name} transport closed`));
+    });
   }
 
   onListChanged(cb: () => void): void {
@@ -19,6 +32,7 @@ export class McpClient {
 
   async initialize(): Promise<void> {
     await this.request("initialize", { clientInfo: { name: "agency", version: "0.1.0" } });
+    this.notify("notifications/initialized", {});
   }
 
   async listTools(): Promise<McpToolDefinition[]> {
@@ -29,9 +43,13 @@ export class McpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<{ content: unknown; isError?: boolean }> {
-    const result = (await this.request("tools/call", { name, arguments: args })) as {
+    const result = (await this.request(
+      "tools/call",
+      { name, arguments: args },
+      { timeoutMs: this.toolCallTimeoutMs, signal },
+    )) as {
       content?: unknown;
       isError?: boolean;
     };
@@ -42,14 +60,36 @@ export class McpClient {
     await this.transport.close();
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private notify(method: string, params: unknown): void {
+    this.transport.send({ jsonrpc: "2.0", method, params }).catch(() => {});
+  }
+
+  private request(
+    method: string,
+    params: unknown,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<unknown> {
+    const timeoutMs =
+      opts.timeoutMs ??
+      (method === "tools/call" ? this.toolCallTimeoutMs : this.requestTimeoutMs);
     const { id, promise } = this.pending.register(
-      10_000,
+      timeoutMs,
       () => new Error(`MCP ${this.name} ${method} timed out`),
     );
-    // A failed write must fail the request now with the real error, not 10s
-    // from now as a generic timeout. If a response already settled the
-    // request, reject() is a no-op (so a late send failure can't clobber it).
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        this.pending.reject(id, new Error(`MCP ${this.name} ${method} aborted`));
+      } else {
+        const onAbort = () => {
+          this.pending.reject(id, new Error(`MCP ${this.name} ${method} aborted`));
+        };
+        opts.signal.addEventListener("abort", onAbort, { once: true });
+        void promise.then(
+          () => opts.signal?.removeEventListener("abort", onAbort),
+          () => opts.signal?.removeEventListener("abort", onAbort),
+        );
+      }
+    }
     this.transport.send({ jsonrpc: "2.0", id, method, params }).catch((error: unknown) => {
       this.pending.reject(id, error instanceof Error ? error : new Error(String(error)));
     });

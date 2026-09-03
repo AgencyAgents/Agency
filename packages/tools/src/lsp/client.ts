@@ -19,6 +19,7 @@ export interface LspClientOptions {
   command: string;
   args?: string[];
   cwd?: string;
+  env?: Record<string, string>;
   requestTimeoutMs?: number;
 }
 
@@ -71,6 +72,7 @@ export class LspClient {
   private async start(): Promise<void> {
     this.child = spawn(this.options.command, this.options.args ?? [], {
       cwd: this.options.cwd,
+      env: this.options.env ? { ...process.env, ...this.options.env } as Record<string, string> : undefined,
       stdio: ["pipe", "pipe", "ignore"],
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.handleChunk(chunk));
@@ -113,6 +115,19 @@ export class LspClient {
   /** The diagnostics the server has pushed for `path` so far (sync cache read). */
   diagnosticsFor(path: string): readonly LspDiagnostic[] {
     return this.diagnostics.get(pathToFileURL(path).href) ?? [];
+  }
+
+  async waitForDiagnostics(path: string, timeoutMs: number): Promise<readonly LspDiagnostic[]> {
+    const uri = pathToFileURL(path).href;
+    const initial = this.diagnostics.get(uri);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      const cur = this.diagnostics.get(uri);
+      if (cur !== initial && cur !== undefined) return cur;
+      if (initial === undefined && cur !== undefined) return cur;
+    }
+    return this.diagnosticsFor(path);
   }
 
   /** textDocument/references, resolved to plain paths. */
