@@ -77,3 +77,10 @@ export {
   Transcript,
   type TranscriptOptions,
 } from "./transcript.ts";
+export {
+  ERROR_STATES,
+  type ErrorStateConfig,
+  formatErrorState,
+  getErrorState,
+  stopReasonState,
+} from "./error-states.ts";

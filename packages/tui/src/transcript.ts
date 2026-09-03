@@ -3,6 +3,7 @@ import { t } from "@agency/i18n";
 import { reflow } from "./renderer.ts";
 import { type RenderMode, type StyleKind, type Theme } from "./theme.ts";
 import { resolveTheme } from "./themes.ts";
+import { formatErrorState, getErrorState } from "./error-states.ts";
 
 /**
  * Structural subset of the tools' ToolSpec the transcript renders with (R3
@@ -62,6 +63,7 @@ interface ToolBlock {
   name: string;
   input?: Record<string, unknown>;
   result?: { content: string; isError: boolean };
+  startedAt: number;
   rendered?: string[];
 }
 
@@ -138,6 +140,7 @@ export class Transcript {
           id: event.id,
           name: event.name,
           input: context?.toolInput ?? event.input,
+          startedAt: Date.now(),
         });
         break;
       }
@@ -168,11 +171,21 @@ export class Transcript {
         break;
       }
       case "error": {
-        this.blocks.push({
-          kind: "status",
-          style: "error",
-          text: t("tui.error.message", { code: event.code, message: event.message }),
-        });
+        const state = getErrorState(event.code);
+        if (state) {
+          const formatted = formatErrorState(event.code, event.message);
+          this.blocks.push({
+            kind: "status",
+            style: formatted.style,
+            text: formatted.text,
+          });
+        } else {
+          this.blocks.push({
+            kind: "status",
+            style: "error",
+            text: t("tui.error.message", { code: event.code, message: event.message }),
+          });
+        }
         break;
       }
       case "retry": {
@@ -217,7 +230,9 @@ export class Transcript {
       }
       case "tool": {
         if (block.result === undefined) {
-          return [this.styled("accent", this.callText(block))];
+          const elapsed = Math.max(0, Math.floor((Date.now() - block.startedAt) / 1000));
+          const label = elapsed >= 1 ? `${this.callText(block)}  ${elapsed}s` : this.callText(block);
+          return [this.styled("accent", label)];
         }
         const style: StyleKind = block.result.isError ? "error" : "success";
         return [this.styled(style, this.resultText(block))];
