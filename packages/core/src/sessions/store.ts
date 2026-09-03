@@ -70,14 +70,22 @@ interface LoadCache {
  */
 export class SessionStore {
   private readonly caches = new Map<string, LoadCache>();
+  private bus?: { emit: (event: string, payload: unknown) => void };
 
-  constructor(private readonly sessionsDir: string) {}
+  constructor(private readonly sessionsDir: string, opts?: { bus?: { emit: (event: string, payload: unknown) => void } }) {
+    this.bus = opts?.bus;
+  }
+
+  setBus(bus: { emit: (event: string, payload: unknown) => void }): void {
+    this.bus = bus;
+  }
 
   create(sessionId: string = newEntryId()): SessionMeta {
     mkdirSync(this.sessionsDir, { recursive: true });
     const path = sessionPath(this.sessionsDir, sessionId);
     if (!existsSync(path)) writeFileSync(path, "");
     this.caches.delete(sessionId);
+    try { this.bus?.emit("session.created", { sessionId }); this.bus?.emit("event", { event: "session.created", payload: { sessionId } }); } catch {}
     return { id: sessionId, createdAt: new Date().toISOString() };
   }
 

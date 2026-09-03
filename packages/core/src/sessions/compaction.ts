@@ -112,5 +112,11 @@ export async function compact(
     parentId = appended.id;
   }
 
+  try {
+    const bus = (store as unknown as { bus?: { emit: (e: string, p: unknown) => void } }).bus;
+    bus?.emit("session.compacted", { sessionId, tipId: parentId });
+    bus?.emit("event", { event: "session.compacted", payload: { sessionId, tipId: parentId } });
+  } catch {}
+
   return { compacted: true, tipId: parentId };
 }

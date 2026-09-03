@@ -6,8 +6,13 @@ import {
   composeSystemPrompt,
   createRotatingFileSink,
   dataDir,
+  EventBus,
   type GitRunner,
   gatherEnvironmentInfo,
+  loadCommands,
+  expandCommand,
+  parseSlashInput,
+  loadPlugins,
   Logger,
   type LoopEvent,
   loadConfig,
@@ -314,11 +319,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
   }
 
+  const eventBus = new EventBus();
   const rotatingSink = options.logsDir ? createRotatingFileSink({ dir: options.logsDir }) : undefined;
   const sink = rotatingSink
     ? (line: string) => rotatingSink.write(line)
     : (line: string) => console.log(line);
-  const logger = new Logger({ level: config.logLevel, sink, redactor });
+  const logger = new Logger({ level: config.logLevel, sink, redactor, bus: eventBus });
+  eventBus.emit("config.loaded", { config });
+  eventBus.emit("event", { event: "config.loaded", payload: { config } });
   const telemetry = new Telemetry({
     enabled: config.telemetryEnabled,
     crashReports: { enabled: config.crashReportsEnabled },
@@ -385,7 +393,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // session's JSONL (daemon-owned), and each run_turn rehydrates from the
   // latest one — so todos survive daemon restarts and compaction.
   const todoSessionsDir = options.sessionsDir ?? storagePaths(options.workspaceRoot).sessionsDir;
-  const todoStore = new SessionStore(todoSessionsDir);
+  const todoStore = new SessionStore(todoSessionsDir, { bus: eventBus });
   const todoPersistence = {
     async save(sessionId: string, todos: readonly { id: string; content: string; status: string }[]) {
       const entries = todoStore.load(sessionId);
@@ -419,7 +427,26 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         mcpServers: config.mcpServers,
         lspServers: config.lspServers,
       });
-  const tools = options.tools ?? builtins?.tools ?? [];
+  let tools: ToolSpec[] = options.tools ?? builtins?.tools ?? [];
+  const { ToolRegistry } = await import("@agency/tools");
+  const pluginToolRegistry = new ToolRegistry();
+  for (const t of tools) pluginToolRegistry.register(t as unknown as import("@agency/tools").ToolSpec);
+  const pluginResult = await loadPlugins({
+    workspaceRoot: options.workspaceRoot,
+    configDirOverride: options.configDir,
+    configPlugins: (config as { plugins?: string[] }).plugins,
+    bus: eventBus,
+    registry: pluginToolRegistry as unknown as never,
+    capabilities: { tools: "*", pathScopes: "*", network: "none" },
+    identity,
+  });
+  if (pluginResult.errors.length > 0) {
+    for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
+  }
+  tools = pluginToolRegistry.list() as unknown as ToolSpec[];
+
+  const commands = loadCommands({ workspaceRoot: options.workspaceRoot, configDirOverride: options.configDir });
+
   const defaultCapabilities: Capabilities = options.capabilities ?? {
     tools: sessionTools(),
     pathScopes: "*",
@@ -505,26 +532,47 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             });
             const modelInfo = catalogModel(params.provider, params.model);
             const sessionId = params.sessionId ?? "default";
-            // Rehydrate the shared TodoStore from this session's persisted
-            // todos so a daemon restart (or a session switch) restores them.
+            const isNewSession = todoStore.load(sessionId).length === 0 && params.session.length > 0;
+            if (isNewSession) {
+              try { eventBus.emit("session.created", { sessionId }); eventBus.emit("event", { event: "session.created", payload: { sessionId } }); } catch {}
+            }
+            if (params.session.length > 0) {
+              const lastMsg = params.session[params.session.length - 1];
+              const lastText = lastMsg?.content?.find((b: { type: string }) => b.type === "text") as { text?: string } | undefined;
+              const text = typeof lastText?.text === "string" ? lastText.text.trim() : "";
+              const parsed = parseSlashInput(text);
+              if (parsed) {
+                const tmpl = commands.find((c) => c.name === parsed.name);
+                if (tmpl) {
+                  const expanded = expandCommand(tmpl.content, parsed.args, options.workspaceRoot);
+                  const userMsg = params.session[params.session.length - 1] as unknown as { role: string; content: { text: string }[] };
+                  if (userMsg.content[0]) userMsg.content[0].text = expanded;
+                  params.session[params.session.length - 1] = { ...userMsg } as unknown as typeof params.session[number];
+                }
+              }
+            }
             if (builtins?.todos) await builtins.todos.hydrate(sessionId);
             const approvals = approvalsFor(sessionId);
-            // Approval asks broadcast on the turn stream (the requesting
-            // client) and, when the client named a session, the session
-            // stream (every surface attached to the room).
             const requestApproval: RequestApproval = async (request) => {
-              if (approvals.hasAlways(request)) return "once";
+              try { eventBus.emit("permission.asked", { tool: request.tool, command: request.command, path: request.path, decision: "ask" }); eventBus.emit("event", { event: "permission.asked", payload: { tool: request.tool } }); } catch {}
+              if (approvals.hasAlways(request)) {
+                try { eventBus.emit("permission.replied", { tool: request.tool, command: request.command, path: request.path, decision: "once" }); eventBus.emit("event", { event: "permission.replied", payload: { tool: request.tool, decision: "once" } }); } catch {}
+                return "once";
+              }
               const { id, promise } = approvals.createPending(request, params.turnId);
               const payload = { type: "approval_requested" as const, requestId: id, request };
               server.broadcast(eventStream, payload);
               if (params.sessionId !== undefined) server.broadcast(`session.${sessionId}`, payload);
-              return await promise;
+              const decision = await promise;
+              try { eventBus.emit("permission.replied", { tool: request.tool, command: request.command, path: request.path, decision }); eventBus.emit("event", { event: "permission.replied", payload: { tool: request.tool, decision } }); } catch {}
+              return decision;
             };
             const result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
               identity,
               capabilities: params.capabilities ?? defaultCapabilities,
               toolPolicy: gate,
               requestApproval,
+              eventBus,
               systemPrompt: resolveSystemPrompt(params, {
                 workspaceRoot: options.workspaceRoot,
                 mcpFailures: builtins?.mcpFailures,
@@ -549,6 +597,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               signal: controller.signal,
               onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
             });
+            try { eventBus.emit("session.idle", { sessionId }); eventBus.emit("event", { event: "session.idle", payload: { sessionId } }); } catch {}
 
             logger.info("turn finished", {
               turnId: params.turnId,
@@ -687,6 +736,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       async lsp_status() {
         return { statuses: builtins?.lspRegistry?.statuses() ?? {} };
       },
+
+      async commands_list() {
+        return { commands: commands.map((c) => ({ name: c.name, description: c.description, source: c.source, path: c.path })) };
+      },
+
+      async commands_expand(rawParams) {
+        const { name, args } = rawParams as { name: string; args?: string };
+        const tmpl = commands.find((c) => c.name === name);
+        if (!tmpl) throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
+        const expanded = expandCommand(tmpl.content, args ?? "", options.workspaceRoot);
+        return { expanded, name };
+      },
     },
 
     onClientCount(count) {
@@ -696,6 +757,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         return;
       }
       idleTimer = setTimeout(() => {
+        try { eventBus.emit("session.idle", {}); eventBus.emit("event", { event: "session.idle", payload: {} }); } catch {}
         options.onIdleShutdown?.();
       }, idleLingerMs);
     },

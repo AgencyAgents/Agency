@@ -91,6 +91,7 @@ export interface RunTurnOptions {
   maxToolIterations?: number;
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
+  eventBus?: { emit: (event: string, payload: unknown) => void; emitAsync?: (event: string, payload: unknown) => Promise<void>; emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }> };
 }
 
 const NEVER_ABORTED = new AbortController().signal;
@@ -348,6 +349,14 @@ async function executeOne(
     return { content: validationError, isError: true };
   }
 
+  if (options.eventBus && resolved.name === "bash") {
+    try {
+      const envPayload = { env: {} as Record<string, string> };
+      options.eventBus.emit("shell.env", envPayload);
+      options.eventBus.emit("event", { event: "shell.env", payload: envPayload });
+    } catch {}
+  }
+
   // Permission gate: deny (or a rejected ask) becomes a per-call error result;
   // the handler never runs. A tool absent from the caller's capability set is
   // already refused above; this layer is the per-subject policy.
@@ -360,10 +369,23 @@ async function executeOne(
       subject.path = call.input.path;
     }
     try {
+      const bus = options.eventBus;
+      if (bus) {
+        try {
+          bus.emit("permission.asked", { tool: resolved.name, command: subject.command, path: subject.path, decision: "ask" });
+          bus.emit("event", { event: "permission.asked", payload: { tool: resolved.name, command: subject.command, path: subject.path } });
+        } catch {}
+      }
       const verdict = await options.toolPolicy.check(
         { tool: resolved.name, riskTier: resolved.riskTier, ...subject },
         options.requestApproval,
       );
+      if (bus) {
+        try {
+          bus.emit("permission.replied", { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict });
+          bus.emit("event", { event: "permission.replied", payload: { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict } });
+        } catch {}
+      }
       if (verdict === "deny") {
         return {
           content: `permission denied: ${resolved.name} is not permitted by the current permissions policy`,
@@ -373,6 +395,24 @@ async function executeOne(
     } catch (error) {
       return { content: error instanceof Error ? error.message : String(error), isError: true };
     }
+  }
+
+  if (options.eventBus) {
+    const payload = { tool: resolved.name, input: call.input, sessionId: options.sessionId, turnId: options.turnId };
+    try {
+      if (options.eventBus.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.execute.before", payload);
+        if (errors.length > 0) {
+          const first = errors[0];
+          return { content: first instanceof Error ? first.message : String(first), isError: true };
+        }
+      } else if (options.eventBus.emitAsync) {
+        await options.eventBus.emitAsync("tool.execute.before", payload);
+      } else {
+        options.eventBus.emit("tool.execute.before", payload);
+      }
+    } catch {}
+    options.eventBus.emit("event", { event: "tool.execute.before", payload });
   }
 
   const toolSignal = signal ?? NEVER_ABORTED;
@@ -390,12 +430,29 @@ async function executeOne(
         }
       : undefined,
   };
+  let result: { content: string; isError?: boolean; images?: ImageBlock[] };
   try {
-    const result = await resolved.handler(call.input, toolCtx);
-    return { content: result.content, isError: result.isError ?? false, images: result.images };
+    result = await resolved.handler(call.input, toolCtx);
   } catch (error) {
-    return { content: error instanceof Error ? error.message : String(error), isError: true };
+    result = { content: error instanceof Error ? error.message : String(error), isError: true };
   }
+
+  if (options.eventBus) {
+    const afterPayload = { tool: resolved.name, input: call.input, result: { content: result.content, isError: result.isError ?? false }, sessionId: options.sessionId, turnId: options.turnId };
+    try {
+      if (options.eventBus.emitAsync) await options.eventBus.emitAsync("tool.execute.after", afterPayload);
+      else options.eventBus.emit("tool.execute.after", afterPayload);
+    } catch {}
+    options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
+    if (!result.isError && (resolved.name === "write" || resolved.name === "edit") && typeof call.input.path === "string") {
+      try {
+        options.eventBus.emit("file.edited", { path: call.input.path });
+        options.eventBus.emit("event", { event: "file.edited", payload: { path: call.input.path } });
+      } catch {}
+    }
+  }
+
+  return { content: result.content, isError: result.isError ?? false, images: result.images };
 }
 
 const SIMPLE_TYPES: Record<string, (value: unknown) => boolean> = {
