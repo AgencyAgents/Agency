@@ -170,7 +170,7 @@ export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpe
         content: step.text,
         status: "pending",
       }));
-      todos.items = items;
+      await todos.replace(items, ctx.sessionId);
 
       return {
         content: `plan approved by ${record.approvedBy}; queued ${items.length} step(s) as todos:\n${items

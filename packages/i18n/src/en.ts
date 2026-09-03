@@ -79,6 +79,50 @@ export const en = {
   "image.read.attached": "Attached image {path} ({mime}, {bytes} bytes).",
   "image.unsupported": "{path} is not a readable image (supported: {formats}).",
 
+  // A6: tool RESULT strings route through t(); model-facing descriptions stay English.
+  "tool.read.too_large":
+    "file is {bytes} bytes, larger than the {limit}-byte read limit; use grep to search it, or read it in slices with offset/limit",
+  "tool.read.slice_truncated":
+    "[truncated at {bytes} bytes; re-read with a larger offset to continue]",
+  "tool.write.wrote": "wrote {bytes} bytes to {path}",
+  "tool.write.unread_overwrite":
+    "[note: {path} existed but was never read this session — read it to confirm the overwrite matches your intent]",
+  "tool.edit.not_found":
+    "edit rejected: the expected text was not found, the file has changed since it was last read",
+  "tool.edit.ambiguous":
+    "edit rejected: the expected text appears {count} times, include more surrounding context to make it unique, or pass replaceAll",
+  "tool.edit.missing_file": "cannot edit {path}: it doesn't exist yet, use write instead",
+  "tool.edit.applied": "edited {path}",
+  "tool.edit.hunks_applied": "applied {count} hunk(s)",
+  "tool.edit.bad_input": "edit rejected: pass either oldText+newText or a non-empty hunks array, not both",
+  "tool.edit.empty_hunk": "edit rejected: hunk {index} has empty oldText",
+  "tool.bash.background_started": "started background process {id} (pid {pid})",
+  "tool.bash.truncated":
+    "[truncated: output exceeded {bytes} bytes; full output saved to {path}]",
+  "tool.bash.truncated_no_spill": "[truncated: output exceeded {bytes} bytes]",
+  "tool.bash.cancelled": "[cancelled: command aborted before completion]",
+  "tool.bash.timeout": "[timeout: command exceeded {ms}ms and was killed]",
+  "tool.bash.exit_code": "[exit code: {code}]",
+  "tool.bash.cwd_kept": "[cwd kept: {cwd} resolves outside the workspace]",
+  "tool.grep.no_matches": "no matches",
+  "tool.grep.no_search_binary": "neither ripgrep (rg) nor grep is installed or on PATH",
+  "tool.grep.truncated": "[truncated at {count} matches]",
+  "tool.grep.truncated_files": "[truncated at {count} files]",
+  "tool.glob.no_matches": "no files matched",
+  "tool.glob.truncated": "[truncated at {count} results]",
+  "tool.fetch.truncated": "[truncated at {chars} characters]",
+  "tool.todo.empty": "(empty)",
+  "tool.todo.updated": "updated {count} todo item(s)",
+  "tool.todo.invalid": "todo_write rejected: {detail}",
+  "tool.process.unknown": "unknown process id: {id}",
+  "tool.process.no_output": "no output yet from process {id}",
+  "tool.process.killed": "killed process {id}",
+  "tool.process.none_running": "no background processes",
+  "tool.question.answer_next_message": "(the user's answer will arrive in their next message)",
+  "tool.question.dismissed": "the user dismissed the question",
+  "tool.websearch.not_configured":
+    "websearch is not configured; set websearch.endpoint in config to enable it",
+
   "onboarding.no_credentials": "No provider credentials found. Let's connect one.",
   "onboarding.connect_done": "Connected {provider}.",
   "onboarding.already_connected": "Already connected to {provider}.",

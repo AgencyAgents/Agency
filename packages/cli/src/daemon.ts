@@ -14,6 +14,7 @@ import {
   mcpServerDownReminder,
   type ProviderConfig,
   runTurn,
+  SessionStore,
   type SystemReminder,
   storagePaths,
   type ToolSpec,
@@ -257,6 +258,12 @@ export interface AgentDaemonOptions {
    * Tests point this at a temp file so trust decisions never leak between runs.
    */
   trustStorePath?: string;
+  /**
+   * Overrides where the todo-persistence SessionStore reads/writes; defaults
+   * to the workspace's storagePaths sessionsDir. Tests point this at a temp
+   * dir so todo_state entries never leak between runs.
+   */
+  sessionsDir?: string;
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
 }
@@ -374,6 +381,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
 
+  // Todo persistence: todo_write/execute_plan append a todo_state entry to the
+  // session's JSONL (daemon-owned), and each run_turn rehydrates from the
+  // latest one — so todos survive daemon restarts and compaction.
+  const todoSessionsDir = options.sessionsDir ?? storagePaths(options.workspaceRoot).sessionsDir;
+  const todoStore = new SessionStore(todoSessionsDir);
+  const todoPersistence = {
+    async save(sessionId: string, todos: readonly { id: string; content: string; status: string }[]) {
+      const entries = todoStore.load(sessionId);
+      await todoStore.append(sessionId, {
+        type: "todo_state",
+        parentId: todoStore.latestTip(entries) ?? null,
+        todos,
+      });
+    },
+    load(sessionId: string) {
+      const entries = todoStore.load(sessionId);
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry?.type === "todo_state" && Array.isArray(entry.todos)) return entry.todos;
+      }
+      return undefined;
+    },
+  };
+
   const builtins = options.tools
     ? undefined
     : await createBuiltinTools({
@@ -384,6 +415,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         http,
         workspaceRoot: options.workspaceRoot,
         snapshotDir: storagePaths(options.workspaceRoot).snapshotsDir,
+        formatter: config.formatter,
+        windowsShell: config.windowsShell,
+        ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
+        todoPersistence,
         mcpServers: config.mcpServers,
       });
   const tools = options.tools ?? builtins?.tools ?? [];
@@ -472,6 +507,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             });
             const modelInfo = catalogModel(params.provider, params.model);
             const sessionId = params.sessionId ?? "default";
+            // Rehydrate the shared TodoStore from this session's persisted
+            // todos so a daemon restart (or a session switch) restores them.
+            if (builtins?.todos) await builtins.todos.hydrate(sessionId);
             const approvals = approvalsFor(sessionId);
             // Approval asks broadcast on the turn stream (the requesting
             // client) and, when the client named a session, the session

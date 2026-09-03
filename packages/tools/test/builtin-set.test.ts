@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createBuiltinTools } from "../src/builtin-set.ts";
+import { createFetchTool } from "../src/builtins/fetch.ts";
 import type { McpServerConfig, McpTransport } from "../src/mcp/index.ts";
 
 const dirs: string[] = [];
@@ -45,7 +46,7 @@ function fakeTransport(responses: Record<string, unknown>): McpTransport {
 }
 
 describe("createBuiltinTools", () => {
-  test("without mcpServers the set is the ten built-ins with no failures", async () => {
+  test("without mcpServers the set is the fourteen built-ins with no failures", async () => {
     const root = mkdtempSync(join(tmpdir(), "agency-builtin-set-"));
     dirs.push(root);
 
@@ -63,6 +64,10 @@ describe("createBuiltinTools", () => {
       "fetch",
       "glob",
       "grep",
+      "process_kill",
+      "process_list",
+      "process_output",
+      "question",
       "read",
       "todo_read",
       "todo_write",
@@ -70,6 +75,72 @@ describe("createBuiltinTools", () => {
     ]);
     expect(builtins.mcpFailures.size).toBe(0);
     await builtins.dispose();
+  });
+
+  test("websearch registers only when an endpoint is configured", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agency-builtin-set-"));
+    dirs.push(root);
+
+    const configured = await createBuiltinTools({
+      deps: depsFor(root),
+      http: noopHttp,
+      workspaceRoot: root,
+      snapshotDir: join(root, "snapshots"),
+      websearch: { endpoint: "https://search.example.com/api" },
+    });
+    expect(configured.registry.get("websearch")).toBeDefined();
+    await configured.dispose();
+
+    const unconfigured = await createBuiltinTools({
+      deps: depsFor(root),
+      http: noopHttp,
+      workspaceRoot: root,
+      snapshotDir: join(root, "snapshots"),
+    });
+    expect(unconfigured.registry.get("websearch")).toBeUndefined();
+    await unconfigured.dispose();
+  });
+
+  test("the registry supports register/unregister/filter and per-agent subsets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agency-builtin-set-"));
+    dirs.push(root);
+
+    const builtins = await createBuiltinTools({
+      deps: depsFor(root),
+      http: noopHttp,
+      workspaceRoot: root,
+      snapshotDir: join(root, "snapshots"),
+    });
+    try {
+      expect(builtins.tools).toEqual(builtins.registry.list());
+
+      builtins.registry.unregister("fetch");
+      expect(builtins.registry.has("fetch")).toBe(false);
+      expect(builtins.registry.list().map((t) => t.name)).not.toContain("fetch");
+      builtins.registry.register(createFetchTool(depsFor(root), noopHttp));
+      expect(builtins.registry.has("fetch")).toBe(true);
+
+      expect(builtins.registry.filter("process_").map((t) => t.name).sort()).toEqual([
+        "process_kill",
+        "process_list",
+        "process_output",
+      ]);
+
+      // A5 permissions predicate: a read-only agent sees only safe tools.
+      const readOnly = builtins.registry.forAgent((_name, tier) => tier === "safe");
+      expect(readOnly.map((t) => t.name).sort()).toEqual([
+        "glob",
+        "grep",
+        "process_list",
+        "process_output",
+        "question",
+        "read",
+        "todo_read",
+        "todo_write",
+      ]);
+    } finally {
+      await builtins.dispose();
+    }
   });
 
   test("mcpServers config adds the server's tools under the capability model", async () => {

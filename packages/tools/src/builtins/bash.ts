@@ -2,6 +2,8 @@ import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { parseShellOutput, type ShellConfig } from "../shell.ts";
+import { t } from "@agency/i18n";
+import { truncateWithSpill } from "../truncate.ts";
 
 /**
  * Byte cap for a single bash result. The session-wide caps in
@@ -19,37 +21,24 @@ const MAX_OUTPUT_BYTES = 30_000;
  */
 const ABORT_DRAIN_MS = 1_000;
 
+/** How often a long-running foreground command emits a progress notice. */
+const PROGRESS_TICK_MS = 2_000;
+
 export interface BashState {
   cwd: string;
 }
 
 /**
- * Cuts a UTF-8 buffer to at most `maxBytes` bytes without splitting a
- * character: any continuation bytes (10xxxxxx) at the cut point are walked
- * back to the start of the containing character. Mirrors
- * `sliceAtCharBoundary` in core/src/truncate.ts — kept local rather than
- * imported because @agency/tools does not depend on @agency/core, and
- * adding that edge is out of scope here.
- */
-function sliceAtCharBoundary(buf: Buffer, maxBytes: number): string {
-  let end = Math.min(maxBytes, buf.length);
-  while (end > 0) {
-    const byte = buf.at(end);
-    if (byte === undefined || (byte & 0xc0) !== 0x80) break;
-    end -= 1;
-  }
-  return buf.subarray(0, end).toString("utf8");
-}
-
-/**
  * Caps a bash result the way `truncateOutput` caps session-wide results in
  * core/src/truncate.ts: head kept, cut at a character boundary,
- * machine-readable notice appended. Content within the cap is untouched.
+ * machine-readable notice appended — and the overflow spilled to a temp file
+ * so nothing is silently dropped.
  */
 function truncateResult(content: string): string {
-  const bytes = Buffer.from(content, "utf8");
-  if (bytes.length <= MAX_OUTPUT_BYTES) return content;
-  return `${sliceAtCharBoundary(bytes, MAX_OUTPUT_BYTES)}\n[truncated: output exceeded ${MAX_OUTPUT_BYTES} bytes]`;
+  return truncateWithSpill(content, MAX_OUTPUT_BYTES, {
+    truncated: (path) => t("tool.bash.truncated", { bytes: MAX_OUTPUT_BYTES, path }),
+    truncatedNoSpill: t("tool.bash.truncated_no_spill", { bytes: MAX_OUTPUT_BYTES }),
+  });
 }
 
 export function createBashTool(
@@ -58,17 +47,20 @@ export function createBashTool(
   state: BashState,
   processManager: ProcessManager,
 ): ToolSpec {
-  const spec: ToolSpec<{ command: string; background?: boolean }> = {
+  const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number }> = {
     name: "bash",
     description:
-      `Runs a shell command in ${shell.label}. Working directory persists across calls within this ` +
-      "session; environment variables do not. Pass background: true for long-running processes " +
-      "(dev servers, watchers) instead of waiting for them to exit.",
+      `Runs a shell command in ${shell.label}. Despite the tool's name, write commands in ` +
+      `${shell.label} syntax on this platform, not bash/POSIX syntax. Working directory persists ` +
+      "across calls within this session; environment variables do not. Pass background: true for " +
+      "long-running processes (dev servers, watchers) instead of waiting for them to exit. Pass " +
+      "timeout (milliseconds) to kill a command that may hang.",
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
         background: { type: "boolean" },
+        timeout: { type: "number", description: "Kill the command after this many milliseconds." },
       },
       required: ["command"],
     },
@@ -85,7 +77,7 @@ export function createBashTool(
       if (input.background) {
         const argv = [shell.command, ...shell.buildArgs(input.command)];
         const info = processManager.spawn(argv, { cwd: state.cwd });
-        return { content: `started background process ${info.id} (pid ${info.pid})` };
+        return { content: t("tool.bash.background_started", { id: info.id, pid: info.pid }) };
       }
 
       const wrapped = shell.wrapCommand(input.command);
@@ -126,12 +118,34 @@ export function createBashTool(
       const abortSettled = new Promise<void>((resolve) => {
         settleAborted = resolve;
       });
+      let timedOut = false;
       const onAbort = (): void => {
         killProc();
         settleAborted();
       };
       if (ctx.signal.aborted) onAbort();
       else ctx.signal.addEventListener("abort", onAbort);
+
+      const timeout =
+        typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0
+          ? input.timeout
+          : undefined;
+      const timeoutTimer =
+        timeout !== undefined
+          ? setTimeout(() => {
+              timedOut = true;
+              killProc();
+              settleAborted();
+            }, timeout)
+          : undefined;
+
+      const startedAt = Date.now();
+      const progressTimer = ctx.onProgress
+        ? setInterval(() => {
+            const seconds = Math.round((Date.now() - startedAt) / 1000);
+            ctx.onProgress?.(`still running (${seconds}s)`);
+          }, PROGRESS_TICK_MS)
+        : undefined;
 
       try {
         const outcome = await Promise.race([
@@ -169,7 +183,7 @@ export function createBashTool(
             deps.sandbox.resolvePath(cwd);
             state.cwd = cwd;
           } catch {
-            cwdNotice = `\n[cwd kept: ${cwd} resolves outside the workspace]`;
+            cwdNotice = `\n${t("tool.bash.cwd_kept", { cwd })}`;
           }
         }
 
@@ -177,16 +191,19 @@ export function createBashTool(
         if (cwdNotice) combined += cwdNotice;
         if (outcome.aborted) {
           // Cancellation must not read as a silent success with exit code 0.
-          combined = combined
-            ? `${combined}\n[cancelled: command aborted before completion]`
-            : "[cancelled: command aborted before completion]";
+          const notice = timedOut
+            ? t("tool.bash.timeout", { ms: timeout ?? 0 })
+            : t("tool.bash.cancelled");
+          combined = combined ? `${combined}\n${notice}` : notice;
         } else if (exitCode !== 0) {
-          combined += `\n[exit code: ${exitCode}]`;
+          combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;
         }
 
         return { content: truncateResult(combined) };
       } finally {
         ctx.signal.removeEventListener("abort", onAbort);
+        if (progressTimer !== undefined) clearInterval(progressTimer);
+        if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
       }
     },
   };

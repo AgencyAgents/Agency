@@ -23,6 +23,12 @@ export interface ToolContext {
    * caller has no approval surface, in which case a tool must fail closed.
    */
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
+  /**
+   * Progress channel for long-running tools (A6): a handler may emit bounded
+   * one-line progress notices while it works; the loop turns them into
+   * tool_progress events. Absent when the caller has no event surface.
+   */
+  onProgress?: (message: string) => void;
 }
 
 export interface ToolResult {

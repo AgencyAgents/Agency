@@ -21,6 +21,7 @@ export type ToolHandler = (
     sessionId?: string;
     toolCallId?: string;
     requestApproval?: RequestApproval;
+    onProgress?: (message: string) => void;
   },
 ) => Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
 
@@ -47,6 +48,7 @@ export type LoopEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input?: Record<string, unknown> }
   | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
+  | { type: "tool_progress"; id: string; name: string; message: string }
   | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
   | { type: "iteration_limit"; iterations: number }
@@ -210,44 +212,114 @@ function emitErrorEvent(error: unknown, onEvent?: (event: LoopEvent) => void): v
   onEvent?.({ type: "error", code: "internal", message: String(error) });
 }
 
+type ToolResultLike = { content: string; isError: boolean; images?: ImageBlock[] };
+
+interface ToolCallItem {
+  call: Extract<ContentBlock, { type: "tool_call" }>;
+  index: number;
+  /** Pre-parsed per-call error for a call whose arguments never repaired. */
+  malformed?: string;
+  spec?: ToolSpec;
+}
+
+/**
+ * True when a call can run beside its neighbors without ordering hazards:
+ * safe-tier tools (reads) and calls with no handler to run (malformed
+ * arguments, unknown tools — both resolve to fixed error results). Anything
+ * mutating, unclassified, or unknown-risk runs alone, in call order.
+ */
+function parallelSafe(spec: ToolSpec | undefined, malformed: string | undefined): boolean {
+  if (malformed !== undefined) return true;
+  if (spec === undefined) return true;
+  return spec.riskTier === "safe";
+}
+
 async function runTools(
   calls: Extract<ContentBlock, { type: "tool_call" }>[],
   options: RunTurnOptions,
   malformedCalls: ReadonlyMap<string, string>,
   signal: AbortSignal | undefined,
 ): Promise<ContentBlock[]> {
-  const results: Array<Extract<ContentBlock, { type: "tool_result" }>> = [];
+  const results: Array<Extract<ContentBlock, { type: "tool_result" }>> = new Array(calls.length);
 
-  for (const call of calls) {
-    // A call whose streamed arguments never parsed (even after repair) gets a
-    // per-call error instead of running the handler on garbage input.
+  // Consecutive safe calls batch into one concurrent run; the first unsafe
+  // call (or an interleaved one) flushes the batch, so a read sandwiched
+  // between two writes still observes the writes in model order.
+  const batches: ToolCallItem[][] = [];
+  let pending: ToolCallItem[] = [];
+  calls.forEach((call, index) => {
     const malformed = malformedCalls.get(call.id);
-    const result: { content: string; isError: boolean; images?: ImageBlock[] } = malformed
-      ? { content: malformed, isError: true }
-      : await executeOne(
-          options.tools.find((t) => t.name === call.name),
-          call,
-          options,
-          signal,
-        );
+    const spec = resolveToolSpec(options.tools, call.name);
+    if (!parallelSafe(spec, malformed)) {
+      if (pending.length > 0) batches.push(pending);
+      pending = [];
+      batches.push([{ call, index, ...(malformed !== undefined ? { malformed } : {}), ...(spec ? { spec } : {}) }]);
+      return;
+    }
+    pending.push({ call, index, ...(malformed !== undefined ? { malformed } : {}), ...(spec ? { spec } : {}) });
+  });
+  if (pending.length > 0) batches.push(pending);
+
+  const emit = (callId: string, result: ToolResultLike): void => {
     options.onEvent?.({
       type: "tool_result",
-      id: call.id,
+      id: callId,
       content: result.content,
       isError: result.isError,
       images: result.images,
     });
-    results.push({
+  };
+
+  const store = (item: ToolCallItem, result: ToolResultLike): void => {
+    results[item.index] = {
       type: "tool_result",
-      toolCallId: call.id,
+      toolCallId: item.call.id,
       content: result.content,
       isError: result.isError,
       ...(result.images?.length ? { images: result.images } : {}),
-    });
+    };
+  };
+
+  for (const batch of batches) {
+    // Aborting mid-round must not run every remaining queued call: the
+    // check lands before each batch, and every tool_call still gets a
+    // matching (cancelled) tool_result so the conversation stays well-formed.
+    if (signal?.aborted) {
+      for (const item of batch) {
+        const cancelled: ToolResultLike = {
+          content: "[cancelled: turn aborted before this tool ran]",
+          isError: true,
+        };
+        emit(item.call.id, cancelled);
+        store(item, cancelled);
+      }
+      continue;
+    }
+
+    const settled = await Promise.all(
+      batch.map(async (item): Promise<{ item: ToolCallItem; result: ToolResultLike }> => {
+        const result: ToolResultLike = item.malformed
+          ? { content: item.malformed, isError: true }
+          : await executeOne(item.spec, item.call, options, signal);
+        return { item, result };
+      }),
+    );
+    for (const { item, result } of settled) {
+      emit(item.call.id, result);
+      store(item, result);
+    }
   }
 
   // The event above streams full content to the TUI; only the conversation is capped.
   return truncateToolResults(results);
+}
+
+function resolveToolSpec(tools: ToolSpec[], name: string): ToolSpec | undefined {
+  const exact = tools.find((t) => t.name === name);
+  if (exact) return exact;
+  // Tool-call repair: providers occasionally mangle tool-name casing; fall back to a
+  // case-insensitive match. Mismatch repair for "${name}" is silent by design (no log dependency).
+  return tools.find((t) => t.name.toLowerCase() === name.toLowerCase());
 }
 
 async function executeOne(
@@ -256,12 +328,7 @@ async function executeOne(
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
-  let resolved = spec;
-  if (!resolved) {
-    // Tool-call repair: providers occasionally mangle tool-name casing; fall back to a
-    // case-insensitive match. Mismatch repair for "${call.name}" is silent by design (no log dependency).
-    resolved = options.tools.find((t) => t.name.toLowerCase() === call.name.toLowerCase());
-  }
+  const resolved = spec ?? resolveToolSpec(options.tools, call.name);
   if (!resolved) {
     const available = options.tools.map((t) => t.name).join(", ");
     return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
@@ -309,6 +376,7 @@ async function executeOne(
   }
 
   const toolSignal = signal ?? NEVER_ABORTED;
+  const onEvent = options.onEvent;
   const toolCtx = {
     signal: toolSignal,
     turnId: options.turnId,
@@ -316,6 +384,11 @@ async function executeOne(
     sessionId: options.sessionId,
     toolCallId: call.id,
     requestApproval: options.requestApproval,
+    onProgress: onEvent
+      ? (message: string) => {
+          onEvent({ type: "tool_progress", id: call.id, name: resolved.name, message });
+        }
+      : undefined,
   };
   try {
     const result = await resolved.handler(call.input, toolCtx);

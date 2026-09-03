@@ -126,6 +126,22 @@ export const ConfigSchema = z.object({
       forecastCostUsd: z.number().optional(),
     })
     .optional(),
+  /**
+   * Formatter run after every successful write/edit, e.g.
+   * `formatter: {command: ["biome", "format", "--write"]}`; the file path is
+   * appended as the final argument. Absent/empty means no formatter.
+   */
+  formatter: z.object({ command: z.array(z.string()).optional() }).optional(),
+  /**
+   * Which shell the bash tool actually spawns on Windows (powershell, gitbash
+   * or cmd); other platforms always use POSIX sh. Defaults to powershell.
+   */
+  windowsShell: z.enum(["powershell", "gitbash", "cmd"]).optional(),
+  /**
+   * Web search for the websearch tool: a GET endpoint the query is appended
+   * to as `?q=`. Absent means the tool is not offered to the model at all.
+   */
+  websearch: z.object({ endpoint: z.string().optional() }).optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;
