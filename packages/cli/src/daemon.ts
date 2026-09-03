@@ -1,5 +1,6 @@
-import { rmSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { configDir } from "@agency/core";
 import {
   type Budget,
   buildEnvironmentBlock,
@@ -387,6 +388,35 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return keychainPromise;
   };
 
+  const configFingerprint = (() => {
+    const paths = [
+      join(options.configDir ?? configDir(), "config.jsonc"),
+      join(options.workspaceRoot, ".agency", "config.jsonc"),
+    ];
+    const snapshot = new Map<string, number>();
+    for (const p of paths) {
+      try {
+        snapshot.set(p, statSync(p).mtimeMs);
+      } catch {
+        snapshot.set(p, 0);
+      }
+    }
+    return {
+      check: () => {
+        for (const [p, prev] of snapshot) {
+          let cur = 0;
+          try {
+            cur = statSync(p).mtimeMs;
+          } catch {
+            cur = 0;
+          }
+          if (cur !== prev) return true;
+        }
+        return false;
+      },
+    };
+  })();
+
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
 
   // Todo persistence: todo_write/execute_plan append a todo_state entry to the
@@ -497,6 +527,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         // R10 wiring: the whole turn — provider requests and tool calls —
         // correlates under one trace ID in the logs.
         return withTrace(async () => {
+          if (configFingerprint.check()) {
+            logger.warn("config changed — restart daemon to apply");
+          }
           // Turn heartbeats keep heartbeat-aware clients' deadlines alive
           // through silent stretches (a long tool call emits no deltas).
           const turnHeartbeat = setInterval(() => {

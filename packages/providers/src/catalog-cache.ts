@@ -63,8 +63,11 @@ export async function loadModelRegistry(options: {
       try {
         await registry.refresh(target.family, target.http, target.apiKey);
         refreshed = true;
-      } catch {
-        // Offline or the endpoint is unreachable: keep serving what's cached.
+      } catch (error) {
+        // Offline or the endpoint is unreachable: keep serving what's cached, but surface the failure.
+        console.warn(
+          `[catalog] refresh for "${target.family}" failed; serving stale cache: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     if (refreshed) saveCachedCatalog(options.cacheDir, registry.list());

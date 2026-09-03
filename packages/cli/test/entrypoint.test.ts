@@ -343,7 +343,7 @@ describe("-p headless mode", () => {
     expect(call.provider).toBe("openai");
     expect(call.model).toBe("fake-1");
     // A3: the key no longer travels to the daemon; it resolves it itself.
-    expect(call.apiKey).toBeUndefined();
+    expect((call as Record<string, unknown>).apiKey).toBeUndefined();
     expect(call.prompt).toBe("hello");
     expect(call.systemPrompt.length).toBeGreaterThan(0);
   });
