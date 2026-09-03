@@ -10,7 +10,6 @@
     { "path": "packages/rpc" },
     { "path": "packages/tools" },
     { "path": "packages/cli" },
-    { "path": "packages/tui" },
     { "path": "scripts" }
   ]
 }

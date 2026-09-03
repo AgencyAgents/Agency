@@ -6,7 +6,7 @@ import { createFileTrustStore } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { HttpClient } from "@agency/net";
 import { createKeychain, type KeychainBackend, type ModelInfo } from "@agency/providers";
-import { ConnectError, createHttpValidator, runConnectFlow } from "@agency/tui";
+import { ConnectError, createHttpValidator, runConnectFlow } from "./connect.ts";
 import { listProviders } from "./providers-list.ts";
 
 /**

@@ -27,7 +27,6 @@
         "@agency/schema": "workspace:*",
         "@agency/telemetry": "workspace:*",
         "@agency/tools": "workspace:*",
-        "@agency/tui": "workspace:*",
       },
     },
     "packages/core": {
@@ -122,15 +121,6 @@
         "zod": "^4",
       },
     },
-    "packages/tui": {
-      "name": "@agency/tui",
-      "version": "0.1.0",
-      "dependencies": {
-        "@agency/core": "workspace:*",
-        "@agency/i18n": "workspace:*",
-        "@agency/schema": "workspace:*",
-      },
-    },
   },
   "packages": {
     "@agency/cli": ["@agency/cli@workspace:packages/cli"],
@@ -154,8 +144,6 @@
     "@agency/telemetry": ["@agency/telemetry@workspace:packages/telemetry"],
 
     "@agency/tools": ["@agency/tools@workspace:packages/tools"],
-
-    "@agency/tui": ["@agency/tui@workspace:packages/tui"],
 
     "@biomejs/biome": ["@biomejs/biome@2.5.11", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.11", "@biomejs/cli-darwin-x64": "2.5.11", "@biomejs/cli-linux-arm64": "2.5.11", "@biomejs/cli-linux-arm64-musl": "2.5.11", "@biomejs/cli-linux-x64": "2.5.11", "@biomejs/cli-linux-x64-musl": "2.5.11", "@biomejs/cli-win32-arm64": "2.5.11", "@biomejs/cli-win32-x64": "2.5.11" }, "bin": { "biome": "bin/biome" } }, "sha512-Tj0dnkLPdW0ASjHfj2D/ZkkvPU2wrFmnE1jWTD2xzV1ycapV1DutbYXk4NDnR3rYTi1ZCbNFD4G2gRMEY65WaA=="],
 

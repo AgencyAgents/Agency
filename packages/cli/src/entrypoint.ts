@@ -28,7 +28,7 @@ import { pruneCommand, storageCommand, whereCommand } from "./storage-commands.t
  */
 const VERSION = process.env.AGENCY_VERSION ?? "0.1.0";
 
-const HELP = `Agency - production coding harness
+const HELP = `Agency - production coding harness (backend)
 
 Usage: agency [command] [options]
        agency -p <prompt> [options]
@@ -59,7 +59,7 @@ Options:
   --help, -h               Show this help
   --version, -v            Show version
 
-Run without a command to launch the TUI.
+No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
 
 export interface ParsedArgv {
@@ -523,8 +523,8 @@ async function dispatch(
 
   switch (parsed.command) {
     case undefined:
-      out(t("cli.tui.hint"));
-      return 0;
+      err('Interactive client not included in this build — use `agency -p "prompt"` for headless, `agency --help` for commands.');
+      return 1;
     case "where":
       return whereCmd(parsed, deps, out);
     case "storage":

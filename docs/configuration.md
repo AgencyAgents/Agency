@@ -27,7 +27,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `provider` | `Record<id, ProviderConfig>` | `{}` | Per-provider overrides (see below) |
 | `model` | string | — | Default model as `provider/model` (model id may contain `/`) |
 | `small_model` | string | — | Cheap model for background tasks |
-| `theme` | string | — | TUI palette name; unknown values fall back silently |
+| `theme` | string | — | Reserved for future frontend; unknown values ignored |
 | `disabled_providers` | `string[]` | `[]` | Families to hide |
 | `enabled_providers` | `string[]` | — | When set, only these families are kept |
 | `mcpServers` | `Record<string, unknown>` | — | Loose map; re-validated by `parseMcpServers` at startup |
@@ -98,9 +98,9 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 Configured under `mcpServers` / `lspServers`. The MCP layer accepts stdio (`command`+`args`) and HTTP (`url`) servers, optional `headers`, and per-request timeouts. LSP is a minimal client that decorates read/write/edit results with diagnostics. Failures surface via `providers_list` / `mcp_status` / `lsp_status` RPC and per-turn `mcp_server_down` system reminders.
 
-## Themes and keybinds
+## Themes and keybinds (deferred — frontend follows separately)
 
-`theme` selects a TUI palette; `KeybindRegistry` supports `default` and `vim` presets with `applyOverrides` for per-project `keybinds` overrides. Conflicts are detected after merge.
+`theme` is a config key reserved for the future frontend. Keybind and theme registries were part of the removed `packages/tui` package; the backend retains the config key but does not apply it. Frontend will rebuild from these config values.
 
 ## Writing config
 

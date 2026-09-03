@@ -6,6 +6,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ## [Unreleased]
 
+### Removed
+
+- `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, swarm, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments now exits 1 with an honest notice; use `agency -p "prompt"` for headless or `agency --help` for commands.
+
 ### Added
 
 - Release engineering: `bun build --compile` binary builds with a 100 MB size
@@ -44,12 +48,12 @@ Initial development release. Foundation through ecosystem, built in phases:
 - **Prompt + context + sessions**: fixed-order prompt composition with environment block and system reminders, AGENTS.md
   and rules loading behind the trust gate, compaction both proactive (0.8 ratio, 200k default window) and reactive (compact-and-retry on `CONTEXT_OVERFLOW` with `needsCompaction` + `runSessionTurn` retry),
   append-only JSONL session trees with fork/clone/resume/export, crash recovery, storage layout with `agency where`/`storage`/`prune`.
-- **TUI** (`packages/tui`): differential renderer with degradation modes (no-color, narrow,
+- **TUI** (`packages/tui`, since removed in Unreleased): differential renderer with degradation modes (no-color, narrow,
   non-TTY, screen-reader), streaming transcript with collapsible thinking,
   model picker with fuzzy search (`Ctrl+L`, `ModelPickerStore` with favorites/recents), `/connect` flow
   (`tui/connect.ts`, also available as `agency auth login`), session browser, diff
   viewer, command palette (`Ctrl+K`), contextual help (`?`), rebindable keybinds, themes,
-  designed empty/error states. Note: `agency` without arguments currently prints a hint; the TUI modules are implemented but not yet launched from the entrypoint.
+  designed empty/error states. The TUI was implemented but not yet launched from the entrypoint; it has been removed in the Unreleased backend-only cut pending the new frontend.
 - **Ecosystem + input**: MCP client (stdio + HTTP with headers/timeouts) registering through the
   built-in tool contract (parallel start, `mcp_status` RPC, `mcp_server_down` reminders), minimal LSP client feeding edit verification
   (diagnostics appended to `write`/`edit` results, `lsp_status` RPC), image input across adapters, todo tools, SDK surface.

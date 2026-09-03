@@ -35,7 +35,7 @@ Inspect with `agency storage` (sizes by `data`/`cache`/`logs`) or `--format json
 
 Content-addressed blobs under `snapshotsDir` via a snapshot journal keyed by `turnId`. `write`/`edit` capture `before` and (after formatter) `afterHash`; `undo` restores the latest unrestored snapshot, `redo` re-applies it. Blobs are `sha/ <h[0:2]>/<h[2:]>`. The journal is in-memory per daemon — undo depth resets on daemon restart. `prune` refcounts both hashes across `<h[0:2]>/<h[2:]>` shards.
 
-Exposed as daemon RPC `undo`/`redo`; the TUI must go through RPC.
+Exposed as daemon RPC `undo`/`redo`; clients (including the future frontend) go through RPC.
 
 ## Logs and telemetry
 

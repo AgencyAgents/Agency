@@ -1,31 +1,21 @@
 import { t } from "@agency/i18n";
 
 /**
- * The /connect flow: prompt for a provider id and API key, validate the pair
- * against the provider's live endpoint, store the key, and hand back enough
- * for the caller to refresh the catalog. All terminal I/O is injected, so the
- * whole flow is testable without a TTY.
+ * Local connect flow (moved from packages/tui/src/connect.ts when the TUI
+ * package was removed). Backend CLI onboarding owns this now; the future
+ * frontend will rebuild from ErrorCode + i18n keys.
  */
 
-/**
- * Structural subset of the daemon-side keychain the flow needs. The TUI talks
- * to providers over RPC, so it depends on this shape, not on the providers
- * package; the real keychain satisfies it as-is.
- */
 export interface KeyStore {
   readonly name: string;
   set(account: string, secret: string): Promise<void>;
 }
 
 export interface ConnectPrompter {
-  /** Reads a line of plain input (provider ids, custom names). */
   line(prompt: string): Promise<string>;
-  /** Reads a secret; the implementation masks echoed characters. */
   secret(prompt: string): Promise<string>;
 }
 
-/** A terminal prompter: secrets are read with echo suppressed by the caller's
- *  readline config; this implementation only shapes the prompts. */
 export function createTerminalPrompter(
   readLine: (prompt: string, mask: boolean) => Promise<string>,
 ): ConnectPrompter {
@@ -35,7 +25,6 @@ export function createTerminalPrompter(
   };
 }
 
-/** A prompter over pre-scripted answers; tests drive the flow deterministically. */
 export function createScriptedPrompter(answers: readonly string[]): ConnectPrompter & { asked: string[] } {
   const queue = [...answers];
   const asked: string[] = [];
@@ -62,7 +51,6 @@ export class ConnectError extends Error {
   }
 }
 
-/** opencode's custom-provider id rule: lowercase, digits, dash, underscore. */
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-_]*$/;
 
 export function isValidProviderId(id: string): boolean {
@@ -71,9 +59,7 @@ export function isValidProviderId(id: string): boolean {
 
 export interface ConnectOutcome {
   providerId: string;
-  /** Where the key was persisted, so the UI can say so. */
   storedIn: string;
-  /** True when the key was verified against the provider before storing. */
   verified: boolean;
 }
 
@@ -82,22 +68,12 @@ export const OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot"]);
 export interface ConnectFlowOptions {
   prompter: ConnectPrompter;
   keychain: KeyStore;
-  /** Verifies a candidate key before it's stored; a rejection aborts the flow. */
   validate?: (providerId: string, apiKey: string) => Promise<boolean>;
-  /** Known provider ids offered as suggestions (from the catalog). */
   knownProviders?: readonly string[];
-  /** Skip live validation (offline, or a provider with no cheap ping). */
   skipValidation?: boolean;
-  /** OAuth handler: if provided and the provider supports OAuth, the flow offers it. */
   oauth?: (providerId: string) => Promise<{ accessToken: string; storedIn: string }>;
 }
 
-/**
- * Runs one /connect interaction: provider id (validated against the known
- * list, free-form allowed for custom gateways), masked API key, live
- * validation, keychain persistence. Throws ConnectError with a code the UI
- * maps to an i18n message; the key never outlives this function's scope.
- */
 export async function runConnectFlow(options: ConnectFlowOptions): Promise<ConnectOutcome> {
   const known = options.knownProviders ?? [];
   const suggestions = known.length > 0 ? ` (${known.join(", ")})` : "";
@@ -110,7 +86,11 @@ export async function runConnectFlow(options: ConnectFlowOptions): Promise<Conne
   }
 
   if (OAUTH_PROVIDER_IDS.has(providerId) && options.oauth) {
-    const choice = (await options.prompter.line(`Use OAuth for ${providerId}? (type "oauth" for OAuth, Enter for API key)`)).trim().toLowerCase();
+    const choice = (await options.prompter.line(
+      `Use OAuth for ${providerId}? (type "oauth" for OAuth, Enter for API key)`,
+    ))
+      .trim()
+      .toLowerCase();
     if (choice === "oauth" || choice === "o" || choice === "2") {
       const oauthResult = await options.oauth(providerId);
       return { providerId, storedIn: oauthResult.storedIn, verified: true };
@@ -131,13 +111,6 @@ export async function runConnectFlow(options: ConnectFlowOptions): Promise<Conne
   return { providerId, storedIn: options.keychain.name, verified };
 }
 
-/**
- * Live validation for a provider before its key is stored: a cheap
- * authenticated ping. OpenAI-shaped endpoints list models; that's the smallest
- * request that proves both reachability and the key. Any 2xx counts; 401/403
- * explicitly reject; anything else (network down, 5xx) is inconclusive, and an
- * inconclusive check doesn't block storing the key.
- */
 export function createHttpValidator(
   http: { fetch(url: string, init?: RequestInit): Promise<Response> },
   baseUrls: Record<string, string> = {},
@@ -152,7 +125,6 @@ export function createHttpValidator(
           : `${baseUrl ?? "https://api.openai.com/v1"}/models`;
 
     if (providerId !== "google" && providerId !== "anthropic" && providerId !== "openai" && !baseUrl) {
-      // No known endpoint to ping: validation is inconclusive, not failed.
       return true;
     }
 
@@ -168,8 +140,6 @@ export function createHttpValidator(
       if (res.status === 401 || res.status === 403) return false;
       return true;
     } catch {
-      // Inconclusive (offline, timeout): don't reject the key for our own
-      // network problems.
       return true;
     }
   };

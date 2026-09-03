@@ -22,11 +22,11 @@ entries). Network optional for offline steps.
 | 0.3 | `agency --help` | Lists `where, storage, session, auth, onboard, debug, update, serve` plus `-p/--print` flags |
 | 0.4 | `agency where` | Prints every path the harness reads/writes; no crash on any platform |
 
-### 1. Launch (1 min) — [auto via headless] + [manual for TUI hint]
+### 1. Launch (1 min) — [auto via headless] + [manual for no-interactive notice]
 
 | Step | Do | Expect |
 |---|---|---|
-| 1.1 | `agency` with no args in a TTY | Hint: "Agency TUI: run in a terminal with a TTY. Use --help for commands." (exit 0, no crash) |
+| 1.1 | `agency` with no args | Notice: "Interactive client not included in this build — use `agency -p \"prompt\"` for headless, `agency --help` for commands." (exit 1, no crash) |
 | 1.2 | `agency --version` | Version string, no stack trace |
 
 ### 2. Connect — first provider (3 min) — [auto] + [manual gate: no credentials message]
@@ -34,9 +34,9 @@ entries). Network optional for offline steps.
 | Step | Do | Expect |
 |---|---|---|
 | 2.1 | `agency auth list` before connecting | Each builtin provider shows `not connected` |
-| 2.2 | `agency onboard` (or `agency auth login openai`) | Prompts for provider id and API key via hidden input; on success prints `Key for <provider> stored in <backend>` via `tui.connect.stored`; invalid id prints `tui.connect.invalid_id`; empty key prints `tui.connect.no_key` and stores nothing |
+| 2.2 | `agency onboard` (or `agency auth login openai`) | Prompts for provider id and API key via hidden input; on success prints `Key for <provider> stored in <backend>` via `tui.connect.stored` i18n key (backend now owns `cli/src/connect.ts`); invalid id prints `tui.connect.invalid_id`; empty key prints `tui.connect.no_key` and stores nothing |
 | 2.3 | `agency auth list` after | Connected provider shows `connected` |
-| 2.4 | *(offline variant)* Disconnect network, `agency auth login <provider>` with a bad key | Either `tui.connect.stored` + `tui.connect.unverified` or a clear network error via `error-states.ts` — never a raw stack trace |
+| 2.4 | *(offline variant)* Disconnect network, `agency auth login <provider>` with a bad key | Either `tui.connect.stored` + `tui.connect.unverified` or a clear network error (ErrorCode `NETWORK` → `error.network` i18n) — never a raw stack trace |
 
 **Automatable:** `onboarding.test.ts`, `connect.test.ts`, `entrypoint.test.ts` cover the i18n paths.
 **Manual gate:** Verify on each OS that the hidden-key prompt actually hides input in the real terminal (not just in tests).
@@ -58,9 +58,9 @@ entries). Network optional for offline steps.
 | 4.1 | `agency -p "create a file hello.txt containing 'hi'" --session walkthrough` | `tool.write.wrote` style result; file exists on disk |
 | 4.2 | `agency -p "edit hello.txt: change 'hi' to 'hello world'" --session walkthrough` | `tool.edit.applied` (or `hunks_applied`), no clobber warning; file now contains `hello world` |
 | 4.3 | `agency session list` | Lists `walkthrough` with entry count > 0 |
-| 4.4 | *(optional desktop path)* Open the session in the transcript viewer / `Transcript` frame dump | Inline diff shows `+`/`-` lines, `diff-viewer.test.ts` semantics: real LCS, not positional zip |
+| 4.4 | *(optional)* Inspect the tool result `renderResult` for `edit` | Inline diff summary shows `+added -removed path`; backend `dispatch` renderResult is a single collapsed line per agent |
 
-**Automatable:** `builtin-tools-integration.test.ts`, `diff-viewer.test.ts`, `daemon` undo/redo not yet exercised here.
+**Automatable:** `builtin-tools-integration.test.ts`, `daemon` undo/redo not yet exercised here. Diff semantics verified via dispatch `renderResult` backend contract (no TUI diff viewer in this build).
 
 ### 5. An undo (1 min) — [auto]
 
@@ -77,7 +77,7 @@ entries). Network optional for offline steps.
 | Step | Do | Expect |
 |---|---|---|
 | 6.1 | `agency -p "run a shell command that sleeps 30 seconds" --session walkthrough` → press `Esc` mid-run (or call `cancel_turn` over RPC within 5 s of the marker) | Bash output preserves whatever was printed before the kill plus `[cancelled: command aborted before completion]`; exit code is not 0; no orphaned grandchildren (check with `ps` or `Get-Process`) |
-| 6.2 | Inspect the transcript/session: the cancelled `tool_result` is `isError:false` content with the cancelled label (retryable tool_error class), not a fatal `error` LoopEvent that killed the turn | Status line shows `cancelled` in `warning` style via `error-states.ts` |
+| 6.2 | Inspect the session: the cancelled `tool_result` is `isError:false` content with the cancelled label (retryable tool_error class), not a fatal `error` LoopEvent that killed the turn | No crash; session resumable (status UI deferred) |
 | 6.3 | *(screen-reader variant)* `AGENCY_SCREEN_READER=1 agency -p "..."` with the same cancel | Spoken cue is `warn`/`error` words, never glyphs; ANSI stripped |
 
 **Automatable:** `packages/cli/test/cancellation-e2e.test.ts` — marker-file polling, generous 30 s timeout, asserts: partial output contains first line + `[cancelled]`, session resumable. See `docs/scenario-matrix.md` turn row.
@@ -97,15 +97,15 @@ entries). Network optional for offline steps.
 
 | Check | How | Expect |
 |---|---|---|
-| Retry countdown | Point `agency` at a fake provider that returns 429 with `Retry-After: 5` | Transcript shows `retry 1: … — retrying at <time>` via `tui.retry.next` using the `next` timestamp from `LoopEvent`; no frozen screen |
-| Elapsed time | Run a tool that sleeps 5 s | Tool row shows `  Ns` ticking (e.g. `bash sleep 5  3s`) via `transcript.ts:startedAt` |
-| Compaction visible | Fill context to overflow on Anthropic/OpenAI/Google | `error.context_overflow` message plus automatic continuation; todos not dropped |
+| Retry countdown | Point `agency` at a fake provider that returns 429 with `Retry-After: 5` | `retry` LoopEvent carries `next` timestamp; retry message via `tui.retry.next` i18n — no frozen screen (TUI rendering deferred) |
+| Elapsed time | Run a tool that sleeps 5 s | `tool_progress` LoopEvent ticks every 2 s (backend); elapsed row rendering deferred (was `transcript.ts:startedAt`) |
+| Compaction visible | Fill context to overflow on Anthropic/OpenAI/Google | `error.context_overflow` i18n message plus automatic continuation; todos not dropped |
 
 ---
 
 ## Pass criteria
 
-- All `[auto]` rows stay green without touching source or docs: `bun run typecheck` clean, `bun test packages/cli` all pass (including `cancellation-e2e`), and per-package suites for `core`/`tui`/`tools`.
+- All `[auto]` rows stay green without touching source or docs: `bun run typecheck` clean, `bun test packages/cli` all pass (including `cancellation-e2e`), and per-package suites for `core`/`tools` (no `packages/tui` in this build).
 - All `[manual]` rows were walked on the releasing machine and the `scenario-matrix.md` status column was updated to match what you saw. A step that required guessing or a retry is a failure — file it, don't excuse it.
 
 ## Cleanup

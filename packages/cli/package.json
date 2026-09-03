@@ -14,8 +14,7 @@
     "@agency/providers": "workspace:*",
     "@agency/rpc": "workspace:*",
     "@agency/telemetry": "workspace:*",
-    "@agency/tools": "workspace:*",
-    "@agency/tui": "workspace:*"
+    "@agency/tools": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --build",

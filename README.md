@@ -1,12 +1,13 @@
 # Agency
 
-A production coding harness for the terminal: one agent, one conversation,
-real provider support, a custom TUI, headless mode, and MCP tool consumption.
+A headless backend coding harness: daemon, RPC, HTTP+SSE gateway, real provider
+support, tools, MCP/LSP, swarm, traces, permissions, and a headless CLI.
+The interactive frontend is not included in this build — it follows separately.
 Built for Windows, macOS, and Linux with equal standing.
 
 ```
-agency          # work in your project, in the terminal
-agency --help   # commands: where, storage, session, auth, onboard, debug
+agency -p "prompt"   # run one headless turn
+agency --help        # commands: where, storage, session, auth, onboard, debug
 ```
 
 ## Install
@@ -29,10 +30,9 @@ rollback.
 
 ## Getting started
 
-1. `agency` in a project directory; trust it when prompted.
-2. `agency auth login <provider>` or `agency onboard` to add a provider API key (stored in your OS keychain; the TUI `tui/connect.ts` flow also supports interactive `/connect` when the TUI is running).
-3. Work. `Ctrl+K` opens the command palette, `?` shows panel shortcuts,
-   `Ctrl+L` opens the model picker (with fuzzy search, favorites, and recents), `Ctrl+T` collapses thinking.
+1. `agency onboard` to add a provider API key (stored in your OS keychain) and pick a default model, or `agency auth login <provider>` for a single provider.
+2. Trust the workspace when prompted.
+3. Run headless: `agency -p "your prompt"` or `agency -p "prompt" --session <id>` / `--continue` for session-backed turns.
 
 ## What it does
 
@@ -44,20 +44,18 @@ rollback.
   endpoint (self-hosted, gateways, corporate proxies) via config and `provider`/`model` flags.
 - **Ecosystem tools**: MCP servers (stdio and HTTP with `headers`/`timeoutMs`) register through the same tool contract as
   built-ins (parallel start, `mcp_status` RPC, `mcp_server_down` system reminder); a minimal LSP client feeds edit verification (diagnostics appended after `write`/`edit`).
-- **Honest degradation**: no-color, 80-column, non-TTY, and screen-reader
-  modes are part of the renderer core, not an afterthought.
 - **Your machine stays yours**: keys in the OS keychain, secrets redacted at
   one chokepoint, telemetry and crash reports off by default and local-only. See
   [docs/privacy.md](docs/privacy.md).
 
-> **Status note**: `agency` without arguments currently prints a hint (the interactive TUI is implemented in `packages/tui` — differential renderer, transcript, model picker, connect flow, session browser, diff viewer, palette, help, keybinds, themes — but not yet launched from the entrypoint). Headless mode (`agency -p "<prompt>"`) and the daemon RPC are the primary interfaces today. There is no desktop app; any mention of one is planned, not shipped.
+> **Status note**: `agency` without arguments prints a notice that the interactive client is not included in this build. Use `agency -p "<prompt>"` for headless turns or `agency --help` for commands. The daemon RPC and HTTP+SSE gateway are the primary interfaces today. There is no desktop app; any mention of one is planned, not shipped. The `packages/tui` frontend package has been removed pending the new frontend.
 
 ## Documentation
 
 | Doc | Contents |
 |---|---|
 | [Install](docs/install.md) | Platforms, verification, updating |
-| [Configuration](docs/configuration.md) | Layers, providers, MCP, keybinds, themes |
+| [Configuration](docs/configuration.md) | Layers, providers, MCP, LSP |
 | [Storage](docs/storage.md) | Paths, what's safe to delete, retention |
 | [Privacy](docs/privacy.md) | Data handling, telemetry, debug bundles |
 | [Release process](docs/release.md) | Builds, signing, SBOM, verification |

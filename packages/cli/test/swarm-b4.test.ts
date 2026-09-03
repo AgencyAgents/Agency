@@ -265,17 +265,12 @@ describe("B4 swarm RPC", () => {
     expect(status.costTotal).toBeCloseTo(1.23);
   });
 
-  it("transcript renders dispatch result as one collapsed line with handle and handle", async () => {
-    const { Transcript } = await import("@agency/tui");
+  it("dispatch result renderResult is a single collapsed line containing handle", async () => {
     const { createDispatchTool: createDispatchTool2 } = await import("@agency/core");
     const tool = createDispatchTool2({ dispatch: async () => ({ content: "porter dispatched at low: do thing" }) });
-    const presentations = [{ name: "dispatch", renderCall: (tool as unknown as { renderCall: (i: unknown) => string }).renderCall, renderResult: (tool as unknown as { renderResult: (r: unknown) => string }).renderResult }];
-    const transcript = new Transcript({ colorEnabled: false, width: 80, tools: presentations as never });
-    transcript.consume({ type: "tool_start", id: "d1", name: "dispatch", input: { agents: [{ handle: "porter", brief: "do thing" }] } });
-    transcript.consume({ type: "tool_result", id: "d1", content: "porter dispatched at low: do thing", isError: false });
-    const frame = transcript.frame();
-    expect(frame.length).toBe(1);
-    expect(frame[0]).toContain("porter");
-    expect(frame[0]!.split("\n").length).toBe(1);
+    const renderResult = (tool as unknown as { renderResult: (r: unknown) => string }).renderResult;
+    const result = renderResult({ content: "porter dispatched at low: do thing", isError: false });
+    expect(result.split("\n").length).toBe(1);
+    expect(result).toContain("porter");
   });
 });
