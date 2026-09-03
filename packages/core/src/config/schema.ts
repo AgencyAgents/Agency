@@ -146,6 +146,16 @@ export const ConfigSchema = z.object({
   /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
   plugins: z.array(z.string()).optional(),
   fallback_model: z.string().optional(),
+  trace: z
+    .object({
+      export: z
+        .object({
+          endpoint: z.string(),
+          headers: z.record(z.string(), z.string()).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { configDir } from "./paths.ts";
 
 /** User data: sessions, snapshots. Never safe to delete casually. */
@@ -144,7 +144,7 @@ export function pruneSessions(
     const workspaceDir = join(root, workspace);
     if (!statSync(workspaceDir).isDirectory()) continue;
     for (const file of readdirSync(workspaceDir)) {
-      if (!file.endsWith(".jsonl")) continue;
+      if (!file.endsWith(".jsonl") || file.endsWith(".trace.jsonl")) continue;
       const full = join(workspaceDir, file);
       const stat = statSync(full);
       files.push({ path: full, mtimeMs: stat.mtimeMs, size: stat.size });
@@ -154,9 +154,23 @@ export function pruneSessions(
   const deleted: string[] = [];
   const now = Date.now();
   const maxAgeMs = policy.maxAgeDays !== undefined ? policy.maxAgeDays * 24 * 60 * 60 * 1000 : undefined;
+  const removeWithSidecars = (sessionPath: string): void => {
+    rmSync(sessionPath, { force: true });
+    const dir = join(sessionPath, "..");
+    const id = basename(sessionPath, ".jsonl");
+    try {
+      for (const f of readdirSync(dir)) {
+        if (f === `${id}.trace.jsonl` || (f.startsWith(`${id}.`) && f.endsWith(".cassette.json"))) {
+          rmSync(join(dir, f), { force: true });
+          deleted.push(join(dir, f));
+        }
+      }
+    } catch {}
+  };
+
   const kept = files.filter((f) => {
     if (maxAgeMs !== undefined && now - f.mtimeMs > maxAgeMs) {
-      rmSync(f.path, { force: true });
+      removeWithSidecars(f.path);
       deleted.push(f.path);
       return false;
     }
@@ -168,7 +182,7 @@ export function pruneSessions(
     let total = kept.reduce((sum, f) => sum + f.size, 0);
     for (const f of kept) {
       if (total <= policy.maxTotalBytes) break;
-      rmSync(f.path, { force: true });
+      removeWithSidecars(f.path);
       deleted.push(f.path);
       total -= f.size;
     }

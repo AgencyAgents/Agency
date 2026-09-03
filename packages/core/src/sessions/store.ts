@@ -177,12 +177,20 @@ export class SessionStore {
   list(): string[] {
     if (!existsSync(this.sessionsDir)) return [];
     return readdirSync(this.sessionsDir)
-      .filter((f) => f.endsWith(".jsonl"))
+      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl"))
       .map((f) => f.slice(0, -".jsonl".length));
   }
 
   delete(sessionId: string): void {
     rmSync(sessionPath(this.sessionsDir, sessionId), { force: true });
+    rmSync(join(this.sessionsDir, `${sessionId}.trace.jsonl`), { force: true });
+    if (existsSync(this.sessionsDir)) {
+      for (const f of readdirSync(this.sessionsDir)) {
+        if (f.startsWith(`${sessionId}.`) && f.endsWith(".cassette.json")) {
+          rmSync(join(this.sessionsDir, f), { force: true });
+        }
+      }
+    }
     this.caches.delete(sessionId);
   }
 

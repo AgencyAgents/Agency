@@ -11,6 +11,7 @@ import {
 } from "@agency/providers";
 import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
 import { truncateToolResults } from "./truncate.ts";
+import type { TraceRecorder } from "./trace/recorder.ts";
 
 export type ToolHandler = (
   input: Record<string, unknown>,
@@ -92,6 +93,12 @@ export interface RunTurnOptions {
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
   eventBus?: { emit: (event: string, payload: unknown) => void; emitAsync?: (event: string, payload: unknown) => Promise<void>; emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }> };
+  /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
+  promptVersion?: string;
+  /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
+  traceRecorder?: TraceRecorder;
+  /** Provider identifier for the model (e.g. "anthropic"), used for trace attribution. */
+  provider?: string;
 }
 
 const NEVER_ABORTED = new AbortController().signal;
@@ -126,8 +133,40 @@ export async function runTurn(
   let cumulativeUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let spentCostUsd = 0;
   let stopReason: StopReason = "end_turn";
+  const tracer = options.traceRecorder;
+  const turnSpanId = tracer
+    ? tracer.startTurnSpan({
+        provider: options.provider,
+        model: options.model,
+        promptVersion: options.promptVersion,
+      })
+    : null;
+  const endTurnOk = () => {
+    if (tracer && turnSpanId) {
+      try {
+        tracer.endTurnSpan(options.signal?.aborted ? "cancelled" : "ok");
+      } catch {}
+      try { tracer.flushAsync(); } catch {}
+    }
+  };
+  const endTurnError = () => {
+    if (tracer && turnSpanId) {
+      try {
+        tracer.endTurnSpan("error");
+      } catch {}
+      try { tracer.flushAsync(); } catch {}
+    }
+  };
 
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+    let modelSpanId: string | null = null;
+    if (tracer && turnSpanId) {
+      modelSpanId = tracer.startModelSpan(turnSpanId, {
+        model: options.model,
+        provider: options.provider ?? "unknown",
+        promptVersion: options.promptVersion,
+      });
+    }
     try {
       let turn: CollectedTurn;
       turn = await scheduler.schedule(
@@ -158,18 +197,28 @@ export async function runTurn(
 
       messages.push({ role: "assistant", content: turn.content });
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
-      spentCostUsd += costOf(turn.usage, options.pricePerMTok);
+      const turnCost = costOf(turn.usage, options.pricePerMTok);
+      spentCostUsd += turnCost;
       stopReason = turn.stopReason;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
+      if (tracer && modelSpanId) {
+        tracer.endSpan(modelSpanId, {
+          status: turn.stopReason === "error" ? "error" : "ok",
+          attributes: {
+            inputTokens: turn.usage.inputTokens,
+            outputTokens: turn.usage.outputTokens,
+            cachedInputTokens: turn.usage.cachedInputTokens,
+            cost: turnCost,
+          },
+        });
+        modelSpanId = null;
+      }
 
       const toolCalls = turn.content.filter(
         (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
       );
 
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
-        // Close out pending tool calls before ending the turn: a tool_call
-        // without a matching tool_result makes the persisted conversation
-        // malformed, and resuming that session 400s at the provider.
         if (toolCalls.length > 0 && !options.signal?.aborted) {
           const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
           messages.push({ role: "user", content: results });
@@ -179,6 +228,7 @@ export async function runTurn(
           spentTokens: totalTokens(cumulativeUsage),
           spentCostUsd,
         });
+        endTurnOk();
         return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
       }
 
@@ -187,19 +237,20 @@ export async function runTurn(
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
       messages.push({ role: "user", content: results });
     } catch (error) {
-      // Terminal for the turn: visible on the event stream (TUI/transcript), then rethrown to the caller.
+      if (tracer && modelSpanId) {
+        try { tracer.endSpan(modelSpanId, { status: "error" }); } catch {}
+      }
+      endTurnError();
       emitErrorEvent(error, options.onEvent);
       throw error;
     }
   }
 
-  // Reaching here means every iteration was spent with the model still asking
-  // for tools (any other exit breaks or returns above): the cap, not the
-  // model, ended this turn. Say so explicitly so the UI can offer to continue.
   if (stopReason === "tool_use" && !options.signal?.aborted) {
     options.onEvent?.({ type: "iteration_limit", iterations: maxToolIterations });
   }
 
+  endTurnOk();
   return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: false };
 }
 
@@ -282,15 +333,17 @@ async function runTools(
   };
 
   for (const batch of batches) {
-    // Aborting mid-round must not run every remaining queued call: the
-    // check lands before each batch, and every tool_call still gets a
-    // matching (cancelled) tool_result so the conversation stays well-formed.
     if (signal?.aborted) {
       for (const item of batch) {
         const cancelled: ToolResultLike = {
           content: "[cancelled: turn aborted before this tool ran]",
           isError: true,
         };
+        const t = options.traceRecorder;
+        if (t) {
+          const sid = t.startToolSpan(t.getTurnSpanId(), { toolName: item.call.name });
+          t.endSpan(sid, { status: "cancelled", attributes: { isError: true } });
+        }
         emit(item.call.id, cancelled);
         store(item, cancelled);
       }
@@ -299,9 +352,19 @@ async function runTools(
 
     const settled = await Promise.all(
       batch.map(async (item): Promise<{ item: ToolCallItem; result: ToolResultLike }> => {
-        const result: ToolResultLike = item.malformed
-          ? { content: item.malformed, isError: true }
-          : await executeOne(item.spec, item.call, options, signal);
+        const t = options.traceRecorder;
+        const spanId = t ? t.startToolSpan(t.getTurnSpanId(), { toolName: item.call.name }) : null;
+        let result: ToolResultLike;
+        try {
+          result = item.malformed
+            ? { content: item.malformed, isError: true }
+            : await executeOne(item.spec, item.call, options, signal);
+        } catch (error) {
+          result = { content: error instanceof Error ? error.message : String(error), isError: true };
+        }
+        if (t && spanId) {
+          t.endSpan(spanId, { status: result.isError ? "error" : "ok", attributes: { isError: result.isError } });
+        }
         return { item, result };
       }),
     );

@@ -26,6 +26,11 @@ import {
   type ToolSpec,
   withSystemReminders,
   withTrace,
+  TraceRecorder,
+  buildSpanTree,
+  loadTraceSpansSync,
+  readCassetteRecord,
+  spansToOtlp,
 } from "@agency/core";
 import {
   ApprovalManager,
@@ -128,6 +133,7 @@ export interface RunTurnParams {
    */
   capabilities?: Capabilities;
   images?: import("@agency/schema").ImageBlock[];
+  promptVersion?: string;
 }
 
 export interface ResolveSystemPromptOptions {
@@ -566,6 +572,27 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             });
             const modelInfo = catalogModel(params.provider, params.model);
             const sessionId = params.sessionId ?? "default";
+            const tracePromptVersion =
+              params.promptVersion ??
+              (params.systemPromptParts?.identity || params.systemPromptParts?.role
+                ? `${params.systemPromptParts?.identity ?? ""}|${params.systemPromptParts?.role ?? ""}`.slice(0, 200)
+                : undefined);
+            let traceRecorder: TraceRecorder | undefined;
+            const collectedTraceEvents: LoopEvent[] = [];
+            try {
+              traceRecorder = new TraceRecorder({
+                sessionsDir: todoSessionsDir,
+                sessionId,
+                traceId: params.turnId,
+                promptVersion: tracePromptVersion,
+                provider: params.provider,
+                model: params.model,
+              });
+            } catch {}
+            const wrappedOnEvent = (event: LoopEvent): void => {
+              collectedTraceEvents.push(event);
+              server.broadcast(eventStream, event);
+            };
             const isNewSession = todoStore.load(sessionId).length === 0 && params.session.length > 0;
             if (isNewSession) {
               try { eventBus.emit("session.created", { sessionId }); eventBus.emit("event", { event: "session.created", payload: { sessionId } }); } catch {}
@@ -632,6 +659,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
                 model: params.model,
                 apiKey,
+                provider: params.provider,
+                promptVersion: tracePromptVersion,
+                traceRecorder,
                 thinkingLevel: params.thinkingLevel,
                 session: params.session,
                 budget: params.budget,
@@ -647,7 +677,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 cwd: options.workspaceRoot,
                 maxToolIterations: params.maxToolIterations,
                 signal: controller.signal,
-                onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
+                onEvent: wrappedOnEvent,
               });
             } catch (error) {
               const isRetryable = error instanceof AgencyError && (error.code === ErrorCode.OVERLOAD || error.code === ErrorCode.TRANSIENT || error.code === ErrorCode.RATE_LIMIT);
@@ -690,12 +720,29 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   cwd: options.workspaceRoot,
                   maxToolIterations: params.maxToolIterations,
                   signal: controller.signal,
-                  onEvent: (event: LoopEvent) => server.broadcast(eventStream, event),
+                  provider: fallbackRef.provider,
+                  promptVersion: tracePromptVersion,
+                  traceRecorder,
+                  onEvent: wrappedOnEvent,
                 });
               } else {
                 throw error;
               }
             }
+            try {
+              if (traceRecorder) {
+                const sysPrompt = resolveSystemPrompt(params, {
+                  workspaceRoot: options.workspaceRoot,
+                  mcpFailures: builtins?.mcpFailures,
+                });
+                const record = traceRecorder.toCassetteRecord(
+                  { provider: params.provider, model: params.model, systemPrompt: sysPrompt, session: params.session },
+                  collectedTraceEvents,
+                  result,
+                );
+                void traceRecorder.writeCassette(params.turnId, record);
+              }
+            } catch {}
             try { eventBus.emit("session.idle", { sessionId }); eventBus.emit("event", { event: "session.idle", payload: { sessionId } }); } catch {}
 
             logger.info("turn finished", {
@@ -846,6 +893,75 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         if (!tmpl) throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
         const expanded = expandCommand(tmpl.content, args ?? "", options.workspaceRoot);
         return { expanded, name };
+      },
+
+      async trace_get(rawParams) {
+        const { sessionId, turnId } = rawParams as { sessionId: string; turnId?: string };
+        if (!sessionId) throw new AgencyError(ErrorCode.INTERNAL, "trace_get requires sessionId", { source: "trace" });
+        const spans = loadTraceSpansSync(todoSessionsDir, sessionId);
+        const filtered = turnId ? spans.filter((s) => s.traceId === turnId) : spans;
+        const tree = buildSpanTree(filtered);
+        return { spans: filtered, tree };
+      },
+
+      async trace_replay(rawParams) {
+        const { sessionId, turnId, overrides } = rawParams as {
+          sessionId: string;
+          turnId: string;
+          overrides?: { model?: string; provider?: string; thinkingLevel?: ThinkingLevel; systemPrompt?: string; effort?: string };
+        };
+        if (!sessionId || !turnId) throw new AgencyError(ErrorCode.INTERNAL, "trace_replay requires sessionId and turnId", { source: "trace" });
+        const record = await readCassetteRecord(todoSessionsDir, sessionId, turnId);
+        if (!record) throw new AgencyError(ErrorCode.INTERNAL, `no cassette for ${sessionId}/${turnId}`, { source: "trace" });
+        const targetProvider = overrides?.provider ?? record.params.provider;
+        const targetModel = overrides?.model ?? record.params.model;
+        const targetSystemPrompt = overrides?.systemPrompt ?? record.params.systemPrompt;
+        const thinkingLevel = overrides?.thinkingLevel;
+        const targetAdapter = adapterFor(targetProvider);
+        const targetScheduler = schedulerFor(targetProvider);
+        const replayed = await runTurn(targetAdapter, targetScheduler, http, {
+          identity,
+          capabilities: defaultCapabilities,
+          toolPolicy: gate,
+          eventBus,
+          systemPrompt: targetSystemPrompt,
+          tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
+          model: targetModel,
+          apiKey: await (async () => {
+            const k = await (async () => {
+              let kc: KeychainBackend | undefined;
+              try { kc = await getKeychain(); } catch {}
+              return resolveApiKey({ provider: targetProvider, env: process.env, keychain: kc, config: providers[targetProvider]?.apiKey });
+            })();
+            return k ?? "replay-key";
+          })(),
+          thinkingLevel: thinkingLevel as ThinkingLevel | undefined,
+          session: record.params.session,
+          cwd: options.workspaceRoot,
+          maxToolIterations: 25,
+        });
+        const equal = JSON.stringify(replayed.messages) === JSON.stringify(record.result.messages);
+        return { equal, original: record, replayed };
+      },
+
+      async trace_export(rawParams) {
+        const { sessionId, turnId } = rawParams as { sessionId: string; turnId?: string };
+        const exportCfg = (config as unknown as { trace?: { export?: { endpoint: string; headers?: Record<string, string> } } }).trace?.export;
+        if (!exportCfg?.endpoint) return { exported: false, reason: "not configured" };
+        const spans = loadTraceSpansSync(todoSessionsDir, sessionId ?? "");
+        const filtered = turnId ? spans.filter((s) => s.traceId === turnId) : spans;
+        if (filtered.length === 0) return { exported: false, reason: "no spans" };
+        const payload = spansToOtlp(filtered);
+        try {
+          await fetch(exportCfg.endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(exportCfg.headers ?? {}) },
+            body: JSON.stringify(payload),
+          });
+        } catch (error) {
+          throw new AgencyError(ErrorCode.INTERNAL, `trace export failed: ${error instanceof Error ? error.message : String(error)}`, { source: "trace" });
+        }
+        return { exported: true, endpoint: exportCfg.endpoint };
       },
     },
 
