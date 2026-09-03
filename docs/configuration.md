@@ -39,6 +39,32 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only; default `powershell` |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
+| `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Swarm roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
+| `leader` | string | — | Handle of leader agent; defaults to first roster entry |
+| `budgets` | `{perAgentUsd?, swarmUsd?}` | — | Token/cost ceilings per agent and swarm-wide |
+
+### Agents presets (swarm roster)
+
+Starter roster presets are editable config examples, not hardcoded. Example:
+
+```jsonc
+{
+  "agents": {
+    "marshal": { "role": "leader", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "auto" },
+    "surveyor": { "role": "planner", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "high", "permissions": { "write": "deny", "edit": "deny", "bash": "deny" } },
+    "skeptic": { "role": "reviewer", "provider": "openai", "model": "gpt-5.2", "effort": "high", "permissions": { "write": "deny", "edit": "deny", "bash": "deny" } },
+    "smith": { "role": "coder", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "medium" },
+    "driver": { "role": "executor", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "medium", "permissions": { "write": "deny", "edit": "deny" } },
+    "scout": { "role": "explorer", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "low", "permissions": { "write": "deny", "edit": "deny", "bash": "deny" } },
+    "archivist": { "role": "researcher", "provider": "anthropic", "model": "claude-sonnet-5", "effort": "medium", "permissions": { "read": "deny", "write": "deny", "edit": "deny", "bash": "deny" } },
+    "warden": { "role": "reviewer", "provider": "openai", "model": "gpt-5.2", "effort": "high", "permissions": { "write": "deny", "edit": "deny" } }
+  },
+  "leader": "marshal",
+  "budgets": { "perAgentUsd": 5, "swarmUsd": 20 }
+}
+```
+
+Worktree isolation: agents with write capabilities get `.agency/worktrees/<handle>`; read-only agents share the main workspace. Merge-back is manual or via leader instruction.
 
 ### ProviderConfig (`provider.<id>`)
 

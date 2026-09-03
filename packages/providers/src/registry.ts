@@ -38,6 +38,8 @@ export interface ModelInfo {
   apiBaseURL?: string;
   /** The client package that knows how to talk to this provider. */
   apiNpm?: string;
+  /** Per-model effort-to-provider knob mapping. Absent = model has no variable reasoning. */
+  effortMapping?: Record<string, unknown>;
 }
 
 /**

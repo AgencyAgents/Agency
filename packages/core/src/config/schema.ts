@@ -161,6 +161,28 @@ export const ConfigSchema = z.object({
       maxDepth: z.number().int().min(1).optional(),
     })
     .optional(),
+  agents: z
+    .record(
+      z.string().regex(/^[a-z][a-z0-9-]*$/, "handle must match [a-z][a-z0-9-]*"),
+      z.object({
+        role: z.string().min(1),
+        provider: z.string().min(1),
+        model: z.string().min(1),
+        effort: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]).default("medium"),
+        permissions: z.record(z.string(), ToolPermissionSchema).optional(),
+      }),
+    )
+    .optional(),
+  leader: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .optional(),
+  budgets: z
+    .object({
+      perAgentUsd: z.number().nonnegative().optional(),
+      swarmUsd: z.number().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;

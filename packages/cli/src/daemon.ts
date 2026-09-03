@@ -73,7 +73,9 @@ import {
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
 import { createSessionScope, type SessionScope, writeApprovalRecord, createTaskTool, extractFinalText } from "@agency/tools";
-import { newEntryId } from "@agency/core";
+import { newEntryId, parseHandles, AgentRegistry, SwarmTodoStore, createDispatchTool } from "@agency/core";
+import { classifyEffortFromText } from "@agency/providers";
+import { createWorktree } from "@agency/core";
 import { listProviders } from "./providers-list.ts";
 
 export const DEFAULT_SYSTEM_PROMPT =
@@ -644,6 +646,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 sessionId: childSessionId,
                 cwd: options.workspaceRoot,
                 taskDepth: parentDepth + 1,
+                doomLoopDetection: true,
                 signal: ctx.signal,
                 onEvent: (ev) => {
                   childEvents.push(ev);
@@ -712,6 +715,41 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           },
         });
         if (!scope.registry.has("task")) scope.registry.register(taskTool as unknown as import("@agency/tools").ToolSpec);
+        try {
+          const cfgAgents = (config as unknown as { agents?: Record<string, unknown> }).agents;
+          const hasSwarm = cfgAgents && Object.keys(cfgAgents).length > 1;
+          if (hasSwarm && !scope.registry.has("dispatch")) {
+            const dispatchTool = createDispatchTool({
+              dispatch: async (input) => {
+                const results: string[] = [];
+                for (const a of input.agents) {
+                  const agent = swarmRegistry.get(a.handle);
+                  if (!agent) { results.push(`${a.handle}: unknown handle`); continue; }
+                  const effort = a.effort ?? (agent.effort === "auto" ? classifyEffortFromText(a.brief) : agent.effort);
+                  const childSessionId = agent.sessionId;
+                  try { todoStore.create(childSessionId); } catch {}
+                  await getOrCreateScope(childSessionId);
+                  const caps = agent.capabilities;
+                  const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
+                  if (writeCapable) {
+                    try {
+                      const wtPath = join(options.workspaceRoot, ".agency", "worktrees", a.handle);
+                      await createWorktree(options.workspaceRoot, wtPath).catch(() => {});
+                      const sc = sessionScopes.get(childSessionId);
+                      if (sc) sc.bashState.cwd = wtPath;
+                    } catch {}
+                  }
+                  const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
+                  await todoStore.append(childSessionId, { type: "agent_lifecycle", parentId: tip, handle: a.handle, state: "working", detail: a.brief }).catch(() => {});
+                  results.push(`${a.handle} dispatched at ${effort}: ${a.brief.slice(0, 80)}`);
+                  try { eventBus.emit("agent.lifecycle", { handle: a.handle, state: "working" }); } catch {}
+                }
+                return { content: results.join("\n") };
+              },
+            });
+            scope.registry.register(dispatchTool as unknown as import("@agency/tools").ToolSpec);
+          }
+        } catch {}
       } catch {}
       (scope as { tools: ToolSpec[] }).tools = scope.registry.list() as unknown as ToolSpec[];
       return scope;
@@ -757,6 +795,33 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     (builtinsMode
       ? { tools: "*", pathScopes: "*", network: "*" }
       : { tools: sessionToolsFor(tools), pathScopes: "*", network: "*" });
+
+  const swarmRegistry = new AgentRegistry();
+  // @ts-ignore unused but reserves swarm-shared todo persistence
+  const swarmTodo: SwarmTodoStore = new SwarmTodoStore({
+    persist: async (todos) => {
+      try {
+        const sid = "swarm-shared";
+        const entries = todoStore.load(sid);
+        await todoStore.append(sid, { type: "todo_state", parentId: todoStore.latestTip(entries) ?? null, todos });
+      } catch {}
+    },
+  });
+  const swarmCost = new Map<string, number>();
+  let swarmTotalCost = 0;
+  const agentMailboxes = new Map<string, import("@agency/schema").Message[]>();
+
+  const initSwarmFromConfig = () => {
+    const cfg = config as unknown as { agents?: Record<string, { role: string; provider: string; model: string; effort: string }>; leader?: string };
+    if (!cfg.agents) return;
+    for (const [handle, a] of Object.entries(cfg.agents)) {
+      if (!swarmRegistry.has(handle)) {
+        swarmRegistry.register({ handle, role: a.role, provider: a.provider, model: a.model, effort: a.effort, sessionId: `swarm-${handle}`, mailbox: [] });
+        agentMailboxes.set(handle, []);
+      }
+    }
+  };
+  try { initSwarmFromConfig(); } catch {}
 
   // Session-scoped "always allow" grants: one manager per session id, alive
   // as long as the daemon process — never beyond it.
@@ -838,7 +903,40 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               provider: params.provider,
               model: params.model,
             });
-            const modelInfo = catalogModel(params.provider, params.model);
+            let resolvedProvider = params.provider;
+            let resolvedModel = params.model;
+            let resolvedThinkingLevel = params.thinkingLevel as string | undefined;
+            const lastUserText = (() => {
+              const m = params.session[params.session.length - 1];
+              const b = m?.content?.find((c: { type: string }) => c.type === "text") as { text?: string } | undefined;
+              return typeof b?.text === "string" ? b.text : "";
+            })();
+            const mentioned = parseHandles(lastUserText).filter((h) => swarmRegistry.has(h));
+            if (mentioned.length === 1) {
+              const agent = swarmRegistry.get(mentioned[0]!)!;
+              resolvedProvider = agent.provider;
+              resolvedModel = agent.model;
+              if (agent.effort === "auto" && !resolvedThinkingLevel) {
+                resolvedThinkingLevel = classifyEffortFromText(lastUserText);
+              }
+            } else if (mentioned.length === 0 && params.thinkingLevel === undefined) {
+              const cfgAgents = (config as unknown as { agents?: Record<string, { effort: string }> }).agents;
+              const leaderHandle = (config as unknown as { leader?: string }).leader ?? (cfgAgents ? Object.keys(cfgAgents)[0] : undefined);
+              const leaderEffort = leaderHandle ? cfgAgents?.[leaderHandle]?.effort : undefined;
+              if (leaderEffort === "auto") {
+                resolvedThinkingLevel = classifyEffortFromText(lastUserText) as string;
+              }
+            }
+            const budgets = (config as unknown as { budgets?: { perAgentUsd?: number; swarmUsd?: number } }).budgets;
+            const perAgentBudget = budgets?.perAgentUsd;
+            const swarmBudget = budgets?.swarmUsd;
+            if (perAgentBudget !== undefined) {
+              const spent = swarmCost.get(params.sessionId ?? "default") ?? 0;
+              if (spent >= perAgentBudget) throw new Error(`budget exceeded: per-agent ${spent} >= ${perAgentBudget}`);
+            }
+            if (swarmBudget !== undefined && swarmTotalCost >= swarmBudget) throw new Error(`swarm budget exceeded: ${swarmTotalCost} >= ${swarmBudget}`);
+
+            const modelInfo = catalogModel(resolvedProvider, resolvedModel);
             const sessionId = params.sessionId ?? "default";
             const tracePromptVersion =
               params.promptVersion ??
@@ -980,23 +1078,36 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               });
               try {
-                result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
+                const mailboxDrain = (() => {
+                  const box = agentMailboxes.get(sessionId);
+                  if (!box || box.length === 0) {
+                    const firstHandle = mentioned.length === 1 ? mentioned[0] : undefined;
+                    if (firstHandle) {
+                      const mbox = swarmRegistry.get(firstHandle)?.mailbox;
+                      if (mbox && mbox.length > 0) return () => { const msgs = [...mbox]; mbox.length = 0; return msgs; };
+                    }
+                    return undefined;
+                  }
+                  return () => { const msgs = [...box]; box.length = 0; return msgs; };
+                })();
+                result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
                   identity,
                   capabilities: effectiveCapabilities,
                   toolPolicy: gate,
                   requestApproval,
                   eventBus,
+                  drainMailbox: mailboxDrain,
                   systemPrompt: resolveSystemPrompt(params, {
                     workspaceRoot: options.workspaceRoot,
                     mcpFailures: effectiveMcpFailures,
                   }),
                   tools: effectiveTools,
-                  model: params.model,
+                  model: resolvedModel,
                   apiKey,
-                  provider: params.provider,
+                  provider: resolvedProvider,
                   promptVersion: tracePromptVersion,
                   traceRecorder,
-                  thinkingLevel: params.thinkingLevel,
+                  thinkingLevel: (resolvedThinkingLevel as import("@agency/providers").ThinkingLevel | undefined) ?? params.thinkingLevel,
                   session: params.session,
                   budget: params.budget,
                   pricePerMTok: modelInfo
@@ -1138,6 +1249,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
             } catch {}
 
+            const costUsd = modelInfo ? (result.usage.inputTokens / 1_000_000) * modelInfo.pricing.inputPerMTok + (result.usage.outputTokens / 1_000_000) * modelInfo.pricing.outputPerMTok : 0;
+            const sidKey = sessionId;
+            swarmCost.set(sidKey, (swarmCost.get(sidKey) ?? 0) + costUsd);
+            swarmTotalCost += costUsd;
+            if (budgets?.swarmUsd !== undefined && swarmTotalCost >= budgets.swarmUsd) {
+              for (const c of activeControllers.values()) try { c.abort(); } catch {}
+            }
             logger.info("turn finished", {
               turnId: params.turnId,
               stopReason: result.stopReason,
@@ -1146,7 +1264,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               cachedInputTokens: result.usage.cachedInputTokens ?? null,
             });
             telemetry.record("turn_complete", {
-              provider: params.provider,
+              provider: resolvedProvider,
               stopReason: result.stopReason,
               inputTokens: result.usage.inputTokens,
               outputTokens: result.usage.outputTokens,
@@ -1221,6 +1339,37 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           if (outcome?.resolved) return outcome;
         }
         return { resolved: false, retroactive: 0 };
+      },
+
+      async agent_message(rawParams) {
+        const { from, to, body, sessionId } = rawParams as { from: string; to: string; body: string; sessionId?: string };
+        const sid = sessionId ?? "default";
+        const entrySid = sid;
+        try {
+          const tip = todoStore.latestTip(todoStore.load(entrySid)) ?? null;
+          await todoStore.append(entrySid, { type: "agent_message", parentId: tip, from, to, body });
+        } catch {}
+        const box = agentMailboxes.get(to);
+        if (box) box.push({ role: "user", content: [{ type: "text", text: `[from ${from}] ${body}` }] });
+        else {
+          const mbox = swarmRegistry.get(to)?.mailbox;
+          if (mbox) mbox.push({ role: "user", content: [{ type: "text", text: `[from ${from}] ${body}` }] });
+        }
+        try { eventBus.emit("agent.message", { from, to, body }); } catch {}
+        return { delivered: true };
+      },
+
+      async swarm_stop(rawParams) {
+        const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
+        const sid = sessionId ?? "default";
+        for (const ctrl of activeControllers.values()) try { ctrl.abort(); } catch {}
+        try {
+          const tip = todoStore.latestTip(todoStore.load(sid)) ?? null;
+          for (const h of swarmRegistry.list().map((a) => a.handle)) {
+            await todoStore.append(sid, { type: "agent_lifecycle", parentId: tip, handle: h, state: "idle", detail: "swarm_stop" }).catch(() => {});
+          }
+        } catch {}
+        return { stopped: true };
       },
 
       // Plan mode's approve half: writes the plan_approval companion record

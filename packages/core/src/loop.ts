@@ -68,6 +68,10 @@ export interface RunTurnOptions {
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
+  drainMailbox?: () => Message[];
+  /** Swarm control (B3): detects identical tool+input 3x consecutively and
+   *  halts the turn. Opt-in — enabled for dispatched peers only. */
+  doomLoopDetection?: boolean;
   /** Correlates tool invocations with the turn that caused them (snapshot
    *  journaling for undo); passed through to tool handler contexts. */
   turnId?: string;
@@ -160,7 +164,17 @@ export async function runTurn(
     }
   };
 
-  for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+  // Doom-loop detection is a swarm control (B3): opt-in per turn, enabled for
+  // dispatched peers. The solo room keeps its existing semantics — a runaway
+  // loop is capped by maxToolIterations, not by input-identity heuristics.
+  const doomHistory: string[] = [];
+  const doomDetection = options.doomLoopDetection === true;  for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+    if (options.drainMailbox) {
+      try {
+        const injected = options.drainMailbox();
+        if (injected.length > 0) messages.push(...injected);
+      } catch {}
+    }
     let modelSpanId: string | null = null;
     if (tracer && turnSpanId) {
       modelSpanId = tracer.startModelSpan(turnSpanId, {
@@ -236,6 +250,18 @@ export async function runTurn(
 
       if (stopReason !== "tool_use" || options.signal?.aborted) break;
 
+      for (const tc of toolCalls) {
+        if (!doomDetection) break;
+        const key = `${tc.name}:${JSON.stringify(tc.input)}`;
+        doomHistory.push(key);
+        if (doomHistory.length >= 3) {
+          const last3 = doomHistory.slice(-3);
+          if (last3[0] === last3[1] && last3[1] === last3[2]) {
+            options.onEvent?.({ type: "error", code: "doom_loop", message: `doom loop detected: ${tc.name} repeated 3x` });
+            throw Object.assign(new Error(`doom loop: ${tc.name} repeated 3x consecutively`), { code: "doom_loop" });
+          }
+        }
+      }
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
       messages.push({ role: "user", content: results });
     } catch (error) {

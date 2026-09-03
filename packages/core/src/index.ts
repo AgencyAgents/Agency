@@ -14,4 +14,7 @@ export * from "./paths.ts";
 export * from "./prompt/index.ts";
 export * from "./sessions/index.ts";
 export * from "./storage.ts";
+export * from "./swarm/registry.ts";
+export * from "./swarm/todo.ts";
+export * from "./swarm/dispatch.ts";
 export * from "./truncate.ts";

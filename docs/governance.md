@@ -5,7 +5,7 @@
 | Surface | Constant | Current |
 |---|---|---|
 | Config schema | `CONFIG_SCHEMA_VERSION` in `packages/core/src/config/schema.ts` | 2 |
-| Session format | `SESSION_SCHEMA_VERSION` in `packages/core/src/sessions/entry.ts` | 1 |
+| Session format | `SESSION_SCHEMA_VERSION` in `packages/core/src/sessions/entry.ts` | 2 |
 | RPC protocol | `PROTOCOL_VERSION` in `packages/rpc/src/protocol.ts` | 1 |
 | SDK types | exported from `packages/sdk/src/index.ts` | 0.1.0 (package version) |
 
