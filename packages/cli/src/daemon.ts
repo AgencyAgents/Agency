@@ -1,36 +1,36 @@
 import { rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { configDir } from "@agency/core";
 import {
   type Budget,
   buildEnvironmentBlock,
+  buildSpanTree,
   composeSystemPrompt,
+  configDir,
   createRotatingFileSink,
   dataDir,
   EventBus,
+  expandCommand,
   type GitRunner,
   gatherEnvironmentInfo,
-  loadCommands,
-  expandCommand,
-  parseSlashInput,
-  loadPlugins,
   Logger,
   type LoopEvent,
+  loadCommands,
   loadConfig,
+  loadPlugins,
+  loadTraceSpansSync,
   mcpServerDownReminder,
   type ProviderConfig,
+  parseSlashInput,
+  readCassetteRecord,
   runTurn,
   SessionStore,
   type SystemReminder,
+  spansToOtlp,
   storagePaths,
   type ToolSpec,
+  TraceRecorder,
   withSystemReminders,
   withTrace,
-  TraceRecorder,
-  buildSpanTree,
-  loadTraceSpansSync,
-  readCassetteRecord,
-  spansToOtlp,
 } from "@agency/core";
 import {
   ApprovalManager,
@@ -72,7 +72,7 @@ import {
 } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
-import { createBuiltinTools, writeApprovalRecord } from "@agency/tools";
+import { createSessionScope, type SessionScope, writeApprovalRecord } from "@agency/tools";
 import { listProviders } from "./providers-list.ts";
 
 export const DEFAULT_SYSTEM_PROMPT =
@@ -293,9 +293,7 @@ export interface AgentDaemon {
  * interactive gate. Allowlists aren't derived — `ask`/`allow` ordering is the
  * gate's job, the sandbox only ever vetoes.
  */
-export function commandPolicyFromPermissions(
-  permissions: Record<string, unknown>,
-): { deny: RegExp[] } {
+export function commandPolicyFromPermissions(permissions: Record<string, unknown>): { deny: RegExp[] } {
   const bash = (permissions as { bash?: unknown }).bash;
   const deny: RegExp[] = [];
   if (bash && typeof bash === "object" && !Array.isArray(bash)) {
@@ -379,14 +377,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     gate.externalDirectoryDecision(resolved),
   );
 
-  // Two-level policy: a tool the permissions config bare-denies (or, under a
-  // per-agent policy, omits) is not in the list the model ever sees. When
-  // nothing is filtered, tools stay "*" so requireTool keeps its fast path.
-  const sessionTools = () => {
-    const offered = tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
-    return offered.length === tools.length ? ("*" as const) : offered.map((t) => t.name);
-  };
-
   // A3: API keys resolve daemon-side (this process has keychain access), so
   // the keychain is created lazily on the first keyless run_turn and reused.
   let keychainPromise: Promise<KeychainBackend> | undefined;
@@ -450,13 +440,60 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   };
 
-  const builtins = options.tools
-    ? undefined
-    : await createBuiltinTools({
+  const snapshotDir = storagePaths(options.workspaceRoot).snapshotsDir;
+
+  const builtinsMode = options.tools === undefined;
+  let tools: ToolSpec[] = [];
+  let sharedPluginTools: ToolSpec[] = [];
+  if (builtinsMode) {
+    const { ToolRegistry: SharedRegistry } = await import("@agency/tools");
+    const sharedPluginRegistry = new SharedRegistry();
+    const pluginResultEarly = await loadPlugins({
+      workspaceRoot: options.workspaceRoot,
+      configDirOverride: options.configDir,
+      configPlugins: (config as { plugins?: string[] }).plugins,
+      bus: eventBus,
+      registry: sharedPluginRegistry as unknown as never,
+      capabilities: { tools: "*", pathScopes: "*", network: "none" },
+      identity,
+    });
+    if (pluginResultEarly.errors.length > 0) {
+      for (const e of pluginResultEarly.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
+    }
+    sharedPluginTools = sharedPluginRegistry.list() as unknown as ToolSpec[];
+  } else {
+    tools = options.tools ?? [];
+    const { ToolRegistry } = await import("@agency/tools");
+    const pluginToolRegistry = new ToolRegistry();
+    for (const t of tools) pluginToolRegistry.register(t as unknown as import("@agency/tools").ToolSpec);
+    const pluginResult = await loadPlugins({
+      workspaceRoot: options.workspaceRoot,
+      configDirOverride: options.configDir,
+      configPlugins: (config as { plugins?: string[] }).plugins,
+      bus: eventBus,
+      registry: pluginToolRegistry as unknown as never,
+      capabilities: { tools: "*", pathScopes: "*", network: "none" },
+      identity,
+    });
+    if (pluginResult.errors.length > 0) {
+      for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
+    }
+    tools = pluginToolRegistry.list() as unknown as ToolSpec[];
+  }
+
+  const sessionScopes = new Map<string, SessionScope>();
+  const scopePromises = new Map<string, Promise<SessionScope>>();
+  async function getOrCreateScope(sessionId: string): Promise<SessionScope> {
+    const existing = sessionScopes.get(sessionId);
+    if (existing) return existing;
+    const pending = scopePromises.get(sessionId);
+    if (pending) return pending;
+    const promise = (async () => {
+      const scope = await createSessionScope({
         deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
         http,
         workspaceRoot: options.workspaceRoot,
-        snapshotDir: storagePaths(options.workspaceRoot).snapshotsDir,
+        snapshotDir,
         formatter: config.formatter,
         windowsShell: config.windowsShell,
         ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
@@ -464,31 +501,55 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         mcpServers: config.mcpServers,
         lspServers: config.lspServers,
       });
-  let tools: ToolSpec[] = options.tools ?? builtins?.tools ?? [];
-  const { ToolRegistry } = await import("@agency/tools");
-  const pluginToolRegistry = new ToolRegistry();
-  for (const t of tools) pluginToolRegistry.register(t as unknown as import("@agency/tools").ToolSpec);
-  const pluginResult = await loadPlugins({
+      for (const t of sharedPluginTools) {
+        try {
+          scope.registry.register(t as unknown as import("@agency/tools").ToolSpec);
+        } catch {}
+      }
+      (scope as { tools: ToolSpec[] }).tools = scope.registry.list() as unknown as ToolSpec[];
+      return scope;
+    })();
+    scopePromises.set(sessionId, promise);
+    try {
+      const scope = await promise;
+      sessionScopes.set(sessionId, scope);
+      return scope;
+    } finally {
+      scopePromises.delete(sessionId);
+    }
+  }
+
+  function sessionToolsFor(list: ToolSpec[]): readonly string[] | "*" {
+    const offered = list.filter((t) => gate.toolOffered(t.name, t.riskTier));
+    return offered.length === list.length ? ("*" as const) : offered.map((t) => t.name);
+  }
+
+  const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
     configDirOverride: options.configDir,
-    configPlugins: (config as { plugins?: string[] }).plugins,
-    bus: eventBus,
-    registry: pluginToolRegistry as unknown as never,
-    capabilities: { tools: "*", pathScopes: "*", network: "none" },
-    identity,
   });
-  if (pluginResult.errors.length > 0) {
-    for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
+
+  const globalDefaultCapabilities: Capabilities | undefined = options.capabilities;
+  async function defaultCapabilitiesForSession(sessionId?: string): Promise<Capabilities> {
+    if (globalDefaultCapabilities) return globalDefaultCapabilities;
+    if (!builtinsMode) {
+      return { tools: sessionToolsFor(tools), pathScopes: "*", network: "*" };
+    }
+    const sid = sessionId ?? "default";
+    const cached = sessionScopes.get(sid);
+    if (cached) return { tools: sessionToolsFor(cached.tools), pathScopes: "*", network: "*" };
+    try {
+      const scope = await getOrCreateScope(sid);
+      return { tools: sessionToolsFor(scope.tools), pathScopes: "*", network: "*" };
+    } catch {
+      return { tools: "*", pathScopes: "*", network: "*" };
+    }
   }
-  tools = pluginToolRegistry.list() as unknown as ToolSpec[];
-
-  const commands = loadCommands({ workspaceRoot: options.workspaceRoot, configDirOverride: options.configDir });
-
-  const defaultCapabilities: Capabilities = options.capabilities ?? {
-    tools: sessionTools(),
-    pathScopes: "*",
-    network: "*",
-  };
+  const defaultCapabilitiesSync: Capabilities =
+    options.capabilities ??
+    (builtinsMode
+      ? { tools: "*", pathScopes: "*", network: "*" }
+      : { tools: sessionToolsFor(tools), pathScopes: "*", network: "*" });
 
   // Session-scoped "always allow" grants: one manager per session id, alive
   // as long as the daemon process — never beyond it.
@@ -575,7 +636,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             const tracePromptVersion =
               params.promptVersion ??
               (params.systemPromptParts?.identity || params.systemPromptParts?.role
-                ? `${params.systemPromptParts?.identity ?? ""}|${params.systemPromptParts?.role ?? ""}`.slice(0, 200)
+                ? `${params.systemPromptParts?.identity ?? ""}|${params.systemPromptParts?.role ?? ""}`.slice(
+                    0,
+                    200,
+                  )
                 : undefined);
             let traceRecorder: TraceRecorder | undefined;
             const collectedTraceEvents: LoopEvent[] = [];
@@ -595,20 +659,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             };
             const isNewSession = todoStore.load(sessionId).length === 0 && params.session.length > 0;
             if (isNewSession) {
-              try { eventBus.emit("session.created", { sessionId }); eventBus.emit("event", { event: "session.created", payload: { sessionId } }); } catch {}
+              try {
+                eventBus.emit("session.created", { sessionId });
+                eventBus.emit("event", { event: "session.created", payload: { sessionId } });
+              } catch {}
             }
             if (params.session.length > 0) {
               const lastMsg = params.session[params.session.length - 1];
-              const lastText = lastMsg?.content?.find((b: { type: string }) => b.type === "text") as { text?: string } | undefined;
+              const lastText = lastMsg?.content?.find((b: { type: string }) => b.type === "text") as
+                | { text?: string }
+                | undefined;
               const text = typeof lastText?.text === "string" ? lastText.text.trim() : "";
               const parsed = parseSlashInput(text);
               if (parsed) {
                 const tmpl = commands.find((c) => c.name === parsed.name);
                 if (tmpl) {
                   const expanded = expandCommand(tmpl.content, parsed.args, options.workspaceRoot);
-                  const userMsg = params.session[params.session.length - 1] as unknown as { role: string; content: { text: string }[] };
+                  const userMsg = params.session[params.session.length - 1] as unknown as {
+                    role: string;
+                    content: { text: string }[];
+                  };
                   if (userMsg.content[0]) userMsg.content[0].text = expanded;
-                  params.session[params.session.length - 1] = { ...userMsg } as unknown as typeof params.session[number];
+                  params.session[params.session.length - 1] = {
+                    ...userMsg,
+                  } as unknown as (typeof params.session)[number];
                 }
               }
             }
@@ -620,12 +694,35 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 params.session = [...params.session, { role: "user", content: [...params.images] }];
               }
             }
-            if (builtins?.todos) await builtins.todos.hydrate(sessionId);
+            let turnScope: SessionScope | undefined;
+            if (builtinsMode) {
+              turnScope = await getOrCreateScope(sessionId);
+              await turnScope.todos.hydrate(sessionId);
+            }
             const approvals = approvalsFor(sessionId);
             const requestApproval: RequestApproval = async (request) => {
-              try { eventBus.emit("permission.asked", { tool: request.tool, command: request.command, path: request.path, decision: "ask" }); eventBus.emit("event", { event: "permission.asked", payload: { tool: request.tool } }); } catch {}
+              try {
+                eventBus.emit("permission.asked", {
+                  tool: request.tool,
+                  command: request.command,
+                  path: request.path,
+                  decision: "ask",
+                });
+                eventBus.emit("event", { event: "permission.asked", payload: { tool: request.tool } });
+              } catch {}
               if (approvals.hasAlways(request)) {
-                try { eventBus.emit("permission.replied", { tool: request.tool, command: request.command, path: request.path, decision: "once" }); eventBus.emit("event", { event: "permission.replied", payload: { tool: request.tool, decision: "once" } }); } catch {}
+                try {
+                  eventBus.emit("permission.replied", {
+                    tool: request.tool,
+                    command: request.command,
+                    path: request.path,
+                    decision: "once",
+                  });
+                  eventBus.emit("event", {
+                    event: "permission.replied",
+                    payload: { tool: request.tool, decision: "once" },
+                  });
+                } catch {}
                 return "once";
               }
               const { id, promise } = approvals.createPending(request, params.turnId);
@@ -633,7 +730,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               server.broadcast(eventStream, payload);
               if (params.sessionId !== undefined) server.broadcast(`session.${sessionId}`, payload);
               const decision = await promise;
-              try { eventBus.emit("permission.replied", { tool: request.tool, command: request.command, path: request.path, decision }); eventBus.emit("event", { event: "permission.replied", payload: { tool: request.tool, decision } }); } catch {}
+              try {
+                eventBus.emit("permission.replied", {
+                  tool: request.tool,
+                  command: request.command,
+                  path: request.path,
+                  decision,
+                });
+                eventBus.emit("event", {
+                  event: "permission.replied",
+                  payload: { tool: request.tool, decision },
+                });
+              } catch {}
               return decision;
             };
             const fallbackRef = (() => {
@@ -646,17 +754,25 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
             let result: Awaited<ReturnType<typeof runTurn>>;
             try {
+              const effectiveCapabilities =
+                params.capabilities ??
+                (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
+              const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
+              const effectiveTools =
+                builtinsMode && turnScope
+                  ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
+                  : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
               result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
                 identity,
-                capabilities: params.capabilities ?? defaultCapabilities,
+                capabilities: effectiveCapabilities,
                 toolPolicy: gate,
                 requestApproval,
                 eventBus,
                 systemPrompt: resolveSystemPrompt(params, {
                   workspaceRoot: options.workspaceRoot,
-                  mcpFailures: builtins?.mcpFailures,
+                  mcpFailures: effectiveMcpFailures,
                 }),
-                tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
+                tools: effectiveTools,
                 model: params.model,
                 apiKey,
                 provider: params.provider,
@@ -680,70 +796,110 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 onEvent: wrappedOnEvent,
               });
             } catch (error) {
-              const isRetryable = error instanceof AgencyError && (error.code === ErrorCode.OVERLOAD || error.code === ErrorCode.TRANSIENT || error.code === ErrorCode.RATE_LIMIT);
+              const isRetryable =
+                error instanceof AgencyError &&
+                (error.code === ErrorCode.OVERLOAD ||
+                  error.code === ErrorCode.TRANSIENT ||
+                  error.code === ErrorCode.RATE_LIMIT);
               if (isRetryable && fallbackRef && fallbackRef.provider !== params.provider) {
-                const fbEvent = { type: "fallback" as const, from: `${params.provider}/${params.model}`, to: `${fallbackRef.provider}/${fallbackRef.model}`, reason: error instanceof Error ? error.message : String(error) };
+                const fbEvent = {
+                  type: "fallback" as const,
+                  from: `${params.provider}/${params.model}`,
+                  to: `${fallbackRef.provider}/${fallbackRef.model}`,
+                  reason: error instanceof Error ? error.message : String(error),
+                };
                 server.broadcast(eventStream, fbEvent);
-                try { eventBus.emit("model.fallback", fbEvent); } catch {}
+                try {
+                  eventBus.emit("model.fallback", fbEvent);
+                } catch {}
                 const fbApiKey = await (async () => {
                   let kc: KeychainBackend | undefined;
-                  try { kc = await getKeychain(); } catch {}
-                  const k = await resolveApiKey({ provider: fallbackRef.provider, env: process.env, keychain: kc, config: providers[fallbackRef.provider]?.apiKey });
+                  try {
+                    kc = await getKeychain();
+                  } catch {}
+                  const k = await resolveApiKey({
+                    provider: fallbackRef.provider,
+                    env: process.env,
+                    keychain: kc,
+                    config: providers[fallbackRef.provider]?.apiKey,
+                  });
                   return k ?? apiKey;
                 })();
                 if (fbApiKey) redactor.registerSecret(fbApiKey);
-                result = await runTurn(adapterFor(fallbackRef.provider), schedulerFor(fallbackRef.provider), http, {
-                  identity,
-                  capabilities: params.capabilities ?? defaultCapabilities,
-                  toolPolicy: gate,
-                  requestApproval,
-                  eventBus,
-                  systemPrompt: resolveSystemPrompt(params, {
-                    workspaceRoot: options.workspaceRoot,
-                    mcpFailures: builtins?.mcpFailures,
-                  }),
-                  tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
-                  model: fallbackRef.model,
-                  apiKey: fbApiKey ?? apiKey,
-                  thinkingLevel: params.thinkingLevel,
-                  session: params.session,
-                  budget: params.budget,
-                  pricePerMTok: modelInfo
-                    ? {
-                        input: modelInfo.pricing.inputPerMTok,
-                        output: modelInfo.pricing.outputPerMTok,
-                      }
-                    : undefined,
-                  maxTokensPerRequest: modelInfo?.maxOutputTokens,
-                  turnId: params.turnId,
-                  sessionId: params.sessionId,
-                  cwd: options.workspaceRoot,
-                  maxToolIterations: params.maxToolIterations,
-                  signal: controller.signal,
-                  provider: fallbackRef.provider,
-                  promptVersion: tracePromptVersion,
-                  traceRecorder,
-                  onEvent: wrappedOnEvent,
-                });
+                const fallbackCapabilities =
+                  params.capabilities ??
+                  (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
+                const fallbackMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
+                const fallbackTools =
+                  builtinsMode && turnScope
+                    ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
+                    : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+                result = await runTurn(
+                  adapterFor(fallbackRef.provider),
+                  schedulerFor(fallbackRef.provider),
+                  http,
+                  {
+                    identity,
+                    capabilities: fallbackCapabilities,
+                    toolPolicy: gate,
+                    requestApproval,
+                    eventBus,
+                    systemPrompt: resolveSystemPrompt(params, {
+                      workspaceRoot: options.workspaceRoot,
+                      mcpFailures: fallbackMcpFailures,
+                    }),
+                    tools: fallbackTools,
+                    model: fallbackRef.model,
+                    apiKey: fbApiKey ?? apiKey,
+                    thinkingLevel: params.thinkingLevel,
+                    session: params.session,
+                    budget: params.budget,
+                    pricePerMTok: modelInfo
+                      ? {
+                          input: modelInfo.pricing.inputPerMTok,
+                          output: modelInfo.pricing.outputPerMTok,
+                        }
+                      : undefined,
+                    maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                    turnId: params.turnId,
+                    sessionId: params.sessionId,
+                    cwd: options.workspaceRoot,
+                    maxToolIterations: params.maxToolIterations,
+                    signal: controller.signal,
+                    provider: fallbackRef.provider,
+                    promptVersion: tracePromptVersion,
+                    traceRecorder,
+                    onEvent: wrappedOnEvent,
+                  },
+                );
               } else {
                 throw error;
               }
             }
             try {
               if (traceRecorder) {
+                const cassetteMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
                 const sysPrompt = resolveSystemPrompt(params, {
                   workspaceRoot: options.workspaceRoot,
-                  mcpFailures: builtins?.mcpFailures,
+                  mcpFailures: cassetteMcpFailures,
                 });
                 const record = traceRecorder.toCassetteRecord(
-                  { provider: params.provider, model: params.model, systemPrompt: sysPrompt, session: params.session },
+                  {
+                    provider: params.provider,
+                    model: params.model,
+                    systemPrompt: sysPrompt,
+                    session: params.session,
+                  },
                   collectedTraceEvents,
                   result,
                 );
                 void traceRecorder.writeCassette(params.turnId, record);
               }
             } catch {}
-            try { eventBus.emit("session.idle", { sessionId }); eventBus.emit("event", { event: "session.idle", payload: { sessionId } }); } catch {}
+            try {
+              eventBus.emit("session.idle", { sessionId });
+              eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
+            } catch {}
 
             logger.info("turn finished", {
               turnId: params.turnId,
@@ -853,51 +1009,111 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         }
       },
 
-      // File undo/redo over the write/edit snapshot journal. The daemon owns
-      // the SnapshotStore (tools run here, not in clients), so /undo and
-      // /redo in a TUI must come through as RPC, like every other effect.
-      async undo() {
-        const snapshots = options.tools ? undefined : builtins?.snapshots;
+      async undo(rawParams?: unknown) {
+        const p = rawParams as { sessionId?: string } | undefined;
+        const snapshots = options.tools
+          ? undefined
+          : ((p?.sessionId ? sessionScopes.get(p.sessionId)?.snapshots : undefined) ??
+            sessionScopes.get("default")?.snapshots ??
+            [...sessionScopes.values()][0]?.snapshots);
         const outcome = snapshots?.undo();
         return { undone: outcome !== undefined, ...(outcome ? { path: outcome.path } : {}) };
       },
 
-      async redo() {
-        const snapshots = options.tools ? undefined : builtins?.snapshots;
+      async redo(rawParams?: unknown) {
+        const p = rawParams as { sessionId?: string } | undefined;
+        const snapshots = options.tools
+          ? undefined
+          : ((p?.sessionId ? sessionScopes.get(p.sessionId)?.snapshots : undefined) ??
+            sessionScopes.get("default")?.snapshots ??
+            [...sessionScopes.values()][0]?.snapshots);
         const outcome = snapshots?.redo();
         return { undone: outcome !== undefined, ...(outcome ? { path: outcome.path } : {}) };
       },
 
       async providers_list() {
         const base = await listProviders({ config, http, catalog: options.catalog });
-        const mcpFailures = builtins?.mcpFailures ? Object.fromEntries(builtins.mcpFailures) : {};
-        const lspStatuses = builtins?.lspRegistry?.statuses() ?? {};
+        let mcpFailures: Record<string, string> = {};
+        let lspStatuses: Record<string, string> = {};
+        if (builtinsMode) {
+          const first = sessionScopes.get("default") ?? [...sessionScopes.values()][0];
+          if (first?.mcpFailures) mcpFailures = Object.fromEntries(first.mcpFailures);
+          if (first?.lspRegistry) lspStatuses = first.lspRegistry.statuses();
+        }
         return { ...base, mcpFailures, lspStatuses };
       },
 
-      async mcp_status() {
-        return { failures: builtins?.mcpFailures ? Object.fromEntries(builtins.mcpFailures) : {} };
+      async mcp_status(rawParams?: unknown) {
+        const p = rawParams as { sessionId?: string } | undefined;
+        if (builtinsMode && p?.sessionId) {
+          const s = sessionScopes.get(p.sessionId);
+          if (s) return { failures: Object.fromEntries(s.mcpFailures) };
+        }
+        const first = builtinsMode
+          ? (sessionScopes.get("default") ?? [...sessionScopes.values()][0])
+          : undefined;
+        return { failures: first?.mcpFailures ? Object.fromEntries(first.mcpFailures) : {} };
       },
 
-      async lsp_status() {
-        return { statuses: builtins?.lspRegistry?.statuses() ?? {} };
+      async lsp_status(rawParams?: unknown) {
+        const p = rawParams as { sessionId?: string } | undefined;
+        if (builtinsMode && p?.sessionId) {
+          const s = sessionScopes.get(p.sessionId);
+          if (s?.lspRegistry) return { statuses: s.lspRegistry.statuses() };
+        }
+        const first = builtinsMode
+          ? (sessionScopes.get("default") ?? [...sessionScopes.values()][0])
+          : undefined;
+        return { statuses: first?.lspRegistry?.statuses() ?? {} };
+      },
+
+      async session_delete(rawParams) {
+        const { sessionId } = rawParams as { sessionId: string };
+        if (!sessionId)
+          throw new AgencyError(ErrorCode.INTERNAL, "session_delete requires sessionId", {
+            source: "session",
+          });
+        const scope = sessionScopes.get(sessionId);
+        if (scope) {
+          try {
+            scope.processManager.killAll();
+          } catch {}
+          try {
+            await scope.dispose();
+          } catch {}
+          sessionScopes.delete(sessionId);
+        }
+        approvalManagers.delete(sessionId);
+        try {
+          todoStore.delete(sessionId);
+        } catch {}
+        return { deleted: true };
       },
 
       async commands_list() {
-        return { commands: commands.map((c) => ({ name: c.name, description: c.description, source: c.source, path: c.path })) };
+        return {
+          commands: commands.map((c) => ({
+            name: c.name,
+            description: c.description,
+            source: c.source,
+            path: c.path,
+          })),
+        };
       },
 
       async commands_expand(rawParams) {
         const { name, args } = rawParams as { name: string; args?: string };
         const tmpl = commands.find((c) => c.name === name);
-        if (!tmpl) throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
+        if (!tmpl)
+          throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
         const expanded = expandCommand(tmpl.content, args ?? "", options.workspaceRoot);
         return { expanded, name };
       },
 
       async trace_get(rawParams) {
         const { sessionId, turnId } = rawParams as { sessionId: string; turnId?: string };
-        if (!sessionId) throw new AgencyError(ErrorCode.INTERNAL, "trace_get requires sessionId", { source: "trace" });
+        if (!sessionId)
+          throw new AgencyError(ErrorCode.INTERNAL, "trace_get requires sessionId", { source: "trace" });
         const spans = loadTraceSpansSync(todoSessionsDir, sessionId);
         const filtered = turnId ? spans.filter((s) => s.traceId === turnId) : spans;
         const tree = buildSpanTree(filtered);
@@ -908,30 +1124,57 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         const { sessionId, turnId, overrides } = rawParams as {
           sessionId: string;
           turnId: string;
-          overrides?: { model?: string; provider?: string; thinkingLevel?: ThinkingLevel; systemPrompt?: string; effort?: string };
+          overrides?: {
+            model?: string;
+            provider?: string;
+            thinkingLevel?: ThinkingLevel;
+            systemPrompt?: string;
+            effort?: string;
+          };
         };
-        if (!sessionId || !turnId) throw new AgencyError(ErrorCode.INTERNAL, "trace_replay requires sessionId and turnId", { source: "trace" });
+        if (!sessionId || !turnId)
+          throw new AgencyError(ErrorCode.INTERNAL, "trace_replay requires sessionId and turnId", {
+            source: "trace",
+          });
         const record = await readCassetteRecord(todoSessionsDir, sessionId, turnId);
-        if (!record) throw new AgencyError(ErrorCode.INTERNAL, `no cassette for ${sessionId}/${turnId}`, { source: "trace" });
+        if (!record)
+          throw new AgencyError(ErrorCode.INTERNAL, `no cassette for ${sessionId}/${turnId}`, {
+            source: "trace",
+          });
         const targetProvider = overrides?.provider ?? record.params.provider;
         const targetModel = overrides?.model ?? record.params.model;
         const targetSystemPrompt = overrides?.systemPrompt ?? record.params.systemPrompt;
         const thinkingLevel = overrides?.thinkingLevel;
         const targetAdapter = adapterFor(targetProvider);
         const targetScheduler = schedulerFor(targetProvider);
+        const replayCaps = builtinsMode
+          ? await defaultCapabilitiesForSession(sessionId)
+          : defaultCapabilitiesSync;
+        const replayTools = builtinsMode
+          ? ((sessionScopes.get(sessionId) ?? [...sessionScopes.values()][0])?.tools.filter((t) =>
+              gate.toolOffered(t.name, t.riskTier),
+            ) ?? tools.filter((t) => gate.toolOffered(t.name, t.riskTier)))
+          : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
         const replayed = await runTurn(targetAdapter, targetScheduler, http, {
           identity,
-          capabilities: defaultCapabilities,
+          capabilities: replayCaps,
           toolPolicy: gate,
           eventBus,
           systemPrompt: targetSystemPrompt,
-          tools: tools.filter((t) => gate.toolOffered(t.name, t.riskTier)),
+          tools: replayTools,
           model: targetModel,
           apiKey: await (async () => {
             const k = await (async () => {
               let kc: KeychainBackend | undefined;
-              try { kc = await getKeychain(); } catch {}
-              return resolveApiKey({ provider: targetProvider, env: process.env, keychain: kc, config: providers[targetProvider]?.apiKey });
+              try {
+                kc = await getKeychain();
+              } catch {}
+              return resolveApiKey({
+                provider: targetProvider,
+                env: process.env,
+                keychain: kc,
+                config: providers[targetProvider]?.apiKey,
+              });
             })();
             return k ?? "replay-key";
           })(),
@@ -946,7 +1189,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
       async trace_export(rawParams) {
         const { sessionId, turnId } = rawParams as { sessionId: string; turnId?: string };
-        const exportCfg = (config as unknown as { trace?: { export?: { endpoint: string; headers?: Record<string, string> } } }).trace?.export;
+        const exportCfg = (
+          config as unknown as { trace?: { export?: { endpoint: string; headers?: Record<string, string> } } }
+        ).trace?.export;
         if (!exportCfg?.endpoint) return { exported: false, reason: "not configured" };
         const spans = loadTraceSpansSync(todoSessionsDir, sessionId ?? "");
         const filtered = turnId ? spans.filter((s) => s.traceId === turnId) : spans;
@@ -959,7 +1204,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
             body: JSON.stringify(payload),
           });
         } catch (error) {
-          throw new AgencyError(ErrorCode.INTERNAL, `trace export failed: ${error instanceof Error ? error.message : String(error)}`, { source: "trace" });
+          throw new AgencyError(
+            ErrorCode.INTERNAL,
+            `trace export failed: ${error instanceof Error ? error.message : String(error)}`,
+            { source: "trace" },
+          );
         }
         return { exported: true, endpoint: exportCfg.endpoint };
       },
@@ -972,7 +1221,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         return;
       }
       idleTimer = setTimeout(() => {
-        try { eventBus.emit("session.idle", {}); eventBus.emit("event", { event: "session.idle", payload: {} }); } catch {}
+        try {
+          eventBus.emit("session.idle", {});
+          eventBus.emit("event", { event: "session.idle", payload: {} });
+        } catch {}
         options.onIdleShutdown?.();
       }, idleLingerMs);
     },
@@ -1000,15 +1252,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       if (stopped) return;
       stopped = true;
       clearTimeout(idleTimer);
-      builtins?.processManager.killAll();
-      await builtins?.dispose();
-      // Shutdown must not leave any client's approval promise hanging.
+      if (builtinsMode) {
+        for (const scope of sessionScopes.values()) {
+          try {
+            scope.processManager.killAll();
+          } catch {}
+        }
+        for (const scope of [...sessionScopes.values()]) {
+          try {
+            await scope.dispose();
+          } catch {}
+        }
+        sessionScopes.clear();
+        scopePromises.clear();
+      }
       for (const manager of approvalManagers.values()) manager.rejectAll();
       await server.close();
-      // Graceful shutdown clears its own instance file: clients probing the
-      // old port refuse fast instead of timing out against a dead pid.
       rmSync(options.instanceFile, { force: true });
-      // Async log sink: flush queued lines so the shutdown record survives.
       await rotatingSink?.flush();
     },
   };

@@ -1,4 +1,5 @@
 export * from "./builtin-set.ts";
+export * from "./session-scope.ts";
 export { type BashState, createBashTool } from "./builtins/bash.ts";
 export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";
