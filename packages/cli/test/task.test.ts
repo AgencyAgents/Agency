@@ -258,6 +258,15 @@ describe("task ephemeral workers", () => {
     const root = tempRepo();
     writeFileSync(join(root, "a.txt"), "A");
     writeFileSync(join(root, "b.txt"), "B");
+    // Deterministic concurrency proof via shared barrier: each child awaits a
+    // Promise that resolves only after BOTH children have started. If tasks ran
+    // sequentially, the first would deadlock waiting for the second to start.
+    // Completion of both therefore proves overlap without any wall-clock threshold.
+    let startedCount = 0;
+    let barrierResolve!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      barrierResolve = resolve;
+    });
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(request): AsyncIterable<StreamEvent> {
@@ -265,13 +274,17 @@ describe("task ephemeral workers", () => {
         const lastUser = [...request.messages].reverse().find((m) => m.role === "user");
         const txt = (lastUser?.content.find((b) => (b as { type: string }).type === "text") as { text?: string } | undefined)?.text ?? "";
         if (txt === "task A") {
-          await new Promise((r) => setTimeout(r, 120));
+          startedCount++;
+          if (startedCount === 2) barrierResolve();
+          await barrier;
           yield { type: "text_delta", text: "result A" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
           return;
         }
         if (txt === "task B") {
-          await new Promise((r) => setTimeout(r, 120));
+          startedCount++;
+          if (startedCount === 2) barrierResolve();
+          await barrier;
           yield { type: "text_delta", text: "result B" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
           return;
@@ -306,7 +319,6 @@ describe("task ephemeral workers", () => {
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
-    const start = Date.now();
     const result = (await client.call("run_turn", {
       turnId: "t-parallel",
       provider: "anthropic",
@@ -316,7 +328,6 @@ describe("task ephemeral workers", () => {
       session: [{ role: "user", content: [{ type: "text", text: "" }] }],
       sessionId: "test-parallel",
     })) as RunTurnRpcResult;
-    const duration = Date.now() - start;
 
     const toolResultsMsg = result.messages.find((m) => m.role === "user" && m.content.some((b) => (b as { type: string }).type === "tool_result"));
     const toolResults = (toolResultsMsg?.content.filter((b) => (b as { type: string }).type === "tool_result") as Array<{ content: string; type: string }>) ?? [];
@@ -324,7 +335,8 @@ describe("task ephemeral workers", () => {
     const contents = toolResults.map((r) => r.content);
     expect(contents).toEqual(expect.arrayContaining([expect.stringContaining("result A"), expect.stringContaining("result B")]));
 
-    expect(duration).toBeLessThan(400);
+    // Barrier proof: both handlers must have started and been unblocked together.
+    expect(startedCount).toBe(2);
 
     const sdir = sessionsDirFor(root);
     const store = new SessionStore(sdir);
