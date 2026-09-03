@@ -72,7 +72,8 @@ import {
 } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
-import { createSessionScope, type SessionScope, writeApprovalRecord } from "@agency/tools";
+import { createSessionScope, type SessionScope, writeApprovalRecord, createTaskTool, extractFinalText } from "@agency/tools";
+import { newEntryId } from "@agency/core";
 import { listProviders } from "./providers-list.ts";
 
 export const DEFAULT_SYSTEM_PROMPT =
@@ -481,6 +482,22 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     tools = pluginToolRegistry.list() as unknown as ToolSpec[];
   }
 
+  const taskMaxDepth = (config as unknown as { task?: { maxDepth?: number } }).task?.maxDepth ?? 1;
+
+  const activeTurnMeta = new Map<
+    string,
+    {
+      capabilities: Capabilities;
+      tools: ToolSpec[];
+      sessionId: string;
+      provider: string;
+      model: string;
+      apiKey: string;
+      budget?: Budget;
+      taskDepth?: number;
+    }
+  >();
+
   const sessionScopes = new Map<string, SessionScope>();
   const scopePromises = new Map<string, Promise<SessionScope>>();
   async function getOrCreateScope(sessionId: string): Promise<SessionScope> {
@@ -506,6 +523,196 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           scope.registry.register(t as unknown as import("@agency/tools").ToolSpec);
         } catch {}
       }
+      try {
+        const taskTool = createTaskTool({
+          maxDepth: taskMaxDepth,
+          runTask: async (input, ctx) => {
+            const parentTurnId = ctx.turnId;
+            const parentSessionId = ctx.sessionId ?? "default";
+            const meta = parentTurnId ? activeTurnMeta.get(parentTurnId) : undefined;
+            const parentDepth = ctx.taskDepth ?? meta?.taskDepth ?? 0;
+            const parentProvider = meta?.provider ?? "anthropic";
+            const parentModel = meta?.model ?? "test-model";
+            const parentApiKey = meta?.apiKey ?? "";
+            const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
+            const parentTools = meta?.tools ?? scope.registry.list() as unknown as ToolSpec[];
+
+            let childProvider = parentProvider;
+            let childModel = parentModel;
+            if (typeof input.model === "string" && input.model.length > 0) {
+              const slash = input.model.indexOf("/");
+              if (slash > 0) {
+                childProvider = input.model.slice(0, slash);
+                childModel = input.model.slice(slash + 1);
+              } else {
+                childModel = input.model;
+              }
+            }
+
+            let childApiKey = parentApiKey;
+            if (childProvider !== parentProvider) {
+              try {
+                const kc = await getKeychain();
+                const k = await resolveApiKey({
+                  provider: childProvider,
+                  env: process.env,
+                  keychain: kc,
+                  config: providers[childProvider]?.apiKey,
+                });
+                if (k) {
+                  childApiKey = k;
+                  redactor.registerSecret(k);
+                }
+              } catch {}
+            }
+
+            const childSessionId = newEntryId();
+            const childTurnId = newEntryId();
+            const startMs = Date.now();
+            try {
+              todoStore.create(childSessionId);
+            } catch {}
+            await getOrCreateScope(childSessionId);
+
+            const baseTools = parentTools;
+            let childTools: ToolSpec[];
+            if (Array.isArray(input.tools) && input.tools.length > 0) {
+              const allow = new Set(input.tools);
+              childTools = baseTools.filter((t) => allow.has(t.name));
+              if (!allow.has("task") && childTools.some((t) => t.name === "task")) {
+                childTools = childTools.filter((t) => t.name !== "task");
+              }
+            } else {
+              childTools = baseTools.filter((t) => gate.toolOffered(t.name, t.riskTier as never));
+            }
+
+            const childCapTools = childTools.map((t) => t.name);
+            const childCaps: Capabilities = {
+              tools: childCapTools.length > 0 ? childCapTools : ("*" as const),
+              pathScopes: parentCaps.pathScopes,
+              network: parentCaps.network,
+            };
+
+            const workerPrompt = composeSystemPrompt({
+              base: "You are a task worker. Complete the given prompt concisely and return only the final result.",
+              instructions: [],
+              toolDescriptions: [],
+            }).text;
+
+            const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
+
+            const childModelInfo = catalogModel(childProvider, childModel);
+            const childTraceRecorder = (() => {
+              try {
+                return new TraceRecorder({
+                  sessionsDir: todoSessionsDir,
+                  sessionId: childSessionId,
+                  traceId: childTurnId,
+                  provider: childProvider,
+                  model: childModel,
+                });
+              } catch {
+                return undefined;
+              }
+            })();
+            const childEvents: LoopEvent[] = [];
+            const adapter = adapterFor(childProvider);
+            const scheduler = schedulerFor(childProvider);
+            const childBudget = meta?.budget;
+
+            let childResult: Awaited<ReturnType<typeof runTurn>> | undefined;
+            let childError: unknown;
+            try {
+              childResult = await runTurn(adapter, scheduler, http, {
+                identity,
+                capabilities: childCaps,
+                toolPolicy: gate,
+                eventBus,
+                systemPrompt: workerPrompt,
+                tools: childTools as unknown as import("@agency/core").ToolSpec[],
+                model: childModel,
+                apiKey: childApiKey,
+                provider: childProvider,
+                traceRecorder: childTraceRecorder,
+                session: freshSession,
+                budget: childBudget,
+                pricePerMTok: childModelInfo
+                  ? { input: childModelInfo.pricing.inputPerMTok, output: childModelInfo.pricing.outputPerMTok }
+                  : undefined,
+                maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+                turnId: childTurnId,
+                sessionId: childSessionId,
+                cwd: options.workspaceRoot,
+                taskDepth: parentDepth + 1,
+                signal: ctx.signal,
+                onEvent: (ev) => {
+                  childEvents.push(ev);
+                },
+              });
+            } catch (e) {
+              childError = e;
+            }
+            {
+              const durationMs = Date.now() - startMs;
+              const finalText = childResult ? extractFinalText(childResult.messages) : "";
+              const collapsed = (finalText || (childError instanceof Error ? childError.message : String(childError ?? ""))).split("\n")[0]?.slice(0, 500) ?? "";
+              try {
+                const parentLatestTip = todoStore.latestTip(todoStore.load(parentSessionId)) ?? null;
+                await todoStore.append(parentSessionId, {
+                  type: "task_result",
+                  parentId: parentLatestTip,
+                  tool: "task",
+                  childSessionId,
+                  childTurnId,
+                  durationMs,
+                  summary: collapsed || finalText.slice(0, 500),
+                  prompt: input.prompt.slice(0, 200),
+                });
+              } catch {}
+              try {
+                if (childResult) {
+                  let childParentId: string | null = null;
+                  const msgs = childResult.messages;
+                  for (const msg of msgs) {
+                    const appended = await todoStore.append(childSessionId, {
+                      type: "message",
+                      parentId: childParentId,
+                      message: msg,
+                    });
+                    childParentId = appended.id;
+                  }
+                }
+              } catch {}
+              try {
+                if (childTraceRecorder && childResult) {
+                  const rec = childTraceRecorder.toCassetteRecord(
+                    { provider: childProvider, model: childModel, systemPrompt: workerPrompt, session: freshSession },
+                    childEvents,
+                    childResult,
+                  );
+                  void childTraceRecorder.writeCassette(childTurnId, rec);
+                }
+              } catch {}
+              try {
+                const cs = sessionScopes.get(childSessionId);
+                if (cs) {
+                  try {
+                    await cs.dispose();
+                  } catch {}
+                  sessionScopes.delete(childSessionId);
+                }
+              } catch {}
+            }
+
+            if (childError) {
+              return { content: childError instanceof Error ? childError.message : String(childError), isError: true };
+            }
+            const finalText = extractFinalText(childResult!.messages);
+            return { content: finalText || "(no output)" };
+          },
+        });
+        if (!scope.registry.has("task")) scope.registry.register(taskTool as unknown as import("@agency/tools").ToolSpec);
+      } catch {}
       (scope as { tools: ToolSpec[] }).tools = scope.registry.list() as unknown as ToolSpec[];
       return scope;
     })();
@@ -762,39 +969,54 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 builtinsMode && turnScope
                   ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
                   : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
-              result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
-                identity,
+              activeTurnMeta.set(params.turnId, {
                 capabilities: effectiveCapabilities,
-                toolPolicy: gate,
-                requestApproval,
-                eventBus,
-                systemPrompt: resolveSystemPrompt(params, {
-                  workspaceRoot: options.workspaceRoot,
-                  mcpFailures: effectiveMcpFailures,
-                }),
                 tools: effectiveTools,
+                sessionId,
+                provider: params.provider,
                 model: params.model,
                 apiKey,
-                provider: params.provider,
-                promptVersion: tracePromptVersion,
-                traceRecorder,
-                thinkingLevel: params.thinkingLevel,
-                session: params.session,
                 budget: params.budget,
-                pricePerMTok: modelInfo
-                  ? {
-                      input: modelInfo.pricing.inputPerMTok,
-                      output: modelInfo.pricing.outputPerMTok,
-                    }
-                  : undefined,
-                maxTokensPerRequest: modelInfo?.maxOutputTokens,
-                turnId: params.turnId,
-                sessionId: params.sessionId,
-                cwd: options.workspaceRoot,
-                maxToolIterations: params.maxToolIterations,
-                signal: controller.signal,
-                onEvent: wrappedOnEvent,
+                taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               });
+              try {
+                result = await runTurn(adapterFor(params.provider), schedulerFor(params.provider), http, {
+                  identity,
+                  capabilities: effectiveCapabilities,
+                  toolPolicy: gate,
+                  requestApproval,
+                  eventBus,
+                  systemPrompt: resolveSystemPrompt(params, {
+                    workspaceRoot: options.workspaceRoot,
+                    mcpFailures: effectiveMcpFailures,
+                  }),
+                  tools: effectiveTools,
+                  model: params.model,
+                  apiKey,
+                  provider: params.provider,
+                  promptVersion: tracePromptVersion,
+                  traceRecorder,
+                  thinkingLevel: params.thinkingLevel,
+                  session: params.session,
+                  budget: params.budget,
+                  pricePerMTok: modelInfo
+                    ? {
+                        input: modelInfo.pricing.inputPerMTok,
+                        output: modelInfo.pricing.outputPerMTok,
+                      }
+                    : undefined,
+                  maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                  turnId: params.turnId,
+                  sessionId: params.sessionId,
+                  cwd: options.workspaceRoot,
+                  maxToolIterations: params.maxToolIterations,
+                  signal: controller.signal,
+                  taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+                  onEvent: wrappedOnEvent,
+                });
+              } finally {
+                activeTurnMeta.delete(params.turnId);
+              }
             } catch (error) {
               const isRetryable =
                 error instanceof AgencyError &&
@@ -834,44 +1056,59 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   builtinsMode && turnScope
                     ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
                     : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
-                result = await runTurn(
-                  adapterFor(fallbackRef.provider),
-                  schedulerFor(fallbackRef.provider),
-                  http,
-                  {
-                    identity,
-                    capabilities: fallbackCapabilities,
-                    toolPolicy: gate,
-                    requestApproval,
-                    eventBus,
-                    systemPrompt: resolveSystemPrompt(params, {
-                      workspaceRoot: options.workspaceRoot,
-                      mcpFailures: fallbackMcpFailures,
-                    }),
-                    tools: fallbackTools,
-                    model: fallbackRef.model,
-                    apiKey: fbApiKey ?? apiKey,
-                    thinkingLevel: params.thinkingLevel,
-                    session: params.session,
-                    budget: params.budget,
-                    pricePerMTok: modelInfo
-                      ? {
-                          input: modelInfo.pricing.inputPerMTok,
-                          output: modelInfo.pricing.outputPerMTok,
-                        }
-                      : undefined,
+                activeTurnMeta.set(params.turnId, {
+                  capabilities: fallbackCapabilities,
+                  tools: fallbackTools,
+                  sessionId,
+                  provider: fallbackRef.provider,
+                  model: fallbackRef.model,
+                  apiKey: fbApiKey ?? apiKey,
+                  budget: params.budget,
+                  taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+                });
+                try {
+                  result = await runTurn(
+                    adapterFor(fallbackRef.provider),
+                    schedulerFor(fallbackRef.provider),
+                    http,
+                    {
+                      identity,
+                      capabilities: fallbackCapabilities,
+                      toolPolicy: gate,
+                      requestApproval,
+                      eventBus,
+                      systemPrompt: resolveSystemPrompt(params, {
+                        workspaceRoot: options.workspaceRoot,
+                        mcpFailures: fallbackMcpFailures,
+                      }),
+                      tools: fallbackTools,
+                      model: fallbackRef.model,
+                      apiKey: fbApiKey ?? apiKey,
+                      thinkingLevel: params.thinkingLevel,
+                      session: params.session,
+                      budget: params.budget,
+                      pricePerMTok: modelInfo
+                        ? {
+                            input: modelInfo.pricing.inputPerMTok,
+                            output: modelInfo.pricing.outputPerMTok,
+                          }
+                        : undefined,
                     maxTokensPerRequest: modelInfo?.maxOutputTokens,
                     turnId: params.turnId,
                     sessionId: params.sessionId,
                     cwd: options.workspaceRoot,
                     maxToolIterations: params.maxToolIterations,
                     signal: controller.signal,
+                    taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
                     provider: fallbackRef.provider,
                     promptVersion: tracePromptVersion,
                     traceRecorder,
                     onEvent: wrappedOnEvent,
-                  },
-                );
+                    },
+                  );
+                } finally {
+                  activeTurnMeta.delete(params.turnId);
+                }
               } else {
                 throw error;
               }

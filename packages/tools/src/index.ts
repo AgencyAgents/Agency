@@ -31,6 +31,7 @@ export {
 } from "./builtins/todo.ts";
 export { createWebSearchTool, type WebSearchConfig } from "./builtins/websearch.ts";
 export { createWriteTool } from "./builtins/write.ts";
+export { createTaskTool, extractFinalText } from "./builtins/task.ts";
 export * from "./contract.ts";
 export * from "./edit-engine.ts";
 export * from "./formatter.ts";

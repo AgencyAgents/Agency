@@ -17,6 +17,8 @@ export interface ToolContext {
   sessionId?: string;
   /** The provider's tool-call id; correlates asks and results with the call. */
   toolCallId?: string;
+  /** Depth of the current task chain (0 for the root turn). */
+  taskDepth?: number;
   /**
    * Ask the user to approve something this handler wants to do (an out-of-workspace
    * path, a costly dispatch, ...). Resolves once/always/reject; absent when the

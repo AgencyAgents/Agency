@@ -99,6 +99,8 @@ export interface RunTurnOptions {
   traceRecorder?: TraceRecorder;
   /** Provider identifier for the model (e.g. "anthropic"), used for trace attribution. */
   provider?: string;
+  /** Depth of nested task invocations (0 for root, incremented per child). */
+  taskDepth?: number;
 }
 
 const NEVER_ABORTED = new AbortController().signal;
@@ -487,6 +489,7 @@ async function executeOne(
     sessionId: options.sessionId,
     toolCallId: call.id,
     requestApproval: options.requestApproval,
+    taskDepth: options.taskDepth,
     onProgress: onEvent
       ? (message: string) => {
           onEvent({ type: "tool_progress", id: call.id, name: resolved.name, message });

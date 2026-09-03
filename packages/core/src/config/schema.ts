@@ -156,6 +156,11 @@ export const ConfigSchema = z.object({
         .optional(),
     })
     .optional(),
+  task: z
+    .object({
+      maxDepth: z.number().int().min(1).optional(),
+    })
+    .optional(),
 });
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;
