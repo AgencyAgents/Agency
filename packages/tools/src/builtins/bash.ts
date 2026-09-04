@@ -197,7 +197,12 @@ export function createBashTool(
           combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;
         }
 
-        return { content: truncateResult(combined) };
+        // Timeouts are labeled outcomes, not errors. Nonzero exits and user
+        // aborts surface as errors so callers react instead of continuing.
+        const failed = !timedOut && (exitCode !== 0 || outcome.aborted);
+        return failed
+          ? { content: truncateResult(combined), isError: true as const }
+          : { content: truncateResult(combined) };
       } finally {
         ctx.signal.removeEventListener("abort", onAbort);
         if (progressTimer !== undefined) clearInterval(progressTimer);

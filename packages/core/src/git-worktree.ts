@@ -67,7 +67,11 @@ export async function removeWorktree(cwd: string, path: string, force = false): 
  * @returns The absolute path to the scratch directory.
  */
 export function makeWorktreeReadOnly(worktreePath: string, scratchDir: string): string {
-  const scratchAbs = join(worktreePath, scratchDir);
+  // Accept Windows-style paths on any platform: backslashes are separators,
+  // and on posix a raw backslash would otherwise name a phantom directory.
+  const root = worktreePath.replace(/\\/g, sep);
+  const rel = scratchDir.replace(/\\/g, sep);
+  const scratchAbs = join(root, rel);
   mkdirSync(scratchAbs, { recursive: true });
 
   // Walk the worktree tree and set read-only on everything except scratch.
