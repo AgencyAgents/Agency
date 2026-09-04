@@ -41,6 +41,7 @@ jobs:
       MACOS_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
       WINDOWS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_THUMBPRINT }}
       LINUX_SIGN_KEY: ${{ secrets.LINUX_SIGN_KEY }}
+      AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -90,11 +91,28 @@ jobs:
             bash scripts/sign.sh --os linux --file "$f" --key signing.key
           done
           rm -f signing.key
+      - name: Sign release artifacts (ed25519)
+        if: env.AGENCY_UPDATE_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
+        run: |
+          for f in dist/agency-*; do
+            case "$f" in
+              *.sig|*checksums-signed*) continue ;;
+            esac
+            bun scripts/sign-release.ts --file "$f"
+          done
+          # Per-OS fragment: merge-multiple would let same-named
+          # checksums-signed.txt files overwrite each other on download.
+          cp dist/checksums-signed.txt "dist/checksums-signed-${{ matrix.sign_os }}.txt"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: agency-${{ matrix.sign_os }}
-          path: dist/agency-*
+          path: |
+            dist/agency-*
+            dist/checksums-signed-*.txt
           if-no-files-found: error
 
   sbom:
@@ -134,14 +152,24 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum agency-* agency.cdx.json > checksums.txt
+          # Merge per-OS signed checksum fragments into the single manifest
+          # the update client fetches as checksums-signed.txt.
+          cat checksums-signed-*.txt > checksums-signed.txt
+          rm -f checksums-signed-*.txt
+          # checksums.txt covers install payloads only (binaries + SBOM),
+          # never the detached .sig sidecars or the signed manifest itself.
+          sha256sum $(ls agency-* | grep -v '\.sig$') agency.cdx.json > checksums.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Release carries the binaries, their detached .sig files
+          # (raw 64-byte ed25519), the signed checksum manifest, the plain
+          # checksums.txt for install-script verification, and the SBOM.
+          # sort -u dedupes: platform globs already match their .sig sidecars.
+          FILES=$(ls artifacts/agency-* artifacts/agency-*.sig artifacts/checksums.txt artifacts/checksums-signed.txt artifacts/agency.cdx.json 2>/dev/null | sort -u)
+          # shellcheck disable=SC2086
           gh release create "$GITHUB_REF_NAME" \
-            artifacts/agency-* \
-            artifacts/checksums.txt \
-            artifacts/agency.cdx.json \
+            $FILES \
             --title "Agency $GITHUB_REF_NAME" \
             --generate-notes

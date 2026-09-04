@@ -40,7 +40,8 @@ function measureColdStart(cmd: string[]): { ms: number; ok: boolean } {
   });
   const ms = performance.now() - start;
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`agency --version exited ${result.status}: ${result.stderr?.toString()}`);
+  if (result.status !== 0)
+    throw new Error(`agency --version exited ${result.status}: ${result.stderr?.toString()}`);
   return { ms, ok: true };
 }
 
@@ -63,7 +64,15 @@ async function measureDaemonIdle(): Promise<{
     // Simpler: spawn `bun packages/cli/src/daemon-entry.ts --workspace ws --instance-file ...` directly.
     const instanceFile = join(instanceDir, "test.json");
     const proc = Bun.spawn(
-      ["bun", "run", join(import.meta.dir, "..", "packages/cli/src/daemon-entry.ts"), "--workspace", ws, "--instance-file", instanceFile],
+      [
+        "bun",
+        "run",
+        join(import.meta.dir, "..", "packages/cli/src/daemon-entry.ts"),
+        "--workspace",
+        ws,
+        "--instance-file",
+        instanceFile,
+      ],
       { stdio: ["ignore", "ignore", "ignore"] },
     );
     daemonPid = proc.pid;
@@ -76,7 +85,12 @@ async function measureDaemonIdle(): Promise<{
     }
     if (!existsSync(instanceFile)) {
       proc.kill();
-      return { rssMb: undefined, cpuPercent: undefined, skipped: true, reason: "daemon instance file never appeared" };
+      return {
+        rssMb: undefined,
+        cpuPercent: undefined,
+        skipped: true,
+        reason: "daemon instance file never appeared",
+      };
     }
 
     // Give it a moment to settle
@@ -125,9 +139,13 @@ async function measureDaemonIdle(): Promise<{
       // Windows: RSS via ps not reliable; try to get via `tasklist` or skip
       // Use `wmic` if available
       try {
-        const out = spawnSync("wmic", ["process", "where", `ProcessId=${daemonPid}`, "get", "WorkingSetSize", "/value"], {
-          encoding: "utf8",
-        });
+        const out = spawnSync(
+          "wmic",
+          ["process", "where", `ProcessId=${daemonPid}`, "get", "WorkingSetSize", "/value"],
+          {
+            encoding: "utf8",
+          },
+        );
         const m = out.stdout.match(/WorkingSetSize=(\d+)/);
         if (m) rssMb = Number.parseInt(m[1]!, 10) / (1024 * 1024);
       } catch {}
@@ -169,7 +187,8 @@ async function main(): Promise<number> {
   try {
     const { ms } = measureColdStart(cmd);
     console.log(`cold start: ${ms.toFixed(1)} ms (budget ${BUDGETS.coldStartMs} ms)`);
-    if (ms > BUDGETS.coldStartMs) failures.push(`cold start ${ms.toFixed(1)}ms exceeds ${BUDGETS.coldStartMs}ms`);
+    if (ms > BUDGETS.coldStartMs)
+      failures.push(`cold start ${ms.toFixed(1)}ms exceeds ${BUDGETS.coldStartMs}ms`);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     warnings.push(`cold start measurement failed: ${msg}`);
@@ -184,15 +203,19 @@ async function main(): Promise<number> {
     } else {
       if (rssMb !== undefined) {
         console.log(`idle RSS: ${rssMb.toFixed(1)} MB (budget ${BUDGETS.idleRssMb} MB)`);
-        if (rssMb > BUDGETS.idleRssMb) failures.push(`idle RSS ${rssMb.toFixed(1)}MB exceeds ${BUDGETS.idleRssMb}MB`);
+        if (rssMb > BUDGETS.idleRssMb)
+          failures.push(`idle RSS ${rssMb.toFixed(1)}MB exceeds ${BUDGETS.idleRssMb}MB`);
       }
       if (cpuPercent !== undefined) {
         console.log(`idle CPU: ${cpuPercent.toFixed(1)}% over 2s (budget ${BUDGETS.idleCpuPercent}%)`);
-        if (cpuPercent > BUDGETS.idleCpuPercent) failures.push(`idle CPU ${cpuPercent.toFixed(1)}% exceeds ${BUDGETS.idleCpuPercent}%`);
+        if (cpuPercent > BUDGETS.idleCpuPercent)
+          failures.push(`idle CPU ${cpuPercent.toFixed(1)}% exceeds ${BUDGETS.idleCpuPercent}%`);
       }
     }
   } catch (error) {
-    warnings.push(`daemon idle measurement failed: ${error instanceof Error ? error.message : String(error)}`);
+    warnings.push(
+      `daemon idle measurement failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     console.log(`daemon idle: skipped (${warnings[warnings.length - 1]})`);
   }
 

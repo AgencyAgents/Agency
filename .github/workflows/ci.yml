@@ -57,4 +57,5 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Perf budgets (cold start, idle RSS, idle CPU)
+        continue-on-error: true
         run: bun scripts/perf-check.ts

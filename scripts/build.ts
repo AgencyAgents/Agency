@@ -85,7 +85,15 @@ function parseArgs(argv: string[]): Options {
 async function compile(target: string, outfile: string, version: string): Promise<void> {
   // The version is inlined at compile time; running from source falls back to
   // the entrypoint's own default (see entrypoint.ts).
-  const define = `process.env.AGENCY_VERSION=${JSON.stringify(version)}`;
+  // AGENCY_UPDATE_PUBLIC_KEY (SPKI DER base64) is inlined the same way so the
+  // production public key is embedded in the binary; without it the dev key
+  // in update-public-key.ts applies (dev builds only).
+  const defineVersion = `process.env.AGENCY_VERSION=${JSON.stringify(version)}`;
+  const updateKey = process.env.AGENCY_UPDATE_PUBLIC_KEY?.trim();
+  const defineKey =
+    updateKey !== undefined && updateKey.length > 0
+      ? `process.env.AGENCY_UPDATE_PUBLIC_KEY=${JSON.stringify(updateKey)}`
+      : undefined;
   const proc = Bun.spawn(
     [
       process.execPath,
@@ -94,7 +102,8 @@ async function compile(target: string, outfile: string, version: string): Promis
       "--minify",
       "--sourcemap=none",
       "--define",
-      define,
+      defineVersion,
+      ...(defineKey !== undefined ? (["--define", defineKey] as const) : []),
       `--target=${target}`,
       `--outfile=${outfile}`,
       ENTRYPOINT,
