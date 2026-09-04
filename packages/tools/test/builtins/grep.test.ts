@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "agency-grep-test-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-grep-test-")));
   dirs.push(root);
   const capabilities = { ...FULL_CAPABILITIES, pathScopes: [root] };
   const deps: ToolDeps = { identity: { type: "user" }, capabilities, sandbox: new SandboxBoundary(root) };

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -15,7 +15,7 @@ const signal = new AbortController().signal;
 
 describe("glob: gitignore + mtime sort (A6)", () => {
   test("respects the search root's .gitignore and never lists .git", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-glob-ignore-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-glob-ignore-")));
     dirs.push(root);
     writeFileSync(join(root, ".gitignore"), "dist/\n*.log\n");
     mkdirSync(join(root, "dist"));
@@ -41,7 +41,7 @@ describe("glob: gitignore + mtime sort (A6)", () => {
   });
 
   test("sorts newest first", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-glob-mtime-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-glob-mtime-")));
     dirs.push(root);
     const { utimesSync } = await import("node:fs");
     const base = new Date(Date.now() - 4_000);

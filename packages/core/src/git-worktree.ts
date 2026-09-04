@@ -75,7 +75,7 @@ export function makeWorktreeReadOnly(worktreePath: string, scratchDir: string): 
   mkdirSync(scratchAbs, { recursive: true });
 
   // Walk the worktree tree and set read-only on everything except scratch.
-  setReadOnlyRecursive(worktreePath, scratchAbs);
+  setReadOnlyRecursive(root, scratchAbs);
 
   // Ensure the scratch dir itself and its future contents stay writable.
   chmodSync(scratchAbs, 0o755);

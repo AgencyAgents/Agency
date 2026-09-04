@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -23,7 +23,7 @@ function depsFor(root: string): ToolDeps {
 
 describe("grep: global cap and flags (A6)", () => {
   test("the match cap is global, not per-file", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-grep-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-grep-a6-")));
     dirs.push(root);
     for (let f = 0; f < 5; f++) {
       const lines = Array.from({ length: 80 }, (_, i) => `hit ${f}-${i}`).join("\n");
@@ -40,7 +40,7 @@ describe("grep: global cap and flags (A6)", () => {
   }, 30_000);
 
   test("caseInsensitive and context flags flow through", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-grep-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-grep-a6-")));
     dirs.push(root);
     writeFileSync(join(root, "a.txt"), "Mixed CASE value\nbefore\nafter\n");
 
@@ -58,7 +58,7 @@ describe("grep: global cap and flags (A6)", () => {
   }, 30_000);
 
   test("filesOnly lists file paths instead of lines", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-grep-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-grep-a6-")));
     dirs.push(root);
     writeFileSync(join(root, "x.txt"), "needle here\nneedle again\n");
     writeFileSync(join(root, "y.txt"), "needle too\n");
