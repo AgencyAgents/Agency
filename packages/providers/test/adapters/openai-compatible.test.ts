@@ -165,6 +165,61 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
   });
 
+  test("parses legacy delta.function_call into tool call events", async () => {
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+    const encoder = new TextEncoder();
+    const http: HttpClient = {
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              // First delta: function name
+              const frame1 = JSON.stringify({
+                choices: [
+                  { delta: { function_call: { name: "read_file", arguments: "" } }, finish_reason: null },
+                ],
+              });
+              c.enqueue(encoder.encode(`data: ${frame1}\n\n`));
+              // Second delta: arguments
+              const frame2 = JSON.stringify({
+                choices: [
+                  {
+                    delta: { function_call: { arguments: JSON.stringify({ path: "src/index.ts" }) } },
+                    finish_reason: null,
+                  },
+                ],
+              });
+              c.enqueue(encoder.encode(`data: ${frame2}\n\n`));
+              // Finish
+              const frame3 = JSON.stringify({
+                choices: [{ delta: {}, finish_reason: "function_call" }],
+              });
+              c.enqueue(encoder.encode(`data: ${frame3}\n\n`));
+              c.enqueue(encoder.encode("data: [DONE]\n\n"));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    };
+
+    const events = await collect(adapter.stream(baseRequest, http));
+
+    const starts = events.filter((e) => e.type === "tool_call_start");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ type: "tool_call_start", name: "read_file" });
+    expect((starts[0] as { id: string }).id).toBeTruthy();
+
+    const deltas = events.filter((e) => e.type === "tool_call_delta");
+    expect(deltas).toHaveLength(1);
+
+    const ends = events.filter((e) => e.type === "tool_call_end");
+    expect(ends).toHaveLength(1);
+
+    const stop = events.find((e) => e.type === "message_stop") as { stopReason: string };
+    expect(stop.stopReason).toBe("tool_use");
+  });
+
   function fakeError(options: { status: number; body: unknown }): HttpClient {
     return {
       fetch: async () => new Response(JSON.stringify(options.body), { status: options.status }),

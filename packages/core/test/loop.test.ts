@@ -599,6 +599,36 @@ describe("runTurn", () => {
     ]);
   });
 
+  test("two back-to-back signed thinking blocks keep separate signatures", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "thinking_delta", text: "first reasoning" };
+        yield { type: "thinking_signature", signature: "sig-1" };
+        yield { type: "thinking_delta", text: "second reasoning" };
+        yield { type: "thinking_signature", signature: "sig-2" };
+        yield { type: "text_delta", text: "answer" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages[0]?.content).toEqual([
+      { type: "thinking", text: "first reasoning", signature: "sig-1" },
+      { type: "thinking", text: "second reasoning", signature: "sig-2" },
+      { type: "text", text: "answer" },
+    ]);
+  });
+
   test("tool handlers receive the run's turnId in their context", async () => {
     let sawTurnId: string | undefined;
     const spec: ToolSpec = {
@@ -698,6 +728,63 @@ describe("A5: input validation and permissions gating", () => {
     expect(validateToolInput(schema, { mode: "sideways" })).toContain("must be one of");
     expect(validateToolInput(schema, { mode: "fast" })).toBeUndefined();
     expect(validateToolInput({}, { anything: 1 })).toBeUndefined();
+  });
+
+  test("validateToolInput rejects array items with wrong type", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        tags: { type: "array", items: { type: "string" } },
+        scores: { type: "array", items: { type: "number" } },
+      },
+    };
+    expect(validateToolInput(schema, { tags: ["a", "b", 1] })).toContain(
+      '"tags[2]" must be string, got number',
+    );
+    expect(validateToolInput(schema, { tags: ["a", "b"] })).toBeUndefined();
+    expect(validateToolInput(schema, { scores: [1, 2, "three"] })).toContain(
+      '"scores[2]" must be number, got string',
+    );
+    expect(validateToolInput(schema, { scores: [1, 2, 3] })).toBeUndefined();
+  });
+
+  test("validateToolInput handles edge cases: null input, null schema, non-object root", () => {
+    expect(validateToolInput({ type: "object", properties: { x: { type: "string" } } }, null)).toContain(
+      "expected an object, got null",
+    );
+    expect(validateToolInput({ type: "object", properties: { x: { type: "string" } } }, "string")).toContain(
+      "expected an object, got string",
+    );
+    expect(validateToolInput({ type: "object", properties: { x: { type: "string" } } }, [])).toContain(
+      "expected an object, got array",
+    );
+    expect(validateToolInput(null as unknown as Record<string, unknown>, { x: 1 })).toBeUndefined();
+    expect(validateToolInput({}, null)).toBeUndefined();
+  });
+
+  test("validateToolInput passes valid input through cleanly", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        age: { type: "integer" },
+        active: { type: "boolean" },
+        tags: { type: "array", items: { type: "string" } },
+        meta: { type: "object" },
+        score: { type: "number" },
+      },
+      required: ["name", "age"],
+    };
+    expect(
+      validateToolInput(schema, {
+        name: "alice",
+        age: 30,
+        active: true,
+        tags: ["dev", "ops"],
+        meta: { key: "val" },
+        score: 9.5,
+      }),
+    ).toBeUndefined();
   });
 
   test("a deny decision blocks the handler with a clean permission error", async () => {

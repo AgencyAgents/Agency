@@ -25,6 +25,7 @@ async function builtinsFor() {
     http: noopHttp,
     workspaceRoot: root,
     snapshotDir: join(root, "snapshots"),
+    websearch: { endpoint: "https://search.example.com" },
   });
 }
 
@@ -35,10 +36,26 @@ type RenderableTool = {
 };
 
 describe("built-in tool presentations", () => {
-  test("all nine built-ins ship renderCall and renderResult", async () => {
+  test("all built-ins ship renderCall and renderResult", async () => {
     const builtins = await builtinsFor();
     try {
-      const names = ["bash", "read", "write", "edit", "grep", "glob", "fetch", "todo_read", "todo_write"];
+      const names = [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "grep",
+        "glob",
+        "fetch",
+        "todo_read",
+        "todo_write",
+        "execute_plan",
+        "process_output",
+        "process_list",
+        "process_kill",
+        "question",
+        "websearch",
+      ];
       for (const name of names) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name);
         expect(tool, name).toBeDefined();
@@ -152,11 +169,92 @@ describe("built-in tool presentations", () => {
     }
   });
 
+  test("process tools render process id and status", async () => {
+    const builtins = await builtinsFor();
+    try {
+      const procOutput = builtins.tools.find((t: RenderableTool) => t.name === "process_output")!;
+      expect(procOutput.renderCall!({ id: "p1" })).toBe("process_output p1");
+      expect(procOutput.renderResult!({ content: "build output", isError: false })).toBe(
+        "process_output: build output",
+      );
+      expect(procOutput.renderResult!({ content: "not found", isError: true })).toBe(
+        "process_output failed: not found",
+      );
+
+      const procList = builtins.tools.find((t: RenderableTool) => t.name === "process_list")!;
+      expect(procList.renderCall!({})).toBe("process_list");
+      expect(procList.renderResult!({ content: "running  p1  pid 123  bun dev", isError: false })).toBe(
+        "running  p1  pid 123  bun dev",
+      );
+      expect(procList.renderResult!({ content: "no processes", isError: false })).toBe("no processes");
+
+      const procKill = builtins.tools.find((t: RenderableTool) => t.name === "process_kill")!;
+      expect(procKill.renderCall!({ id: "p1" })).toBe("process_kill p1");
+      expect(procKill.renderResult!({ content: "killed p1", isError: false })).toBe("killed p1");
+      expect(procKill.renderResult!({ content: "unknown process", isError: true })).toBe(
+        "process_kill failed: unknown process",
+      );
+    } finally {
+      await builtins.dispose();
+    }
+  });
+
+  test("question and websearch render one-line summaries", async () => {
+    const builtins = await builtinsFor();
+    try {
+      const question = builtins.tools.find((t: RenderableTool) => t.name === "question")!;
+      expect(question.renderCall!({ question: "Which approach?" })).toBe("question Which approach?");
+      expect(
+        question.renderResult!({ content: '{"type":"question","question":"Which?"}', isError: false }),
+      ).toBe('{"type":"question","question":"Which?"}');
+      expect(question.renderResult!({ content: "empty question", isError: true })).toBe(
+        "question failed: empty question",
+      );
+
+      const websearch = builtins.tools.find((t: RenderableTool) => t.name === "websearch")!;
+      expect(websearch.renderCall!({ query: "latest news" })).toBe("websearch latest news");
+      expect(websearch.renderResult!({ content: "result 1\nresult 2", isError: false })).toBe(
+        "websearch: result 1 (+1 lines)",
+      );
+      expect(websearch.renderResult!({ content: "", isError: false })).toBe("websearch: (no results)");
+      expect(websearch.renderResult!({ content: "API error", isError: true })).toBe(
+        "websearch failed: API error",
+      );
+    } finally {
+      await builtins.dispose();
+    }
+  });
+
+  test("execute_plan renders plan path and step count", async () => {
+    const builtins = await builtinsFor();
+    try {
+      const plan = builtins.tools.find((t: RenderableTool) => t.name === "execute_plan")!;
+      expect(plan.renderCall!({ path: ".agency/plans/plan.md" })).toBe("execute_plan .agency/plans/plan.md");
+      expect(
+        plan.renderResult!({ content: "plan approved by user; queued 3 step(s) as todos", isError: false }),
+      ).toBe("plan approved by user; queued 3 step(s) as todos");
+      expect(plan.renderResult!({ content: "no approval record", isError: true })).toBe(
+        "execute_plan failed: no approval record",
+      );
+    } finally {
+      await builtins.dispose();
+    }
+  });
+
   test("every render result is a single line and stays bounded on huge output", async () => {
     const builtins = await builtinsFor();
     try {
       const huge = `${"x".repeat(5000)}\n${"y".repeat(5000)}`;
-      const input = { command: "c", path: "p.ts", pattern: "pp", url: "https://u.dev" };
+      const input = {
+        command: "c",
+        path: "p.ts",
+        pattern: "pp",
+        url: "https://u.dev",
+        id: "p1",
+        question: "q",
+        query: "q",
+        items: [1],
+      };
       for (const name of [
         "bash",
         "read",
@@ -167,6 +265,12 @@ describe("built-in tool presentations", () => {
         "fetch",
         "todo_read",
         "todo_write",
+        "execute_plan",
+        "process_output",
+        "process_list",
+        "process_kill",
+        "question",
+        "websearch",
       ]) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name)!;
         const call = tool.renderCall!(input);
@@ -184,7 +288,16 @@ describe("built-in tool presentations", () => {
   test("renders survive malformed model-produced input without throwing", async () => {
     const builtins = await builtinsFor();
     try {
-      const bad = { command: 42, path: undefined, pattern: {}, url: null, items: "not-an-array" };
+      const bad = {
+        command: 42,
+        path: undefined,
+        pattern: {},
+        url: null,
+        items: "not-an-array",
+        id: 123,
+        question: 42,
+        query: 42,
+      };
       for (const name of [
         "bash",
         "read",
@@ -195,10 +308,19 @@ describe("built-in tool presentations", () => {
         "fetch",
         "todo_read",
         "todo_write",
+        "execute_plan",
+        "process_output",
+        "process_list",
+        "process_kill",
+        "question",
+        "websearch",
       ]) {
         const tool = builtins.tools.find((t: RenderableTool) => t.name === name)!;
-        expect(() => tool.renderCall!(bad)).not.toThrow();
-        expect(() => tool.renderResult!({ content: "c", isError: false, input: bad })).not.toThrow();
+        expect(() => tool.renderCall!(bad), `${name} renderCall throws`).not.toThrow();
+        expect(
+          () => tool.renderResult!({ content: "c", isError: false, input: bad }),
+          `${name} renderResult throws`,
+        ).not.toThrow();
       }
     } finally {
       await builtins.dispose();

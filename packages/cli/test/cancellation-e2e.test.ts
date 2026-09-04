@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
@@ -7,7 +7,7 @@ import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import type { RunTurnRpcResult } from "../src/daemon.ts";
-import { createAgentDaemon, type AgentDaemon } from "../src/daemon.ts";
+import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 
@@ -46,7 +46,11 @@ function writeConfigDir(config: Record<string, unknown>): string {
   return dir;
 }
 
-function toolCallingAdapter(toolName: string, input: Record<string, unknown>, secondText: string): ProviderAdapter {
+function toolCallingAdapter(
+  toolName: string,
+  input: Record<string, unknown>,
+  secondText: string,
+): ProviderAdapter {
   let call = 0;
   return {
     family: "fake",
@@ -174,7 +178,9 @@ describe("cancellation e2e — Esc -> abort -> partial output -> resumable", () 
 
     await waitForMarker(marker, 5000);
 
-    const cancelResult = (await client.call("cancel_turn", { turnId: "cancel-e2e-1" })) as { cancelled: boolean };
+    const cancelResult = (await client.call("cancel_turn", { turnId: "cancel-e2e-1" })) as {
+      cancelled: boolean;
+    };
     expect(cancelResult.cancelled).toBe(true);
 
     const result = await runPromise;

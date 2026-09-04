@@ -78,11 +78,19 @@ describe("concurrency", () => {
     const dir = tmp("agency-concur-sess-");
     const store = new SessionStore(dir);
     store.create("s1");
-    const first = await store.append("s1", { type: "message", parentId: null, message: { role: "user", content: [{ type: "text", text: "root" }] } });
+    const first = await store.append("s1", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [{ type: "text", text: "root" }] },
+    });
 
     const N = 20;
     const appends = Array.from({ length: N }, (_, i) =>
-      store.append("s1", { type: "message", parentId: first.id, message: { role: "user", content: [{ type: "text", text: `msg-${i}` }] } }),
+      store.append("s1", {
+        type: "message",
+        parentId: first.id,
+        message: { role: "user", content: [{ type: "text", text: `msg-${i}` }] },
+      }),
     );
     const results = await Promise.all(appends);
     expect(results).toHaveLength(N);

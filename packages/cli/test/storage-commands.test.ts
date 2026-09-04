@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pruneCommand, storageCommand, whereCommand } from "../src/storage-commands.ts";
+import { pruneCommand, storageCommand, whereCommand, wherePaths } from "../src/storage-commands.ts";
 
 describe("whereCommand", () => {
   test("lists config, data, cache, and log directories", () => {
@@ -8,6 +8,15 @@ describe("whereCommand", () => {
     expect(output).toContain("data:");
     expect(output).toContain("cache:");
     expect(output).toContain("logs:");
+  });
+
+  test("text and JSON agree on every path (wherePaths parity)", () => {
+    const paths = wherePaths();
+    const text = whereCommand();
+    for (const value of Object.values(paths)) {
+      expect(text).toContain(value);
+    }
+    expect(Object.keys(paths).sort()).toEqual(["cache", "config", "data", "logs"]);
   });
 });
 
@@ -21,8 +30,8 @@ describe("storageCommand", () => {
 });
 
 describe("pruneCommand", () => {
-  test("always clears the cache, and mentions session retention only when a policy is given", () => {
-    expect(pruneCommand()).toBe("cache: cleared");
-    expect(pruneCommand({ maxAgeDays: 30 })).toContain("sessions: deleted");
+  test("always clears the cache, and mentions session retention only when a policy is given", async () => {
+    expect(await pruneCommand()).toBe("cache: cleared");
+    expect(await pruneCommand({ maxAgeDays: 30 })).toContain("sessions: deleted");
   });
 });

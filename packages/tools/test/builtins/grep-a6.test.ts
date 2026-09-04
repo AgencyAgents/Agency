@@ -6,20 +6,6 @@ import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import { createGrepTool } from "../../src/builtins/grep.ts";
 import type { ToolDeps } from "../../src/contract.ts";
 
-function searchBinaryAvailable(): boolean {
-  for (const binary of ["rg", "grep"]) {
-    try {
-      const result = Bun.spawnSync([binary, "--version"], { stdout: "ignore", stderr: "ignore" });
-      if (result.exitCode === 0) return true;
-    } catch {
-      // not on PATH
-    }
-  }
-  return false;
-}
-
-const hasSearchBinary = searchBinaryAvailable();
-
 function isMissingBinary(content: string): boolean {
   return content.includes("neither ripgrep") || content.includes("not installed or on PATH");
 }
@@ -35,7 +21,7 @@ function depsFor(root: string): ToolDeps {
   return { identity: { type: "user" }, capabilities: FULL_CAPABILITIES, sandbox: new SandboxBoundary(root) };
 }
 
-describe("grep: global cap and flags (A6)", { skip: !hasSearchBinary }, () => {
+describe("grep: global cap and flags (A6)", () => {
   test("the match cap is global, not per-file", async () => {
     const root = mkdtempSync(join(tmpdir(), "agency-grep-a6-"));
     dirs.push(root);

@@ -144,4 +144,80 @@ describe("SnapshotStore", () => {
       }),
     ).toBe("referenced content");
   });
+
+  test("recordAfter records afterHash even when file content is unchanged after capture", () => {
+    const { store, file } = tempStore();
+    writeFileSync(file("a.ts"), "stable content", "utf8");
+
+    // Capture the before state, then write the same content (simulating a
+    // formatter that doesn't change anything), then recordAfter.
+    store.capture(file("a.ts"), "stable content", "turn-1");
+    writeFileSync(file("a.ts"), "stable content", "utf8");
+    store.recordAfter(file("a.ts"));
+
+    // Undo restores the captured before state.
+    expect(store.undo()).toEqual({ path: file("a.ts") });
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("stable content");
+
+    // Redo re-applies the after state (same content, but the afterHash was
+    // recorded so redo has something to restore).
+    expect(store.redo()).toEqual({ path: file("a.ts") });
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("stable content");
+  });
+
+  test("prune preserves blobs referenced by afterHash", () => {
+    const { store, file } = tempStore();
+    writeFileSync(file("a.ts"), "before content", "utf8");
+    writeFileSync(file("b.ts"), "b-before", "utf8");
+
+    // Capture two files, write new content, record after-states.
+    store.capture(file("a.ts"), "before content", "turn-1");
+    writeFileSync(file("a.ts"), "after content", "utf8");
+    store.recordAfter(file("a.ts"));
+
+    store.capture(file("b.ts"), "b-before", "turn-1");
+    writeFileSync(file("b.ts"), "b-after", "utf8");
+    store.recordAfter(file("b.ts"));
+
+    // Both before and after blobs should survive pruning.
+    const beforeHash = createHash("sha256").update("before content").digest("hex");
+    const afterHash = createHash("sha256").update("after content").digest("hex");
+    const bBeforeHash = createHash("sha256").update("b-before").digest("hex");
+    const bAfterHash = createHash("sha256").update("b-after").digest("hex");
+
+    expect(store.prune()).toBe(0);
+    expect(store.read({ hash: beforeHash, path: "/x", capturedAt: "" })).toBe("before content");
+    expect(store.read({ hash: afterHash, path: "/x", capturedAt: "" })).toBe("after content");
+    expect(store.read({ hash: bBeforeHash, path: "/x", capturedAt: "" })).toBe("b-before");
+    expect(store.read({ hash: bAfterHash, path: "/x", capturedAt: "" })).toBe("b-after");
+  });
+
+  test("prune handles multiple shard directories with correct refcounting", () => {
+    const { store, dir } = tempStore();
+
+    // Capture content whose hash falls into different shard directories.
+    // We force-create blobs in two different shards to verify the
+    // shard+filename reconstruction in prune().
+    const contentA = "shard-a-content";
+    const contentB = "shard-b-orphan";
+    const hashA = createHash("sha256").update(contentA).digest("hex");
+    const hashB = createHash("sha256").update(contentB).digest("hex");
+
+    // Create blobs in shard A (referenced) and shard B (orphan).
+    const shardADir = join(dir, "blobs", hashA.slice(0, 2));
+    const shardBDir = join(dir, "blobs", hashB.slice(0, 2));
+    mkdirSync(shardADir, { recursive: true });
+    mkdirSync(shardBDir, { recursive: true });
+    writeFileSync(join(shardADir, hashA.slice(2)), contentA, "utf8");
+    writeFileSync(join(shardBDir, hashB.slice(2)), contentB, "utf8");
+
+    // Only hashA is referenced by the journal.
+    store.capture("/repo/x.ts", contentA, "turn-1");
+
+    // prune() should delete the orphan in shard B but keep the referenced blob in shard A.
+    expect(store.prune()).toBe(1);
+    expect(store.prune()).toBe(0);
+    expect(store.read({ hash: hashA, path: "/x", capturedAt: "" })).toBe(contentA);
+    expect(() => store.read({ hash: hashB, path: "/x", capturedAt: "" })).toThrow();
+  });
 });

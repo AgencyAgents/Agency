@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FULL_CAPABILITIES } from "@agency/guard";
+import { join } from "node:path";
+import { FULL_CAPABILITIES, Redactor } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent, Usage } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
+import { readCassette, writeCassette } from "../src/cassette.ts";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
-import { TraceRecorder, loadTraceSpans } from "../src/trace/recorder.ts";
+import { exportSpansOtlp, otlpJsonValid, spansToOtlp } from "../src/trace/otel.ts";
+import { loadTraceSpans, TraceRecorder } from "../src/trace/recorder.ts";
 import { buildSpanTree } from "../src/trace/types.ts";
-import { spansToOtlp, otlpJsonValid, exportSpansOtlp } from "../src/trace/otel.ts";
-import { writeCassette, readCassette } from "../src/cassette.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const user = { type: "user" as const };
@@ -47,7 +47,12 @@ function toolAdapter(toolName: string, input: Record<string, unknown>): Provider
 describe("TraceRecorder", () => {
   test("produces well-formed tree with correct parent linkage and cost rollup", async () => {
     const dir = mkdtempSync(join(tmpdir(), "trace-"));
-    const recorder = new TraceRecorder({ sessionsDir: dir, sessionId: "sess1", traceId: "turn-1", promptVersion: "v1" });
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "sess1",
+      traceId: "turn-1",
+      promptVersion: "v1",
+    });
     const turnId = recorder.startTurnSpan({ provider: "anthropic", model: "claude-4", promptVersion: "v1" });
     const m1 = recorder.startModelSpan(turnId, { model: "claude-4", provider: "anthropic" });
     recorder.endSpan(m1, { attributes: { cost: 0.05, inputTokens: 100, outputTokens: 50 } });
@@ -77,7 +82,12 @@ describe("TraceRecorder", () => {
 
   test("promptVersion propagates to every span", async () => {
     const dir = mkdtempSync(join(tmpdir(), "trace-pv-"));
-    const recorder = new TraceRecorder({ sessionsDir: dir, sessionId: "s2", traceId: "turn-pv", promptVersion: "test-v2" });
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "s2",
+      traceId: "turn-pv",
+      promptVersion: "test-v2",
+    });
     const turn = recorder.startTurnSpan();
     const m = recorder.startModelSpan(turn, { model: "m", provider: "p" });
     recorder.endSpan(m, { attributes: { cost: 0.01 } });
@@ -118,14 +128,69 @@ describe("TraceRecorder", () => {
   test("cassette bridge: toCassetteRecord produces valid CassetteRecord", async () => {
     const dir = mkdtempSync(join(tmpdir(), "trace-cass-"));
     const recorder = new TraceRecorder({ sessionsDir: dir, sessionId: "sCass", traceId: "tCass" });
-    const fakeResult: any = { messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }] }], stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 }, budgetExceeded: false };
-    const record = recorder.toCassetteRecord({ provider: "test", model: "test/m", systemPrompt: "sys", session: [] }, [{ type: "text_delta", text: "hi" }], fakeResult);
+    // biome-ignore lint/suspicious/noExplicitAny: test data
+    const fakeResult: any = {
+      messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }] }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      budgetExceeded: false,
+    };
+    const record = recorder.toCassetteRecord(
+      { provider: "test", model: "test/m", systemPrompt: "sys", session: [] },
+      [{ type: "text_delta", text: "hi" }],
+      fakeResult,
+    );
     expect(record.params.provider).toBe("test");
     expect(record.events).toHaveLength(1);
     expect(record.result.messages[0]!.content[0]).toMatchObject({ type: "text" });
     await recorder.writeCassette("tCass", record);
-    const loaded = await import("../src/trace/recorder.ts").then((m) => m.readCassetteRecord(dir, "sCass", "tCass"));
+    const loaded = await import("../src/trace/recorder.ts").then((m) =>
+      m.readCassetteRecord(dir, "sCass", "tCass"),
+    );
     expect(loaded?.params.model).toBe("test/m");
+  });
+
+  test("cassette redacts registered secrets and known key patterns through writeCassette", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "trace-redact-"));
+    const redactor = new Redactor();
+    redactor.registerSecret("sk-ant-real-secret-abcdef123456");
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "sRedact",
+      traceId: "tRedact",
+      redactor,
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: test data
+    const fakeResult: any = {
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "my key is sk-ant-real-secret-abcdef123456" }] },
+      ],
+      stopReason: "end_turn",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      budgetExceeded: false,
+    };
+    const record = recorder.toCassetteRecord(
+      {
+        provider: "anthropic",
+        model: "anthropic/claude-4",
+        systemPrompt: "You have key sk-ant-real-secret-abcdef123456",
+        session: [],
+      },
+      [{ type: "text_delta", text: "using sk-ant-real-secret-abcdef123456" }],
+      fakeResult,
+    );
+    await recorder.writeCassette("tRedact", record);
+
+    const loaded = await import("../src/trace/recorder.ts").then((m) =>
+      m.readCassetteRecord(dir, "sRedact", "tRedact"),
+    );
+    expect(loaded).not.toBeNull();
+    // Registered secret must not appear anywhere in the cassette
+    const json = JSON.stringify(loaded);
+    expect(json).not.toContain("sk-ant-real-secret-abcdef123456");
+    expect(json).toContain("[REDACTED]");
+    // Known key pattern (Anthropic) should also be redacted even if not registered
+    expect(json).not.toContain("sk-ant-");
   });
 
   test("replay reproduces same tool calls offline without network", async () => {
@@ -168,7 +233,12 @@ describe("TraceRecorder", () => {
 describe("OTel export", () => {
   test("spansToOtlp produces valid OTLP JSON shape", () => {
     const dir = mkdtempSync(join(tmpdir(), "otel-"));
-    const recorder = new TraceRecorder({ sessionsDir: dir, sessionId: "sOtel", traceId: "turn-otel", promptVersion: "v3" });
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "sOtel",
+      traceId: "turn-otel",
+      promptVersion: "v3",
+    });
     const turn = recorder.startTurnSpan({ provider: "openai", model: "gpt-5" });
     const m = recorder.startModelSpan(turn, { model: "gpt-5", provider: "openai" });
     recorder.endSpan(m, { attributes: { inputTokens: 10, outputTokens: 5, cost: 0.001 } });
@@ -187,22 +257,53 @@ describe("OTel export", () => {
       fetchCalled = true;
       return new Response(JSON.stringify({}), { status: 200 });
     };
-    const spans: any[] = [{ traceId: "t", spanId: "s", parentId: null, name: "turn", kind: "turn", startTime: new Date().toISOString(), endTime: new Date().toISOString(), durationMs: 1, status: "ok", attributes: {} }];
+    // biome-ignore lint/suspicious/noExplicitAny: test data
+    const spans: any[] = [
+      {
+        traceId: "t",
+        spanId: "s",
+        parentId: null,
+        name: "turn",
+        kind: "turn",
+        startTime: new Date().toISOString(),
+        endTime: new Date().toISOString(),
+        durationMs: 1,
+        status: "ok",
+        attributes: {},
+      },
+    ];
+    // biome-ignore lint/suspicious/noExplicitAny: test data
     const r1 = await exportSpansOtlp(spans, undefined, fakeFetch as any);
     expect(r1.exported).toBe(false);
     expect(fetchCalled).toBe(false);
+    // biome-ignore lint/suspicious/noExplicitAny: test data
     const r2 = await exportSpansOtlp(spans, { trace: {} } as any, fakeFetch as any);
     expect(r2.exported).toBe(false);
     expect(fetchCalled).toBe(false);
-    const r3 = await exportSpansOtlp(spans, { trace: { export: { endpoint: "http://localhost:4318/v1/traces" } } } as any, fakeFetch as any);
+    const r3 = await exportSpansOtlp(
+      spans,
+      // biome-ignore lint/suspicious/noExplicitAny: test data
+      { trace: { export: { endpoint: "http://localhost:4318/v1/traces" } } } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test data
+      fakeFetch as any,
+    );
     expect(r3.exported).toBe(true);
     expect(fetchCalled).toBe(true);
   });
 
   test("export with empty spans does not call fetch even when configured", async () => {
     let called = false;
-    const fakeFetch = async () => { called = true; return new Response(); };
-    const r = await exportSpansOtlp([], { trace: { export: { endpoint: "http://localhost:4318/v1/traces" } } } as any, fakeFetch as any);
+    const fakeFetch = async () => {
+      called = true;
+      return new Response();
+    };
+    const r = await exportSpansOtlp(
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: test data
+      { trace: { export: { endpoint: "http://localhost:4318/v1/traces" } } } as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test data
+      fakeFetch as any,
+    );
     expect(r.exported).toBe(false);
     expect(called).toBe(false);
   });
@@ -211,7 +312,12 @@ describe("OTel export", () => {
 describe("loop integration with trace", () => {
   test("runTurn with traceRecorder creates turn span with model and tool child spans and correct promptVersion and cost", async () => {
     const dir = mkdtempSync(join(tmpdir(), "loop-trace-"));
-    const recorder = new TraceRecorder({ sessionsDir: dir, sessionId: "sess-loop", traceId: "turn-loop", promptVersion: "pv-loop" });
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "sess-loop",
+      traceId: "turn-loop",
+      promptVersion: "pv-loop",
+    });
     const spec: ToolSpec = {
       name: "read",
       description: "read",

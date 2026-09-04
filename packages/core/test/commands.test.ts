@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { expandCommand, loadCommands, parseSlashInput } from "../src/commands/loader.ts";
 
 describe("slash commands", () => {
@@ -52,6 +52,63 @@ describe("slash commands", () => {
     mkdirSync(dir, { recursive: true });
     const expanded = expandCommand("{{file:missing.txt}}", "", dir);
     expect(expanded).toContain("missing file");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("path traversal {{file:../outside.txt}} is blocked outside workspace", () => {
+    const dir = join(tmpdir(), `agency-cmd-contain-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    // Create a file outside the workspace root
+    const outsideDir = join(tmpdir(), `agency-cmd-outside-${Date.now()}`);
+    mkdirSync(outsideDir, { recursive: true });
+    const secretFile = join(outsideDir, "secret.txt");
+    writeFileSync(secretFile, "leaked");
+    // Use relative traversal from the workspace root
+    const relDir = basename(outsideDir);
+    const tmpl = `{{file:../${relDir}/secret.txt}}`;
+    const expanded = expandCommand(tmpl, "", dir);
+    expect(expanded).toContain("blocked");
+    expect(expanded).not.toContain("leaked");
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  test("$FILE:../outside.txt is blocked outside workspace", () => {
+    const dir = join(tmpdir(), `agency-cmd-contain2-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const outsideDir = join(tmpdir(), `agency-cmd-outside2-${Date.now()}`);
+    mkdirSync(outsideDir, { recursive: true });
+    const secretFile = join(outsideDir, "secret.txt");
+    writeFileSync(secretFile, "leaked");
+    const relDir = basename(outsideDir);
+    const expanded = expandCommand(`$FILE:../${relDir}/secret.txt`, "", dir);
+    expect(expanded).toContain("blocked");
+    expect(expanded).not.toContain("leaked");
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  test("absolute path outside workspace is blocked", () => {
+    const dir = join(tmpdir(), `agency-cmd-abs-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const outsideFile = join(tmpdir(), `agency-cmd-abs-outside-${Date.now()}.txt`);
+    writeFileSync(outsideFile, "leaked");
+    // Absolute paths outside the sandbox root are resolved by SandboxBoundary
+    // and rejected if they don't start with the workspace root
+    const expanded = expandCommand(`{{file:${outsideFile}}}`, "", dir);
+    expect(expanded).toContain("blocked");
+    expect(expanded).not.toContain("leaked");
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outsideFile, { recursive: true, force: true });
+  });
+
+  test("in-workspace path with ../ that stays inside is allowed", () => {
+    const dir = join(tmpdir(), `agency-cmd-sub-${Date.now()}`);
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(join(dir, "sub", "nested.txt"), "nested content");
+    const tmpl = "{{file:sub/../sub/nested.txt}}";
+    const expanded = expandCommand(tmpl, "", dir);
+    expect(expanded).toBe("nested content");
     rmSync(dir, { recursive: true, force: true });
   });
 

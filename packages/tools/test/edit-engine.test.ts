@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { applyEdit, applyEditVerified, errorDiagnostics } from "../src/edit-engine.ts";
+import { applyEdit, applyEditsVerified, applyEditVerified, errorDiagnostics } from "../src/edit-engine.ts";
 
 describe("applyEdit", () => {
   test("replaces a uniquely-occurring region", () => {
@@ -92,5 +92,157 @@ describe("applyEditVerified", () => {
   test("no provider or no path means no warnings and a plain edit", () => {
     const outcome = applyEditVerified("abc", { oldText: "b", newText: "B" });
     expect(outcome).toEqual({ content: "aBc", warnings: [] });
+  });
+});
+
+describe("applyEdit hashline match (sha256 content-hash)", () => {
+  test("matches when indentation differs but line content is the same", () => {
+    const content = "function f() {\n    return 1;\n}\n";
+    const result = applyEdit(content, {
+      oldText: "  return 1;",
+      newText: "  return 2;",
+    });
+    expect(result).toBe("function f() {\n    return 2;\n}\n");
+  });
+
+  test("matches when internal whitespace runs differ", () => {
+    const content = "const  x  =  1;\n";
+    const result = applyEdit(content, {
+      oldText: "const x = 1;",
+      newText: "const x = 2;",
+    });
+    expect(result).toBe("const  x  =  2;\n");
+  });
+
+  test("matches multi-line with mixed whitespace drift", () => {
+    const content = "function f() {\n    if (x) {\n        return 1;\n    }\n}\n";
+    const result = applyEdit(content, {
+      oldText: "if (x) {\n  return 1;\n}",
+      newText: "if (x) {\n  return 2;\n}",
+    });
+    expect(result).toBe("function f() {\n    if (x) {\n        return 2;\n    }\n}\n");
+  });
+
+  test("rejects when content differs (hash mismatch)", () => {
+    expect(() => applyEdit("return 1;\n", { oldText: "return 2;", newText: "x" })).toThrow(AgencyError);
+  });
+
+  test("rejects when a token is fused (no whitespace between words)", () => {
+    expect(() => applyEdit("return1;\n", { oldText: "return 1;", newText: "x" })).toThrow(AgencyError);
+  });
+
+  test("ambiguous hashline match without replaceAll throws", () => {
+    const content = "  foo(1);\n  foo(1);\n";
+    expect(() => applyEdit(content, { oldText: "foo( 1 );", newText: "bar" })).toThrow(/appears 2 times/);
+  });
+
+  test("hashline match with replaceAll replaces all occurrences", () => {
+    const content = "  foo(1);\n  foo(1);\n";
+    const result = applyEdit(content, {
+      oldText: "foo( 1 );",
+      newText: "bar(1);",
+      replaceAll: true,
+    });
+    expect(result).toBe("  bar(1);\n  bar(1);\n");
+  });
+
+  test("hashline match preserves surrounding content exactly", () => {
+    const content = "line1\n  line2\nline3";
+    const result = applyEdit(content, {
+      oldText: " line2",
+      newText: " replaced",
+    });
+    expect(result).toBe("line1\n  replaced\nline3");
+  });
+
+  test("context-sensitive WS: return 1 does not match return1 (word-word boundary)", () => {
+    // Space between two word chars requires at least one whitespace
+    expect(() => applyEdit("return1;\n", { oldText: "return 1;", newText: "x" })).toThrow(AgencyError);
+  });
+
+  test("context-sensitive WS: foo( 1) matches foo(1) (non-word-word boundary)", () => {
+    // Space between non-word ( and word 1 is optional
+    const result = applyEdit("foo(1);\n", {
+      oldText: "foo( 1);",
+      newText: "bar(1);",
+    });
+    expect(result).toBe("bar(1);\n");
+  });
+
+  test("context-sensitive WS: preserves internal WS alignment in replacement", () => {
+    const result = applyEdit("foo(  1);\n", {
+      oldText: "foo( 1);",
+      newText: "bar(x);",
+    });
+    expect(result).toBe("bar(x);\n");
+  });
+
+  test("hashline match handles trailing-newline anchor against EOF", () => {
+    const content = "value";
+    expect(applyEdit(content, { oldText: "value\n", newText: "value2\n" })).toBe("value2\n");
+  });
+
+  test("hashline match handles \\r\\n line endings", () => {
+    const content = "a\r\nb\r\nc\r\n";
+    expect(applyEdit(content, { oldText: "a\nb", newText: "X" })).toBe("X\r\nc\r\n");
+  });
+});
+
+describe("applyEditsVerified bottom-to-top ordering and dedupe", () => {
+  test("applies hunks bottom-to-top so earlier-line edits are not shifted", () => {
+    const outcome = applyEditsVerified("a\nb\nc\n", [
+      { oldText: "a", newText: "A" },
+      { oldText: "c", newText: "C" },
+    ]);
+    // c → C applied first (bottom), then a → A (top) — both succeed
+    expect(outcome.content).toBe("A\nb\nC\n");
+  });
+
+  test("dedupes overlapping hunks (keeps bottom-most)", () => {
+    const outcome = applyEditsVerified("function f() {\n  return 1;\n}\n", [
+      { oldText: "return 1", newText: "return 11" },
+      { oldText: "return 1;\n}", newText: "return 2;\n}" },
+    ]);
+    // Both match overlapping region; second (bottom-most) wins
+    expect(outcome.content).toBe("function f() {\n  return 2;\n}\n");
+  });
+
+  test("non-overlapping hunks all apply regardless of input order", () => {
+    const outcome = applyEditsVerified("const a = 1;\nconst b = 2;\nconst c = 3;\n", [
+      { oldText: "c = 3", newText: "c = 33" },
+      { oldText: "a = 1", newText: "a = 11" },
+      { oldText: "b = 2", newText: "b = 22" },
+    ]);
+    expect(outcome.content).toBe("const a = 11;\nconst b = 22;\nconst c = 33;\n");
+  });
+
+  test("a rejected hunk still means nothing is applied (all-or-nothing)", () => {
+    expect(() =>
+      applyEditsVerified("const a = 1;\n", [
+        { oldText: "a = 1", newText: "a = 2" },
+        { oldText: "not present", newText: "x" },
+      ]),
+    ).toThrow(AgencyError);
+  });
+
+  test("reads diagnostics once after all hunks applied", () => {
+    let callCount = 0;
+    const outcome = applyEditsVerified(
+      "const a = 1;\nconst b = 2;\n",
+      [
+        { oldText: "a = 1", newText: "a = 11" },
+        { oldText: "b = 2", newText: "b = 22" },
+      ],
+      {
+        path: "a.ts",
+        diagnostics: () => {
+          callCount++;
+          return [{ severity: 1, message: "boom", line: 0, character: 6 }];
+        },
+      },
+    );
+    expect(outcome.content).toBe("const a = 11;\nconst b = 22;\n");
+    expect(outcome.warnings).toEqual(["1:7 boom"]);
+    expect(callCount).toBe(1);
   });
 });

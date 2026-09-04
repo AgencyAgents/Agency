@@ -6,7 +6,13 @@ import { join } from "node:path";
 describe("runHeadless", () => {
   test("headless path with fake daemon returns result and closes client", async () => {
     const ws = mkdtempSync(join(tmpdir(), "agency-headless-ws-"));
-    const expected = { messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }] }], stopReason: "end_turn", usage: { inputTokens: 2, outputTokens: 2 }, budgetExceeded: false, cancelled: false };
+    const expected = {
+      messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }] }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 2, outputTokens: 2 },
+      budgetExceeded: false,
+      cancelled: false,
+    };
 
     // Inject via headless internal: use ensureDaemon mock by patching runHeadless's import is not trivial,
     // so instead test via entrypoint deps injection which is the real surface. This test exercises the

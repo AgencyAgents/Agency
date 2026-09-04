@@ -6,8 +6,8 @@ import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer } from "@agency/providers";
-import { AgencyError, ErrorCode } from "@agency/schema";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 import { runSessionTurn } from "../src/session-runner.ts";
 
@@ -50,7 +50,13 @@ function compactingAdapter(): ProviderAdapter {
 }
 
 async function daemon(ws: string, adapter: ProviderAdapter) {
-  const d = await createAgentDaemon({ workspaceRoot: ws, instanceFile: join(ws, ".agency", "instance.json"), adapterFor: () => adapter, http: noopHttp, tools: [] });
+  const d = await createAgentDaemon({
+    workspaceRoot: ws,
+    instanceFile: join(ws, ".agency", "instance.json"),
+    adapterFor: () => adapter,
+    http: noopHttp,
+    tools: [],
+  });
   daemons.push(d);
   const c = await connectToDaemon(d.server.port, "127.0.0.1", { token: d.server.token });
   clients.push(c);
@@ -66,7 +72,11 @@ describe("compact-and-retry branch", () => {
 
     let parent: string | null = null;
     for (let i = 0; i < 6; i++) {
-      const e = await store.append("s1", { type: "message", parentId: parent, message: { role: "user", content: [{ type: "text", text: `history ${i} ${"x".repeat(800)}` }] } });
+      const e = await store.append("s1", {
+        type: "message",
+        parentId: parent,
+        message: { role: "user", content: [{ type: "text", text: `history ${i} ${"x".repeat(800)}` }] },
+      });
       parent = e.id;
     }
 
@@ -87,12 +97,16 @@ describe("compact-and-retry branch", () => {
     });
 
     expect(result.stopReason).toBe("end_turn");
-    expect(result.messages.some((m) => JSON.stringify(m.content).includes("recovered after compaction"))).toBe(true);
+    expect(
+      result.messages.some((m) => JSON.stringify(m.content).includes("recovered after compaction")),
+    ).toBe(true);
 
     const entries = store.load("s1");
     const chain = store.chainFor(entries, tipId);
     expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
-    expect(chain.some((e) => e.type === "message" && JSON.stringify(e).includes("continue after overflow"))).toBe(true);
+    expect(
+      chain.some((e) => e.type === "message" && JSON.stringify(e).includes("continue after overflow")),
+    ).toBe(true);
   }, 15000);
 
   test("retry events: scheduler onRetry flows to LoopEvent retry event via runSessionTurn", async () => {

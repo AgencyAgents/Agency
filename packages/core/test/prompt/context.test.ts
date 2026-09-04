@@ -148,4 +148,39 @@ describe("buildEnvironmentBlock", () => {
     });
     expect(one).toContain("git: branch main (dirty, 1 changed file)");
   });
+
+  test("renders the shell line after the date when a shell label is known", () => {
+    const block = buildEnvironmentBlock({
+      platform: "win32 10.0.26100 x64",
+      cwd: "C:\\repo",
+      date: "2026-09-02 12:34 UTC+02:00",
+      shell: "PowerShell",
+    });
+    const lines = block.split("\n");
+    expect(lines).toContain("shell: PowerShell");
+    expect(lines.indexOf("shell: PowerShell")).toBeGreaterThan(
+      lines.indexOf("date: 2026-09-02 12:34 UTC+02:00"),
+    );
+  });
+
+  test("omits the shell line when the caller passes no label", () => {
+    const info = gatherEnvironmentInfo({
+      cwd: "/repo",
+      now: new Date("2026-09-02T12:34:56"),
+      git: () => null,
+    });
+    expect(info.shell).toBeUndefined();
+    expect(buildEnvironmentBlock(info)).not.toContain("shell:");
+  });
+
+  test("carries the caller's shell label into the gathered info", () => {
+    const info = gatherEnvironmentInfo({
+      cwd: "/repo",
+      now: new Date("2026-09-02T12:34:56"),
+      git: () => null,
+      shell: "POSIX sh",
+    });
+    expect(info.shell).toBe("POSIX sh");
+    expect(buildEnvironmentBlock(info)).toContain("shell: POSIX sh");
+  });
 });

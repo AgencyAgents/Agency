@@ -195,8 +195,16 @@ describe("Scheduler per-call retry observer", () => {
     };
 
     await Promise.all([
-      scheduler.schedule(failTimes(3), { onRetry: () => void seenBy.a++ }),
-      scheduler.schedule(failTimes(2), { onRetry: () => void seenBy.b++ }),
+      scheduler.schedule(failTimes(3), {
+        onRetry: () => {
+          seenBy.a = (seenBy.a ?? 0) + 1;
+        },
+      }),
+      scheduler.schedule(failTimes(2), {
+        onRetry: () => {
+          seenBy.b = (seenBy.b ?? 0) + 1;
+        },
+      }),
     ]);
 
     expect(seenBy.a).toBe(2);

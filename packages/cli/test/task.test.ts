@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
-import { SessionStore } from "@agency/core";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
-import { createAgentDaemon, type AgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
+import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const daemons: AgentDaemon[] = [];
@@ -30,7 +30,9 @@ function sessionsDirFor(root: string): string {
   return storagePaths(root).sessionsDir;
 }
 
-function findToolResultContent(messages: Array<{ role: string; content: Array<{ type: string; content?: string; text?: string }> }>): string {
+function findToolResultContent(
+  messages: Array<{ role: string; content: Array<{ type: string; content?: string; text?: string }> }>,
+): string {
   const msg = messages.find((m) => m.role === "user" && m.content.some((b) => b.type === "tool_result"));
   const block = msg?.content.find((b) => b.type === "tool_result") as { content?: string } | undefined;
   return block?.content ?? "";
@@ -42,9 +44,16 @@ describe("task ephemeral workers", () => {
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(request): AsyncIterable<StreamEvent> {
-        const hasToolResult = request.messages.some((m) => m.content.some((b) => (b as { type: string }).type === "tool_result"));
+        const hasToolResult = request.messages.some((m) =>
+          m.content.some((b) => (b as { type: string }).type === "tool_result"),
+        );
         const lastUser = [...request.messages].reverse().find((m) => m.role === "user");
-        const txt = (lastUser?.content.find((b) => (b as { type: string }).type === "text") as { text?: string } | undefined)?.text ?? "";
+        const txt =
+          (
+            lastUser?.content.find((b) => (b as { type: string }).type === "text") as
+              | { text?: string }
+              | undefined
+          )?.text ?? "";
         if (txt.startsWith("worker task")) {
           yield { type: "text_delta", text: "worker done: hello" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
@@ -52,7 +61,11 @@ describe("task ephemeral workers", () => {
         }
         if (!hasToolResult) {
           yield { type: "tool_call_start", id: "c1", name: "task" };
-          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "worker task hello" }) };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ prompt: "worker task hello" }),
+          };
           yield { type: "tool_call_end", id: "c1" };
           yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
         } else {
@@ -113,27 +126,52 @@ describe("task ephemeral workers", () => {
         const msgs = req.messages;
         const hasTR = msgs.some((m) => m.content.some((b) => (b as { type: string }).type === "tool_result"));
         const lastUser = [...msgs].reverse().find((m) => m.role === "user");
-        const txt = (lastUser?.content.find((b) => (b as { type: string }).type === "text") as { text?: string } | undefined)?.text ?? "";
+        const txt =
+          (
+            lastUser?.content.find((b) => (b as { type: string }).type === "text") as
+              | { text?: string }
+              | undefined
+          )?.text ?? "";
         const toolResultContent = (() => {
-          const m = msgs.find((x) => x.role === "user" && x.content.some((b) => (b as { type: string }).type === "tool_result"));
-          return (m?.content.find((b) => (b as { type: string }).type === "tool_result") as { content?: string } | undefined)?.content ?? "";
+          const m = msgs.find(
+            (x) => x.role === "user" && x.content.some((b) => (b as { type: string }).type === "tool_result"),
+          );
+          return (
+            (
+              m?.content.find((b) => (b as { type: string }).type === "tool_result") as
+                | { content?: string }
+                | undefined
+            )?.content ?? ""
+          );
         })();
         if (txt === "outer prompt") {
           if (!hasTR) {
             yield { type: "tool_call_start", id: "c1", name: "task" };
             yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "inner" }) };
             yield { type: "tool_call_end", id: "c1" };
-            yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           } else {
             yield { type: "text_delta", text: `child saw: ${toolResultContent}` };
-            yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           }
         }
         if (txt === "" && !hasTR) {
           yield { type: "tool_call_start", id: "c0", name: "task" };
-          yield { type: "tool_call_delta", id: "c0", inputJsonDelta: JSON.stringify({ prompt: "outer prompt" }) };
+          yield {
+            type: "tool_call_delta",
+            id: "c0",
+            inputJsonDelta: JSON.stringify({ prompt: "outer prompt" }),
+          };
           yield { type: "tool_call_end", id: "c0" };
           yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
           return;
@@ -147,13 +185,25 @@ describe("task ephemeral workers", () => {
         if (txt === "inner") {
           if (!hasTR) {
             yield { type: "tool_call_start", id: "c2", name: "task" };
-            yield { type: "tool_call_delta", id: "c2", inputJsonDelta: JSON.stringify({ prompt: "should be denied" }) };
+            yield {
+              type: "tool_call_delta",
+              id: "c2",
+              inputJsonDelta: JSON.stringify({ prompt: "should be denied" }),
+            };
             yield { type: "tool_call_end", id: "c2" };
-            yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           } else {
             yield { type: "text_delta", text: `inner child saw: ${toolResultContent}` };
-            yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           }
         }
@@ -182,7 +232,9 @@ describe("task ephemeral workers", () => {
     })) as RunTurnRpcResult;
 
     const parentTR = findToolResultContent(result.messages);
-    expect(parentTR).toContain("depth limit");
+    // Depth-0 isolation: child never receives the task tool (Layer 1: "no such tool"),
+    // with handler-level "nested task blocked" as defense-in-depth (Layer 2).
+    expect(parentTR).toMatch(/nested task blocked|no such tool.*task/);
   });
 
   test("tool restriction honored: allowlist limits child tools", async () => {
@@ -190,23 +242,50 @@ describe("task ephemeral workers", () => {
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(request): AsyncIterable<StreamEvent> {
-        const hasTR = request.messages.some((m) => m.content.some((b) => (b as { type: string }).type === "tool_result"));
+        const hasTR = request.messages.some((m) =>
+          m.content.some((b) => (b as { type: string }).type === "tool_result"),
+        );
         const lastUser = [...request.messages].reverse().find((m) => m.role === "user");
-        const txt = (lastUser?.content.find((b) => (b as { type: string }).type === "text") as { text?: string } | undefined)?.text ?? "";
+        const txt =
+          (
+            lastUser?.content.find((b) => (b as { type: string }).type === "text") as
+              | { text?: string }
+              | undefined
+          )?.text ?? "";
         const toolResultContent = (() => {
-          const m = request.messages.find((x) => x.role === "user" && x.content.some((b) => (b as { type: string }).type === "tool_result"));
-          return (m?.content.find((b) => (b as { type: string }).type === "tool_result") as { content?: string } | undefined)?.content ?? "";
+          const m = request.messages.find(
+            (x) => x.role === "user" && x.content.some((b) => (b as { type: string }).type === "tool_result"),
+          );
+          return (
+            (
+              m?.content.find((b) => (b as { type: string }).type === "tool_result") as
+                | { content?: string }
+                | undefined
+            )?.content ?? ""
+          );
         })();
         if (txt === "restricted task") {
           if (!hasTR) {
             yield { type: "tool_call_start", id: "c1", name: "bash" };
-            yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ command: "echo should be denied" }) };
+            yield {
+              type: "tool_call_delta",
+              id: "c1",
+              inputJsonDelta: JSON.stringify({ command: "echo should be denied" }),
+            };
             yield { type: "tool_call_end", id: "c1" };
-            yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           } else {
             yield { type: "text_delta", text: `child saw bash result: ${toolResultContent}` };
-            yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: "message_stop",
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
             return;
           }
         }
@@ -270,9 +349,16 @@ describe("task ephemeral workers", () => {
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(request): AsyncIterable<StreamEvent> {
-        const hasTR = request.messages.some((m) => m.content.some((b) => (b as { type: string }).type === "tool_result"));
+        const hasTR = request.messages.some((m) =>
+          m.content.some((b) => (b as { type: string }).type === "tool_result"),
+        );
         const lastUser = [...request.messages].reverse().find((m) => m.role === "user");
-        const txt = (lastUser?.content.find((b) => (b as { type: string }).type === "text") as { text?: string } | undefined)?.text ?? "";
+        const txt =
+          (
+            lastUser?.content.find((b) => (b as { type: string }).type === "text") as
+              | { text?: string }
+              | undefined
+          )?.text ?? "";
         if (txt === "task A") {
           startedCount++;
           if (startedCount === 2) barrierResolve();
@@ -300,8 +386,13 @@ describe("task ephemeral workers", () => {
           return;
         }
         if (hasTR) {
-          const msgs = request.messages.find((m) => m.role === "user" && m.content.some((b) => (b as { type: string }).type === "tool_result"));
-          const results = (msgs?.content.filter((b) => (b as { type: string }).type === "tool_result") as Array<{ content: string }>) ?? [];
+          const msgs = request.messages.find(
+            (m) => m.role === "user" && m.content.some((b) => (b as { type: string }).type === "tool_result"),
+          );
+          const results =
+            (msgs?.content.filter((b) => (b as { type: string }).type === "tool_result") as Array<{
+              content: string;
+            }>) ?? [];
           const joined = results.map((r) => r.content).join("|");
           yield { type: "text_delta", text: `parent both: ${joined}` };
           yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
@@ -329,11 +420,19 @@ describe("task ephemeral workers", () => {
       sessionId: "test-parallel",
     })) as RunTurnRpcResult;
 
-    const toolResultsMsg = result.messages.find((m) => m.role === "user" && m.content.some((b) => (b as { type: string }).type === "tool_result"));
-    const toolResults = (toolResultsMsg?.content.filter((b) => (b as { type: string }).type === "tool_result") as Array<{ content: string; type: string }>) ?? [];
+    const toolResultsMsg = result.messages.find(
+      (m) => m.role === "user" && m.content.some((b) => (b as { type: string }).type === "tool_result"),
+    );
+    const toolResults =
+      (toolResultsMsg?.content.filter((b) => (b as { type: string }).type === "tool_result") as Array<{
+        content: string;
+        type: string;
+      }>) ?? [];
     expect(toolResults).toHaveLength(2);
     const contents = toolResults.map((r) => r.content);
-    expect(contents).toEqual(expect.arrayContaining([expect.stringContaining("result A"), expect.stringContaining("result B")]));
+    expect(contents).toEqual(
+      expect.arrayContaining([expect.stringContaining("result A"), expect.stringContaining("result B")]),
+    );
 
     // Barrier proof: both handlers must have started and been unblocked together.
     expect(startedCount).toBe(2);

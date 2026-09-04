@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolSpec } from "@agency/core";
+import { SessionStore, type ToolSpec, TraceRecorder } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import type { RunTurnParams } from "../src/daemon.ts";
 import {
   type AgentDaemon,
+  classifyEffortWithSmallModel,
   createAgentDaemon,
   DEFAULT_SYSTEM_PROMPT,
   type RunTurnRpcResult,
@@ -46,11 +47,14 @@ function textAdapter(text: string, capture?: { systems: string[] }): ProviderAda
 }
 
 async function startFakeDaemon(overrides: Partial<Parameters<typeof createAgentDaemon>[0]> = {}) {
+  const approvalsDir = mkdtempSync(join(tmpdir(), "agency-daemon-approvals-"));
+  dirs.push(approvalsDir);
   const daemon = await createAgentDaemon({
     workspaceRoot: "/repo/fake",
     instanceFile: tempInstanceFile(),
     adapterFor: () => textAdapter("hello from the daemon"),
     http: noopHttp,
+    approvalsDir,
     ...overrides,
   });
   daemons.push(daemon);
@@ -271,6 +275,90 @@ describe("createAgentDaemon", () => {
     expect(result.all.some((p) => p.id === "openai")).toBe(true);
   }, 30_000);
 
+  test("providers_list honors enabled_providers from config", async () => {
+    const { client } = await startFakeDaemon({
+      catalog: [catalogModel("gpt-5.2", "openai"), catalogModel("claude-opus-5", "anthropic")],
+      configDir: writeConfigDir({ enabled_providers: ["openai"] }),
+    });
+
+    const result = (await client.call("providers_list", {})) as {
+      all: Array<{ id: string }>;
+    };
+    expect(result.all.map((p) => p.id)).toEqual(["openai"]);
+  }, 30_000);
+
+  test("providers_list honors per-provider whitelist", async () => {
+    const { client } = await startFakeDaemon({
+      catalog: [
+        catalogModel("gpt-5.2", "openai"),
+        catalogModel("gpt-5-mini", "openai"),
+        catalogModel("claude-opus-5", "anthropic"),
+      ],
+      configDir: writeConfigDir({
+        provider: { openai: { whitelist: ["gpt-5.2"] } },
+      }),
+    });
+
+    const result = (await client.call("providers_list", {})) as {
+      all: Array<{ id: string; models: Array<{ id: string }> }>;
+    };
+    const openai = result.all.find((p) => p.id === "openai");
+    expect(openai?.models.map((m) => m.id)).toEqual(["gpt-5.2"]);
+  }, 30_000);
+
+  test("providers_list honors per-provider blacklist", async () => {
+    const { client } = await startFakeDaemon({
+      catalog: [catalogModel("gpt-5.2", "openai"), catalogModel("gpt-5-mini", "openai")],
+      configDir: writeConfigDir({
+        provider: { openai: { blacklist: ["gpt-5-mini"] } },
+      }),
+    });
+
+    const result = (await client.call("providers_list", {})) as {
+      all: Array<{ id: string; models: Array<{ id: string }> }>;
+    };
+    const openai = result.all.find((p) => p.id === "openai");
+    expect(openai?.models.map((m) => m.id)).toEqual(["gpt-5.2"]);
+  }, 30_000);
+
+  test("providers_list includes apiBaseURL when catalog has it", async () => {
+    const catalog: ModelInfo[] = [
+      {
+        id: "gpt-5.2",
+        family: "openai",
+        name: "GPT-5.2",
+        providerName: "OpenAI",
+        contextWindow: 400_000,
+        maxOutputTokens: 128_000,
+        pricing: { inputPerMTok: 5, outputPerMTok: 20 },
+        capabilities: { tools: true, vision: true, thinking: true },
+        releaseDate: "2026-04-01",
+      },
+      {
+        id: "llama-4",
+        family: "my-gateway",
+        name: "Llama 4",
+        providerName: "My Gateway",
+        contextWindow: 128_000,
+        maxOutputTokens: 8_000,
+        pricing: { inputPerMTok: 0, outputPerMTok: 0 },
+        capabilities: { tools: false, vision: false, thinking: false },
+        apiBaseURL: "https://gateway.example.com/v1",
+      },
+    ];
+
+    const { client } = await startFakeDaemon({ catalog });
+
+    const result = (await client.call("providers_list", {})) as {
+      all: Array<{ id: string; models: Array<{ id: string; apiBaseURL?: string }> }>;
+    };
+    const gateway = result.all.find((p) => p.id === "my-gateway");
+    expect(gateway?.models[0]?.apiBaseURL).toBe("https://gateway.example.com/v1");
+    // openai has no apiBaseURL in the catalog, so it should be undefined
+    const openai = result.all.find((p) => p.id === "openai");
+    expect(openai?.models[0]?.apiBaseURL).toBeUndefined();
+  }, 30_000);
+
   // macOS has no env override for dataDir (would hit the real one), so the
   // catalog-cache sandbox only runs on Windows/Linux.
   test.skipIf(process.platform === "darwin")(
@@ -474,6 +562,135 @@ describe("resolveSystemPrompt", () => {
     });
     expect(system.startsWith(`${DEFAULT_SYSTEM_PROMPT}\n\nROLE\n\n<environment>`)).toBe(true);
   });
+
+  test("the shared default carries safety, conventions, tool-use, and shell doctrine", () => {
+    for (const phrase of ["Safety first", "Coding conventions", "Tool-use doctrine", "Shell dialect"]) {
+      expect(DEFAULT_SYSTEM_PROMPT).toContain(phrase);
+    }
+  });
+
+  test("shellLabel renders into the environment block so the model uses the right dialect", () => {
+    const system = resolveSystemPrompt(params(), {
+      workspaceRoot: "/repo/fake",
+      git: () => null,
+      shellLabel: "PowerShell",
+    });
+    expect(system).toContain("shell: PowerShell");
+  });
+
+  test("no shellLabel means no shell line", () => {
+    const system = resolveSystemPrompt(params(), {
+      workspaceRoot: "/repo/fake",
+      git: () => null,
+    });
+    expect(system).not.toContain("shell:");
+  });
+
+  test("context=false drops the environment block and warns about lost orientation", () => {
+    const warnings: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const system = resolveSystemPrompt(params({ systemPromptParts: { context: false } }), {
+        workspaceRoot: "/repo/fake",
+        git: () => null,
+      });
+      expect(system).not.toContain("<environment>");
+      expect(system).toContain("sys");
+    } finally {
+      console.warn = orig;
+    }
+    expect(warnings.join(" ")).toContain("context=false");
+  });
+});
+
+describe("session RPC", () => {
+  async function seedSession(sessionsDir: string, sessionId: string): Promise<void> {
+    const store = new SessionStore(sessionsDir);
+    store.create(sessionId);
+    await store.append(sessionId, {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [{ type: "text", text: "hello" }] },
+    });
+  }
+
+  function tempSessionsDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "agency-daemon-sessions-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  test("session_show returns entries, the tip, and the branch messages", async () => {
+    const sessionsDir = tempSessionsDir();
+    await seedSession(sessionsDir, "s1");
+    const { client } = await startFakeDaemon({ sessionsDir });
+
+    const shown = (await client.call("session_show", { sessionId: "s1" })) as {
+      sessionId: string;
+      entries: unknown[];
+      tipId: string;
+      messages: unknown[];
+    };
+    expect(shown.sessionId).toBe("s1");
+    expect(shown.entries).toHaveLength(1);
+    expect(typeof shown.tipId).toBe("string");
+    expect(shown.messages).toHaveLength(1);
+  });
+
+  test("session_fork starts a new branch tip in the same file", async () => {
+    const sessionsDir = tempSessionsDir();
+    await seedSession(sessionsDir, "s1");
+    const { client } = await startFakeDaemon({ sessionsDir });
+
+    const forked = (await client.call("session_fork", { sessionId: "s1", label: "spike" })) as {
+      forked: boolean;
+      sessionId: string;
+      tipId: string;
+    };
+    expect(forked.forked).toBe(true);
+    expect(forked.sessionId).toBe("s1");
+    const entries = new SessionStore(sessionsDir).load("s1");
+    expect(entries).toHaveLength(2);
+    expect(entries[entries.length - 1]?.type).toBe("branch_summary");
+  });
+
+  test("session_clone copies the session under a new id", async () => {
+    const sessionsDir = tempSessionsDir();
+    await seedSession(sessionsDir, "s1");
+    const { client } = await startFakeDaemon({ sessionsDir });
+
+    const cloned = (await client.call("session_clone", { sessionId: "s1" })) as {
+      cloned: boolean;
+      sessionId: string;
+    };
+    expect(cloned.cloned).toBe(true);
+    expect(cloned.sessionId).not.toBe("s1");
+    expect(new SessionStore(sessionsDir).load(cloned.sessionId)).toHaveLength(1);
+  });
+
+  test("session RPC rejects missing and unknown sessions", async () => {
+    const { client } = await startFakeDaemon({ sessionsDir: tempSessionsDir() });
+
+    for (const [method, args] of [
+      ["session_show", {}],
+      ["session_fork", {}],
+      ["session_clone", {}],
+      ["session_show", { sessionId: "nope" }],
+      ["session_fork", { sessionId: "nope" }],
+      ["session_clone", { sessionId: "nope" }],
+    ] as const) {
+      let message = "";
+      try {
+        await client.call(method, args);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 function catalogModel(id: string, family: string): ModelInfo {
@@ -495,6 +712,167 @@ function writeConfigDir(config: Record<string, unknown>): string {
   writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ schemaVersion: 2, ...config }));
   return dir;
 }
+
+describe("dispatch cost forecast wiring", () => {
+  function forecastAdapter(dispatchInput: Record<string, unknown>): ProviderAdapter {
+    let call = 0;
+    return {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        call += 1;
+        if (call === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "dispatch" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify(dispatchInput) };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+        } else {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+        }
+      },
+    };
+  }
+
+  const dispatchAgents = {
+    agents: {
+      leader: {
+        role: "GeneralDispatcher",
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        effort: "low",
+        enabled: true,
+      },
+      worker: { role: "Worker", provider: "openai", model: "gpt-5.2", effort: "low", enabled: true },
+    },
+  };
+
+  test("dispatch with forecastCostUsd below threshold proceeds without asking", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => forecastAdapter({ agents: [{ handle: "worker", brief: "x" }] }),
+      configDir: writeConfigDir({
+        ...dispatchAgents,
+        sandbox: { forecastCostUsd: 100 },
+      }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "fc-happy",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    // The forecast check passes (under threshold), so the dispatch proceeds
+    // (but may fail on sub-agent spawn — that's not the forecast check's job)
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toBeDefined();
+  });
+
+  test("dispatch with forecastCostUsd over threshold and approval rejected returns error", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () =>
+        forecastAdapter({
+          agents: [
+            {
+              handle: "worker",
+              brief:
+                "do a very very expensive thing that is super long to push the cost estimate over the tiny threshold",
+            },
+          ],
+        }),
+      configDir: writeConfigDir({
+        ...dispatchAgents,
+        sandbox: { forecastCostUsd: 0.0001 },
+      }),
+    });
+
+    // Listen for the approval request and reject it
+    const events: Array<{ type: string; requestId?: string }> = [];
+    client.on("turn.fc-reject", (payload) => events.push(payload as { type: string }));
+    const runPromise = client.call("run_turn", {
+      turnId: "fc-reject",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    }) as Promise<RunTurnRpcResult>;
+
+    await new Promise((r) => setTimeout(r, 200));
+    const ask = events.find((e) => e.type === "approval_requested");
+    expect(ask?.requestId).toBeTruthy();
+    await client.call("approval_respond", { requestId: ask?.requestId, decision: "reject" });
+
+    const result = await runPromise;
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toBeDefined();
+    if (toolResult?.type === "tool_result") {
+      expect(toolResult.isError).toBe(true);
+      expect(toolResult.content).toContain("threshold");
+    }
+  });
+
+  test("dispatch without forecastCostUsd configured does not check forecast", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => forecastAdapter({ agents: [{ handle: "worker", brief: "do work" }] }),
+      configDir: writeConfigDir(dispatchAgents),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "fc-no-cfg",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    // No forecast check, dispatch proceeds (but may fail on sub-agent spawn)
+    const toolResult = result.messages[1]?.content[0];
+    expect(toolResult).toBeDefined();
+  });
+});
+
+describe("undo/redo RPC", () => {
+  test("undo with nothing to undo returns undone: false", async () => {
+    const { client } = await startFakeDaemon();
+    const result = (await client.call("undo", {})) as { undone: boolean; path?: string };
+    expect(result).toEqual({ undone: false });
+  });
+
+  test("redo with nothing to redo returns undone: false", async () => {
+    const { client } = await startFakeDaemon();
+    const result = (await client.call("redo", {})) as { undone: boolean; path?: string };
+    expect(result).toEqual({ undone: false });
+  });
+
+  test("undo with a non-existent sessionId returns undone: false", async () => {
+    const { client } = await startFakeDaemon();
+    const result = (await client.call("undo", { sessionId: "no-such-session" })) as {
+      undone: boolean;
+      path?: string;
+    };
+    expect(result).toEqual({ undone: false });
+  });
+
+  test("redo with a non-existent sessionId returns undone: false", async () => {
+    const { client } = await startFakeDaemon();
+    const result = (await client.call("redo", { sessionId: "no-such-session" })) as {
+      undone: boolean;
+      path?: string;
+    };
+    expect(result).toEqual({ undone: false });
+  });
+
+  test("undo/redo round-trip returns the expected shape over RPC", async () => {
+    const { client } = await startFakeDaemon();
+    // No session scope exists yet — both return undone: false
+    expect(await client.call("undo", {})).toEqual({ undone: false });
+    expect(await client.call("redo", {})).toEqual({ undone: false });
+  });
+});
 
 describe("resolveAdapter", () => {
   test("builtin family ids resolve to their native adapters", () => {
@@ -793,5 +1171,204 @@ describe("A5 permissions and sandbox", () => {
       rejection = error instanceof Error ? error.message : String(error);
     }
     expect(rejection).toContain("outside the sandbox root");
+  });
+});
+
+describe("HTTP+SSE gateway mounted alongside TCP", () => {
+  test("POST /rpc succeeds with bearer token, GET /health without token, 401 without token", async () => {
+    const daemon = await createAgentDaemon({
+      workspaceRoot: "/repo/fake",
+      instanceFile: tempInstanceFile(),
+      adapterFor: () => textAdapter("hello from the daemon"),
+      http: noopHttp,
+      tools: [],
+    });
+    daemons.push(daemon);
+
+    const httpBase = `http://127.0.0.1:${daemon.httpPort}`;
+    const token = daemon.server.token!;
+
+    // POST /rpc with correct token succeeds
+    const rpcRes = await fetch(`${httpBase}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: "test-1", method: "providers_list" }),
+    });
+    expect(rpcRes.status).toBe(200);
+    const rpcBody = (await rpcRes.json()) as { id: string; result: unknown };
+    expect(rpcBody.id).toBe("test-1");
+    expect(rpcBody.result).toBeDefined();
+
+    // GET /health without token succeeds (health is unauthenticated)
+    const healthRes = await fetch(`${httpBase}/health`);
+    expect(healthRes.status).toBe(200);
+    const healthBody = (await healthRes.json()) as { ok: boolean };
+    expect(healthBody.ok).toBe(true);
+
+    // POST /rpc without token is rejected
+    const noAuthRes = await fetch(`${httpBase}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "test-2", method: "providers_list" }),
+    });
+    expect(noAuthRes.status).toBe(401);
+
+    // GET /events without token is rejected
+    const eventsNoAuth = await fetch(`${httpBase}/events?stream=turn.abc`);
+    expect(eventsNoAuth.status).toBe(401);
+
+    // GET /events with token succeeds and receives SSE
+    const eventsRes = await fetch(`${httpBase}/events?stream=turn.abc`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(eventsRes.status).toBe(200);
+    expect(eventsRes.headers.get("Content-Type")).toContain("text/event-stream");
+    await eventsRes.body!.cancel();
+  });
+
+  test("SSE events broadcast through the HTTP gateway reach subscribers", async () => {
+    const daemon = await createAgentDaemon({
+      workspaceRoot: "/repo/fake",
+      instanceFile: tempInstanceFile(),
+      adapterFor: () => textAdapter("hello from the daemon"),
+      http: noopHttp,
+      tools: [],
+    });
+    daemons.push(daemon);
+
+    const httpBase = `http://127.0.0.1:${daemon.httpPort}`;
+    const token = daemon.server.token!;
+
+    // Subscribe to SSE events
+    const eventsRes = await fetch(`${httpBase}/events?stream=turn.test-sse`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(eventsRes.status).toBe(200);
+
+    // Run a turn — it should broadcast events over the HTTP gateway
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token });
+    clients.push(client);
+
+    await client.call("run_turn", {
+      turnId: "test-sse",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+
+    // Collect SSE data
+    const reader = eventsRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let acc = "";
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline && !acc.includes("event: turn.test-sse")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      acc += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel().catch(() => {});
+
+    expect(acc).toContain("event: turn.test-sse");
+    expect(acc).toContain("text_delta");
+  });
+});
+
+describe("classifyEffortWithSmallModel", () => {
+  const noopHttp: HttpClient = { fetch: async () => new Response() };
+  const noopAdapter: ProviderAdapter = {
+    family: "fake",
+    async *stream() {
+      yield { type: "text_delta", text: "low" };
+      yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 2 } };
+    },
+  };
+
+  test("falls back to keyword heuristic when small_model is absent from config", async () => {
+    const result = await classifyEffortWithSmallModel("fix a typo in the readme", {
+      config: {},
+      adapterFor: () => noopAdapter,
+      http: noopHttp,
+      apiKey: "key",
+      providers: {},
+    });
+    // "fix a typo in the readme" is short (< 20 chars) → classifyEffortFromText returns "low"
+    expect(result).toBe("low");
+  });
+
+  test("falls back to keyword heuristic when adapter resolution fails", async () => {
+    const result = await classifyEffortWithSmallModel("complex architecture redesign", {
+      config: { small_model: "anthropic/claude-sonnet-5" },
+      adapterFor: () => {
+        throw new Error("unknown provider");
+      },
+      http: noopHttp,
+      apiKey: "key",
+      providers: {},
+    });
+    // "complex architecture redesign" contains "architecture" → classifyEffortFromText returns "high"
+    expect(result).toBe("high");
+  });
+
+  test("traces as effort-classification span when traceRecorder is provided", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-effort-trace-"));
+    dirs.push(dir);
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "test-session",
+      traceId: "test-trace",
+    });
+
+    const result = await classifyEffortWithSmallModel("review the authentication flow", {
+      config: { small_model: "anthropic/claude-sonnet-5" },
+      adapterFor: () => noopAdapter,
+      http: noopHttp,
+      apiKey: "key",
+      providers: {},
+      traceRecorder: recorder,
+    });
+
+    expect(result).toBe("low");
+    const spans = recorder.getSpans();
+    expect(spans.length).toBe(1);
+    expect(spans[0]!.name).toBe("effort-classification");
+    expect(spans[0]!.kind).toBe("tool");
+    expect(spans[0]!.status).toBe("ok");
+    expect(spans[0]!.attributes.model).toBe("claude-sonnet-5");
+    expect(spans[0]!.attributes.provider).toBe("anthropic");
+    expect(spans[0]!.attributes.effort).toBe("low");
+  });
+
+  test("traces error status when small_model call fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-effort-error-"));
+    dirs.push(dir);
+    const recorder = new TraceRecorder({
+      sessionsDir: dir,
+      sessionId: "test-session",
+      traceId: "test-trace",
+    });
+
+    const result = await classifyEffortWithSmallModel("complex architecture redesign", {
+      config: { small_model: "anthropic/claude-sonnet-5" },
+      adapterFor: () => ({
+        family: "fake",
+        // biome-ignore lint/correctness/useYield: mock that intentionally throws
+        async *stream() {
+          throw new Error("API error");
+        },
+      }),
+      http: noopHttp,
+      apiKey: "key",
+      providers: {},
+      traceRecorder: recorder,
+    });
+
+    // Falls back to keyword heuristic
+    expect(result).toBe("high");
+    const spans = recorder.getSpans();
+    expect(spans.length).toBe(1);
+    expect(spans[0]!.name).toBe("effort-classification");
+    expect(spans[0]!.status).toBe("error");
   });
 });

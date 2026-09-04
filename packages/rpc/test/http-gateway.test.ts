@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type HttpGatewayServer, startHttpGateway } from "../src/http-gateway.ts";
+import { type HttpGatewayServer, type SessionStoreLike, startHttpGateway } from "../src/http-gateway.ts";
 
 const servers: HttpGatewayServer[] = [];
 
@@ -177,7 +177,7 @@ describe("GET /health and GET /doc", () => {
 
     const doc = (await res.json()) as { openapi: string; paths: Record<string, unknown> };
     expect(doc.openapi).toBe("3.1.0");
-    expect(Object.keys(doc.paths).sort()).toEqual(["/doc", "/events", "/health", "/rpc"]);
+    expect(Object.keys(doc.paths).sort()).toEqual(["/doc", "/events", "/health", "/rpc", "/sync-events"]);
   });
 
   test("unknown paths are a JSON 404", async () => {
@@ -303,7 +303,7 @@ describe("auth", () => {
     expect(res.status).toBe(200);
   });
 
-  test("a configured token rejects missing and wrong credentials", async () => {
+  test("a configured token rejects missing and wrong credentials on RPC and events", async () => {
     const server = startHttpGateway({ handlers: { ping: async () => "pong" }, token: "secret" });
     servers.push(server);
 
@@ -314,8 +314,9 @@ describe("auth", () => {
     const wrongToken = await rpc(server, { id: "req-1", method: "ping" }, { Authorization: "Bearer nope" });
     expect(wrongToken.status).toBe(401);
 
+    // Health is always open — clients probe liveness without a token.
     const health = await fetch(`${base(server)}/health`);
-    expect(health.status).toBe(401);
+    expect(health.status).toBe(200);
 
     const events = await fetch(`${base(server)}/events?stream=turn.abc`);
     expect(events.status).toBe(401);
@@ -384,5 +385,86 @@ describe("CORS", () => {
 
     const res = await rpc(server, { id: "req-1", method: "ping" });
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("GET /sync-events (SSE replay)", () => {
+  function mockStore(entries: Record<string, unknown>[]): SessionStoreLike {
+    return {
+      load: () => entries as { id: string; type: string; createdAt: string; [key: string]: unknown }[],
+    };
+  }
+
+  test("streams session entries as SSE events with a completion frame", async () => {
+    const entries = [
+      { id: "e1", type: "message", createdAt: "2025-01-01T00:00:00Z", parentId: null, schemaVersion: 2 },
+      { id: "e2", type: "message", createdAt: "2025-01-01T00:00:01Z", parentId: "e1", schemaVersion: 2 },
+    ];
+    const server = startHttpGateway({ handlers: {}, store: mockStore(entries) });
+    servers.push(server);
+
+    const res = await fetch(`${base(server)}/sync-events?sessionId=test-session`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+
+    const acc = await collectSse(res, (text) => text.includes("sync-complete"), 3_000);
+
+    expect(acc).toContain('event: sync-entry\ndata: {"id":"e1"');
+    expect(acc).toContain('event: sync-entry\ndata: {"id":"e2"');
+    expect(acc).toContain('event: sync-complete\ndata: {"count":2}');
+  });
+
+  test("returns 400 when sessionId is missing", async () => {
+    const server = startHttpGateway({ handlers: {}, store: mockStore([]) });
+    servers.push(server);
+
+    const res = await fetch(`${base(server)}/sync-events`);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("sessionId");
+  });
+
+  test("returns 404 when session has no entries", async () => {
+    const server = startHttpGateway({ handlers: {}, store: mockStore([]) });
+    servers.push(server);
+
+    const res = await fetch(`${base(server)}/sync-events?sessionId=nonexistent`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("session not found");
+  });
+
+  test("returns 501 when no store is configured", async () => {
+    const server = startHttpGateway({ handlers: {} });
+    servers.push(server);
+
+    const res = await fetch(`${base(server)}/sync-events?sessionId=test`);
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("no session store configured");
+  });
+
+  test("requires auth when token is configured", async () => {
+    const entries = [
+      { id: "e1", type: "message", createdAt: "2025-01-01T00:00:00Z", parentId: null, schemaVersion: 2 },
+    ];
+    const server = startHttpGateway({ handlers: {}, store: mockStore(entries), token: "secret" });
+    servers.push(server);
+
+    const noAuth = await fetch(`${base(server)}/sync-events?sessionId=test`);
+    expect(noAuth.status).toBe(401);
+
+    const withAuth = await fetch(`${base(server)}/sync-events?sessionId=test&token=secret`);
+    expect(withAuth.status).toBe(200);
+    await withAuth.body!.cancel();
+  });
+
+  test("GET /sync-events is a 405 with an Allow header", async () => {
+    const server = startHttpGateway({ handlers: {}, store: mockStore([]) });
+    servers.push(server);
+
+    const res = await fetch(`${base(server)}/sync-events`, { method: "POST" });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("Allow")).toBe("GET");
   });
 });

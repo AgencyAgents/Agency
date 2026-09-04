@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import { type BashState, createBashTool } from "../../src/builtins/bash.ts";
+import {
+  createProcessKillTool,
+  createProcessListTool,
+  createProcessOutputTool,
+} from "../../src/builtins/process.ts";
+import { createQuestionTool } from "../../src/builtins/question.ts";
 import type { ToolDeps } from "../../src/contract.ts";
 import { ProcessManager } from "../../src/process-manager.ts";
 import { resolveShell } from "../../src/shell.ts";
-import { createProcessKillTool, createProcessListTool, createProcessOutputTool } from "../../src/builtins/process.ts";
-import { createQuestionTool } from "../../src/builtins/question.ts";
 
 const dirs: string[] = [];
 const managers: ProcessManager[] = [];
@@ -55,10 +59,7 @@ describe("bash: timeout + spill + progress (A6)", () => {
 
   test("overflow output is spilled to a temp file, not dropped", async () => {
     const { tool } = setup();
-    const result = await tool.handler(
-      { command: `node -e "console.log('y'.repeat(40000))"` },
-      { signal },
-    );
+    const result = await tool.handler({ command: `node -e "console.log('y'.repeat(40000))"` }, { signal });
 
     expect(result.content).toContain("[truncated");
     expect(result.content).toContain("full output saved to");
@@ -88,7 +89,7 @@ describe("bash: timeout + spill + progress (A6)", () => {
 
 describe("process_* builtins (A6)", () => {
   test("background → list → output → kill round-trip", async () => {
-    const { deps, manager, root } = setup();
+    const { deps, root } = setup();
     const started = new ProcessManager();
     managers.push(started);
 

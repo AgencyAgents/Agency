@@ -17,8 +17,12 @@ describe("EventBus", () => {
   test("supports multiple listeners on the same event", () => {
     const bus = new EventBus();
     const calls: string[] = [];
-    bus.on("log.entry", () => calls.push("a"));
-    bus.on("log.entry", () => calls.push("b"));
+    bus.on("log.entry", () => {
+      calls.push("a");
+    });
+    bus.on("log.entry", () => {
+      calls.push("b");
+    });
 
     bus.emit("log.entry", { level: "info", message: "hi" });
 

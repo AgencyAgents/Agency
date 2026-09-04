@@ -57,7 +57,9 @@ describe("Logger", () => {
   test("emits a log.entry event on the bus for every write", () => {
     const bus = new EventBus();
     const seen: string[] = [];
-    bus.on("log.entry", (payload) => seen.push(payload.message));
+    bus.on("log.entry", (payload: unknown) => {
+      seen.push((payload as { message: string }).message);
+    });
 
     const logger = new Logger({ sink: () => {}, bus });
     logger.error("boom");

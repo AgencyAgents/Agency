@@ -24,7 +24,14 @@ describe("concurrent RPC", () => {
         async run_turn(params) {
           const { turnId } = params as { turnId: string };
           await new Promise((r) => setTimeout(r, 50));
-          return { messages: [], stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 }, budgetExceeded: false, cancelled: false, echo: turnId };
+          return {
+            messages: [],
+            stopReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+            budgetExceeded: false,
+            cancelled: false,
+            echo: turnId,
+          };
         },
       },
     });
@@ -53,9 +60,22 @@ describe("concurrent RPC", () => {
       // Simulate daemon start: write instance file with a random port server
       // We'll use startDaemonServer directly and write file via helper.
       void (async () => {
-        const s = await startDaemonServer({ token: "tok", handlers: { async ping() { return { ok: true }; } } });
+        const s = await startDaemonServer({
+          token: "tok",
+          handlers: {
+            async ping() {
+              return { ok: true };
+            },
+          },
+        });
         const { writeInstanceFile } = await import("../src/instance.ts");
-        writeInstanceFile(file, { port: s.port, pid: process.pid, startedAt: new Date().toISOString(), version: (await import("../src/protocol.ts")).PROTOCOL_VERSION, token: "tok" });
+        writeInstanceFile(file, {
+          port: s.port,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          version: (await import("../src/protocol.ts")).PROTOCOL_VERSION,
+          token: "tok",
+        });
         // Keep server open for test duration; close after
         setTimeout(() => void s.close(), 5000);
       })();

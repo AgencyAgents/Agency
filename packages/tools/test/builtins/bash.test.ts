@@ -86,17 +86,18 @@ describe("createBashTool", () => {
     expect(result.content.length).toBeLessThan(31_000);
   }, 30_000);
 
-  test("a nonzero exit code is reported in the output, not as isError", async () => {
+  test("a nonzero exit code is reported in the output and sets isError", async () => {
     const { tool } = setup();
     const result = await tool.handler({ command: `node -e "process.exit(7)"` }, { signal });
     expect(result.content).toContain("exit code: 7");
-    expect(result.isError).toBeFalsy();
+    expect(result.isError).toBe(true);
   }, 30_000);
 
   test("a zero exit code is not reported (only nonzero is noteworthy)", async () => {
     const { tool } = setup();
     const result = await tool.handler({ command: "echo ok" }, { signal });
     expect(result.content).not.toContain("exit code");
+    expect(result.isError).toBeFalsy();
   }, 30_000);
 
   test("a deny-listed command is rejected with PERMISSION_DENIED before running", async () => {
@@ -156,6 +157,7 @@ describe("createBashTool", () => {
     expect(result.content).toContain("partial-output-before-abort");
     expect(result.content).toContain("[cancelled");
     expect(result.content).not.toContain("exit code: 0");
+    expect(result.isError).toBe(true);
   }, 60_000);
 
   test("aborting tears down the process tree via ProcessManager.killTree", async () => {

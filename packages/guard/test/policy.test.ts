@@ -195,6 +195,16 @@ describe("PermissionsGate", () => {
     expect(await gate.check({ tool: "read", riskTier: "safe" }, undefined)).toBe("allow");
   });
 
+  test("trust gate denies a tool with no riskTier set (undefined treated as unsafe)", async () => {
+    const trustPath = join(root, "trust.json");
+    const gate = new PermissionsGate({
+      workspaceRoot: root,
+      trust: { store: createFileTrustStore(trustPath), root, required: true },
+    });
+    // A plugin tool without riskTier must be denied in an untrusted workspace
+    expect(await gate.check({ tool: "some-plugin-tool" }, undefined)).toBe("deny");
+  });
+
   test("external_directory: bare decision and directory-glob map", () => {
     const bare = new PermissionsGate({
       permissions: { external_directory: "allow" },
@@ -213,5 +223,103 @@ describe("PermissionsGate", () => {
   test("unconfigured external_directory defaults to deny (historical sandbox behavior)", () => {
     const gate = new PermissionsGate({ workspaceRoot: root });
     expect(gate.externalDirectoryDecision("/tmp/x")).toBe("deny");
+  });
+
+  test("planner agent: absentToolsDenied filters bash when not in permissions map", () => {
+    const gate = new PermissionsGate({
+      permissions: {
+        read: "allow",
+        glob: "allow",
+        grep: "allow",
+        write: { "*": "deny", ".agency/plans/**": "allow" },
+      },
+      workspaceRoot: root,
+      absentToolsDenied: true,
+    });
+    expect(gate.toolOffered("bash", "dangerous")).toBe(false);
+    expect(gate.toolOffered("read", "safe")).toBe(true);
+    expect(gate.toolOffered("glob", "safe")).toBe(true);
+    expect(gate.toolOffered("grep", "safe")).toBe(true);
+    expect(gate.toolOffered("write", "moderate")).toBe(true);
+    expect(gate.toolOffered("edit", "moderate")).toBe(false);
+    expect(gate.toolOffered("fetch", "safe")).toBe(false);
+  });
+
+  test("coder agent: write against plan-file path is denied by per-agent gate", () => {
+    const gate = new PermissionsGate({
+      permissions: {
+        read: "allow",
+        write: { "*": "allow", ".agency/plans/**": "deny" },
+        edit: { "*": "allow", ".agency/plans/**": "deny" },
+        bash: "allow",
+        glob: "allow",
+        grep: "allow",
+      },
+      workspaceRoot: root,
+      absentToolsDenied: true,
+    });
+    expect(gate.toolOffered("bash", "dangerous")).toBe(true);
+    expect(gate.toolOffered("write", "moderate")).toBe(true);
+    expect(gate.toolOffered("edit", "moderate")).toBe(true);
+    expect(gate.decisionFor({ tool: "write", path: "src/index.ts" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "write", path: ".agency/plans/auth.md" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "edit", path: ".agency/plans/auth.md" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "edit", path: "src/index.ts" })).toBe("allow");
+  });
+
+  test("single-occupant fallback: no per-agent override behaves like global gate", () => {
+    const globalGate = new PermissionsGate({
+      permissions: { bash: "allow", write: "allow" },
+      workspaceRoot: root,
+    });
+    const fallbackGate = new PermissionsGate({
+      workspaceRoot: root,
+      absentToolsDenied: true,
+    });
+    expect(globalGate.toolOffered("bash", "dangerous")).toBe(true);
+    expect(globalGate.toolOffered("read", "safe")).toBe(true);
+    expect(globalGate.toolOffered("fetch", "safe")).toBe(true);
+    expect(fallbackGate.toolOffered("bash", "dangerous")).toBe(false);
+    expect(fallbackGate.toolOffered("read", "safe")).toBe(false);
+    expect(fallbackGate.toolOffered("fetch", "safe")).toBe(false);
+  });
+
+  test(".env file read is denied by default even when riskTier safe", () => {
+    const gate = new PermissionsGate({ workspaceRoot: root });
+    expect(gate.decisionFor({ tool: "read", path: ".env", riskTier: "safe" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "read", path: "config/.env", riskTier: "safe" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "read", path: ".env.local", riskTier: "safe" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "read", path: "src/.env.production", riskTier: "safe" })).toBe("deny");
+  });
+
+  test(".env file read is allowed when explicit allow exists", () => {
+    const gate = new PermissionsGate({
+      permissions: { read: { "**/.env": "allow" } },
+      workspaceRoot: root,
+    });
+    expect(gate.decisionFor({ tool: "read", path: ".env", riskTier: "safe" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "read", path: "config/.env", riskTier: "safe" })).toBe("allow");
+  });
+
+  test(".env file read is denied even with bare allow on read tool when no explicit .env allow", () => {
+    const gate = new PermissionsGate({
+      permissions: { read: { "*": "allow", "**/.env": "deny" } },
+      workspaceRoot: root,
+    });
+    // The explicit deny for .env overrides the wildcard allow
+    expect(gate.decisionFor({ tool: "read", path: ".env", riskTier: "safe" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "read", path: "src/index.ts", riskTier: "safe" })).toBe("allow");
+  });
+
+  test("non-.env files are still allowed when riskTier safe with no explicit config", () => {
+    const gate = new PermissionsGate({ workspaceRoot: root });
+    expect(gate.decisionFor({ tool: "read", path: "src/index.ts", riskTier: "safe" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "read", path: "README.md", riskTier: "safe" })).toBe("allow");
+  });
+
+  test(".env directory contents are denied by default", () => {
+    const gate = new PermissionsGate({ workspaceRoot: root });
+    expect(gate.decisionFor({ tool: "read", path: ".env/secret", riskTier: "safe" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "read", path: "config/.env/secret", riskTier: "safe" })).toBe("deny");
   });
 });

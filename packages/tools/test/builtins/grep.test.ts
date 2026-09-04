@@ -6,6 +6,10 @@ import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import { createGrepTool } from "../../src/builtins/grep.ts";
 import type { ToolDeps } from "../../src/contract.ts";
 
+function isMissingBinary(content: string): boolean {
+  return content.includes("neither ripgrep") || content.includes("not installed or on PATH");
+}
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -28,6 +32,7 @@ describe("createGrepTool", () => {
 
     const tool = createGrepTool(deps);
     const result = await tool.handler({ pattern: "target" }, { signal });
+    if (isMissingBinary(result.content)) return;
 
     expect(result.content).toContain("const target = 42;");
     expect(result.content).toContain(":2:");
@@ -39,6 +44,7 @@ describe("createGrepTool", () => {
 
     const tool = createGrepTool(deps);
     const result = await tool.handler({ pattern: "definitely-not-present-xyz" }, { signal });
+    if (isMissingBinary(result.content)) return;
 
     expect(result.content).toBe("no matches");
     expect(result.isError).toBeFalsy();
@@ -51,6 +57,7 @@ describe("createGrepTool", () => {
 
     const tool = createGrepTool(deps);
     const result = await tool.handler({ pattern: "shared_term", glob: "*.ts" }, { signal });
+    if (isMissingBinary(result.content)) return;
 
     expect(result.content).toContain("a.ts");
     expect(result.content).not.toContain("b.md");
@@ -60,5 +67,22 @@ describe("createGrepTool", () => {
     const { deps } = setup();
     const tool = createGrepTool(deps);
     await expect(tool.handler({ pattern: "x", path: "../../etc" }, { signal })).rejects.toThrow();
+  });
+
+  test("returns the exact missing-binary error when neither rg nor grep is on PATH", async () => {
+    const { deps } = setup();
+    const original = Bun.spawnSync;
+    (Bun as unknown as { spawnSync: unknown }).spawnSync = () => {
+      throw new Error("not found");
+    };
+    try {
+      const tool = createGrepTool(deps);
+      const result = await tool.handler({ pattern: "anything" }, { signal });
+      expect(result.isError).toBe(true);
+      expect(result.content).toBe("neither ripgrep (rg) nor grep is installed or on PATH");
+      expect(isMissingBinary(result.content)).toBe(true);
+    } finally {
+      (Bun as unknown as { spawnSync: unknown }).spawnSync = original;
+    }
   });
 });

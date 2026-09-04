@@ -39,7 +39,9 @@ describe("applyEdit whitespace-tolerant fallback (A6)", () => {
 
   test("matches modulo internal whitespace runs", () => {
     const content = "const  x  =  1;\n";
-    expect(applyEdit(content, { oldText: "const x = 1;", newText: "const x = 2;" })).toBe("const  x  =  2;\n");
+    expect(applyEdit(content, { oldText: "const x = 1;", newText: "const x = 2;" })).toBe(
+      "const  x  =  2;\n",
+    );
   });
 
   test("tolerates a trailing-newline anchor against EOF without one", () => {
@@ -85,7 +87,10 @@ describe("multi-hunk edits (A6)", () => {
   });
 
   test("applyEditVerified still works for the single-hunk form", () => {
-    expect(applyEditVerified("abc", { oldText: "b", newText: "B" })).toEqual({ content: "aBc", warnings: [] });
+    expect(applyEditVerified("abc", { oldText: "b", newText: "B" })).toEqual({
+      content: "aBc",
+      warnings: [],
+    });
     expect(errorDiagnostics([{ severity: 2, message: "warn", line: 0, character: 0 }])).toEqual([]);
   });
 });

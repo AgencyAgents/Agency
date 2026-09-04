@@ -175,6 +175,9 @@ describe("where and storage", () => {
     const paths = JSON.parse(json.out.join(""));
     expect(typeof paths.sessionsDir).toBe("string");
     expect(typeof paths.configPath).toBe("string");
+    for (const key of ["config", "data", "cache", "logs"]) {
+      expect(typeof paths[key]).toBe("string");
+    }
   });
 
   test("storage reports sizes by category", async () => {
@@ -261,6 +264,88 @@ describe("session commands", () => {
     expect(await runEntrypoint(["session", "delete"], { sessionsDir, ...noArg.deps })).toBe(1);
     expect(noArg.err.join("\n")).toContain("usage");
   });
+
+  test("session fork copies entries under a new id and rejects unknown ids", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    await store.append("source", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [] },
+    });
+
+    const ok = capture();
+    expect(await runEntrypoint(["session", "fork", "source"], { sessionsDir, ...ok.deps })).toBe(0);
+    expect(ok.out.join("\n")).toContain("Forked session source as");
+    const forked = store.list().find((id) => id !== "source");
+    expect(forked).toBeDefined();
+    expect(new SessionStore(sessionsDir).load(forked!).length).toBe(1);
+
+    const json = capture();
+    expect(
+      await runEntrypoint(["session", "fork", "source", "--format", "json"], { sessionsDir, ...json.deps }),
+    ).toBe(0);
+    expect(JSON.parse(json.out.join("")).sourceId).toBe("source");
+
+    const missing = capture();
+    expect(await runEntrypoint(["session", "fork", "nope"], { sessionsDir, ...missing.deps })).toBe(1);
+    expect(missing.err.join("\n")).toContain("nope");
+
+    const noArg = capture();
+    expect(await runEntrypoint(["session", "fork"], { sessionsDir, ...noArg.deps })).toBe(1);
+    expect(noArg.err.join("\n")).toContain("usage");
+  });
+
+  test("session clone copies the file under the given id, or a generated one", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    await store.append("source", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [] },
+    });
+
+    const ok = capture();
+    expect(await runEntrypoint(["session", "clone", "source", "copy"], { sessionsDir, ...ok.deps })).toBe(0);
+    expect(ok.out.join("\n")).toContain("Cloned session source as copy");
+    expect(new SessionStore(sessionsDir).load("copy").length).toBe(1);
+
+    const generated = capture();
+    expect(await runEntrypoint(["session", "clone", "source"], { sessionsDir, ...generated.deps })).toBe(0);
+    expect(store.list().length).toBe(3);
+
+    const missing = capture();
+    expect(await runEntrypoint(["session", "clone", "nope"], { sessionsDir, ...missing.deps })).toBe(1);
+    expect(missing.err.join("\n")).toContain("nope");
+
+    const noArg = capture();
+    expect(await runEntrypoint(["session", "clone"], { sessionsDir, ...noArg.deps })).toBe(1);
+    expect(noArg.err.join("\n")).toContain("usage");
+  });
+
+  test("session show reports entries and rejects unknown ids", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    await store.append("shown", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [] },
+    });
+
+    const text = capture();
+    expect(await runEntrypoint(["session", "show", "shown"], { sessionsDir, ...text.deps })).toBe(0);
+    expect(text.out.join("\n")).toContain("1 entries");
+
+    const json = capture();
+    expect(
+      await runEntrypoint(["session", "show", "shown", "--format", "json"], { sessionsDir, ...json.deps }),
+    ).toBe(0);
+    expect(JSON.parse(json.out.join("")).entries).toBe(1);
+
+    const missing = capture();
+    expect(await runEntrypoint(["session", "show", "nope"], { sessionsDir, ...missing.deps })).toBe(1);
+    expect(missing.err.join("\n")).toContain("nope");
+  });
 });
 
 describe("auth commands", () => {
@@ -314,19 +399,56 @@ describe("auth commands", () => {
     expect(lines).toContain("anthropic: connected");
     expect(lines).toContain("google: not connected");
   });
+
+  test("auth login --oauth runs the OAuth flow for a supported provider", async () => {
+    const keysDir = tempDir("agency-ep-keys-");
+    const { out, deps } = capture();
+    deps.keychain = createFileFallbackBackend(keysDir);
+    deps.configDir = tempDir("agency-ep-config-");
+    let flowed: string | undefined;
+    deps.oauthFlow = async (provider) => {
+      flowed = provider;
+    };
+
+    expect(await runEntrypoint(["auth", "login", "anthropic", "--oauth"], deps)).toBe(0);
+    expect(flowed).toBe("anthropic");
+    expect(out.join("\n")).toContain("anthropic");
+  });
+
+  test("auth login --oauth rejects providers without an OAuth registry entry", async () => {
+    const { err, deps } = capture();
+    deps.keychain = createFileFallbackBackend(tempDir("agency-ep-keys-"));
+    deps.configDir = tempDir("agency-ep-config-");
+    deps.oauthFlow = async () => {};
+
+    expect(await runEntrypoint(["auth", "login", "my-gateway", "--oauth"], deps)).toBe(1);
+    expect(err.join("\n")).toContain("my-gateway");
+  });
+
+  test("auth login --oauth surfaces a provisioning failure instead of storing", async () => {
+    const { err, deps } = capture();
+    deps.keychain = createFileFallbackBackend(tempDir("agency-ep-keys-"));
+    deps.configDir = tempDir("agency-ep-config-");
+    deps.oauthFlow = async () => {
+      throw new Error('OAuth not configured for provider "openai"');
+    };
+
+    expect(await runEntrypoint(["auth", "login", "openai", "--oauth"], deps)).toBe(1);
+    expect(err.join("\n")).toContain("OAuth not configured");
+  });
 });
 
-describe("-p headless mode", () => {
-  function baseDeps(overrides: Partial<EntrypointDeps> = {}): Partial<EntrypointDeps> {
-    return {
-      env: { AGENCY_OPENAI_API_KEY: "sk-test" },
-      configDir: tempDir("agency-ep-config-"),
-      keychain: createFileFallbackBackend(tempDir("agency-ep-keys-")),
-      cwd: tempDir("agency-ep-ws-"),
-      ...overrides,
-    };
-  }
+function baseDeps(overrides: Partial<EntrypointDeps> = {}): Partial<EntrypointDeps> {
+  return {
+    env: { AGENCY_OPENAI_API_KEY: "sk-test" },
+    configDir: tempDir("agency-ep-config-"),
+    keychain: createFileFallbackBackend(tempDir("agency-ep-keys-")),
+    cwd: tempDir("agency-ep-ws-"),
+    ...overrides,
+  };
+}
 
+describe("-p headless mode", () => {
   test("runs one turn through runHeadless and prints the assistant text", async () => {
     const fake = fakeRunHeadless();
     const { out, deps } = capture();
@@ -343,7 +465,7 @@ describe("-p headless mode", () => {
     expect(call.provider).toBe("openai");
     expect(call.model).toBe("fake-1");
     // A3: the key no longer travels to the daemon; it resolves it itself.
-    expect((call as Record<string, unknown>).apiKey).toBeUndefined();
+    expect((call as unknown as Record<string, unknown>).apiKey).toBeUndefined();
     expect(call.prompt).toBe("hello");
     expect(call.systemPrompt.length).toBeGreaterThan(0);
   });
@@ -405,6 +527,38 @@ describe("-p headless mode", () => {
     });
     expect(fake.calls[0]!.provider).toBe("anthropic");
     expect(fake.calls[0]!.model).toBe("gpt-x");
+  });
+
+  test("a bare --provider with no config model falls back to the catalog default", async () => {
+    const fake = fakeRunHeadless();
+    const configDir = tempDir("agency-ep-config-");
+
+    const { deps } = capture();
+    await runEntrypoint(["-p", "hello", "--provider", "anthropic"], {
+      ...baseDeps({ env: { AGENCY_ANTHROPIC_API_KEY: "sk-anthropic" } }),
+      ...deps,
+      configDir,
+      runHeadless: fake.runHeadless,
+    });
+    expect(fake.calls[0]!.provider).toBe("anthropic");
+    expect(typeof fake.calls[0]!.model).toBe("string");
+    expect(fake.calls[0]!.model.length).toBeGreaterThan(0);
+  });
+
+  test("a bare --provider for an unknown family still needs --model", async () => {
+    const fake = fakeRunHeadless();
+    const configDir = tempDir("agency-ep-config-");
+
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--provider", "no-such-family"], {
+      ...baseDeps(),
+      ...deps,
+      configDir,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("no-such-family");
+    expect(fake.calls).toHaveLength(0);
   });
 
   test("a bare --model id without --provider is rejected, and so is no model at all", async () => {
@@ -522,5 +676,150 @@ describe("-p headless mode", () => {
     const code = await runEntrypoint(["where", "-p", "hi"], { ...baseDeps(), ...deps });
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("not both");
+  });
+});
+
+describe("bare agency", () => {
+  test("bare `agency` exits 0 with health summary", async () => {
+    const { out, deps } = capture();
+    const code = await runEntrypoint([], {
+      ...baseDeps({ env: { AGENCY_OPENAI_API_KEY: "sk-test" } }),
+      ...deps,
+    });
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("Agency");
+    expect(text).toContain("Model");
+    expect(text).toContain("Providers");
+    expect(text).toContain("Sessions");
+    expect(text).toContain("agency -p");
+  });
+});
+
+describe("session fork/show/rename", () => {
+  test("session show displays session details", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "test-sesh", [entry("e1", null, "hello", "2026-01-01T00:00:00.000Z")]);
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["session", "show", "test-sesh"], { sessionsDir, ...deps });
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("1 entries");
+  });
+
+  test("session show with missing id prints usage", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["session", "show"], deps);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("usage: agency session show");
+  });
+
+  test("session show with unknown id fails", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["session", "show", "nope"], deps);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("nope");
+  });
+
+  test("session rename changes the session title", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "test-sesh", [entry("e1", null, "hello", "2026-01-01T00:00:00.000Z")]);
+    const renameCalls = capture();
+    const code = await runEntrypoint(["session", "rename", "test-sesh", "New Title"], {
+      sessionsDir,
+      ...renameCalls.deps,
+    });
+    expect(code).toBe(0);
+    expect(renameCalls.out.join("\n")).toContain("renamed");
+    // Verify the session now has a title
+    const store = new (await import("@agency/core")).SessionStore(sessionsDir);
+    const entries = store.load("test-sesh");
+    expect((await import("@agency/core")).getSessionTitle(entries)).toBe("New Title");
+  });
+
+  test("session rename with missing args prints usage", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["session", "rename", "solo"], deps);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("usage: agency session rename");
+  });
+
+  test("session rename with empty title is rejected", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "test-sesh", [entry("e1", null, "hello", "2026-01-01T00:00:00.000Z")]);
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["session", "rename", "test-sesh", ""], { sessionsDir, ...deps });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("cannot");
+  });
+
+  test("session forks a session under a new id", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "src-sesh", [entry("e1", null, "hello", "2026-01-01T00:00:00.000Z")]);
+    const forkCalls = capture();
+    const code = await runEntrypoint(["session", "fork", "src-sesh"], { sessionsDir, ...forkCalls.deps });
+    expect(code).toBe(0);
+    const store = new (await import("@agency/core")).SessionStore(sessionsDir);
+    const all = store.list();
+    expect(all.length).toBe(2);
+    const forkId = all.find((id) => id !== "src-sesh");
+    expect(forkId).toBeDefined();
+    expect(forkId).toContain("fork");
+  });
+
+  test("session fork with missing id prints usage", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["session", "fork"], deps);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("usage: agency session fork");
+  });
+
+  test("session --help prints subcommand help", async () => {
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["session", "--help"], deps);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("show");
+    expect(text).toContain("rename");
+    expect(text).toContain("fork");
+    expect(text).toContain("delete");
+    expect(text).toContain("list");
+  });
+});
+
+describe("subcommand --help", () => {
+  test("storage --help prints storage subcommand list", async () => {
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["storage", "--help"], deps);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("prune");
+  });
+
+  test("auth --help prints auth subcommand list", async () => {
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["auth", "--help"], deps);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("login");
+    expect(text).toContain("list");
+  });
+
+  test("daemon --help prints daemon subcommand list", async () => {
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["daemon", "--help"], deps);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("status");
+  });
+});
+
+describe("daemon status", () => {
+  test("daemon status returns not_running when no daemon", async () => {
+    const { out, deps } = capture();
+    const ws = tempDir("agency-ep-daemon-");
+    deps.cwd = ws;
+    const code = await runEntrypoint(["daemon", "status"], deps);
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("not running");
   });
 });

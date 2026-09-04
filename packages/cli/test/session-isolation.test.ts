@@ -39,7 +39,11 @@ function cdThenPwdAdapter(targetDir: string): ProviderAdapter {
       step += 1;
       if (step === 1) {
         yield { type: "tool_call_start", id: "c1", name: "bash" };
-        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ command: `cd ${targetDir}` }) };
+        yield {
+          type: "tool_call_delta",
+          id: "c1",
+          inputJsonDelta: JSON.stringify({ command: `cd ${targetDir}` }),
+        };
         yield { type: "tool_call_end", id: "c1" };
         yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
       } else if (step === 2) {
@@ -168,7 +172,9 @@ describe("B1 per-session isolation", () => {
       session: [],
       sessionId: "s-wide",
     })) as RunTurnRpcResult;
-    const okToolResult = okResult.messages[1]?.content[0] as { content: string; isError: boolean } | undefined;
+    const okToolResult = okResult.messages[1]?.content[0] as
+      | { content: string; isError: boolean }
+      | undefined;
     expect(okToolResult?.isError).toBe(false);
   }, 30_000);
 
@@ -228,7 +234,11 @@ describe("B1 per-session isolation", () => {
         s1Step += 1;
         if (s1Step === 1) {
           yield { type: "tool_call_start", id: "c1", name: "write" };
-          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ path: "s1.txt", content: "s1-content" }) };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ path: "s1.txt", content: "s1-content" }),
+          };
           yield { type: "tool_call_end", id: "c1" };
           yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
         } else {
@@ -244,7 +254,11 @@ describe("B1 per-session isolation", () => {
         s2Step += 1;
         if (s2Step === 1) {
           yield { type: "tool_call_start", id: "c1", name: "write" };
-          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ path: "s2.txt", content: "s2-content" }) };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ path: "s2.txt", content: "s2-content" }),
+          };
           yield { type: "tool_call_end", id: "c1" };
           yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
         } else {
@@ -264,8 +278,24 @@ describe("B1 per-session isolation", () => {
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
-    await client.call("run_turn", { turnId: "t1", provider: "p1", model: "m", apiKey: "k", systemPrompt: "sys", session: [], sessionId: "sess1" });
-    await client.call("run_turn", { turnId: "t2", provider: "p2", model: "m", apiKey: "k", systemPrompt: "sys", session: [], sessionId: "sess2" });
+    await client.call("run_turn", {
+      turnId: "t1",
+      provider: "p1",
+      model: "m",
+      apiKey: "k",
+      systemPrompt: "sys",
+      session: [],
+      sessionId: "sess1",
+    });
+    await client.call("run_turn", {
+      turnId: "t2",
+      provider: "p2",
+      model: "m",
+      apiKey: "k",
+      systemPrompt: "sys",
+      session: [],
+      sessionId: "sess2",
+    });
 
     const undo1 = (await client.call("undo", { sessionId: "sess1" })) as { undone: boolean };
     expect(undo1.undone).toBe(true);

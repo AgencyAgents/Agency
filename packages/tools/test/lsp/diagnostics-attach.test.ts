@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -8,7 +8,11 @@ import type { LspClient } from "../../src/lsp/client.ts";
 import { createLspRegistry } from "../../src/lsp/registry.ts";
 
 function depsFor(root: string) {
-  return { identity: { type: "user" as const }, capabilities: FULL_CAPABILITIES, sandbox: new SandboxBoundary(root) };
+  return {
+    identity: { type: "user" as const },
+    capabilities: FULL_CAPABILITIES,
+    sandbox: new SandboxBoundary(root),
+  };
 }
 
 const noopHttp = { fetch: async () => new Response() } as unknown as import("@agency/net").HttpClient;
@@ -18,8 +22,8 @@ describe("LSP diagnostics attached to edit/write", () => {
     const root = mkdtempSync(join(tmpdir(), "agency-lsp-diag-"));
     const snapDir = join(root, "snaps");
     try {
-      let opened: string[] = [];
-      let changed: string[] = [];
+      const opened: string[] = [];
+      const changed: string[] = [];
       const fakeClient = {
         ready: Promise.resolve(),
         open(path: string) {
@@ -31,7 +35,9 @@ describe("LSP diagnostics attached to edit/write", () => {
         diagnosticsFor() {
           return [{ severity: 1, message: "boom", line: 0, character: 5, source: "fake" }];
         },
-        waitForDiagnostics: async () => [{ severity: 1, message: "boom", line: 0, character: 5, source: "fake" }],
+        waitForDiagnostics: async () => [
+          { severity: 1, message: "boom", line: 0, character: 5, source: "fake" },
+        ],
         close: async () => {},
       } as unknown as LspClient;
 
@@ -49,7 +55,10 @@ describe("LSP diagnostics attached to edit/write", () => {
       });
 
       const write = builtins.registry.get("write")!;
-      const result = await write.handler({ path: "a.ts", content: "let x = 1;\n" }, { signal: new AbortController().signal });
+      const result = await write.handler(
+        { path: "a.ts", content: "let x = 1;\n" },
+        { signal: new AbortController().signal },
+      );
       expect(result.content).toContain("1:6 boom");
       await builtins.dispose();
     } finally {
@@ -129,7 +138,10 @@ describe("LSP diagnostics attached to edit/write", () => {
 
       const write = builtins.registry.get("write")!;
       const start = Date.now();
-      const result = await write.handler({ path: "c.ts", content: "hi\n" }, { signal: new AbortController().signal });
+      const result = await write.handler(
+        { path: "c.ts", content: "hi\n" },
+        { signal: new AbortController().signal },
+      );
       const elapsed = Date.now() - start;
       expect(elapsed).toBeLessThan(2000);
       expect(result.isError).toBeFalsy();

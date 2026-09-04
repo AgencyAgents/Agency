@@ -6,6 +6,7 @@ import {
   formatSystemReminders,
   mcpServerDownReminder,
   readOnlyReminder,
+  resolveFamilyPrompt,
   withSystemReminders,
 } from "../../src/prompt/compose.ts";
 
@@ -44,6 +45,54 @@ describe("composeSystemPrompt", () => {
       context: "<environment>ENV</environment>",
     });
     expect(composed.text).toBe("BASE\n\nINSTR\n\nTOOL\n\n<environment>ENV</environment>");
+  });
+
+  test("stable prefix (base+overlay+instructions+tools) is identical when only context changes — cache hit property", () => {
+    const stable = {
+      base: "BASE",
+      familyPresetOverlay: "OVERLAY",
+      instructions: ["INSTR"],
+      toolDescriptions: ["TOOL"],
+    };
+    const withContextA = composeSystemPrompt({ ...stable, context: "CONTEXT_A" });
+    const withContextB = composeSystemPrompt({ ...stable, context: "CONTEXT_B" });
+
+    // The stable prefix (everything before the dynamic context) must be identical
+    const prefixA = withContextA.text.slice(0, withContextA.text.indexOf("CONTEXT_A"));
+    const prefixB = withContextB.text.slice(0, withContextB.text.indexOf("CONTEXT_B"));
+    expect(prefixA).toBe(prefixB);
+
+    // The full texts differ because the dynamic tail changed
+    expect(withContextA.text).not.toBe(withContextB.text);
+  });
+
+  test("stable prefix survives when reminders are appended — cache hit property", () => {
+    const sections = { base: "BASE", instructions: ["INSTR"], toolDescriptions: ["TOOL"] };
+    const composed = composeSystemPrompt(sections);
+    const withReminder = withSystemReminders(composed, [readOnlyReminder()]);
+
+    // The composed text (without reminders) must be a prefix of the text with reminders
+    expect(withReminder.text.startsWith(composed.text)).toBe(true);
+    expect(withReminder.text.length).toBeGreaterThan(composed.text.length);
+  });
+
+  test("stable prefix is identical when both context and reminders change independently", () => {
+    const stable = { base: "BASE", instructions: ["INSTR"], toolDescriptions: ["TOOL"] };
+    const base = composeSystemPrompt(stable);
+
+    // With context only
+    const withContext = composeSystemPrompt({ ...stable, context: "ENV" });
+    expect(withContext.text.startsWith(base.text)).toBe(true);
+
+    // With reminders only (no context)
+    const withReminders = withSystemReminders(base, [readOnlyReminder()]);
+    expect(withReminders.text.startsWith(base.text)).toBe(true);
+
+    // With both context and reminders
+    const withBoth = withSystemReminders(composeSystemPrompt({ ...stable, context: "ENV" }), [
+      readOnlyReminder(),
+    ]);
+    expect(withBoth.text.startsWith(base.text)).toBe(true);
   });
 });
 
@@ -115,5 +164,82 @@ describe("describePrompt", () => {
       [readOnlyReminder()],
     );
     expect(describePrompt(composed).map((s) => s.label)).toEqual(["base", "context", "reminders"]);
+  });
+});
+
+describe("resolveFamilyPrompt", () => {
+  test("anthropic family returns mechanics-driven prompt for coder role", () => {
+    const prompt = resolveFamilyPrompt("anthropic", "coder");
+    expect(prompt).toContain("Your job is to:");
+    expect(prompt).toContain("1.");
+    expect(prompt).toContain("2.");
+    expect(prompt).toContain("Do not modify .agency/plans/");
+  });
+
+  test("openai family returns principle-driven prompt for coder role", () => {
+    const prompt = resolveFamilyPrompt("openai", "coder");
+    // Principle-driven: concise, no numbered steps
+    expect(prompt).not.toContain("Your job is to:");
+    expect(prompt).not.toMatch(/\d\.\s/);
+    expect(prompt).toContain("coder");
+    expect(prompt).toContain("write/edit");
+  });
+
+  test("anthropic and openai produce materially different text for same role", () => {
+    const anthropic = resolveFamilyPrompt("anthropic", "coder");
+    const openai = resolveFamilyPrompt("openai", "coder");
+    expect(anthropic).not.toBe(openai);
+    // Anthropic has numbered steps, openai does not
+    expect(anthropic.split("\n").length).toBeGreaterThan(openai.split("\n").length);
+  });
+
+  test("unknown family falls back to principle-driven (same as openai)", () => {
+    const unknown = resolveFamilyPrompt("unknown-vendor", "coder");
+    const openai = resolveFamilyPrompt("openai", "coder");
+    expect(unknown).toBe(openai);
+  });
+
+  test("deepseek family falls back to principle-driven", () => {
+    const deepseek = resolveFamilyPrompt("deepseek", "coder");
+    const openai = resolveFamilyPrompt("openai", "coder");
+    expect(deepseek).toBe(openai);
+  });
+
+  test("glm family falls back to principle-driven", () => {
+    const glm = resolveFamilyPrompt("glm", "coder");
+    const openai = resolveFamilyPrompt("openai", "coder");
+    expect(glm).toBe(openai);
+  });
+
+  test("google family falls back to principle-driven", () => {
+    const google = resolveFamilyPrompt("google", "coder");
+    const openai = resolveFamilyPrompt("openai", "coder");
+    expect(google).toBe(openai);
+  });
+
+  test("every role has a prompt for both anthropic and fallback", () => {
+    const roles = [
+      "leader",
+      "planner",
+      "plan-reviewer",
+      "coder",
+      "executor",
+      "explorer",
+      "researcher",
+      "code-reviewer",
+    ];
+    for (const role of roles) {
+      const anthropic = resolveFamilyPrompt("anthropic", role);
+      const fallback = resolveFamilyPrompt("openai", role);
+      expect(anthropic).toBeTruthy();
+      expect(fallback).toBeTruthy();
+      expect(anthropic.length).toBeGreaterThan(10);
+      expect(fallback.length).toBeGreaterThan(10);
+    }
+  });
+
+  test("unknown role gets a fallback string", () => {
+    const prompt = resolveFamilyPrompt("anthropic", "nonexistent-role");
+    expect(prompt).toBe("You are a nonexistent-role.");
   });
 });

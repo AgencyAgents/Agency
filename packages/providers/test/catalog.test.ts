@@ -258,7 +258,7 @@ describe("fetchModelsDevCatalog", () => {
 });
 
 describe("sortModels", () => {
-  test("priority-prefix ids float to the top, then newest release first", () => {
+  test("newest release first, then id descending as a stable tiebreaker", () => {
     const sorted = sortModels([
       model({ id: "zeta", family: "a", releaseDate: "2026-06-01" }),
       model({ id: "gpt-5-mini", family: "openai", releaseDate: "2026-01-01" }),
@@ -266,7 +266,7 @@ describe("sortModels", () => {
       model({ id: "alpha", family: "a", releaseDate: "2026-07-01" }),
     ]);
 
-    expect(sorted.map((m) => m.id)).toEqual(["gpt-5-mini", "gemini-3-pro", "alpha", "zeta"]);
+    expect(sorted.map((m) => m.id)).toEqual(["alpha", "zeta", "gemini-3-pro", "gpt-5-mini"]);
   });
 
   test("ties break by id descending for a stable order", () => {
@@ -288,16 +288,15 @@ describe("defaultModelIDs", () => {
     ]);
 
     expect(defaults.anthropic).toBe("claude-new");
-    // Both openai ids share the "gpt-5" priority rank, so the newer release wins.
     expect(defaults.openai).toBe("gpt-5-mini");
   });
 
-  test("a priority-prefix id beats a newer release without the prefix", () => {
+  test("the newest release wins, with no hardcoded priority prefixes", () => {
     const defaults = defaultModelIDs([
       model({ id: "gpt-5.2", family: "openai", releaseDate: "2026-04-01" }),
       model({ id: "o9-ultra", family: "openai", releaseDate: "2026-08-01" }),
     ]);
-    expect(defaults.openai).toBe("gpt-5.2");
+    expect(defaults.openai).toBe("o9-ultra");
   });
 });
 

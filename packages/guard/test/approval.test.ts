@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ApprovalManager, type ApprovalRequest } from "../src/approval.ts";
 
 function bashRequest(command: string): ApprovalRequest {
@@ -73,5 +76,45 @@ describe("ApprovalManager", () => {
     manager.respond(id, "always");
     expect(manager.hasAlways({ tool: "write", title: "x", path: "src/a/c.ts" })).toBe(true);
     expect(manager.hasAlways({ tool: "write", title: "x", path: "src/other.ts" })).toBe(false);
+  });
+
+  describe("persistence", () => {
+    test("grant survives daemon restart (load from disk)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "approval-test-"));
+      try {
+        const sessionId = "test-session-1";
+        const first = new ApprovalManager(dir, sessionId);
+        const { id } = first.createPending(bashRequest("git push"));
+        first.respond(id, "always");
+        expect(first.hasAlways(bashRequest("git push"))).toBe(true);
+
+        // Simulate daemon restart: create a fresh manager with same dir+sessionId
+        const second = new ApprovalManager(dir, sessionId);
+        expect(second.hasAlways(bashRequest("git push"))).toBe(true);
+        expect(second.hasAlways(bashRequest("rm -rf build"))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("no file on disk starts with empty grants", () => {
+      const dir = mkdtempSync(join(tmpdir(), "approval-test-"));
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        // Directory doesn't exist yet
+        const manager = new ApprovalManager(dir, "fresh-session");
+        expect(manager.hasAlways(bashRequest("anything"))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("in-memory path unchanged when no dir provided", async () => {
+      const manager = new ApprovalManager();
+      const { id, promise } = manager.createPending(bashRequest("bun test"));
+      manager.respond(id, "always");
+      await expect(promise).resolves.toBe("always");
+      expect(manager.hasAlways(bashRequest("bun test"))).toBe(true);
+    });
   });
 });

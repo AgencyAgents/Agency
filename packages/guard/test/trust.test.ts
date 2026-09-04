@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -41,6 +41,16 @@ describe("createFileTrustStore", () => {
     store.trust("/repo/project");
     store.trust("/repo/project");
     expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+
+  test("external file edits are picked up (mtime cache invalidates)", () => {
+    const path = tempStorePath();
+    const store = createFileTrustStore(path);
+    expect(store.isTrusted("/repo/project")).toBe(false);
+    writeFileSync(path, JSON.stringify(["/repo/project"]));
+    const future = new Date(Date.now() + 2000);
+    utimesSync(path, future, future);
+    expect(store.isTrusted("/repo/project")).toBe(true);
   });
 });
 
@@ -87,5 +97,36 @@ describe("TrustStore subdirectory inheritance (A5)", () => {
     createFileTrustStore(path).trust("/repo/project/");
     expect(createFileTrustStore(path).isTrusted("/repo/project/src")).toBe(true);
     expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+
+  test(".. segments are collapsed so ../project-evil cannot inherit trust", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../project-evil")).toBe(false);
+  });
+
+  test("double .. collapses correctly", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../project/src")).toBe(true);
+    expect(store.isTrusted("/repo/other")).toBe(false);
+  });
+
+  test("root .. escape normalizes to root", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/");
+    expect(store.isTrusted("/any/path")).toBe(true);
+  });
+
+  test("root is canonicalized to sep() not hardcoded slash", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/");
+    expect(store.isTrusted("/")).toBe(true);
+  });
+
+  test(".. with trailing slash collapses to parent and does not inherit trust", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../")).toBe(false);
   });
 });

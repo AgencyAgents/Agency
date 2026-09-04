@@ -37,13 +37,10 @@ describe("McpClient extended", () => {
   });
 
   test("callTool honors abort signal cancels pending request", async () => {
-    let handler: (msg: Record<string, unknown>) => void = () => {};
     const client = new McpClient(
       "srv",
       fakeTransport({
-        onMessage: (h) => {
-          handler = h;
-        },
+        onMessage: () => {},
         send: async () => {
           // never respond — should be cancelled via signal
         },

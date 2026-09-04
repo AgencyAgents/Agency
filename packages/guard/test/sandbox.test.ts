@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -99,6 +99,50 @@ describe("SandboxBoundary.resolvePath symlink handling", () => {
     const boundary = new SandboxBoundary(root);
 
     expect(boundary.resolvePath(join("src", "new-file.ts"))).toBe(join(root, "src", "new-file.ts"));
+  });
+
+  test("EACCES on symlink target directory re-throws, blocking the path", () => {
+    // EACCES is not reliably triggerable on Windows via chmod; skip there.
+    if (process.platform === "win32") return;
+
+    const dir = mkdtempSync(join(tmpdir(), "agency-sandbox-eacces-"));
+    tempDirs.push(dir);
+    const root = join(dir, "workspace");
+    const outside = join(dir, "outside");
+    mkdirSync(join(root, "sub"), { recursive: true });
+    mkdirSync(outside);
+
+    // Remove all permissions from the outside directory so realpathSync
+    // on any path through it throws EACCES.
+    chmodSync(outside, 0o000);
+
+    try {
+      symlinkSync(
+        outside,
+        join(root, "sub", "escape"),
+        (process.platform as string) === "win32" ? "junction" : "dir",
+      );
+
+      const boundary = new SandboxBoundary(root);
+      // Before the fix, canonicalPath would silently fall through to the
+      // nearest accessible ancestor and re-append "escape/file.txt" literally,
+      // making contains() miss the escape. After the fix, EACCES re-throws.
+      expect(() => boundary.resolvePath(join("sub", "escape", "file.txt"))).toThrow(AgencyError);
+    } finally {
+      // Restore permissions so the temp dir can be cleaned up.
+      chmodSync(outside, 0o755);
+    }
+  });
+
+  test("normal ENOENT on non-existent file still resolves through ancestor", () => {
+    const { root } = setup();
+    const boundary = new SandboxBoundary(root);
+
+    // A path that doesn't exist yet (file to be created) must still resolve
+    // to the correct in-root path — ENOENT on the final component is expected.
+    expect(boundary.resolvePath(join("sub", "brand-new-dir", "new-file.ts"))).toBe(
+      join(root, "sub", "brand-new-dir", "new-file.ts"),
+    );
   });
 });
 

@@ -18,8 +18,8 @@ describe("summarizeTranscript", () => {
 
     expect(summary).toContain("[… ");
     expect(summary).toContain("earlier lines elided …]");
-    expect(summary).toContain(lines[0]);
-    expect(summary).toContain(lines.at(-1));
+    expect(summary).toContain(lines[0]!);
+    expect(summary).toContain(lines.at(-1)!);
     // The middle is genuinely gone.
     expect(summary).not.toContain("line 100 ");
     expect(summary.length).toBeLessThan(2600);

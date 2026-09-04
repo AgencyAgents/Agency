@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApproximateTokenizer } from "@agency/providers";
 import type { Message } from "@agency/schema";
-import { compact, countChainTokens, planCompaction, shouldCompact } from "../../src/sessions/compaction.ts";
+import {
+  compact,
+  countChainTokens,
+  countChainTokensAsync,
+  planCompaction,
+  shouldCompact,
+} from "../../src/sessions/compaction.ts";
 import { SessionStore } from "../../src/sessions/store.ts";
 
 const dirs: string[] = [];
@@ -136,5 +142,149 @@ describe("countChainTokens", () => {
       },
     ];
     expect(countChainTokens(chain, tokenizer)).toBeGreaterThan(0);
+  });
+});
+
+describe("countChainTokensAsync", () => {
+  test("falls through to sync counting for sync tokenizers", async () => {
+    const tokenizer = createApproximateTokenizer(1);
+    const chain = [
+      {
+        id: "1",
+        parentId: null,
+        schemaVersion: 1,
+        createdAt: "t1",
+        type: "message" as const,
+        message: {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "abc" }],
+        },
+      },
+    ];
+    const result = await countChainTokensAsync(chain, tokenizer);
+    expect(result).toBe(3);
+  });
+
+  test("counts text, thinking, tool_call, and tool_result blocks via async tokenizer", async () => {
+    const asyncTokenizer = {
+      precise: true,
+      async: true as const,
+      async count(text: string): Promise<number> {
+        return Promise.resolve(text.length);
+      },
+    };
+    const chain = [
+      {
+        id: "1",
+        parentId: null,
+        schemaVersion: 1,
+        createdAt: "t1",
+        type: "message" as const,
+        message: {
+          role: "assistant" as const,
+          content: [
+            { type: "text" as const, text: "abc" },
+            { type: "tool_call" as const, id: "c1", name: "read", input: { path: "x" } },
+          ],
+        },
+      },
+    ];
+    const result = await countChainTokensAsync(chain, asyncTokenizer);
+    expect(result).toBeGreaterThan(0);
+  });
+
+  test("counts compaction summary entries via async tokenizer", async () => {
+    const asyncTokenizer = {
+      precise: true,
+      async: true as const,
+      async count(text: string): Promise<number> {
+        return Promise.resolve(text.length);
+      },
+    };
+    const chain = [
+      {
+        id: "1",
+        parentId: null,
+        schemaVersion: 1,
+        createdAt: "t1",
+        type: "compaction_summary" as const,
+        summary: "hello world",
+        replacedEntryIds: [],
+      },
+    ];
+    const result = await countChainTokensAsync(chain, asyncTokenizer);
+    expect(result).toBe(11); // "hello world" is 11 chars
+  });
+});
+
+describe("compact bus emission", () => {
+  test("emits session.compacted via getBus() when bus is set", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-compaction-bus-"));
+    dirs.push(dir);
+    const emitted: Array<{ event: string; payload: unknown }> = [];
+    const bus = {
+      emit: (event: string, payload: unknown) => {
+        emitted.push({ event, payload });
+      },
+    };
+    const store = new SessionStore(dir, { bus });
+    const meta = store.create("s1");
+    const tokenizer = createApproximateTokenizer(1);
+
+    let parentId: string | null = null;
+    const append = async (entry: { type: string } & Record<string, unknown>) => {
+      const e = await store.append(meta.id, { ...entry, parentId });
+      parentId = e.id;
+      return e;
+    };
+
+    await append({ type: "message", message: userMsg("x".repeat(50)) });
+    await append({ type: "message", message: userMsg("y".repeat(50)) });
+    const last = await append({ type: "message", message: userMsg("z".repeat(50)) });
+
+    const result = await compact(
+      store,
+      meta.id,
+      last.id,
+      tokenizer,
+      { contextWindow: 100, proactiveRatio: 0.5 },
+      async () => "summary",
+      1,
+    );
+
+    expect(result.compacted).toBe(true);
+    expect(emitted.length).toBeGreaterThanOrEqual(1);
+    expect(emitted.some((e) => e.event === "session.compacted")).toBe(true);
+  });
+
+  test("does not crash when no bus is set", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-compaction-nobus-"));
+    dirs.push(dir);
+    const store = new SessionStore(dir);
+    const meta = store.create("s1");
+    const tokenizer = createApproximateTokenizer(1);
+
+    let parentId: string | null = null;
+    const append = async (entry: { type: string } & Record<string, unknown>) => {
+      const e = await store.append(meta.id, { ...entry, parentId });
+      parentId = e.id;
+      return e;
+    };
+
+    await append({ type: "message", message: userMsg("x".repeat(50)) });
+    await append({ type: "message", message: userMsg("y".repeat(50)) });
+    const last = await append({ type: "message", message: userMsg("z".repeat(50)) });
+
+    const result = await compact(
+      store,
+      meta.id,
+      last.id,
+      tokenizer,
+      { contextWindow: 100, proactiveRatio: 0.5 },
+      async () => "summary",
+      1,
+    );
+
+    expect(result.compacted).toBe(true);
   });
 });

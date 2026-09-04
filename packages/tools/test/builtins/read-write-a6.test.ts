@@ -108,7 +108,10 @@ describe("write: read-before-write guard (A6)", () => {
     );
     expect(fresh.content).not.toContain("never read this session");
 
-    const legacy = await createWriteTool(deps, snapshots, {}).handler({ path: "b.ts", content: "y" }, { signal });
+    const legacy = await createWriteTool(deps, snapshots, {}).handler(
+      { path: "b.ts", content: "y" },
+      { signal },
+    );
     expect(legacy.content).not.toContain("never read this session");
     expect(existsSync(join(root, "new.ts"))).toBe(true);
   });

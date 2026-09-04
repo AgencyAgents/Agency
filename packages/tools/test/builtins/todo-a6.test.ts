@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { createTodoReadTool, createTodoWriteTool, TodoStore, validateTodoItems } from "../../src/builtins/todo.ts";
-import type { TodoPersistence } from "../../src/builtins/todo.ts";
+import type { TodoItem, TodoPersistence } from "../../src/builtins/todo.ts";
+import {
+  createTodoReadTool,
+  createTodoWriteTool,
+  TodoStore,
+  validateTodoItems,
+} from "../../src/builtins/todo.ts";
 
 const signal = new AbortController().signal;
 
 describe("todo_write validation (A6)", () => {
   test("well-formed lists pass validateTodoItems", () => {
-    expect(
-      validateTodoItems([{ id: "1", content: "do the thing", status: "pending" }]),
-    ).toBeUndefined();
+    expect(validateTodoItems([{ id: "1", content: "do the thing", status: "pending" }])).toBeUndefined();
   });
 
   test("rejects empty content, bad status, duplicates, and non-objects", () => {
@@ -38,7 +41,7 @@ describe("todo_write validation (A6)", () => {
 
 describe("TodoStore persistence (A6)", () => {
   test("replace persists with the session id; hydrate restores the saved list", async () => {
-    const saved = new Map<string, Array<{ id: string; content: string; status: string }>>();
+    const saved = new Map<string, TodoItem[]>();
     const persistence: TodoPersistence = {
       save: async (sessionId, todos) => {
         saved.set(sessionId, [...todos]);

@@ -1,13 +1,13 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseArgv } from "../../cli/src/entrypoint.ts";
+import { createFileFallbackBackend } from "../../providers/src/auth/file-fallback.ts";
+import { buildAuthorizeUrl, generatePkcePair, OAUTH_PROVIDERS } from "../../providers/src/auth/oauth.ts";
+import { resolveApiKey } from "../../providers/src/auth/resolve.ts";
 import { collectAgentsFiles } from "../src/prompt/instructions.ts";
 import { getSessionTitle } from "../src/sessions/titles.ts";
-import { createFileFallbackBackend } from "../../providers/src/auth/file-fallback.ts";
-import { resolveApiKey } from "../../providers/src/auth/resolve.ts";
-import { buildAuthorizeUrl, generatePkcePair, OAUTH_PROVIDERS } from "../../providers/src/auth/oauth.ts";
-import { parseArgv } from "../../cli/src/entrypoint.ts";
 
 describe("instruction resolution nearest-first", () => {
   test("finds nested AGENTS.md before root", () => {
@@ -25,15 +25,33 @@ describe("instruction resolution nearest-first", () => {
 
 describe("session_title entry R5 passthrough", () => {
   test("getSessionTitle returns latest title", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: test data
     const entries: any[] = [
-      { type: "session_title", title: "First", id: "1", parentId: null, schemaVersion: 1, createdAt: "2026-01-01" },
+      {
+        type: "session_title",
+        title: "First",
+        id: "1",
+        parentId: null,
+        schemaVersion: 1,
+        createdAt: "2026-01-01",
+      },
       { type: "message", id: "2", parentId: "1", schemaVersion: 1, createdAt: "2026-01-02" },
-      { type: "session_title", title: "Second", id: "3", parentId: "2", schemaVersion: 1, createdAt: "2026-01-03" },
+      {
+        type: "session_title",
+        title: "Second",
+        id: "3",
+        parentId: "2",
+        schemaVersion: 1,
+        createdAt: "2026-01-03",
+      },
     ];
     expect(getSessionTitle(entries)).toBe("Second");
   });
   test("returns undefined when no title", () => {
-    expect(getSessionTitle([{ type: "message", id: "1", parentId: null, schemaVersion: 1, createdAt: "" } as any])).toBeUndefined();
+    expect(
+      // biome-ignore lint/suspicious/noExplicitAny: test data
+      getSessionTitle([{ type: "message", id: "1", parentId: null, schemaVersion: 1, createdAt: "" } as any]),
+    ).toBeUndefined();
   });
 });
 
@@ -46,7 +64,11 @@ describe("OAuth PKCE and authorize URL", () => {
   });
   test("buildAuthorizeUrl includes PKCE params", () => {
     const cfg = OAUTH_PROVIDERS.anthropic!;
-    const url = buildAuthorizeUrl(cfg, { redirectUri: "http://127.0.0.1:1234/callback", state: "s123", challenge: "ch" });
+    const url = buildAuthorizeUrl(cfg, {
+      redirectUri: "http://127.0.0.1:1234/callback",
+      state: "s123",
+      challenge: "ch",
+    });
     expect(url).toContain("code_challenge=ch");
     expect(url).toContain("code_challenge_method=S256");
     expect(url).toContain("state=s123");
@@ -74,7 +96,9 @@ describe("entrypoint --image parse", () => {
 describe("cassette harness", () => {
   test("record shape is {params, events, result}", async () => {
     const { recordCassette, writeCassette, readCassette } = await import("../src/cassette.ts");
-    void recordCassette; void writeCassette; void readCassette;
+    void recordCassette;
+    void writeCassette;
+    void readCassette;
     expect(typeof recordCassette).toBe("function");
   });
 });

@@ -187,7 +187,9 @@ describe("client resilience (A3)", () => {
         }, 10);
       });
     });
-    const port = await new Promise<number>((resolve) => raw.listen(0, "127.0.0.1", () => resolve((raw.address() as { port: number }).port)));
+    const port = await new Promise<number>((resolve) =>
+      raw.listen(0, "127.0.0.1", () => resolve((raw.address() as { port: number }).port)),
+    );
 
     const client = await connectToDaemon(port, "127.0.0.1", { reconnect: false });
     clients.push(client);

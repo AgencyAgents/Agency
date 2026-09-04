@@ -120,11 +120,12 @@ describe("createBuiltinTools", () => {
       builtins.registry.register(createFetchTool(depsFor(root), noopHttp));
       expect(builtins.registry.has("fetch")).toBe(true);
 
-      expect(builtins.registry.filter("process_").map((t) => t.name).sort()).toEqual([
-        "process_kill",
-        "process_list",
-        "process_output",
-      ]);
+      expect(
+        builtins.registry
+          .filter("process_")
+          .map((t) => t.name)
+          .sort(),
+      ).toEqual(["process_kill", "process_list", "process_output"]);
 
       // A5 permissions predicate: a read-only agent sees only safe tools.
       const readOnly = builtins.registry.forAgent((_name, tier) => tier === "safe");

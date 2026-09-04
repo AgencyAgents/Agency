@@ -231,7 +231,7 @@ describe("SessionStore", () => {
     const forkEntry = await store.fork(meta.id, { fromTipId: root.id, label: "try another approach" });
     expect(forkEntry.type).toBe("branch_summary");
     expect(forkEntry.parentId).toBe(root.id);
-    expect((forkEntry as { label: string }).label).toBe("try another approach");
+    expect((forkEntry as unknown as { label: string }).label).toBe("try another approach");
 
     const entries = store.load(meta.id);
     // Both branch tips are leaves; the forked one is the newest.
@@ -250,7 +250,7 @@ describe("SessionStore", () => {
 
     const forkEntry = await store.fork(meta.id);
     expect(forkEntry.parentId).toBe(root.id);
-    expect((forkEntry as { label: string }).label).toBe("forked");
+    expect((forkEntry as unknown as { label: string }).label).toBe("forked");
   });
 
   test("load sees entries appended by another store instance over the same directory", async () => {
@@ -307,5 +307,66 @@ describe("SessionStore", () => {
     } finally {
       capture.restore();
     }
+  });
+
+  test("v1 session entries are migrated to v2 on load", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+    // Write a v1-format entry directly (schemaVersion: 1, no new fields)
+    const v1Entry = {
+      id: "v1-entry-1",
+      parentId: null,
+      schemaVersion: 1,
+      createdAt: "2025-01-01T00:00:00.000Z",
+      type: "message",
+      message: { role: "user", content: [{ type: "text", text: "hello from v1" }] },
+    };
+    appendFileSync(join(dir, `${meta.id}.jsonl`), `${JSON.stringify(v1Entry)}\n`);
+
+    const loaded = store.load(meta.id);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.schemaVersion).toBe(2);
+    expect(loaded[0]?.id).toBe("v1-entry-1");
+    expect(loaded[0]?.type).toBe("message");
+    // The message content should survive migration untouched
+    expect((loaded[0] as Record<string, unknown>).message).toEqual(v1Entry.message);
+  });
+
+  test("v1 agent_lifecycle entry is migrated to v2 on load", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+    const v1Entry = {
+      id: "v1-agent-1",
+      parentId: null,
+      schemaVersion: 1,
+      createdAt: "2025-01-01T00:00:00.000Z",
+      type: "agent_lifecycle",
+      handle: "coder",
+      state: "working",
+    };
+    appendFileSync(join(dir, `${meta.id}.jsonl`), `${JSON.stringify(v1Entry)}\n`);
+
+    const loaded = store.load(meta.id);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.schemaVersion).toBe(2);
+    expect(loaded[0]?.type).toBe("agent_lifecycle");
+    expect((loaded[0] as Record<string, unknown>).handle).toBe("coder");
+  });
+
+  test("getBus returns the bus set via constructor", () => {
+    const emitted: string[] = [];
+    const bus = {
+      emit: (_event: string, _payload: unknown) => {
+        emitted.push(_event);
+      },
+    };
+    const { store } = setup();
+    store.setBus(bus);
+    expect(store.getBus()).toBe(bus);
+  });
+
+  test("getBus returns undefined when no bus is set", () => {
+    const { store } = setup();
+    expect(store.getBus()).toBeUndefined();
   });
 });

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFlags, loadConfig } from "../src/config/loader.ts";
-import { parseModelRef } from "../src/config/schema.ts";
+import { DEFAULT_ROSTER, parseModelRef } from "../src/config/schema.ts";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "agency-config-test-"));
@@ -261,5 +261,145 @@ describe("loadConfig", () => {
     expect(config.crashReportsEnabled).toBe(false);
     expect(config.disabled_providers).toEqual(["google", "my-gateway"]);
     expect(config.enabled_providers).toEqual(["openai"]);
+  });
+});
+
+describe("DEFAULT_ROSTER", () => {
+  test("is empty (no default values)", () => {
+    expect(Object.keys(DEFAULT_ROSTER)).toEqual([]);
+  });
+
+  test("fresh config with no agents key gets empty roster on load", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents).toBeDefined();
+    expect(Object.keys(config.agents!)).toEqual([]);
+  });
+
+  test("user-supplied agents in config are NOT overridden by DEFAULT_ROSTER", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "openai", model: "gpt-5.2", effort: "high", enabled: true },
+        },
+      }),
+    );
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents).toBeDefined();
+    expect(Object.keys(config.agents!)).toEqual(["leader"]);
+    expect(config.agents!.leader?.role).toBe("leader");
+  });
+
+  test("enabled defaults to false when not specified", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "anthropic", effort: "high", enabled: true },
+          helper: { role: "helper", provider: "openai", effort: "low" },
+        },
+      }),
+    );
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents!.leader?.enabled).toBe(true);
+    expect(config.agents!.helper?.enabled).toBe(false);
+  });
+
+  test("disabled agent is not registered in orchestra (config still has it)", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "anthropic", effort: "high", enabled: true },
+          helper: { role: "helper", provider: "openai", effort: "low", enabled: false },
+        },
+      }),
+    );
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents!.leader?.enabled).toBe(true);
+    expect(config.agents!.helper?.enabled).toBe(false);
+  });
+
+  test("leader disabled causes validation error", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "anthropic", effort: "high", enabled: false },
+        },
+      }),
+    );
+    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
+  });
+
+  test("missing leader causes validation error when agents are configured", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          helper: { role: "helper", provider: "openai", effort: "low", enabled: true },
+        },
+      }),
+    );
+    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent is required");
+  });
+
+  test("zero enabled agents causes validation error", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "anthropic", effort: "high", enabled: false },
+          helper: { role: "helper", provider: "openai", effort: "low", enabled: false },
+        },
+      }),
+    );
+    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("at least one agent must be enabled");
+  });
+
+  test("empty roster passes validation (no defaults)", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents).toBeDefined();
+    expect(Object.keys(config.agents!)).toEqual([]);
+  });
+
+  test("provider is optional — agent can be defined without provider", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(
+      join(dir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        agents: {
+          leader: { role: "leader", provider: "anthropic", effort: "high", enabled: true },
+          helper: { role: "helper" },
+        },
+      }),
+    );
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents!.leader?.provider).toBe("anthropic");
+    expect(config.agents!.helper?.provider).toBeUndefined();
   });
 });
