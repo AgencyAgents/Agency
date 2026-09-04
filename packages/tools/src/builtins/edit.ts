@@ -6,13 +6,15 @@ import type { ToolDeps, ToolSpec } from "../contract.ts";
 import { applyEditsVerified, type EditHunk } from "../edit-engine.ts";
 import type { FormatterConfig } from "../formatter.ts";
 import { runFormatter } from "../formatter.ts";
-import { str, summarize } from "../render.ts";
 import type { ReadState } from "../read-state.ts";
+import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
 
 export interface EditToolOptions {
   /** LSP diagnostics seam: error-severity diagnostics ride along on results. */
-  diagnostics?: (path: string) => readonly { severity: number; message: string; line: number; character: number }[];
+  diagnostics?: (
+    path: string,
+  ) => readonly { severity: number; message: string; line: number; character: number }[];
   /** Session read journal; marks edited files as read. */
   readState?: ReadState;
 }

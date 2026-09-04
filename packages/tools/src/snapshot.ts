@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 export interface SnapshotEntry {
   /** Content hash of the file at the moment it was captured. */
@@ -34,6 +34,38 @@ function blobPath(storeDir: string, hash: string): string {
   return join(storeDir, "blobs", hash.slice(0, 2), hash.slice(2));
 }
 
+export interface SnapshotStoreOptions {
+  /** Durable journal file. Defaults to `<storeDir>/journal.jsonl`; the daemon
+   *  passes one file per session (`journals/<sessionId>.journal.jsonl`) so
+   *  undo stacks stay session-local. The journal loads on construction, so
+   *  undo depth survives daemon restarts. */
+  journalFile?: string;
+}
+
+/** A persisted journal line: the minimal record needed to rebuild undo/redo. */
+interface PersistedJournalRecord {
+  before: SnapshotEntry;
+  afterHash?: string;
+  ref?: string;
+  undone: boolean;
+}
+
+function isJournalRecord(value: unknown): value is PersistedJournalRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Record<string, unknown>;
+  const before = r.before as Record<string, unknown> | undefined;
+  return (
+    typeof before === "object" &&
+    before !== null &&
+    typeof before.hash === "string" &&
+    typeof before.path === "string" &&
+    typeof before.capturedAt === "string" &&
+    (r.afterHash === undefined || typeof r.afterHash === "string") &&
+    (r.ref === undefined || typeof r.ref === "string") &&
+    typeof r.undone === "boolean"
+  );
+}
+
 const MAX_JOURNAL_RECORDS = 1000;
 
 /**
@@ -49,8 +81,15 @@ const MAX_JOURNAL_RECORDS = 1000;
  */
 export class SnapshotStore {
   private readonly journal: JournalRecord[] = [];
+  private readonly journalFile: string;
 
-  constructor(private readonly storeDir: string) {}
+  constructor(
+    private readonly storeDir: string,
+    opts?: SnapshotStoreOptions,
+  ) {
+    this.journalFile = opts?.journalFile ?? join(storeDir, "journal.jsonl");
+    this.loadJournal();
+  }
 
   /** Captures the current on-disk content of `path`, returning its entry. */
   capture(path: string, content: string, ref?: string): SnapshotEntry {
@@ -61,6 +100,7 @@ export class SnapshotStore {
     };
     this.journal.push({ before: entry, ...(ref === undefined ? {} : { ref }), undone: false });
     if (this.journal.length > MAX_JOURNAL_RECORDS) this.journal.shift();
+    this.persistJournal();
     return entry;
   }
 
@@ -85,6 +125,7 @@ export class SnapshotStore {
       if (record && record.before.path === path) {
         if (record.afterHash === undefined && existsSync(path)) {
           record.afterHash = this.storeBlob(readFileSync(path, "utf8"));
+          this.persistJournal();
         }
         return;
       }
@@ -98,6 +139,7 @@ export class SnapshotStore {
       if (record && !record.undone) {
         this.restore(record.before);
         record.undone = true;
+        this.persistJournal();
         return { path: record.before.path };
       }
     }
@@ -108,10 +150,11 @@ export class SnapshotStore {
   redo(): UndoOutcome | undefined {
     for (let i = this.journal.length - 1; i >= 0; i--) {
       const record = this.journal[i];
-      if (record && record.undone && record.afterHash !== undefined) {
+      if (record?.undone && record.afterHash !== undefined) {
         const after: SnapshotEntry = { ...record.before, hash: record.afterHash };
         this.restore(after);
         record.undone = false;
+        this.persistJournal();
         return { path: record.before.path };
       }
     }
@@ -120,16 +163,25 @@ export class SnapshotStore {
 
   /**
    * Deletes blobs that no journal record references (refcount over every
-   * before+after hash) and returns how many were reclaimed. Blobs written
-   * before journaling existed — or after a restart with an in-memory journal —
-   * are the usual orphans.
+   * before+after hash) and returns how many were reclaimed. Sibling journals
+   * (other sessions' `*.journal.jsonl` next to this store's journal file)
+   * count as references too, so one session's prune never orphans another
+   * session's undo history. Truly unreferenced blobs — written before
+   * journaling existed, or by a crashed run — are the usual reclaims.
    */
   prune(): number {
     const refCounts = new Map<string, number>();
+    const count = (hash: string): void => {
+      refCounts.set(hash, (refCounts.get(hash) ?? 0) + 1);
+    };
     for (const record of this.journal) {
-      refCounts.set(record.before.hash, (refCounts.get(record.before.hash) ?? 0) + 1);
-      if (record.afterHash !== undefined) {
-        refCounts.set(record.afterHash, (refCounts.get(record.afterHash) ?? 0) + 1);
+      count(record.before.hash);
+      if (record.afterHash !== undefined) count(record.afterHash);
+    }
+    for (const sibling of this.loadSiblingJournals()) {
+      for (const record of sibling) {
+        count(record.before.hash);
+        if (record.afterHash !== undefined) count(record.afterHash);
       }
     }
 
@@ -154,6 +206,17 @@ export class SnapshotStore {
     return this.journal.length;
   }
 
+  /**
+   * Single-line frame rendering for undo/redo operations. Returns a compact
+   * string suitable for TUI transcript frames: "undo <path>" or "redo <path>"
+   * when the operation succeeded, or "undo: nothing to undo" / "redo: nothing
+   * to redo" when the journal had no applicable record.
+   */
+  static renderCall(operation: "undo" | "redo", outcome: UndoOutcome | undefined): string {
+    if (!outcome) return `${operation}: nothing to ${operation}`;
+    return `${operation} ${outcome.path}`;
+  }
+
   private storeBlob(content: string): string {
     const hash = contentHash(content);
     const blob = blobPath(this.storeDir, hash);
@@ -162,6 +225,97 @@ export class SnapshotStore {
       writeFileSync(blob, content, "utf8");
     }
     return hash;
+  }
+
+  private loadJournal(): void {
+    let text: string;
+    try {
+      text = readFileSync(this.journalFile, "utf8");
+    } catch {
+      return;
+    }
+    for (const [offset, line] of text.split("\n").entries()) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        console.warn(
+          `[snapshot] corrupt journal line ${offset + 1} in ${this.journalFile} skipped: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        continue;
+      }
+      if (!isJournalRecord(parsed)) {
+        console.warn(`[snapshot] corrupt journal line ${offset + 1} in ${this.journalFile} skipped (shape)`);
+        continue;
+      }
+      this.journal.push({
+        before: parsed.before,
+        ...(parsed.ref === undefined ? {} : { ref: parsed.ref }),
+        ...(parsed.afterHash === undefined ? {} : { afterHash: parsed.afterHash }),
+        undone: parsed.undone,
+      });
+    }
+    while (this.journal.length > MAX_JOURNAL_RECORDS) this.journal.shift();
+  }
+
+  private persistJournal(): void {
+    try {
+      mkdirSync(dirname(this.journalFile), { recursive: true });
+      const tmp = `${this.journalFile}.tmp`;
+      writeFileSync(
+        tmp,
+        this.journal
+          .map((r) =>
+            JSON.stringify({
+              before: r.before,
+              ...(r.afterHash === undefined ? {} : { afterHash: r.afterHash }),
+              ...(r.ref === undefined ? {} : { ref: r.ref }),
+              undone: r.undone,
+            }),
+          )
+          .join("\n") + (this.journal.length > 0 ? "\n" : ""),
+        "utf8",
+      );
+      renameSync(tmp, this.journalFile);
+    } catch (error) {
+      console.warn(
+        `[snapshot] journal persist failed for ${this.journalFile}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private loadSiblingJournals(): PersistedJournalRecord[][] {
+    const dir = dirname(this.journalFile);
+    const own = basename(this.journalFile);
+    let files: string[];
+    try {
+      files = readdirSync(dir);
+    } catch {
+      return [];
+    }
+    const out: PersistedJournalRecord[][] = [];
+    for (const file of files) {
+      if (file === own || file.endsWith(".tmp")) continue;
+      if (file !== "journal.jsonl" && !file.endsWith(".journal.jsonl")) continue;
+      try {
+        const text = readFileSync(join(dir, file), "utf8");
+        const records: PersistedJournalRecord[] = [];
+        for (const line of text.split("\n")) {
+          if (line.length === 0) continue;
+          const parsed: unknown = JSON.parse(line);
+          if (isJournalRecord(parsed)) records.push(parsed);
+        }
+        out.push(records);
+      } catch {
+        // Unreadable sibling journal: not ours to prune by, skip it.
+      }
+    }
+    return out;
   }
 
   private restore(entry: SnapshotEntry): void {

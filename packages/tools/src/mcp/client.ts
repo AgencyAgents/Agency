@@ -61,7 +61,9 @@ export class McpClient {
   }
 
   private notify(method: string, params: unknown): void {
-    this.transport.send({ jsonrpc: "2.0", method, params }).catch(() => {});
+    this.transport.send({ jsonrpc: "2.0", method, params }).catch(() => {
+      /* best-effort notification: transport may be closing */
+    });
   }
 
   private request(
@@ -70,8 +72,7 @@ export class McpClient {
     opts: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     const timeoutMs =
-      opts.timeoutMs ??
-      (method === "tools/call" ? this.toolCallTimeoutMs : this.requestTimeoutMs);
+      opts.timeoutMs ?? (method === "tools/call" ? this.toolCallTimeoutMs : this.requestTimeoutMs);
     const { id, promise } = this.pending.register(
       timeoutMs,
       () => new Error(`MCP ${this.name} ${method} timed out`),

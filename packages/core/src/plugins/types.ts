@@ -1,6 +1,7 @@
+import type { CallerIdentity, Capabilities } from "@agency/guard";
 import type { EventBus } from "../events.ts";
-import type { Capabilities, CallerIdentity } from "@agency/guard";
 import type { ToolSpec } from "../loop.ts";
+import type { PluginTier } from "./context.ts";
 
 export const HOOK_NAMES = [
   "event",
@@ -30,11 +31,28 @@ export interface PluginDefinition {
   id: string;
   hooks?: Record<string, HookHandler>;
   tools?: ToolSpec[];
+  /**
+   * Skill-embedded MCP servers, declared per-skill. Raw (unvalidated) map of
+   * server name to server config; validated with `parseMcpServers` at spawn
+   * time by `startSkillMcpServers` (tools package). Never started at load:
+   * spawned on demand scoped to a task and disposed when the task is done,
+   * so idle skills cost no processes and contribute no tools (no context bloat).
+   */
+  mcpServers?: Record<string, unknown>;
+  /**
+   * Hierarchical AGENTS.md contribution. A plugin may export a string (or
+   * array of strings) of extra instructions; the loader injects them in
+   * tier order (project → user → npm) after `loadInstructions()` output.
+   * Non-string entries are ignored, never fatal.
+   */
+  agentsMd?: string | string[];
 }
 
 export interface LoadedPlugin {
   id: string;
   path: string;
+  /** Tier the plugin was loaded from — load/injection order follows project → user → npm. */
+  tier: PluginTier;
   definition: PluginDefinition;
   unsubscribes: Array<() => void>;
 }

@@ -1,6 +1,10 @@
 import { createAgentDaemon } from "./daemon.ts";
 
-export async function runServe(options: { workspaceRoot: string; instanceFile: string; idleLingerMs?: number }): Promise<void> {
+export async function runServe(options: {
+  workspaceRoot: string;
+  instanceFile: string;
+  idleLingerMs?: number;
+}): Promise<void> {
   const daemon = await createAgentDaemon({
     workspaceRoot: options.workspaceRoot,
     instanceFile: options.instanceFile,

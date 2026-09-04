@@ -4,7 +4,8 @@ export interface AgentHandle {
   handle: string;
   role: string;
   provider: string;
-  model: string;
+  /** Optional: resolved at runtime from the provider catalog or global config.model. */
+  model?: string;
   effort: string;
   sessionId: string;
   mailbox: Message[];
@@ -14,10 +15,9 @@ export interface AgentHandle {
 export function parseHandles(text: string): string[] {
   const re = /@([a-z][a-z0-9-]*)/g;
   const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const h = m[1]!;
-    if (!out.includes(h)) out.push(h);
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const h = m[1];
+    if (h !== undefined && !out.includes(h)) out.push(h);
   }
   return out;
 }
@@ -57,8 +57,19 @@ export class AgentRegistry {
   drain(handle: string): Message[] {
     const agent = this.agents.get(handle);
     if (!agent) return [];
+    // Copy + clear: callers get a snapshot, the mailbox is empty after.
     const msgs = [...agent.mailbox];
     agent.mailbox.length = 0;
     return msgs;
+  }
+
+  /** Alias for drain: handle-keyed mailbox, returns copy and clears. */
+  drainMailbox(handle: string): Message[] {
+    return this.drain(handle);
+  }
+
+  /** Non-destructive peek at a handle's queued messages (copy, no clear). */
+  peek(handle: string): Message[] {
+    return [...(this.agents.get(handle)?.mailbox ?? [])];
   }
 }

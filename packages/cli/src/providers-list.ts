@@ -25,6 +25,8 @@ export interface ProviderListModel {
   capabilities: ModelCapabilities;
   status?: ModelStatus;
   releaseDate?: string;
+  /** Provider API base URL from the catalog, for gateway-style providers. */
+  apiBaseURL?: string;
 }
 
 export interface ProviderListEntry {
@@ -49,6 +51,7 @@ function toListModel(model: ModelInfo): ProviderListModel {
     capabilities: model.capabilities,
     status: model.status,
     releaseDate: model.releaseDate,
+    apiBaseURL: model.apiBaseURL,
   };
 }
 
@@ -69,7 +72,14 @@ async function connectedProviderIds(
     const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
     const key =
       fromDeclaredEnv ??
-      (await resolveApiKey({ provider: id, env, keychain, config: providerConfig?.apiKey }));
+      (await resolveApiKey({
+        provider: id,
+        env,
+        keychain,
+        config: providerConfig?.apiKey,
+        oauthClientId: providerConfig?.oauth?.clientId,
+        oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+      }));
     if (key) connected.push(id);
   }
   return connected;

@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
 import type { CachedCatalog } from "../catalog-cache.ts";
-import { isStale } from "../catalog-cache.ts";
 import { BUILTIN_MODELS, type ModelInfo, type ModelStatus } from "../registry.ts";
 
 /**
@@ -220,6 +219,10 @@ export async function loadModelsDevCatalog(options: {
   const ttlMs = options.ttlMs ?? CATALOG_FRESH_TTL_MS;
 
   const offline = env.OPENCODE_DISABLE_MODELS_FETCH !== undefined;
+  // Resolved lazily (not a top-level import): catalog-cache.ts reads this
+  // module's CATALOG_FRESH_TTL_MS at its own top level, so a static back-edge
+  // would deadlock evaluation order (TDZ) depending on entry point.
+  const { isStale } = await import("../catalog-cache.ts");
   const fresh = !options.force && cached !== undefined && !isStale(cached, ttlMs);
   if (offline || fresh) {
     return { models: cached?.models ?? BUILTIN_MODELS, source: cached ? "cache" : "builtin" };

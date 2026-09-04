@@ -7,24 +7,32 @@ import { McpClient } from "./client.ts";
 import { type McpServerConfig, type McpServersConfig, parseMcpServers } from "./config.ts";
 import { createMcpTransport, type McpTransport } from "./transport.ts";
 
-export function mcpIdentityFor(_serverName: string): CallerIdentity {
-  return { type: "agent", name: "main" };
+export function mcpIdentityFor(_serverName: string, handle?: string): CallerIdentity {
+  return { type: "agent", name: handle ?? "main" };
 }
 
 export interface McpManagerOptions {
   servers: McpServersConfig;
-  identityFor?: (serverName: string) => CallerIdentity;
+  identityFor?: (serverName: string, handle?: string) => CallerIdentity;
   capabilities: Capabilities;
   processManager?: ProcessManager;
   transportFor?: (serverName: string, config: McpServerConfig) => McpTransport;
   registry?: ToolRegistry;
   maxRestarts?: number;
   baseBackoffMs?: number;
+  retryResetWindowMs?: number;
 }
 
 export interface McpManager {
   tools: ToolSpec[];
   failures: ReadonlyMap<string, string>;
+  /**
+   * Per-handle identity resolver threaded from scope creation.
+   * Call with the agent handle active at call time — `identityFor(server, "alice")`
+   * and `identityFor(server, "bob")` must differ — so identity is never baked
+   * once at startup and reused across handles.
+   */
+  identityFor: (serverName: string, handle?: string) => CallerIdentity;
   dispose(): Promise<void>;
 }
 
@@ -40,6 +48,8 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
   const registry = options.registry;
   const maxRestarts = options.maxRestarts ?? 3;
   const baseBackoffMs = options.baseBackoffMs ?? 500;
+  const retryResetWindowMs = options.retryResetWindowMs ?? 60_000;
+  const retryResetTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
 
   const stderrTailFor = (transport: McpTransport | undefined): string => {
@@ -140,12 +150,30 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
     }
   };
 
+  const clearRetryReset = (serverName: string) => {
+    const timer = retryResetTimers.get(serverName);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      retryResetTimers.delete(serverName);
+    }
+  };
+
+  const markHealthy = (serverName: string) => {
+    failures.delete(serverName);
+    clearRetryReset(serverName);
+    const timer = setTimeout(() => {
+      retryCounts.delete(serverName);
+      retryResetTimers.delete(serverName);
+    }, retryResetWindowMs);
+    retryResetTimers.set(serverName, timer);
+  };
+
   const scheduleRestart = (serverName: string, config: McpServerConfig) => {
     if (disposed) return;
     const count = retryCounts.get(serverName) ?? 0;
     if (count >= maxRestarts) return;
     retryCounts.set(serverName, count + 1);
-    const delay = baseBackoffMs * Math.pow(2, count);
+    const delay = baseBackoffMs * 2 ** count;
     setTimeout(() => {
       if (disposed) return;
       void startOne(serverName, config);
@@ -184,9 +212,13 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
         if (disposed) return;
         const existing = clients.get(name);
         if (!existing) return;
+        clearRetryReset(name);
         // crash path
         removeToolsFor(name);
-        failures.set(name, `MCP server "${name}" crashed${stderrTailFor(transport) ? ` — stderr: ${stderrTailFor(transport).slice(-2000)}` : ""}`);
+        failures.set(
+          name,
+          `MCP server "${name}" crashed${stderrTailFor(transport) ? ` — stderr: ${stderrTailFor(transport).slice(-2000)}` : ""}`,
+        );
         clients.delete(name);
         transports.delete(name);
         scheduleRestart(name, config);
@@ -196,8 +228,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       await client.initialize();
       const defs = await client.listTools();
       addToolsFor(name, config, client, defs);
-      failures.delete(name);
-      retryCounts.delete(name);
+      markHealthy(name);
     } catch (error) {
       const detail = failureDetail(error, transport);
       failures.set(name, detail);
@@ -225,14 +256,24 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
   return {
     tools,
     failures,
+    identityFor,
     async dispose() {
+      if (disposed) return;
       disposed = true;
-      const toClose = [...clients.values()];
+      for (const timer of retryResetTimers.values()) clearTimeout(timer);
+      retryResetTimers.clear();
+      const toCloseClients = [...clients.values()];
+      const toCloseTransports = [...transports.values()];
       clients.clear();
       transports.clear();
-      for (const client of toClose) {
+      for (const client of toCloseClients) {
         try {
           await client.close();
+        } catch {}
+      }
+      for (const transport of toCloseTransports) {
+        try {
+          await transport.close();
         } catch {}
       }
       tools.length = 0;

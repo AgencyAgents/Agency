@@ -130,9 +130,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
               .then((result) => conn.writer.write(encodeFrame({ type: "response", id: message.id, result })))
               .catch((error: unknown) => {
                 const code =
-                  error && typeof error === "object" && "code" in error
-                    ? String(error.code)
-                    : undefined;
+                  error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
                 const errMessage = error instanceof Error ? error.message : String(error);
                 conn.writer.write(
                   encodeFrame({
@@ -149,7 +147,8 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
             if (message.event === undefined) {
               conn.subscriptions = undefined; // back to wildcard
             } else {
-              (conn.subscriptions ??= new Set()).add(message.event);
+              if (!conn.subscriptions) conn.subscriptions = new Set();
+              conn.subscriptions.add(message.event);
             }
             break;
 

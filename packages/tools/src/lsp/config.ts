@@ -32,6 +32,11 @@ function inferLanguageId(extensions: string[]): string {
   return first.replace(/^\./, "") || "plaintext";
 }
 
+function normalizeExtension(ext: string): string {
+  const lower = ext.toLowerCase();
+  return lower.startsWith(".") ? lower : `.${lower}`;
+}
+
 export function normalizeLspServers(raw: LspServersConfig): NormalizedLspServerConfig[] {
   const out: NormalizedLspServerConfig[] = [];
   for (const [name, cfg] of Object.entries(raw)) {
@@ -45,13 +50,14 @@ export function normalizeLspServers(raw: LspServersConfig): NormalizedLspServerC
       command = cfg.command;
     }
     const args = [...prefixArgs, ...(cfg.args ?? [])];
+    const extensions = cfg.extensions.map(normalizeExtension);
     out.push({
       name,
       command,
       args: args.length > 0 ? args : undefined,
       env: cfg.env,
-      extensions: cfg.extensions,
-      languageId: cfg.languageId ?? inferLanguageId(cfg.extensions),
+      extensions,
+      languageId: cfg.languageId ?? inferLanguageId(extensions),
     });
   }
   return out;

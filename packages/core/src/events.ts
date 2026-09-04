@@ -3,10 +3,17 @@
  * it yet in v1; the TUI listens now, plugins listen later, without touching emitters.
  */
 
+import type { Logger } from "./logger.ts";
+
 export interface AgencyEvents {
   "config.loaded": { config: unknown };
   "log.entry": { level: string; message: string; traceId?: string };
-  "tool.execute.before": { tool: string; input: Record<string, unknown>; sessionId?: string; turnId?: string };
+  "tool.execute.before": {
+    tool: string;
+    input: Record<string, unknown>;
+    sessionId?: string;
+    turnId?: string;
+  };
   "tool.execute.after": {
     tool: string;
     input: Record<string, unknown>;
@@ -39,6 +46,11 @@ function matchesPattern(pattern: string, event: string): boolean {
 
 export class EventBus<_Events extends object = AgencyEvents> {
   private readonly listeners = new Map<string, Set<Listener>>();
+  private logger?: Logger;
+
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
 
   on(pattern: string, listener: Listener): () => void {
     const set = this.listeners.get(pattern) ?? new Set();
@@ -66,11 +78,19 @@ export class EventBus<_Events extends object = AgencyEvents> {
           const result = (listener as Listener)(payload);
           if (result !== undefined && typeof (result as Promise<void>).catch === "function") {
             (result as Promise<void>).catch((err) => {
-              console.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, err);
+              this.logger?.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, {
+                error: String(err),
+              });
+              if (!this.logger)
+                console.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, err);
             });
           }
         } catch (err) {
-          console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
+          this.logger?.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, {
+            error: String(err),
+          });
+          if (!this.logger)
+            console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
         }
       }
     }
@@ -84,7 +104,11 @@ export class EventBus<_Events extends object = AgencyEvents> {
         try {
           await (listener as Listener)(payload);
         } catch (err) {
-          console.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, err);
+          this.logger?.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, {
+            error: String(err),
+          });
+          if (!this.logger)
+            console.error(`[events] async listener for "${event}" (pattern "${pattern}") threw:`, err);
         }
       }
     }
@@ -99,7 +123,11 @@ export class EventBus<_Events extends object = AgencyEvents> {
         try {
           await (listener as Listener)(payload);
         } catch (err) {
-          console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
+          this.logger?.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, {
+            error: String(err),
+          });
+          if (!this.logger)
+            console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
           errors.push(err);
         }
       }

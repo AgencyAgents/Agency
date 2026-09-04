@@ -82,12 +82,16 @@ export function loadInstructions(
 ): string[] {
   requireTrust(trustStore, workspaceRoot);
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_INSTRUCTION_BYTES;
-  const effectiveFromDir = fromDir ?? (() => {
-    try {
-      const cwd = process.cwd();
-      return cwd.startsWith(workspaceRoot) ? cwd : workspaceRoot;
-    } catch { return workspaceRoot; }
-  })();
+  const effectiveFromDir =
+    fromDir ??
+    (() => {
+      try {
+        const cwd = process.cwd();
+        return cwd.startsWith(workspaceRoot) ? cwd : workspaceRoot;
+      } catch {
+        return workspaceRoot;
+      }
+    })();
   const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
   return files.map((f) => readTextCapped(f, maxFileBytes));
 }

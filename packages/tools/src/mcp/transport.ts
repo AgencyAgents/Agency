@@ -19,7 +19,7 @@ export function createMcpTransport(
   options: TransportOptions = {},
 ): McpTransport {
   if (config.url) {
-    return createHttpTransport(config.url, config.headers);
+    return createHttpTransport(config.url, config.headers, config.timeoutMs ?? config.requestTimeoutMs);
   }
   if (config.command) {
     return createStdioTransport(config.command, config.args ?? [], config.env ?? {}, options);
@@ -29,12 +29,21 @@ export function createMcpTransport(
 
 function parseSseBlock(block: string): Record<string, unknown> | undefined {
   const lines = block.split("\n");
-  let data = "";
-  for (const line of lines) {
-    if (line.startsWith("data:")) data += line.slice(5).trimStart();
-    else if (line.length === 0) continue;
+  const dataLines: string[] = [];
+  for (const raw of lines) {
+    // Tolerate CRLF writers: strip a single trailing \r per line.
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    else if (line.startsWith("data")) {
+      // "data" without colon is an empty payload line per SSE spec.
+      if (line.trim() === "data") dataLines.push("");
+    } else if (line.length === 0) continue;
     else if (line.startsWith(":")) continue;
+    // event:, id:, retry: fields are intentionally ignored.
   }
+  if (dataLines.length === 0) return undefined;
+  // Multi-line data frames join with \n per SSE spec.
+  const data = dataLines.join("\n");
   if (!data) return undefined;
   try {
     return JSON.parse(data) as Record<string, unknown>;
@@ -43,13 +52,112 @@ function parseSseBlock(block: string): Record<string, unknown> | undefined {
   }
 }
 
-function createHttpTransport(url: string, headers?: Record<string, string>): McpTransport {
+function createHttpTransport(
+  url: string,
+  headers?: Record<string, string>,
+  timeoutMs?: number,
+): McpTransport {
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
   let closeHandler: (() => void) | undefined;
+  const abortController = new AbortController();
+  let streamStarted = false;
+
+  /** Pump a ReadableStream body for SSE frames, feeding each parsed message to handler. */
+  async function pumpSse(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (!signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let sep = buf.indexOf("\n\n");
+      while (sep !== -1) {
+        const block = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        const msg = parseSseBlock(block);
+        if (msg) handler?.(msg);
+        sep = buf.indexOf("\n\n");
+      }
+    }
+    // Flush remaining buffer
+    buf += decoder.decode();
+    buf = buf.replace(/\r\n/g, "\n");
+    if (buf.trim().length > 0) {
+      for (const block of buf.split("\n\n")) {
+        if (!block.trim()) continue;
+        const msg = parseSseBlock(block);
+        if (msg) handler?.(msg);
+      }
+    }
+  }
+
+  async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+    if (timeoutMs === undefined) {
+      return fetch(input, { ...init, signal: abortController.signal });
+    }
+    const ctrl = new AbortController();
+    const onParentAbort = () => ctrl.abort();
+    if (abortController.signal.aborted) {
+      ctrl.abort();
+    } else {
+      abortController.signal.addEventListener("abort", onParentAbort, { once: true });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutError = () => new Error(`MCP HTTP request timed out after ${timeoutMs}ms for ${url}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ctrl.abort();
+        reject(timeoutError());
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([fetch(input, { ...init, signal: ctrl.signal }), timeoutPromise]);
+    } catch (error) {
+      if (ctrl.signal.aborted && (error as Error)?.name === "AbortError") throw timeoutError();
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      abortController.signal.removeEventListener("abort", onParentAbort);
+    }
+  }
+
   return {
-    async start() {},
+    async start() {
+      if (streamStarted) return;
+      streamStarted = true;
+      // Start a persistent GET stream for server notifications (MCP Streamable HTTP).
+      // This is a long-lived connection that receives unsolicited server notifications
+      // outside of request/response cycles.
+      const pump = async () => {
+        try {
+          const res = await fetch(url, {
+            method: "GET",
+            headers: {
+              accept: "text/event-stream",
+              ...(headers ?? {}),
+            },
+            signal: abortController.signal,
+          });
+          if (!res.ok || !res.body) {
+            // If the server doesn't support GET streaming, that's fine —
+            // notifications will still arrive via POST response SSE.
+            return;
+          }
+          await pumpSse(res.body, abortController.signal);
+        } catch (error) {
+          // AbortError is expected on close; other errors are logged but
+          // non-fatal — the transport still works for request/response.
+          if ((error as Error).name !== "AbortError") {
+            console.warn(`[mcp] GET stream error for ${url}:`, error);
+          }
+        }
+      };
+      // Fire-and-forget: the GET stream runs independently of request/response.
+      void pump();
+    },
     async send(message) {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -65,30 +173,7 @@ function createHttpTransport(url: string, headers?: Record<string, string>): Mcp
       const ct = res.headers.get("content-type") ?? "";
       if (ct.includes("text/event-stream")) {
         if (!res.body) return;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let sep = buf.indexOf("\n\n");
-          while (sep !== -1) {
-            const block = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            const msg = parseSseBlock(block);
-            if (msg) handler?.(msg);
-            sep = buf.indexOf("\n\n");
-          }
-        }
-        buf += decoder.decode();
-        if (buf.trim().length > 0) {
-          for (const block of buf.split("\n\n")) {
-            if (!block.trim()) continue;
-            const msg = parseSseBlock(block);
-            if (msg) handler?.(msg);
-          }
-        }
+        await pumpSse(res.body, abortController.signal);
         return;
       }
       const text = await res.text();
@@ -110,7 +195,9 @@ function createHttpTransport(url: string, headers?: Record<string, string>): Mcp
           try {
             const msg = JSON.parse(trimmed) as Record<string, unknown>;
             handler?.(msg);
-          } catch {}
+          } catch {
+            /* best-effort: skip non-JSON lines in mixed response */
+          }
         }
       }
     },
@@ -120,7 +207,11 @@ function createHttpTransport(url: string, headers?: Record<string, string>): Mcp
     onClose(h) {
       closeHandler = h;
     },
+    stderrTail() {
+      return "";
+    },
     async close() {
+      abortController.abort();
       closeHandler?.();
     },
   };
@@ -192,7 +283,11 @@ function createStdioTransport(
         void pumpErr();
       }
       if (proc && typeof (proc as unknown as { exited?: Promise<number> }).exited === "object") {
-        void (proc as unknown as { exited: Promise<number> }).exited.then(() => closeHandler?.()).catch(() => {});
+        void (proc as unknown as { exited: Promise<number> }).exited
+          .then(() => closeHandler?.())
+          .catch(() => {
+            /* best-effort: process may already have exited */
+          });
       }
     },
     async send(message) {
@@ -206,11 +301,15 @@ function createStdioTransport(
       if (typeof stdin.write === "function") {
         try {
           stdin.write(payload);
-        } catch {}
+        } catch {
+          /* best-effort write: stdin may have closed */
+        }
         if (typeof stdin.on === "function") stdin.on("error", () => {});
       } else if (stdin.getWriter) {
         const writer = stdin.getWriter();
-        await writer.write(new TextEncoder().encode(payload)).catch(() => {});
+        await writer.write(new TextEncoder().encode(payload)).catch(() => {
+          /* best-effort write: stream may have closed */
+        });
         writer.releaseLock();
       } else {
         throw new Error("transport stdin not writable");

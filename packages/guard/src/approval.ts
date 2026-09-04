@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { normalizeCommand } from "./policy.ts";
 
 /**
@@ -50,12 +51,57 @@ export interface RespondOutcome {
 /**
  * Session-scoped approval state: the "always allow" grants and the pending
  * asks awaiting a user response. One instance per session, owned by the
- * daemon — grants die with the daemon process, so "always" never outlives the
- * session it was given in.
+ * daemon — grants persist to disk per-session so "always" survives daemon
+ * restart.
  */
 export class ApprovalManager {
   private readonly grants = new Set<string>();
   private readonly pending = new Map<string, PendingEntry>();
+
+  /**
+   * @param approvalsDir  Directory for per-session grant files (e.g. dataDir/approvals).
+   *                      When absent, grants are in-memory only.
+   * @param sessionId     Session identifier used as the filename stem.
+   *                      When absent alongside approvalsDir, persistence is skipped.
+   */
+  constructor(
+    private readonly approvalsDir?: string,
+    private readonly sessionId?: string,
+  ) {
+    if (this.approvalsDir && this.sessionId) {
+      this.loadGrants();
+    }
+  }
+
+  private get grantsPath(): string | undefined {
+    if (!this.approvalsDir || !this.sessionId) return undefined;
+    return join(this.approvalsDir, `${this.sessionId}.json`);
+  }
+
+  /** Loads persisted grants from disk. Silently starts fresh on any error. */
+  private loadGrants(): void {
+    const path = this.grantsPath;
+    if (!path) return;
+    try {
+      const data = readFileSync(path, "utf-8");
+      const keys: string[] = JSON.parse(data);
+      for (const key of keys) this.grants.add(key);
+    } catch {
+      // File doesn't exist or is corrupt — start with empty grants.
+    }
+  }
+
+  /** Persists the current grants set to disk. Best-effort (never throws). */
+  private saveGrants(): void {
+    const path = this.grantsPath;
+    if (!path) return;
+    try {
+      mkdirSync(this.approvalsDir!, { recursive: true });
+      writeFileSync(path, JSON.stringify([...this.grants]));
+    } catch {
+      // Best-effort persistence — failure must not break the running daemon.
+    }
+  }
 
   /** Whether this exact subject already carries a session "always" grant. */
   hasAlways(request: ApprovalRequest): boolean {
@@ -64,6 +110,7 @@ export class ApprovalManager {
 
   grantAlways(request: ApprovalRequest): void {
     this.grants.add(grantKey(request));
+    this.saveGrants();
   }
 
   /**

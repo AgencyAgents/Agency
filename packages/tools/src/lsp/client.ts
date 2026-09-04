@@ -29,7 +29,47 @@ export interface LspLocation {
   character: number;
 }
 
+/** One workspace/document symbol, flattened from the server's hierarchy. */
+export interface LspSymbol {
+  name: string;
+  kind: number;
+  path: string;
+  line: number;
+  character: number;
+  containerName?: string;
+}
+
+/** A single text replacement inside one file (0-based positions). */
+export interface LspTextEdit {
+  path: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+  newText: string;
+}
+
+/** What textDocument/prepareRename reported (null when rename is unavailable). */
+export interface LspPrepareRename {
+  placeholder?: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+}
+
 const HEADER_SEPARATOR = Buffer.from("\r\n\r\n");
+
+const LSP_DIAGNOSTICS_POLL_MS = 50;
+
+/** fileURLToPath without throwing on non-native URIs (keeps the raw uri then). */
+function uriToPath(uri: string): string {
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return uri;
+  }
+}
 
 function indexOfSubsequence(haystack: Buffer, needle: Buffer, from = 0): number {
   const last = haystack.length - needle.length;
@@ -72,7 +112,7 @@ export class LspClient {
   private async start(): Promise<void> {
     this.child = spawn(this.options.command, this.options.args ?? [], {
       cwd: this.options.cwd,
-      env: this.options.env ? { ...process.env, ...this.options.env } as Record<string, string> : undefined,
+      env: this.options.env ? ({ ...process.env, ...this.options.env } as Record<string, string>) : undefined,
       stdio: ["pipe", "pipe", "ignore"],
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.handleChunk(chunk));
@@ -117,15 +157,19 @@ export class LspClient {
     return this.diagnostics.get(pathToFileURL(path).href) ?? [];
   }
 
-  async waitForDiagnostics(path: string, timeoutMs: number): Promise<readonly LspDiagnostic[]> {
+  /**
+   * Polls the push-based diagnostics cache until the server publishes for
+   * `path` or `timeoutMs` elapses (default 1200ms). Resolves with whatever is
+   * cached on timeout — never rejects, never blocks an edit.
+   */
+  async waitForDiagnostics(path: string, timeoutMs = 1200): Promise<readonly LspDiagnostic[]> {
     const uri = pathToFileURL(path).href;
     const initial = this.diagnostics.get(uri);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      await new Promise<void>((resolve) => setTimeout(resolve, LSP_DIAGNOSTICS_POLL_MS));
       const cur = this.diagnostics.get(uri);
-      if (cur !== initial && cur !== undefined) return cur;
-      if (initial === undefined && cur !== undefined) return cur;
+      if (cur !== undefined && cur !== initial) return cur;
     }
     return this.diagnosticsFor(path);
   }
@@ -138,10 +182,167 @@ export class LspClient {
       context: { includeDeclaration: true },
     })) as Array<{ uri: string; range: { start: { line: number; character: number } } }> | undefined;
     return (result ?? []).map((location) => ({
-      path: fileURLToPath(location.uri),
+      path: uriToPath(location.uri),
       line: location.range.start.line,
       character: location.range.start.character,
     }));
+  }
+
+  /** textDocument/definition, resolved to plain paths (single, array, or LocationLink). */
+  async definition(path: string, line: number, character: number): Promise<LspLocation[]> {
+    const result = (await this.request("textDocument/definition", {
+      textDocument: { uri: pathToFileURL(path).href },
+      position: { line, character },
+    })) as
+      | { uri: string; range: { start: { line: number; character: number } } }
+      | Array<
+          | { uri: string; range: { start: { line: number; character: number } } }
+          | { targetUri: string; targetSelectionRange: { start: { line: number; character: number } } }
+        >
+      | undefined;
+    if (!result) return [];
+    const items = Array.isArray(result) ? result : [result];
+    return items.map((location) => {
+      if ("targetUri" in location) {
+        return {
+          path: uriToPath(location.targetUri),
+          line: location.targetSelectionRange.start.line,
+          character: location.targetSelectionRange.start.character,
+        };
+      }
+      return {
+        path: uriToPath(location.uri),
+        line: location.range.start.line,
+        character: location.range.start.character,
+      };
+    });
+  }
+
+  /** textDocument/documentSymbol for one file, flattened to a plain list. */
+  async documentSymbols(path: string): Promise<LspSymbol[]> {
+    const result = (await this.request("textDocument/documentSymbol", {
+      textDocument: { uri: pathToFileURL(path).href },
+    })) as Array<Record<string, unknown>> | undefined;
+    const out: LspSymbol[] = [];
+    const walk = (nodes: Array<Record<string, unknown>>, container?: string): void => {
+      for (const node of nodes) {
+        const range = node.range as { start?: { line?: number; character?: number } } | undefined;
+        const selection = node.selectionRange as
+          | { start?: { line?: number; character?: number } }
+          | undefined;
+        const start = selection?.start ?? range?.start;
+        out.push({
+          name: String(node.name ?? ""),
+          kind: typeof node.kind === "number" ? node.kind : 0,
+          path,
+          line: start?.line ?? 0,
+          character: start?.character ?? 0,
+          containerName:
+            container ?? (typeof node.containerName === "string" ? node.containerName : undefined),
+        });
+        const children = node.children;
+        if (Array.isArray(children))
+          walk(children as Array<Record<string, unknown>>, String(node.name ?? ""));
+      }
+    };
+    walk(result ?? []);
+    return out;
+  }
+
+  /** workspace/symbol query across the project. */
+  async workspaceSymbols(query: string): Promise<LspSymbol[]> {
+    const result = (await this.request("workspace/symbol", { query })) as
+      | Array<{
+          name?: string;
+          kind?: number;
+          location?: { uri?: string; range?: { start?: { line?: number; character?: number } } };
+          containerName?: string;
+        }>
+      | undefined;
+    return (result ?? []).map((symbol) => ({
+      name: String(symbol.name ?? ""),
+      kind: typeof symbol.kind === "number" ? symbol.kind : 0,
+      path: symbol.location?.uri ? uriToPath(symbol.location.uri) : "",
+      line: symbol.location?.range?.start?.line ?? 0,
+      character: symbol.location?.range?.start?.character ?? 0,
+      containerName: symbol.containerName,
+    }));
+  }
+
+  /** textDocument/prepareRename; null when the server refuses the rename. */
+  async prepareRename(path: string, line: number, character: number): Promise<LspPrepareRename | null> {
+    let result: unknown;
+    try {
+      result = await this.request("textDocument/prepareRename", {
+        textDocument: { uri: pathToFileURL(path).href },
+        position: { line, character },
+      });
+    } catch {
+      return null;
+    }
+    if (result === null || result === undefined) return null;
+    if (
+      typeof result === "object" &&
+      ("placeholder" in (result as Record<string, unknown>) || "range" in (result as Record<string, unknown>))
+    ) {
+      const r = result as {
+        placeholder?: string;
+        range?: {
+          start?: { line?: number; character?: number };
+          end?: { line?: number; character?: number };
+        };
+        start?: { line?: number; character?: number };
+        end?: { line?: number; character?: number };
+      };
+      const start = r.range?.start ?? r.start;
+      const end = r.range?.end ?? r.end;
+      return {
+        placeholder: typeof r.placeholder === "string" ? r.placeholder : undefined,
+        line: start?.line ?? line,
+        character: start?.character ?? character,
+        endLine: end?.line ?? line,
+        endCharacter: end?.character ?? character,
+      };
+    }
+    return { line, character, endLine: line, endCharacter: character };
+  }
+
+  /**
+   * textDocument/rename, returned as a flat edit list the agent applies with
+   * the edit tool (which owns snapshots, approval, and diagnostics) — the LSP
+   * layer never writes files itself.
+   */
+  async rename(path: string, line: number, character: number, newName: string): Promise<LspTextEdit[]> {
+    const result = (await this.request("textDocument/rename", {
+      textDocument: { uri: pathToFileURL(path).href },
+      position: { line, character },
+      newName,
+    })) as
+      | {
+          changes?: Record<
+            string,
+            Array<{
+              range: { start: { line: number; character: number }; end: { line: number; character: number } };
+              newText: string;
+            }>
+          >;
+        }
+      | undefined;
+    const changes = result?.changes ?? {};
+    const out: LspTextEdit[] = [];
+    for (const [uri, edits] of Object.entries(changes)) {
+      for (const edit of edits) {
+        out.push({
+          path: uriToPath(uri),
+          line: edit.range.start.line,
+          character: edit.range.start.character,
+          endLine: edit.range.end.line,
+          endCharacter: edit.range.end.character,
+          newText: edit.newText,
+        });
+      }
+    }
+    return out;
   }
 
   /** shutdown + exit, then kills the process; safe to call more than once. */

@@ -1,4 +1,4 @@
-import type { ToolSpec, ToolContext } from "../contract.ts";
+import type { ToolContext, ToolSpec } from "../contract.ts";
 import { summarize } from "../render.ts";
 
 export interface TaskToolDeps {
@@ -36,6 +36,13 @@ export function createTaskTool(deps: TaskToolDeps): ToolSpec {
     },
     async handler(input, ctx) {
       const depth = ctx.taskDepth ?? 0;
+      // Depth-0 child isolation: subagents (taskDepth > 0) cannot spawn tasks.
+      if (depth > 0) {
+        return {
+          content: "nested task blocked: subagents cannot spawn tasks",
+          isError: true,
+        };
+      }
       if (depth >= maxDepth) {
         return {
           content: `task depth limit reached (depth ${depth} >= maxDepth ${maxDepth}): nested task denied`,
@@ -51,7 +58,9 @@ export function createTaskTool(deps: TaskToolDeps): ToolSpec {
   return spec as unknown as ToolSpec;
 }
 
-export function extractFinalText(messages: Array<{ role: string; content: Array<{ type: string; text?: string; content?: string }> }>): string {
+export function extractFinalText(
+  messages: Array<{ role: string; content: Array<{ type: string; text?: string; content?: string }> }>,
+): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role !== "assistant") continue;

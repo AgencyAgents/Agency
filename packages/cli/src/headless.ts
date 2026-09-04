@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { dataDir } from "@agency/core";
+import { configDir, dataDir, loadConfig } from "@agency/core";
+import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
 import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
 import type { ImageBlock, Message } from "@agency/schema";
@@ -37,20 +38,48 @@ export interface HeadlessConnectOptions {
   connect?: EnsureDaemonOptions["connect"];
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
+  /** Log sink for progress messages (spawn, connect, trust). Defaults to console.error. */
+  log?: (msg: string) => void;
 }
 
 /**
  * Finds or starts this workspace's daemon (one per workspace root) and returns
- * a handshake-complete client.
+ * a handshake-complete client. Checks trust before spawning, and logs
+ * spawn/connect progress to the log sink.
  */
 export async function connectHeadlessClient(
   options: HeadlessConnectOptions,
 ): Promise<{ port: number; client: DaemonClient }> {
+  const log = options.log ?? ((msg: string) => process.stderr.write(`${msg}\n`));
+
+  // Trust check: verify the workspace is trusted before any daemon work.
+  const { createFileTrustStore } = await import("@agency/guard");
+  const env = process.env;
+  const cfg = loadConfig({ globalDir: configDir(env), env });
+  const trustStore = createFileTrustStore(join(dataDir(env), "trust.json"));
+  const trusted = trustStore.isTrusted(options.workspaceRoot);
+  if (!trusted && cfg.trust?.required !== false) {
+    log(t("cli.trust.checking", { path: options.workspaceRoot }));
+    // In headless mode, prompt on stderr so it doesn't mix with stdout output.
+    log(t("cli.trust.prompt", { path: options.workspaceRoot }));
+    // Read a single line from stdin for the trust decision.
+    const { readSecretLine } = await import("./onboarding.ts");
+    const answer = await readSecretLine("");
+    if (answer.toLowerCase() === "y" || answer.toLowerCase() === "yes") {
+      trustStore.trust(options.workspaceRoot);
+      log(t("cli.trust.accepted", { path: options.workspaceRoot }));
+    } else {
+      log(t("cli.trust.denied", { path: options.workspaceRoot }));
+      throw new Error(t("trust.denied"));
+    }
+  }
+
   return ensureDaemon({
     workspaceRoot: options.workspaceRoot,
     instanceDir: options.instanceDir ?? defaultInstanceDir(),
     connect: options.connect,
     spawnDaemon: (instanceFile) => {
+      log(t("cli.daemon.spawning", { workspace: options.workspaceRoot }));
       Bun.spawn(
         [
           "bun",
@@ -64,7 +93,19 @@ export async function connectHeadlessClient(
         { stdio: ["ignore", "ignore", "ignore"] },
       );
     },
-  });
+  })
+    .then((result) => {
+      log(t("cli.daemon.connected", { port: String(result.port) }));
+      return result;
+    })
+    .catch((error: unknown) => {
+      // Wrap timeout errors with actionable diagnostics.
+      if (error instanceof Error && error.message.includes("did not become ready")) {
+        const entry = options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY;
+        throw new Error(t("cli.daemon.timeout", { timeout: "5000", entry }));
+      }
+      throw error;
+    });
 }
 
 /**

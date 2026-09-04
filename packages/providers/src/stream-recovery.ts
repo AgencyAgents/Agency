@@ -16,6 +16,9 @@ export async function* withMidStreamRecovery(events: AsyncIterable<StreamEvent>)
   const iterator = events[Symbol.asyncIterator]();
   let sawContent = false;
   let sawStop = false;
+  // Track tool calls that have started but not yet ended, so we can close
+  // them out if the connection drops mid-stream.
+  const openToolCalls = new Set<string>();
 
   while (true) {
     let next: IteratorResult<StreamEvent>;
@@ -24,6 +27,10 @@ export async function* withMidStreamRecovery(events: AsyncIterable<StreamEvent>)
     } catch (error) {
       if (sawStop) return;
       if (!sawContent) throw error;
+      // Close any dangling tool calls before synthesizing the stop.
+      for (const id of openToolCalls) {
+        yield { type: "tool_call_end", id };
+      }
       yield {
         type: "message_stop",
         stopReason: "error",
@@ -37,6 +44,9 @@ export async function* withMidStreamRecovery(events: AsyncIterable<StreamEvent>)
     const event = next.value;
     if (event.type === "message_stop") sawStop = true;
     else sawContent = true;
+    // Track tool call lifecycle so we can close dangling calls on recovery.
+    if (event.type === "tool_call_start") openToolCalls.add(event.id);
+    else if (event.type === "tool_call_end") openToolCalls.delete(event.id);
     yield event;
   }
 }

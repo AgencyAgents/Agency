@@ -4,10 +4,13 @@ import { clip, itemCount, lineCount, summarize } from "../render.ts";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
+export type TodoPriority = "low" | "medium" | "high";
+
 export interface TodoItem {
   id: string;
   content: string;
   status: TodoStatus;
+  priority?: TodoPriority;
 }
 
 /**
@@ -38,7 +41,48 @@ export class TodoStore {
   }
 }
 
+/**
+ * Minimal session-store surface needed for todo persistence: the daemon's
+ * SessionStore satisfies this structurally (load/append/latestTip), so this
+ * helper builds the canonical TodoPersistence without importing core (tools
+ * must not depend on core or cli). Save appends a `todo_state` entry; load
+ * reverse-scans for the latest one (newest write wins, earlier states stay in
+ * the file for audit but never shadow the tip).
+ */
+export interface TodoSessionStore {
+  load: (sessionId: string) => Array<{ type: string; todos?: unknown }>;
+  latestTip: (entries: Array<{ type: string; todos?: unknown }>) => string | undefined;
+  append: (
+    sessionId: string,
+    entry: { type: string; parentId: string | null; todos: readonly TodoItem[] },
+  ) => Promise<unknown>;
+}
+
+export function createSessionTodoPersistence(store: TodoSessionStore): TodoPersistence {
+  return {
+    async save(sessionId: string, todos: readonly TodoItem[]): Promise<void> {
+      const entries = store.load(sessionId);
+      await store.append(sessionId, {
+        type: "todo_state",
+        parentId: store.latestTip(entries) ?? null,
+        todos: [...todos],
+      });
+    },
+    load(sessionId: string): readonly TodoItem[] | undefined {
+      const entries = store.load(sessionId);
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry?.type === "todo_state" && Array.isArray(entry.todos)) {
+          return entry.todos as TodoItem[];
+        }
+      }
+      return undefined;
+    },
+  };
+}
+
 const STATUSES: ReadonlySet<string> = new Set(["pending", "in_progress", "completed"]);
+const PRIORITIES: ReadonlySet<string> = new Set(["low", "medium", "high"]);
 
 /** Returns the first validation problem in a todo list, or undefined when it is well-formed. */
 export function validateTodoItems(items: unknown): string | undefined {
@@ -47,12 +91,19 @@ export function validateTodoItems(items: unknown): string | undefined {
   for (const [index, raw] of items.entries()) {
     if (typeof raw !== "object" || raw === null) return `items[${index}] must be an object`;
     const item = raw as Record<string, unknown>;
-    if (typeof item.id !== "string" || item.id.length === 0) return `items[${index}].id must be a non-empty string`;
+    if (typeof item.id !== "string" || item.id.length === 0)
+      return `items[${index}].id must be a non-empty string`;
     if (typeof item.content !== "string" || item.content.trim().length === 0) {
       return `items[${index}].content must be a non-empty string`;
     }
     if (typeof item.status !== "string" || !STATUSES.has(item.status)) {
       return `items[${index}].status must be one of pending, in_progress, completed`;
+    }
+    if (
+      item.priority !== undefined &&
+      (typeof item.priority !== "string" || !PRIORITIES.has(item.priority))
+    ) {
+      return `items[${index}].priority must be one of low, medium, high`;
     }
     if (seen.has(item.id)) return `items[${index}].id "${item.id}" is a duplicate`;
     seen.add(item.id);
@@ -98,6 +149,7 @@ export function createTodoWriteTool(store: TodoStore): ToolSpec {
               id: { type: "string" },
               content: { type: "string" },
               status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              priority: { type: "string", enum: ["low", "medium", "high"] },
             },
             required: ["id", "content", "status"],
           },

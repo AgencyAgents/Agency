@@ -354,9 +354,14 @@ export class PermissionsGate implements ToolPolicy {
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
       if (this.options.absentToolsDenied) return "deny";
-      return this.defaultFor(request.riskTier);
+      const decision = this.defaultFor(request.riskTier);
+      if (decision === "allow" && this.isEnvRead(request)) return "deny";
+      return decision;
     }
-    if (typeof entry === "string") return entry;
+    if (typeof entry === "string") {
+      if (entry === "allow" && this.isEnvRead(request)) return "deny";
+      return entry;
+    }
 
     const subject: PolicyRequest = { tool: request.tool };
     if (request.command !== undefined && isCommandPatternTool(request.tool)) {
@@ -366,7 +371,9 @@ export class PermissionsGate implements ToolPolicy {
     if (request.path !== undefined && isPathPatternTool(request.tool)) {
       subject.path = relativeWorkspacePath(this.options.workspaceRoot, request.path);
     }
-    return this.engine.evaluate(subject);
+    const decision = this.engine.evaluate(subject);
+    if (decision === "allow" && this.isEnvRead(request)) return "deny";
+    return decision;
   }
 
   /**
@@ -395,7 +402,7 @@ export class PermissionsGate implements ToolPolicy {
     // Read-only (`safe`) tools still work — refusing trust leaves a usable,
     // read-only session instead of a dead one.
     const trust = this.options.trust;
-    if (trust?.required && request.riskTier !== undefined && request.riskTier !== "safe") {
+    if (trust?.required && request.riskTier !== "safe") {
       if (!trust.store.isTrusted(trust.root)) return "deny";
     }
 
@@ -412,6 +419,33 @@ export class PermissionsGate implements ToolPolicy {
       metadata: { riskTier: request.riskTier },
     });
     return response === "reject" ? "deny" : "allow";
+  }
+
+  /**
+   * Returns true when the request is a path-scoped read of a `.env` file that
+   * has no explicit allow in the permissions config. This implements the
+   * auto-deny policy: `.env` files are never readable by default, even when
+   * the tool's riskTier is `safe` and no explicit permission is configured.
+   */
+  private isEnvRead(request: ToolCallPolicyRequest): boolean {
+    if (!request.path) return false;
+    if (!isPathPatternTool(request.tool)) return false;
+    const relPath = relativeWorkspacePath(this.options.workspaceRoot, request.path);
+    if (!globMatches("**/.env/**", relPath, "path") && !globMatches("**/.env*", relPath, "path")) {
+      return false;
+    }
+    // If there's an explicit allow for this path, respect it.
+    return !this.hasExplicitAllow(request.tool, relPath);
+  }
+
+  private hasExplicitAllow(tool: string, relPath: string): boolean {
+    const entry = this.permissions[tool];
+    if (entry === undefined) return false;
+    if (typeof entry === "string") return entry === "allow";
+    for (const [pattern, decision] of Object.entries(entry)) {
+      if (decision === "allow" && globMatches(pattern, relPath, "path")) return true;
+    }
+    return false;
   }
 
   private defaultFor(riskTier?: RiskTier): Decision {

@@ -8,6 +8,7 @@ import {
   type Config,
   ConfigSchema,
   configMigrations,
+  DEFAULT_ROSTER,
   defaultConfig,
 } from "./schema.ts";
 
@@ -158,7 +159,14 @@ export function loadConfig(sources: ConfigSources = {}): Config {
     if (managedLayer) merged = deepMergeLayer(merged, migrateLayer(managedLayer));
   }
 
-  return ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+  const config = ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+
+  // Fresh config with no agents key gets the default empty roster.
+  if (!config.agents) {
+    (config as Record<string, unknown>).agents = { ...DEFAULT_ROSTER };
+  }
+
+  return config;
 }
 
 /**

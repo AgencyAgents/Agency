@@ -1,7 +1,7 @@
 import { t } from "@agency/i18n";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
-import { str, summarize } from "../render.ts";
 import type { ProcessManager } from "../process-manager.ts";
+import { str, summarize } from "../render.ts";
 
 function unknown(id: string): { content: string; isError: true } {
   return { content: t("tool.process.unknown", { id }), isError: true };
@@ -10,7 +10,8 @@ function unknown(id: string): { content: string; isError: true } {
 export function createProcessOutputTool(processManager: ProcessManager): ToolSpec {
   const spec: ToolSpec<{ id: string }> = {
     name: "process_output",
-    description: "Reads the accumulated output of a background process started via bash with background: true.",
+    description:
+      "Reads the accumulated output of a background process started via bash with background: true.",
     inputSchema: {
       type: "object",
       properties: {

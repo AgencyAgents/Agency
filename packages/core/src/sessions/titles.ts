@@ -1,7 +1,7 @@
-import type { ProviderAdapter } from "@agency/providers";
 import type { HttpClient } from "@agency/net";
+import type { ProviderAdapter } from "@agency/providers";
 import type { Message } from "@agency/schema";
-import { parseModelRef, type Config } from "../config/schema.ts";
+import { type Config, parseModelRef } from "../config/schema.ts";
 
 export function resolveSmallModel(config: Config): { provider: string; model: string } | undefined {
   const ref = config.small_model ? parseModelRef(config.small_model) : undefined;
@@ -14,6 +14,7 @@ export async function generateTitle(
   options: {
     config: Config;
     http: HttpClient;
+    apiKey: string;
     providerConfig: Record<string, import("../config/schema.ts").ProviderConfig>;
     adapterFor?: (provider: string) => ProviderAdapter;
   },
@@ -27,7 +28,9 @@ export async function generateTitle(
   try {
     if (options.adapterFor) adapter = options.adapterFor(resolved.provider);
     else {
-      const { createOpenAiCompatibleAdapter, anthropicAdapter, openaiAdapter, googleAdapter } = await import("@agency/providers");
+      const { createOpenAiCompatibleAdapter, anthropicAdapter, openaiAdapter, googleAdapter } = await import(
+        "@agency/providers"
+      );
       const pc = options.providerConfig[resolved.provider];
       if (pc) {
         const family = pc.family ?? "openai-compatible";
@@ -49,15 +52,22 @@ export async function generateTitle(
     return undefined;
   }
 
-  const apiKey = "title-gen";
   const messages: Message[] = [
-    { role: "user", content: [{ type: "text", text: `Generate a short title (max 6 words) for this request. Reply with ONLY the title, no quotes, no punctuation prefix:\n\n${trimmed}` }] },
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Generate a short title (max 6 words) for this request. Reply with ONLY the title, no quotes, no punctuation prefix:\n\n${trimmed}`,
+        },
+      ],
+    },
   ];
 
   try {
     let title = "";
     for await (const event of adapter.stream(
-      { model: resolved.model, apiKey, messages, maxTokens: 32 },
+      { model: resolved.model, apiKey: options.apiKey, messages, maxTokens: 32 },
       options.http,
     )) {
       if (event.type === "text_delta") title += event.text;

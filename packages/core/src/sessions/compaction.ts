@@ -1,4 +1,5 @@
-import type { Tokenizer } from "@agency/providers";
+import type { AsyncTokenizer, Tokenizer } from "@agency/providers";
+import { isAsyncTokenizer } from "@agency/providers";
 import type { MessageEntry, SessionEntry } from "./entry.ts";
 import { isMessageEntry, isTodoStateEntry } from "./entry.ts";
 
@@ -16,15 +17,41 @@ export interface CompactionThreshold {
 export function countChainTokens(chain: SessionEntry[], tokenizer: Tokenizer): number {
   let total = 0;
   for (const entry of chain) {
-      if (isMessageEntry(entry)) {
-        for (const block of entry.message.content) {
-          if (block.type === "text" || block.type === "thinking") total += tokenizer.count(block.text);
-          else if (block.type === "tool_result") total += tokenizer.count(block.content);
-          else if (block.type === "tool_call") total += tokenizer.count(JSON.stringify(block.input));
-          else if (block.type === "redacted_thinking") total += tokenizer.count(block.data);
-        }
-      } else if (entry.type === "compaction_summary" && typeof entry.summary === "string") {
+    if (isMessageEntry(entry)) {
+      for (const block of entry.message.content) {
+        if (block.type === "text" || block.type === "thinking") total += tokenizer.count(block.text);
+        else if (block.type === "tool_result") total += tokenizer.count(block.content);
+        else if (block.type === "tool_call") total += tokenizer.count(JSON.stringify(block.input));
+        else if (block.type === "redacted_thinking") total += tokenizer.count(block.data);
+      }
+    } else if (entry.type === "compaction_summary" && typeof entry.summary === "string") {
       total += tokenizer.count(entry.summary);
+    }
+  }
+  return total;
+}
+
+/** Async variant of countChainTokens for use with AsyncTokenizer (API-based
+ *  exact counting for Anthropic/Google). Falls through to sync counting when
+ *  the tokenizer is not async. */
+export async function countChainTokensAsync(
+  chain: SessionEntry[],
+  tokenizer: Tokenizer | AsyncTokenizer,
+): Promise<number> {
+  if (!isAsyncTokenizer(tokenizer)) {
+    return countChainTokens(chain, tokenizer);
+  }
+  let total = 0;
+  for (const entry of chain) {
+    if (isMessageEntry(entry)) {
+      for (const block of entry.message.content) {
+        if (block.type === "text" || block.type === "thinking") total += await tokenizer.count(block.text);
+        else if (block.type === "tool_result") total += await tokenizer.count(block.content);
+        else if (block.type === "tool_call") total += await tokenizer.count(JSON.stringify(block.input));
+        else if (block.type === "redacted_thinking") total += await tokenizer.count(block.data);
+      }
+    } else if (entry.type === "compaction_summary" && typeof entry.summary === "string") {
+      total += await tokenizer.count(entry.summary);
     }
   }
   return total;
@@ -75,14 +102,15 @@ export async function compact(
   store: SessionStore,
   sessionId: string,
   tipId: string,
-  tokenizer: Tokenizer,
+  tokenizer: Tokenizer | AsyncTokenizer,
   threshold: CompactionThreshold,
   summarize: (text: string) => Promise<string>,
   keepLastN = 4,
 ): Promise<CompactionResult> {
   const entries = store.load(sessionId);
   const chain = store.chainFor(entries, tipId);
-  if (!shouldCompact(countChainTokens(chain, tokenizer), threshold)) {
+  const tokenCount = await countChainTokensAsync(chain, tokenizer);
+  if (!shouldCompact(tokenCount, threshold)) {
     return { compacted: false, tipId };
   }
 
@@ -113,7 +141,7 @@ export async function compact(
   }
 
   try {
-    const bus = (store as unknown as { bus?: { emit: (e: string, p: unknown) => void } }).bus;
+    const bus = store.getBus?.();
     bus?.emit("session.compacted", { sessionId, tipId: parentId });
     bus?.emit("event", { event: "session.compacted", payload: { sessionId, tipId: parentId } });
   } catch {}

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { type Dirent, existsSync, mkdirSync, rmSync } from "node:fs";
+import { readdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { configDir } from "./paths.ts";
 
 /** User data: sessions, snapshots. Never safe to delete casually. */
@@ -67,24 +67,35 @@ export function storagePaths(
 /**
  * Recursive size walk, async (A3: this can traverse tens of thousands of
  * files under dataDir; statSync-per-entry stalls whichever loop runs it).
+ * Subtrees listed in `exclude` (exact dirs) are skipped, so a category that
+ * nests inside another (cache/logs under dataDir on win32, logs on every
+ * platform) is never double-counted: each byte belongs to exactly one
+ * category. Non-nested excludes never match and cost nothing.
  */
-async function dirSizeBytes(dir: string): Promise<number> {
-  let entries;
+async function dirSizeBytes(dir: string, exclude: readonly string[] = []): Promise<number> {
+  let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return 0; // missing or unreadable dir counts as empty
   }
-  let total = 0;
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      total += await dirSizeBytes(full);
-    } else {
-      total += (await stat(full)).size;
-    }
-  }
-  return total;
+  const prefix = (p: string): boolean => exclude.some((x) => x === p || p.startsWith(`${x}${sep}`));
+  if (prefix(dir)) return 0;
+  const sizes = await Promise.all(
+    entries.map(async (entry) => {
+      const full = join(dir, entry.name);
+      if (prefix(full)) return 0;
+      if (entry.isDirectory()) {
+        return dirSizeBytes(full, exclude);
+      }
+      try {
+        return (await stat(full)).size;
+      } catch {
+        return 0; // vanished between readdir and stat
+      }
+    }),
+  );
+  return sizes.reduce((sum, n) => sum + n, 0);
 }
 
 export interface StorageReport {
@@ -97,7 +108,9 @@ export interface StorageReport {
 }
 
 /** `agency storage`: size accounting by category, so users can see what's
- *  actually on disk before deciding to prune. */
+ *  actually on disk before deciding to prune. `dataBytes` excludes the
+ *  cache and logs subtrees (both nest under dataDir on win32; logs nests on
+ *  every platform), so no byte is counted twice. */
 export async function reportStorage(
   env: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
@@ -105,13 +118,18 @@ export async function reportStorage(
   const data = dataDir(env, platform);
   const cache = cacheDir(env, platform);
   const logs = logDir(env, platform);
+  const [dataBytes, cacheBytes, logsBytes] = await Promise.all([
+    dirSizeBytes(data, [cache, logs]),
+    dirSizeBytes(cache),
+    dirSizeBytes(logs),
+  ]);
   return {
     dataDir: data,
-    dataBytes: await dirSizeBytes(data),
+    dataBytes,
     cacheDir: cache,
-    cacheBytes: await dirSizeBytes(cache),
+    cacheBytes,
     logsDir: logs,
-    logsBytes: await dirSizeBytes(logs),
+    logsBytes,
   };
 }
 
@@ -130,59 +148,89 @@ export interface RetentionPolicy {
 
 /** Deletes session files across every workspace older than the retention
  *  window, then (if still over budget) oldest-first until under the size
- *  ceiling. Never applied silently: callers decide when this runs. */
-export function pruneSessions(
+ *  ceiling. Sort is deterministic: primary key mtimeMs, tiebreaker path
+ *  (localeCompare). Sidecar files (.trace.jsonl, .cassette.json) are removed
+ *  alongside each session's main .jsonl. Never applied silently: callers
+ *  decide when this runs.
+ *
+ *  Async: the directory walk stats every candidate concurrently
+ *  (Promise.all over readdir/stat) instead of one statSync per file, so a
+ *  large sessions tree doesn't stall the daemon's event loop. */
+export async function pruneSessions(
   policy: RetentionPolicy,
   env: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
-): { deleted: string[] } {
+): Promise<{ deleted: string[] }> {
   const root = join(dataDir(env, platform), "sessions");
-  if (!existsSync(root)) return { deleted: [] };
-
-  const files: Array<{ path: string; mtimeMs: number; size: number }> = [];
-  for (const workspace of readdirSync(root)) {
-    const workspaceDir = join(root, workspace);
-    if (!statSync(workspaceDir).isDirectory()) continue;
-    for (const file of readdirSync(workspaceDir)) {
-      if (!file.endsWith(".jsonl") || file.endsWith(".trace.jsonl")) continue;
-      const full = join(workspaceDir, file);
-      const stat = statSync(full);
-      files.push({ path: full, mtimeMs: stat.mtimeMs, size: stat.size });
-    }
+  let workspaces: Dirent[];
+  try {
+    workspaces = await readdir(root, { withFileTypes: true });
+  } catch {
+    return { deleted: [] };
   }
+
+  const perWorkspace = await Promise.all(
+    workspaces
+      .filter((w) => w.isDirectory())
+      .map(async (w) => {
+        const workspaceDir = join(root, w.name);
+        let files: string[];
+        try {
+          files = await readdir(workspaceDir);
+        } catch {
+          return [];
+        }
+        const candidates = files.filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl"));
+        return (
+          await Promise.all(
+            candidates.map(async (file) => {
+              const full = join(workspaceDir, file);
+              try {
+                const s = await stat(full);
+                return s.isFile() ? [{ path: full, mtimeMs: s.mtimeMs, size: s.size }] : [];
+              } catch {
+                return []; // vanished mid-walk
+              }
+            }),
+          )
+        ).flat();
+      }),
+  );
+  const files: Array<{ path: string; mtimeMs: number; size: number }> = perWorkspace.flat();
 
   const deleted: string[] = [];
   const now = Date.now();
   const maxAgeMs = policy.maxAgeDays !== undefined ? policy.maxAgeDays * 24 * 60 * 60 * 1000 : undefined;
-  const removeWithSidecars = (sessionPath: string): void => {
-    rmSync(sessionPath, { force: true });
+  const removeWithSidecars = async (sessionPath: string): Promise<void> => {
+    await rm(sessionPath, { force: true });
     const dir = join(sessionPath, "..");
     const id = basename(sessionPath, ".jsonl");
     try {
-      for (const f of readdirSync(dir)) {
+      for (const f of await readdir(dir)) {
         if (f === `${id}.trace.jsonl` || (f.startsWith(`${id}.`) && f.endsWith(".cassette.json"))) {
-          rmSync(join(dir, f), { force: true });
+          await rm(join(dir, f), { force: true });
           deleted.push(join(dir, f));
         }
       }
     } catch {}
   };
 
-  const kept = files.filter((f) => {
+  const kept: typeof files = [];
+  for (const f of files) {
     if (maxAgeMs !== undefined && now - f.mtimeMs > maxAgeMs) {
-      removeWithSidecars(f.path);
+      await removeWithSidecars(f.path);
       deleted.push(f.path);
-      return false;
+    } else {
+      kept.push(f);
     }
-    return true;
-  });
+  }
 
   if (policy.maxTotalBytes !== undefined) {
-    kept.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    kept.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
     let total = kept.reduce((sum, f) => sum + f.size, 0);
     for (const f of kept) {
       if (total <= policy.maxTotalBytes) break;
-      removeWithSidecars(f.path);
+      await removeWithSidecars(f.path);
       deleted.push(f.path);
       total -= f.size;
     }

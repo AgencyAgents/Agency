@@ -1,6 +1,6 @@
-import type { LoopEvent, RunTurnOptions } from "./loop.ts";
-import type { ProviderAdapter } from "@agency/providers";
 import type { HttpClient } from "@agency/net";
+import type { ProviderAdapter } from "@agency/providers";
+import type { LoopEvent, RunTurnOptions } from "./loop.ts";
 import { runTurn } from "./loop.ts";
 
 export interface CassetteRecord {
@@ -53,7 +53,10 @@ export async function replayCassette(
   freshAdapter: ProviderAdapter,
   scheduler: import("@agency/providers").Scheduler,
   http: HttpClient,
-  options: Omit<RunTurnOptions, "session" | "systemPrompt" | "model"> & { model?: string; systemPrompt?: string },
+  options: Omit<RunTurnOptions, "session" | "systemPrompt" | "model"> & {
+    model?: string;
+    systemPrompt?: string;
+  },
 ): Promise<{ equal: boolean; original: CassetteRecord; replayed: Awaited<ReturnType<typeof runTurn>> }> {
   const original = readCassette(path);
   const replayed = await runTurn(freshAdapter, scheduler, http, {

@@ -1,8 +1,34 @@
 import { randomUUID } from "node:crypto";
 import type { ThinkingLevel } from "@agency/providers";
-import type { Message } from "@agency/schema";
+import type { Message, Migration } from "@agency/schema";
 
 export const SESSION_SCHEMA_VERSION = 2;
+
+/**
+ * v1→v2: v1 entries carried schemaVersion: 1 but the same base shape. The
+ * migration bumps the version and ensures the entry has the required base
+ * fields (id, parentId, createdAt, type). New entry types (agent_lifecycle,
+ * todo_state, agent_message, session_title) are already handled by the
+ * existing type guards — they just need the version bump to pass through.
+ */
+export const sessionMigrations: Migration[] = [
+  {
+    from: 1,
+    to: 2,
+    migrate(record) {
+      // Ensure the entry has all required base fields; v1 entries already
+      // have them, but this is a safety net for any edge-case entries.
+      return {
+        ...record,
+        // If any v1 entry is missing these, provide sensible defaults
+        id: (record.id as string) ?? randomUUID(),
+        parentId: (record.parentId as string | null) ?? null,
+        createdAt: (record.createdAt as string) ?? new Date().toISOString(),
+        type: (record.type as string) ?? "unknown",
+      };
+    },
+  },
+];
 
 /** Every entry carries these regardless of type, including one this reader
  *  doesn't recognize (R5: unknown entries pass through, they're never dropped). */
@@ -49,6 +75,7 @@ export interface TodoStateEntry extends SessionEntryBase {
     content: string;
     status: "pending" | "in_progress" | "completed" | "ready_for_review";
     claimedBy?: string;
+    priority?: string;
   }>;
 }
 

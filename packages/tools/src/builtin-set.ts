@@ -1,5 +1,8 @@
 import type { HttpClient } from "@agency/net";
-import type { ToolSpec } from "./contract.ts";
+import type { BashState } from "./builtins/bash.ts";
+import type { TodoPersistence, TodoStore } from "./builtins/todo.ts";
+import type { WebSearchConfig } from "./builtins/websearch.ts";
+import type { ToolDeps, ToolSpec } from "./contract.ts";
 import type { DiagnosticsProvider } from "./edit-engine.ts";
 import type { FormatterConfig } from "./formatter.ts";
 import type { LspRegistry } from "./lsp/registry.ts";
@@ -7,14 +10,9 @@ import type { McpManagerOptions } from "./mcp/manager.ts";
 import type { ProcessManager } from "./process-manager.ts";
 import type { ReadState } from "./read-state.ts";
 import type { ToolRegistry } from "./registry.ts";
+import { createSessionScope } from "./session-scope.ts";
 import type { WindowsShellKind } from "./shell.ts";
 import type { SnapshotStore } from "./snapshot.ts";
-import type { ToolDeps } from "./contract.ts";
-import type { TodoPersistence } from "./builtins/todo.ts";
-import type { WebSearchConfig } from "./builtins/websearch.ts";
-import type { BashState } from "./builtins/bash.ts";
-import { TodoStore } from "./builtins/todo.ts";
-import { createSessionScope } from "./session-scope.ts";
 
 export interface BuiltinToolsOptions {
   deps: ToolDeps;

@@ -10,12 +10,27 @@ import {
 } from "@agency/core";
 
 /** `agency where`: every path Agency reads or writes, in one place. */
+export function wherePaths(env: NodeJS.ProcessEnv = process.env): {
+  config: string;
+  data: string;
+  cache: string;
+  logs: string;
+} {
+  return {
+    config: configDir(env),
+    data: dataDir(env),
+    cache: cacheDir(env),
+    logs: logDir(env),
+  };
+}
+
 export function whereCommand(env: NodeJS.ProcessEnv = process.env): string {
+  const paths = wherePaths(env);
   const lines = [
-    `config:  ${configDir(env)}`,
-    `data:    ${dataDir(env)}`,
-    `cache:   ${cacheDir(env)}`,
-    `logs:    ${logDir(env)}`,
+    `config:  ${paths.config}`,
+    `data:    ${paths.data}`,
+    `cache:   ${paths.cache}`,
+    `logs:    ${paths.logs}`,
   ];
   return lines.join("\n");
 }
@@ -45,14 +60,14 @@ export async function storageCommand(env: NodeJS.ProcessEnv = process.env): Prom
 /** `agency storage prune`: clears the cache outright, and applies session
  *  retention if a policy is given. Cache alone is pruned unconditionally,
  *  since deleting it is defined to never lose data. */
-export function pruneCommand(
+export async function pruneCommand(
   sessionRetention?: RetentionPolicy,
   env: NodeJS.ProcessEnv = process.env,
-): string {
+): Promise<string> {
   pruneCache(env);
   const lines = ["cache: cleared"];
   if (sessionRetention) {
-    const { deleted } = pruneSessions(sessionRetention, env);
+    const { deleted } = await pruneSessions(sessionRetention, env);
     lines.push(`sessions: deleted ${deleted.length} file(s) past retention`);
   }
   return lines.join("\n");

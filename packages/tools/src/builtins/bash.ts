@@ -1,8 +1,8 @@
+import { t } from "@agency/i18n";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { parseShellOutput, type ShellConfig } from "../shell.ts";
-import { t } from "@agency/i18n";
 import { truncateWithSpill } from "../truncate.ts";
 
 /**
@@ -191,9 +191,7 @@ export function createBashTool(
         if (cwdNotice) combined += cwdNotice;
         if (outcome.aborted) {
           // Cancellation must not read as a silent success with exit code 0.
-          const notice = timedOut
-            ? t("tool.bash.timeout", { ms: timeout ?? 0 })
-            : t("tool.bash.cancelled");
+          const notice = timedOut ? t("tool.bash.timeout", { ms: timeout ?? 0 }) : t("tool.bash.cancelled");
           combined = combined ? `${combined}\n${notice}` : notice;
         } else if (exitCode !== 0) {
           combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;

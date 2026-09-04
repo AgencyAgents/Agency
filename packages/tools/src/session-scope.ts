@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type { CallerIdentity } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { type BashState, createBashTool } from "./builtins/bash.ts";
 import { createEditTool } from "./builtins/edit.ts";
@@ -17,7 +18,13 @@ import { type DiagnosticsProvider, errorDiagnostics } from "./edit-engine.ts";
 import type { FormatterConfig } from "./formatter.ts";
 import { normalizeLspServers, parseLspServers } from "./lsp/config.ts";
 import { createLspRegistry, type LspRegistry } from "./lsp/registry.ts";
-import { type McpManager, type McpManagerOptions, startMcpServersFromRaw } from "./mcp/manager.ts";
+import { createLspTools } from "./lsp/tools.ts";
+import {
+  type McpManager,
+  type McpManagerOptions,
+  mcpIdentityFor,
+  startMcpServersFromRaw,
+} from "./mcp/manager.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { ReadState } from "./read-state.ts";
 import { ToolRegistry } from "./registry.ts";
@@ -37,17 +44,18 @@ import { SnapshotStore } from "./snapshot.ts";
  *   ordering is per-session so two sessions' undo stacks never interleave)
  * - ReadState: per-session read journal (write's unread-overwrite warning is session-local)
  * - ToolRegistry/tools: per-session adapted set (capability-filtered per agent)
+ * - McpManager: one manager per session, keyed by sessionId in the daemon's
+ *   sessionScopes map. Transports are never shared across sessions: each scope
+ *   starts its own server processes/clients and dispose() closes them, so no
+ *   session leaks state into another. Identity is resolved per agent handle via
+ *   scope.mcpIdentityFor(serverName, handle) — never baked once at startup.
  *
  * MCP transports: MCP servers are stateless request/response over stdio/HTTP.
- * Sharing a single transport/client across sessions is safe and more efficient
- * (one server process serves many sessions), but each session still gets its
+ * Each session gets its own McpManager (own transports/clients) for isolation;
+ * transports are never shared across sessions. Each session still gets its
  * own *adapted* ToolSpec wrappers so identity/capabilities are checked
- * per-session. Currently each SessionScope creates its own McpManager for
- * correctness and isolation simplicity; a future optimization can introduce a
- * shared transport pool that reuses the same McpClient instances while still
- * adapting tools per session — the adaptMcpTool identity/capabilities closure
- * makes that safe, and dispose() would then need reference counting so the
- * shared transports only close on daemon shutdown, not per-session disposal.
+ * per-session. dispose() closes the session's transports, so deleting a
+ * session never leaks server processes into other sessions.
  *
  * Similarly LSP is workspace-scoped and could be shared; each scope currently
  * may share an externally-provided LspRegistry instance when supplied.
@@ -61,15 +69,23 @@ export interface SessionScope {
   readState: ReadState;
   snapshots: SnapshotStore;
   mcpFailures: ReadonlyMap<string, string>;
+  mcp?: McpManager;
+  mcpIdentityFor: (serverName: string, handle?: string) => CallerIdentity;
   lspRegistry?: LspRegistry;
   dispose(): Promise<void>;
 }
+
+const LSP_DIAGNOSTICS_TIMEOUT_MS = 1200;
 
 export interface SessionScopeOptions {
   deps: ToolDeps;
   http: HttpClient;
   workspaceRoot: string;
   snapshotDir: string;
+  /** Durable undo journal for this session's SnapshotStore. Defaults to the
+   *  shared `<snapshotDir>/journal.jsonl`; the daemon passes a per-session
+   *  file so undo stacks never interleave. */
+  snapshotJournalFile?: string;
   formatter?: FormatterConfig;
   windowsShell?: WindowsShellKind;
   diagnostics?: DiagnosticsProvider;
@@ -79,10 +95,14 @@ export interface SessionScopeOptions {
   lspServers?: unknown;
   lspRegistry?: LspRegistry;
   mcpTransportFor?: McpManagerOptions["transportFor"];
+  identityFor?: McpManagerOptions["identityFor"];
 }
 
 export async function createSessionScope(options: SessionScopeOptions): Promise<SessionScope> {
-  const snapshots = new SnapshotStore(options.snapshotDir);
+  const snapshots = new SnapshotStore(
+    options.snapshotDir,
+    options.snapshotJournalFile ? { journalFile: options.snapshotJournalFile } : undefined,
+  );
   const formatter = options.formatter ?? {};
   const shell = resolveShell(process.platform, options.windowsShell);
   const bashState: BashState = { cwd: options.workspaceRoot };
@@ -153,6 +173,11 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
   if (options.websearch?.endpoint) {
     registry.register(createWebSearchTool(options.deps, options.http, options.websearch));
   }
+  if (lspRegistry) {
+    for (const tool of createLspTools({ deps: options.deps, registry: lspRegistry })) {
+      registry.register(tool);
+    }
+  }
 
   if (lspRegistry) {
     const wrapRead = registry.get("read");
@@ -217,7 +242,7 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
       let diags: readonly { severity: number; message: string; line: number; character: number }[] = [];
       try {
         const withTimeout = await Promise.race([
-          client.waitForDiagnostics(resolved, 1200),
+          client.waitForDiagnostics(resolved, LSP_DIAGNOSTICS_TIMEOUT_MS),
           new Promise<readonly { severity: number; message: string; line: number; character: number }[]>(
             (resolve) =>
               setTimeout(
@@ -291,8 +316,11 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
       processManager,
       transportFor: options.mcpTransportFor,
       registry,
+      identityFor: options.identityFor,
     });
   }
+  const mcpIdentityForScope = (serverName: string, handle?: string): CallerIdentity =>
+    (options.identityFor ?? mcpIdentityFor)(serverName, handle);
 
   return {
     tools: registry.list(),
@@ -303,6 +331,8 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
     readState,
     snapshots,
     mcpFailures: mcp?.failures ?? new Map(),
+    mcp,
+    mcpIdentityFor: mcpIdentityForScope,
     lspRegistry,
     async dispose() {
       // Each scope owns its ProcessManager (kills background dev servers/watchers

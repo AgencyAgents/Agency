@@ -5,8 +5,8 @@ import { t } from "@agency/i18n";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { FormatterConfig } from "../formatter.ts";
 import { runFormatter } from "../formatter.ts";
-import { str, summarize } from "../render.ts";
 import type { ReadState } from "../read-state.ts";
+import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
 
 export interface WriteToolOptions {

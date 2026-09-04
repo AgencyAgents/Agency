@@ -19,6 +19,8 @@ export interface LspRegistryOptions {
   clientFactory?: (config: LspServerConfig) => LspClient;
 }
 
+export type LspInstallDecision = "allowed" | "declined";
+
 export interface LspRegistry {
   /** The client owning `path`, or undefined when no server claims it. */
   clientFor(path: string): LspClient | undefined;
@@ -28,7 +30,16 @@ export interface LspRegistry {
   dispose(): Promise<void>;
   /** Snapshot of current server statuses: "running" | "failed: reason". */
   statuses(): Record<string, string>;
+  /** Records the user's install decision for a server command. */
+  recordInstallDecision(server: string, decision: LspInstallDecision): void;
+  /** The recorded install decision for a server command, if any. */
+  installDecisionFor(server: string): LspInstallDecision | undefined;
 }
+
+const normalizeExt = (ext: string): string => {
+  const lower = ext.toLowerCase();
+  return lower.startsWith(".") ? lower : `.${lower}`;
+};
 
 const extension = (path: string): string => {
   const dot = path.lastIndexOf(".");
@@ -42,16 +53,27 @@ const extension = (path: string): string => {
  * registry — an edit must never fail because a language server is missing.
  */
 export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
+  const normalizedServers = options.servers.map((s) => ({
+    ...s,
+    extensions: s.extensions.map(normalizeExt),
+  }));
   const clients = new Map<number, LspClient>();
   const configByIndex = new Map<number, LspServerConfig>();
   const failures = new Map<number, string>();
-  for (let i = 0; i < options.servers.length; i++) configByIndex.set(i, options.servers[i]!);
+  const installDecisions = new Map<string, LspInstallDecision>();
+  for (let i = 0; i < normalizedServers.length; i++) configByIndex.set(i, normalizedServers[i]!);
+
+  const findConfig = (path: string): { config: LspServerConfig; index: number } | undefined => {
+    const ext = extension(path);
+    const index = normalizedServers.findIndex((server) => server.extensions.includes(ext));
+    if (index === -1) return undefined;
+    return { config: normalizedServers[index]!, index };
+  };
 
   const clientFor = (path: string): LspClient | undefined => {
-    const ext = extension(path);
-    const config = options.servers.find((server) => server.extensions.includes(ext));
-    if (!config) return undefined;
-    const index = options.servers.indexOf(config);
+    const found = findConfig(path);
+    if (!found) return undefined;
+    const { config, index } = found;
     const existing = clients.get(index);
     if (existing) return existing;
     const client = options.clientFactory
@@ -72,8 +94,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
   return {
     clientFor,
     languageIdFor(path: string): string | undefined {
-      const ext = extension(path);
-      return options.servers.find((server) => server.extensions.includes(ext))?.languageId;
+      return findConfig(path)?.config.languageId;
     },
     all: () => [...clients.values()],
     statuses() {
@@ -81,9 +102,18 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
       for (const [idx, cfg] of configByIndex) {
         if (failures.has(idx)) out[cfg.command] = `failed: ${failures.get(idx)}`;
         else if (clients.has(idx)) out[cfg.command] = "running";
-        else out[cfg.command] = "idle";
+        else {
+          const decision = installDecisions.get(cfg.command);
+          out[cfg.command] = decision === "declined" ? "declined: user declined install" : "idle";
+        }
       }
       return out;
+    },
+    recordInstallDecision(server: string, decision: LspInstallDecision): void {
+      installDecisions.set(server, decision);
+    },
+    installDecisionFor(server: string): LspInstallDecision | undefined {
+      return installDecisions.get(server);
     },
     async dispose() {
       for (const client of clients.values()) {

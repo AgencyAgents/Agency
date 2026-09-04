@@ -1,5 +1,4 @@
 export * from "./builtin-set.ts";
-export * from "./session-scope.ts";
 export { type BashState, createBashTool } from "./builtins/bash.ts";
 export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";
@@ -7,41 +6,58 @@ export { createGlobTool } from "./builtins/glob.ts";
 export { createGrepTool } from "./builtins/grep.ts";
 export {
   approvalRecordPath,
+  collapsePlanBlockForScrollback,
   commentsPath,
   countUnresolvedComments,
   createExecutePlanTool,
+  createPlanExitTool,
+  isPlanExitYes,
+  isPlanPath,
+  LEGACY_PLAN_DIR,
+  PLAN_BLOCK_ICON,
+  PLAN_DIR,
   type PlanApprovalRecord,
   type PlanStep,
   parsePlanSteps,
+  planAgentPermissions,
+  planApprovedMessage,
   planContentHash,
+  planFilePath,
   readApprovalRecord,
+  renderPlanBlockForScrollback,
+  slugifyPlanTitle,
   writeApprovalRecord,
 } from "./builtins/plan.ts";
 export { createProcessKillTool, createProcessListTool, createProcessOutputTool } from "./builtins/process.ts";
 export { createQuestionTool } from "./builtins/question.ts";
 export { createReadTool } from "./builtins/read.ts";
+export { createTaskTool, extractFinalText } from "./builtins/task.ts";
 export {
+  createSessionTodoPersistence,
   createTodoReadTool,
   createTodoWriteTool,
   type TodoItem,
   type TodoPersistence,
+  type TodoPriority,
+  type TodoSessionStore,
   type TodoStatus,
   TodoStore,
   validateTodoItems,
 } from "./builtins/todo.ts";
 export { createWebSearchTool, type WebSearchConfig } from "./builtins/websearch.ts";
 export { createWriteTool } from "./builtins/write.ts";
-export { createTaskTool, extractFinalText } from "./builtins/task.ts";
 export * from "./contract.ts";
 export * from "./edit-engine.ts";
 export * from "./formatter.ts";
 export * from "./gitignore.ts";
+export * from "./hashline.ts";
 export * from "./html.ts";
 export * from "./lsp/index.ts";
 export * from "./mcp/index.ts";
 export * from "./process-manager.ts";
 export * from "./read-state.ts";
 export * from "./registry.ts";
+export * from "./session-scope.ts";
 export * from "./shell.ts";
 export * from "./snapshot.ts";
 export * from "./truncate.ts";

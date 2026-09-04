@@ -81,15 +81,18 @@ export async function connectToDaemon(
 
   function armPing() {
     clearPing();
-    pingTimer = setInterval(() => {
-      if (!socket || socket.destroyed) return;
-      if (Date.now() - lastInbound > heartbeatMs * 3) {
-        // No sign of life for three windows: deafen no longer, reconnect.
-        socket.destroy();
-        return;
-      }
-      writer?.write(encodeFrame({ type: "ping" }));
-    }, Math.min(heartbeatMs / 3, PING_INTERVAL_MS));
+    pingTimer = setInterval(
+      () => {
+        if (!socket || socket.destroyed) return;
+        if (Date.now() - lastInbound > heartbeatMs * 3) {
+          // No sign of life for three windows: deafen no longer, reconnect.
+          socket.destroy();
+          return;
+        }
+        writer?.write(encodeFrame({ type: "ping" }));
+      },
+      Math.min(heartbeatMs / 3, PING_INTERVAL_MS),
+    );
     pingTimer.unref?.();
   }
 
@@ -108,16 +111,16 @@ export async function connectToDaemon(
   }
 
   function onData(chunk: Buffer) {
-    let messages: RpcMessage[];
+    let messages: RpcMessage[] | undefined;
     try {
-      messages = decoder!.push(chunk.toString("utf8"));
+      messages = decoder?.push(chunk.toString("utf8"));
     } catch {
       // Malformed frame: never crash on parse (the server side already
       // guards this); fail the connection instead.
       socket?.destroy();
       return;
     }
-    for (const message of messages) handleMessage(message);
+    for (const message of messages ?? []) handleMessage(message);
     refreshDeadlines();
   }
 

@@ -94,19 +94,36 @@ export const BUILTIN_MODELS: ModelInfo[] = [
     capabilities: { tools: true, vision: true, thinking: true },
     releaseDate: "2026-03-01",
   },
+  {
+    id: "deepseek-v4",
+    family: "deepseek",
+    name: "DeepSeek V4",
+    providerName: "DeepSeek",
+    contextWindow: 128_000,
+    maxOutputTokens: 32_000,
+    pricing: { inputPerMTok: 0.5, outputPerMTok: 2 },
+    capabilities: { tools: true, vision: false, thinking: true },
+    releaseDate: "2026-06-01",
+  },
+  {
+    id: "glm-7",
+    family: "glm",
+    name: "GLM-7",
+    providerName: "Zhipu AI",
+    contextWindow: 128_000,
+    maxOutputTokens: 16_384,
+    pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2 },
+    capabilities: { tools: true, vision: true, thinking: false },
+    releaseDate: "2026-05-15",
+  },
 ];
 
 /**
- * Models whose ids start with one of these prefixes float to the top of every
- * listing, opencode's default-model heuristic. Everything else sorts by
- * release date (newest first), then id descending as a stable tiebreaker.
+ * Sort derived from the catalog itself: newest releaseDate first, then id
+ * descending as a stable tiebreaker. No hardcoded priority prefixes — the
+ * default-model heuristic is `defaultModelIDs` over this same ordering, so
+ * sort, picker, and routing can never drift apart.
  */
-const SORT_PRIORITY = ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"];
-
-function priorityRank(model: ModelInfo): number {
-  const index = SORT_PRIORITY.findIndex((prefix) => model.id.startsWith(prefix));
-  return index === -1 ? SORT_PRIORITY.length : index;
-}
 
 function releaseTime(model: ModelInfo): number {
   if (!model.releaseDate) return 0;
@@ -116,8 +133,6 @@ function releaseTime(model: ModelInfo): number {
 
 export function sortModels(models: readonly ModelInfo[]): ModelInfo[] {
   return [...models].sort((a, b) => {
-    const priority = priorityRank(a) - priorityRank(b);
-    if (priority !== 0) return priority;
     const release = releaseTime(b) - releaseTime(a);
     if (release !== 0) return release;
     return b.id.localeCompare(a.id);
@@ -267,6 +282,20 @@ export function filterModels(models: readonly ModelInfo[], options: ProviderFilt
   return [...byFamily.values()].flat();
 }
 
+/**
+ * Returns the available ModelInfo entries for a single provider family,
+ * after applying the same filtering as `filterModels` (disabled/enabled
+ * providers, per-provider whitelist/blacklist, deprecated exclusion).
+ * Useful for deriving the model picker list for a specific agent's provider.
+ */
+export function availableModelsForProvider(
+  providerId: string,
+  catalog: readonly ModelInfo[],
+  options: ProviderFilterOptions = {},
+): ModelInfo[] {
+  return filterModels(catalog, options).filter((m) => m.family === providerId);
+}
+
 export class ModelRegistry {
   private models: Map<string, ModelInfo>;
 
@@ -306,10 +335,24 @@ export class ModelRegistry {
   }
 }
 
-async function fetchLiveIds(family: string, http: HttpClient, apiKey: string): Promise<string[]> {
+/**
+ * Live model IDs for one provider family, covering every known family plus a
+ * generic OpenAI-compatible `/v1/models` fallback so custom gateways resolve
+ * too. Unknown families without a baseUrl resolve to [] (catalog still serves).
+ */
+export async function fetchLiveIdsForFamily(
+  family: string,
+  http: HttpClient,
+  apiKey: string,
+  baseUrl?: string,
+): Promise<string[]> {
   switch (family) {
-    case "openai": {
-      const res = await http.fetch("https://api.openai.com/v1/models", {
+    case "openai":
+    case "deepseek":
+    case "glm": {
+      const base = baseUrl ?? (family === "openai" ? "https://api.openai.com/v1" : undefined);
+      const url = base ? `${base.replace(/\/+$/, "")}/models` : "https://api.openai.com/v1/models";
+      const res = await http.fetch(url, {
         headers: { authorization: `Bearer ${apiKey}` },
       });
       const body = (await res.json()) as { data: Array<{ id: string }> };
@@ -328,7 +371,19 @@ async function fetchLiveIds(family: string, http: HttpClient, apiKey: string): P
       // Google returns "models/gemini-3-pro"; the bare id is what requests use.
       return body.models.map((m) => m.name.replace(/^models\//, ""));
     }
-    default:
-      return [];
+    default: {
+      // Any other family (custom gateway): try the OpenAI-compatible shape
+      // when a baseUrl is known, otherwise there is nothing to query.
+      if (!baseUrl) return [];
+      const res = await http.fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      const body = (await res.json()) as { data: Array<{ id: string }> };
+      return body.data.map((m) => m.id);
+    }
   }
+}
+
+async function fetchLiveIds(family: string, http: HttpClient, apiKey: string): Promise<string[]> {
+  return fetchLiveIdsForFamily(family, http, apiKey);
 }

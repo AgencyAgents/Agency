@@ -41,7 +41,9 @@ export function createGlobTool(deps: ToolDeps): ToolSpec {
       requirePathScope(deps.identity, deps.capabilities, searchRoot);
 
       const isIgnored = loadGitignore(searchRoot);
-      const glob = new Bun.Glob(input.pattern);
+      // Strip leading / so patterns like /src/**/*.ts are relative to searchRoot
+      const pattern = input.pattern.startsWith("/") ? input.pattern.slice(1) : input.pattern;
+      const glob = new Bun.Glob(pattern);
       const scanned: Array<{ path: string; mtimeMs: number }> = [];
       for await (const rawPath of glob.scan({ cwd: searchRoot })) {
         const path = rawPath.replace(/\\/g, "/");

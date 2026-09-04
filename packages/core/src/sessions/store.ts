@@ -13,6 +13,8 @@ import {
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Message } from "@agency/schema";
+import { migrate } from "@agency/schema";
+import type { Logger } from "../logger.ts";
 import type { CompactionSummaryEntry, SessionEntry } from "./entry.ts";
 import {
   hasEntryShape,
@@ -20,6 +22,7 @@ import {
   isMessageEntry,
   newEntryId,
   SESSION_SCHEMA_VERSION,
+  sessionMigrations,
 } from "./entry.ts";
 
 export interface SessionMeta {
@@ -71,13 +74,23 @@ interface LoadCache {
 export class SessionStore {
   private readonly caches = new Map<string, LoadCache>();
   private bus?: { emit: (event: string, payload: unknown) => void };
+  private logger?: Logger;
 
-  constructor(private readonly sessionsDir: string, opts?: { bus?: { emit: (event: string, payload: unknown) => void } }) {
+  constructor(
+    private readonly sessionsDir: string,
+    opts?: { bus?: { emit: (event: string, payload: unknown) => void }; logger?: Logger },
+  ) {
     this.bus = opts?.bus;
+    this.logger = opts?.logger;
   }
 
   setBus(bus: { emit: (event: string, payload: unknown) => void }): void {
     this.bus = bus;
+  }
+
+  /** Returns the event bus if one was set via constructor or setBus(). */
+  getBus(): { emit: (event: string, payload: unknown) => void } | undefined {
+    return this.bus;
   }
 
   create(sessionId: string = newEntryId()): SessionMeta {
@@ -85,7 +98,12 @@ export class SessionStore {
     const path = sessionPath(this.sessionsDir, sessionId);
     if (!existsSync(path)) writeFileSync(path, "");
     this.caches.delete(sessionId);
-    try { this.bus?.emit("session.created", { sessionId }); this.bus?.emit("event", { event: "session.created", payload: { sessionId } }); } catch {}
+    try {
+      this.bus?.emit("session.created", { sessionId });
+      this.bus?.emit("event", { event: "session.created", payload: { sessionId } });
+    } catch {
+      /* best-effort event emission: bus listeners must not break session creation */
+    }
     return { id: sessionId, createdAt: new Date().toISOString() };
   }
 
@@ -288,20 +306,47 @@ export class SessionStore {
       try {
         parsed = JSON.parse(line);
       } catch (error) {
-        console.warn(
-          `[sessions] corrupt line ${firstLine + offset + 1} in ${sessionId}.jsonl skipped (invalid JSON): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        this.logger?.warn(
+          `[sessions] corrupt line ${firstLine + offset + 1} in ${sessionId}.jsonl skipped (invalid JSON): ${error instanceof Error ? error.message : String(error)}`,
         );
+        if (!this.logger)
+          console.warn(
+            `[sessions] corrupt line ${firstLine + offset + 1} in ${sessionId}.jsonl skipped (invalid JSON): ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         continue;
       }
       if (!hasEntryShape(parsed)) {
-        console.warn(
+        this.logger?.warn(
           `[sessions] corrupt line ${firstLine + offset + 1} in ${sessionId}.jsonl skipped (not a session entry)`,
         );
+        if (!this.logger)
+          console.warn(
+            `[sessions] corrupt line ${firstLine + offset + 1} in ${sessionId}.jsonl skipped (not a session entry)`,
+          );
         continue;
       }
-      entries.push(parsed);
+      // Forward-migrate entries from older schema versions so the rest of
+      // the system always sees entries at the current schema version.
+      let entry: SessionEntry = parsed;
+      if (entry.schemaVersion < SESSION_SCHEMA_VERSION) {
+        try {
+          entry = migrate(entry, sessionMigrations, SESSION_SCHEMA_VERSION) as SessionEntry;
+        } catch (error) {
+          this.logger?.warn(
+            `[sessions] line ${firstLine + offset + 1} in ${sessionId}.jsonl migration failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          if (!this.logger)
+            console.warn(
+              `[sessions] line ${firstLine + offset + 1} in ${sessionId}.jsonl migration failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          continue;
+        }
+      }
+      entries.push(entry);
     }
     return entries;
   }

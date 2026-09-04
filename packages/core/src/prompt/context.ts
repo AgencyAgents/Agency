@@ -14,6 +14,9 @@ export interface EnvironmentInfo {
   date: string;
   /** Absent when the directory isn't a git repo, or git itself is unavailable. */
   git?: GitStatusInfo;
+  /** Human-readable shell label (e.g. "PowerShell", "POSIX sh"): the dialect
+   *  the model must write commands in. Absent when the caller doesn't know. */
+  shell?: string;
 }
 
 /** Returns trimmed stdout, or null when the command fails (no git, not a
@@ -74,6 +77,8 @@ export interface GatherEnvironmentOptions {
   now?: Date;
   /** Test seam; defaults to `defaultGitRunner`. */
   git?: GitRunner;
+  /** Shell label to report in the block; defaults to absent. */
+  shell?: string;
 }
 
 /** Collects what the model needs to orient itself: platform, working
@@ -85,6 +90,7 @@ export function gatherEnvironmentInfo(options: GatherEnvironmentOptions): Enviro
     platform: `${process.platform} ${release()} ${process.arch}`,
     cwd: options.cwd,
     date: formatDate(options.now ?? new Date()),
+    ...(options.shell === undefined ? {} : { shell: options.shell }),
   };
 
   const status = runGit(options.cwd, ["status", "--porcelain", "--branch"]);
@@ -97,6 +103,7 @@ export function gatherEnvironmentInfo(options: GatherEnvironmentOptions): Enviro
 
 export function buildEnvironmentBlock(info: EnvironmentInfo): string {
   const lines = [`<environment>`, `os: ${info.platform}`, `cwd: ${info.cwd}`, `date: ${info.date}`];
+  if (info.shell !== undefined) lines.push(`shell: ${info.shell}`);
   if (info.git) {
     const state = info.git.detached ? ["detached"] : [];
     state.push(

@@ -1,7 +1,12 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync } from "node:fs";
+import { join, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+/** True when running on Windows — controls whether we use attrib for read-only. */
+const isWin = process.platform === "win32";
 
 export interface WorktreeInfo {
   path: string;
@@ -20,11 +25,23 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
     else if (line.startsWith("HEAD ")) cur.commit = line.slice("HEAD ".length);
     else if (line === "bare") cur.bare = true;
     else if (line === "") {
-      if (cur.path) entries.push({ path: cur.path, branch: cur.branch ?? "", commit: cur.commit ?? "", bare: cur.bare ?? false });
+      if (cur.path)
+        entries.push({
+          path: cur.path,
+          branch: cur.branch ?? "",
+          commit: cur.commit ?? "",
+          bare: cur.bare ?? false,
+        });
       cur = {};
     }
   }
-  if (cur.path) entries.push({ path: cur.path, branch: cur.branch ?? "", commit: cur.commit ?? "", bare: cur.bare ?? false });
+  if (cur.path)
+    entries.push({
+      path: cur.path,
+      branch: cur.branch ?? "",
+      commit: cur.commit ?? "",
+      bare: cur.bare ?? false,
+    });
   return entries;
 }
 
@@ -36,4 +53,67 @@ export async function createWorktree(cwd: string, path: string, branch?: string)
 export async function removeWorktree(cwd: string, path: string, force = false): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), path];
   await execFileAsync("git", args, { cwd });
+}
+
+/**
+ * Makes a worktree read-only at the filesystem level, keeping exactly one
+ * scratch directory writable. Uses chmod on POSIX and the read-only attribute
+ * on Windows. The scratch dir is created inside the worktree and left writable
+ * so the agent can write logs, temp files, and test output there.
+ *
+ * @param worktreePath - Absolute path to the git worktree root.
+ * @param scratchDir   - Relative path (within the worktree) for the writable
+ *                        scratch directory, e.g. ".agency/scratch/reviewer".
+ * @returns The absolute path to the scratch directory.
+ */
+export function makeWorktreeReadOnly(worktreePath: string, scratchDir: string): string {
+  const scratchAbs = join(worktreePath, scratchDir);
+  mkdirSync(scratchAbs, { recursive: true });
+
+  // Walk the worktree tree and set read-only on everything except scratch.
+  setReadOnlyRecursive(worktreePath, scratchAbs);
+
+  // Ensure the scratch dir itself and its future contents stay writable.
+  chmodSync(scratchAbs, 0o755);
+  if (isWin) {
+    // Windows: attrib -r clears the read-only attribute so the scratch dir
+    // stays writable even if a parent directory was set read-only.
+    execFileSync("attrib", ["-r", scratchAbs], { windowsHide: true });
+  }
+
+  return scratchAbs;
+}
+
+function setReadOnlyRecursive(root: string, skipPath: string): void {
+  const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return; // permission error or gone — stop descending
+  }
+  for (const entry of entries) {
+    const full = join(root, entry);
+    // Skip the scratch directory and everything inside it.
+    if (full === skipPath || full.startsWith(skipPath + sep)) continue;
+    try {
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        // Recurse first, then make the directory read-only (no write/search).
+        setReadOnlyRecursive(full, skipPath);
+        chmodSync(full, st.mode & 0o555);
+      } else {
+        // Files: remove write bits.
+        chmodSync(full, st.mode & 0o444);
+      }
+      // On Windows, also set the read-only attribute explicitly via attrib +r.
+      // chmodSync on Windows translates mode bits to the read-only attribute,
+      // but attrib is more reliable for directories and nested paths.
+      if (isWin) {
+        execFileSync("attrib", ["+r", full], { windowsHide: true });
+      }
+    } catch {
+      // Stale symlink, race, or permission — skip.
+    }
+  }
 }

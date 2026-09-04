@@ -13,7 +13,7 @@ interface QuestionInput {
  * the user's answer arrives as their next message. No approval-surface
  * involvement — the question is conversation, not a permission ask.
  */
-export function createQuestionTool(): ToolSpec {
+export function createQuestionTool(opts: { nonInteractive?: boolean } = {}): ToolSpec {
   const spec: ToolSpec<QuestionInput> = {
     name: "question",
     description:
@@ -38,6 +38,9 @@ export function createQuestionTool(): ToolSpec {
       result.isError ? `question failed: ${summarize(result.content)}` : summarize(result.content),
 
     async handler(input) {
+      if (opts.nonInteractive) {
+        return { content: "question denied: non-interactive run has no approval surface", isError: true };
+      }
       const question = str(input.question).trim();
       if (question.length === 0) {
         return { content: "question requires a non-empty question string", isError: true };

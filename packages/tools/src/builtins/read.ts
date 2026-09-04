@@ -3,8 +3,8 @@ import { requirePathScope } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ImageBlock } from "@agency/schema";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
-import { lineCount, str, summarize } from "../render.ts";
 import type { ReadState } from "../read-state.ts";
+import { lineCount, str, summarize } from "../render.ts";
 
 const MAX_READ_BYTES = 1_000_000; // ~1MB; bigger files should be grepped or read in slices
 

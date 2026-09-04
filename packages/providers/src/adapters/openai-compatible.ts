@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { parseRetryAfterMs } from "../retry-after.ts";
@@ -189,6 +190,10 @@ async function* streamRaw(
             id?: string;
             function?: { name?: string; arguments?: string };
           }>;
+          /** Legacy streaming format: some OpenAI-compatible backends send
+           *  `delta.function_call` instead of `delta.tool_calls`. Same shape
+           *  as a single tool call, without the parallel-call index. */
+          function_call?: { name?: string; arguments?: string };
         };
         finish_reason: string | null;
       }>;
@@ -219,9 +224,32 @@ async function* streamRaw(
       if (call.id && call.function?.name) {
         toolCallIdByIndex.set(call.index, call.id);
         yield { type: "tool_call_start", id: call.id, name: call.function.name };
-      } else if (call.function?.arguments) {
-        const id = toolCallIdByIndex.get(call.index);
+      }
+      // Independent check (not else-if): gateways may coalesce the start and
+      // the first arguments chunk into a single delta carrying both id+name
+      // and arguments. Dropping the args half would truncate the tool input.
+      if (call.function?.arguments) {
+        const id = call.id && call.function?.name ? call.id : toolCallIdByIndex.get(call.index);
         if (id) yield { type: "tool_call_delta", id, inputJsonDelta: call.function.arguments };
+      }
+    }
+
+    // Legacy delta.function_call (no index, no id — single tool call).
+    // The id is synthesized via UUID so downstream tool_call_end pairing and
+    // the loop's tool_call collection work exactly like indexed calls.
+    const fc = choice.delta.function_call;
+    if (fc) {
+      if (fc.name) {
+        const id = randomUUID();
+        toolCallIdByIndex.set(-1, id);
+        yield { type: "tool_call_start", id, name: fc.name };
+      }
+      // Same coalescing rule as above: a single legacy delta may carry both
+      // the name and the first arguments chunk. Look the id back up when the
+      // name arrived in this same frame.
+      if (fc.arguments) {
+        const id = toolCallIdByIndex.get(-1);
+        if (id) yield { type: "tool_call_delta", id, inputJsonDelta: fc.arguments };
       }
     }
 

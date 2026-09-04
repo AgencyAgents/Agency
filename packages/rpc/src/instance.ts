@@ -18,6 +18,8 @@ import { PROTOCOL_VERSION } from "./protocol.ts";
 
 export interface InstanceInfo {
   port: number;
+  /** The HTTP+SSE gateway port (absent when the gateway was not started). */
+  httpPort?: number;
   pid: number;
   startedAt: string;
   version: number;
@@ -28,6 +30,15 @@ export interface InstanceInfo {
    */
   token?: string;
 }
+
+/**
+ * Daemon lifecycle constants (item 42): a single source of truth so the
+ * spawn lock, deadline, instance file, token, heartbeat, and linger values
+ * stay in sync between implementation and tests.
+ */
+export const SPAWN_LOCK_STALE_MS = 10_000;
+export const DEFAULT_SPAWN_TIMEOUT_MS = 5_000;
+export const INSTANCE_FILE_MODE = 0o600;
 
 /** Stable, filesystem-safe id for a workspace root: one daemon per root (R1). */
 export function hashWorkspaceRoot(workspaceRoot: string): string {
@@ -61,10 +72,13 @@ export function newInstanceToken(): string {
  */
 export function writeInstanceFile(path: string, info: InstanceInfo): void {
   mkdirSync(join(path, ".."), { recursive: true });
-  const temp = join(join(path, ".."), `${basename(path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  const temp = join(
+    join(path, ".."),
+    `${basename(path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
+  );
   writeFileSync(temp, JSON.stringify(info, null, 2));
   try {
-    if (process.platform !== "win32") chmodSync(temp, 0o600);
+    if (process.platform !== "win32") chmodSync(temp, INSTANCE_FILE_MODE);
     renameOrReplace(temp, path);
   } catch (error) {
     rmSync(temp, { force: true });
@@ -119,7 +133,13 @@ function acquireSpawnLock(lockFile: string, staleMs: number): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(lockFile, "wx");
-      writeSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() } satisfies SpawnLockContents));
+      writeSync(
+        fd,
+        JSON.stringify({
+          pid: process.pid,
+          acquiredAt: new Date().toISOString(),
+        } satisfies SpawnLockContents),
+      );
       closeSync(fd);
       return true;
     } catch (error) {
@@ -148,6 +168,13 @@ export interface EnsureDaemonOptions {
   spawnDaemon: (instanceFile: string) => void;
   pollIntervalMs?: number;
   spawnTimeoutMs?: number;
+  /**
+   * How old an O_EXCL spawn lock may be before it is treated as stale and
+   * stolen. Defaults to `SPAWN_LOCK_STALE_MS` (10s): a crashed spawner can't
+   * wedge the workspace, while a live spawner still finishing inside the
+   * 5s deadline keeps its lock.
+   */
+  lockStaleMs?: number;
   /** Injectable for tests; production callers never need to pass this. */
   connect?: typeof connectToDaemon;
 }
@@ -169,9 +196,9 @@ export async function ensureDaemon(
   const connect = options.connect ?? connectToDaemon;
   const instanceFile = instanceFilePath(options.instanceDir, options.workspaceRoot);
   const lockFile = spawnLockPath(instanceFile);
-  const spawnTimeoutMs = options.spawnTimeoutMs ?? 10_000;
+  const spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? 50;
-  const lockStaleMs = Math.max(spawnTimeoutMs * 2, 30_000);
+  const lockStaleMs = options.lockStaleMs ?? SPAWN_LOCK_STALE_MS;
 
   async function tryConnect(): Promise<{ port: number; client: DaemonClient } | undefined> {
     const info = readInstanceFile(instanceFile);

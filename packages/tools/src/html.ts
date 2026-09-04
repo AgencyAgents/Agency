@@ -36,7 +36,9 @@ export function extractHtmlTitle(html: string): string | undefined {
 }
 
 function inline(text: string): string {
-  return decodeEntities(text.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+  return decodeEntities(text.replace(/<[^>]+>/g, ""))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -57,7 +59,10 @@ export function htmlToMarkdown(html: string): string {
     /<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_m, href: string, inner: string) => `[${inline(inner)}](${href})`,
   );
-  s = s.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, inner: string) => `\n\`\`\`\n${decodeEntities(inner.replace(/<[^>]+>/g, ""))}\n\`\`\`\n`);
+  s = s.replace(
+    /<pre\b[^>]*>([\s\S]*?)<\/pre>/gi,
+    (_m, inner: string) => `\n\`\`\`\n${decodeEntities(inner.replace(/<[^>]+>/g, ""))}\n\`\`\`\n`,
+  );
   s = s.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_m, inner: string) => `\n- ${inline(inner)}`);
   s = s.replace(/<br\s*\/?>/gi, "\n");
   s = s.replace(/<\/(p|div|section|article|header|footer|main|blockquote|tr|table|ul|ol)>/gi, "\n\n");

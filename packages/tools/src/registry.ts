@@ -11,7 +11,7 @@ export interface ToolRegistrationOptions {
  * runtime, namespaced registration, prefix filtering, and per-agent subsets
  * through a permissions predicate (the daemon passes its A5 gate's
  * `toolOffered`). Backward compatible: `list()` is the same ordered ToolSpec[]
-   * createBuiltinTools always returned.
+ * createBuiltinTools always returned.
  */
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolSpec>();

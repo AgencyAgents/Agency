@@ -16,6 +16,18 @@ function trySpawn(args: string[]) {
   }
 }
 
+function searchBinaryAvailable(): boolean {
+  for (const binary of ["rg", "grep"]) {
+    try {
+      const result = Bun.spawnSync([binary, "--version"], { stdout: "ignore", stderr: "ignore" });
+      if (result.exitCode === 0) return true;
+    } catch {
+      // not on PATH
+    }
+  }
+  return false;
+}
+
 interface CapOptions {
   maxMatches: number;
   filesOnly: boolean;
@@ -127,7 +139,17 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
       const searchRoot = deps.sandbox.resolvePath(input.path ?? ".");
       requirePathScope(deps.identity, deps.capabilities, searchRoot);
 
-      const context = typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
+      if (!searchBinaryAvailable()) {
+        return {
+          content: t("tool.grep.no_search_binary"),
+          isError: true,
+        };
+      }
+
+      const context =
+        typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0
+          ? input.context
+          : undefined;
       const filesOnly = input.filesOnly === true;
       const rgArgs = [
         "rg",

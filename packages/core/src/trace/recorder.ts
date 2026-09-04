@@ -1,14 +1,13 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { Redactor } from "@agency/guard";
 import type { CassetteRecord } from "../cassette.ts";
 import type { LoopEvent, PricePerMTok } from "../loop.ts";
-import type { TraceSpan, SpanStatus, SpanKind } from "./types.ts";
-import { newSpanId } from "./types.ts";
-import { buildSpanTree, filterSpansByTraceId } from "./types.ts";
-import type { SpanTreeNode } from "./types.ts";
+import type { SpanKind, SpanStatus, SpanTreeNode, TraceSpan } from "./types.ts";
+import { buildSpanTree, filterSpansByTraceId, newSpanId } from "./types.ts";
 
-export type { TraceSpan, SpanTreeNode, SpanStatus, SpanKind };
+export type { SpanKind, SpanStatus, SpanTreeNode, TraceSpan };
 
 function tracePath(sessionsDir: string, sessionId: string): string {
   return join(sessionsDir, `${sessionId}.trace.jsonl`);
@@ -25,6 +24,9 @@ export interface RecorderOptions {
   promptVersion?: string;
   provider?: string;
   model?: string;
+  /** When set, cassette records are scrubbed through it before writing to disk
+   *  (R11: redaction at the boundary, not at call sites). */
+  redactor?: Redactor;
 }
 
 export class TraceRecorder {
@@ -34,6 +36,7 @@ export class TraceRecorder {
   private readonly sessionsDir: string;
   private readonly sessionId: string;
   private readonly promptVersion?: string;
+  private readonly redactor?: Redactor;
   private turnSpanId: string | null = null;
 
   constructor(options: RecorderOptions) {
@@ -41,6 +44,7 @@ export class TraceRecorder {
     this.sessionId = options.sessionId;
     this.traceId = options.traceId;
     this.promptVersion = options.promptVersion;
+    this.redactor = options.redactor;
   }
 
   startSpan(opts: {
@@ -72,7 +76,10 @@ export class TraceRecorder {
     return spanId;
   }
 
-  endSpan(spanId: string, opts?: { status?: SpanStatus; attributes?: Partial<TraceSpan["attributes"]>; endTime?: string }): void {
+  endSpan(
+    spanId: string,
+    opts?: { status?: SpanStatus; attributes?: Partial<TraceSpan["attributes"]>; endTime?: string },
+  ): void {
     const span = this.spans.get(spanId);
     if (!span) return;
     const end = opts?.endTime ?? new Date().toISOString();
@@ -92,18 +99,23 @@ export class TraceRecorder {
       attributes: {
         ...(opts?.provider ? { provider: opts.provider } : {}),
         ...(opts?.model ? { model: opts.model } : {}),
-        ...(opts?.promptVersion ?? this.promptVersion ? { promptVersion: opts?.promptVersion ?? this.promptVersion } : {}),
+        ...((opts?.promptVersion ?? this.promptVersion)
+          ? { promptVersion: opts?.promptVersion ?? this.promptVersion }
+          : {}),
       },
     });
     this.turnSpanId = id;
     return id;
   }
 
-  endTurnSpan(status: SpanStatus = "ok"): void {
-    if (this.turnSpanId) this.endSpan(this.turnSpanId, { status });
+  endTurnSpan(status: SpanStatus = "ok", attributes?: Partial<TraceSpan["attributes"]>): void {
+    if (this.turnSpanId) this.endSpan(this.turnSpanId, { status, attributes });
   }
 
-  startModelSpan(parentId: string | null, opts: { model: string; provider: string; promptVersion?: string }): string {
+  startModelSpan(
+    parentId: string | null,
+    opts: { model: string; provider: string; promptVersion?: string },
+  ): string {
     return this.startSpan({
       name: `model:${opts.model}`,
       kind: "model",
@@ -111,7 +123,9 @@ export class TraceRecorder {
       attributes: {
         provider: opts.provider,
         model: opts.model,
-        ...(opts.promptVersion ?? this.promptVersion ? { promptVersion: opts.promptVersion ?? this.promptVersion } : {}),
+        ...((opts.promptVersion ?? this.promptVersion)
+          ? { promptVersion: opts.promptVersion ?? this.promptVersion }
+          : {}),
       },
     });
   }
@@ -123,7 +137,9 @@ export class TraceRecorder {
       parentId: parentId ?? this.turnSpanId,
       attributes: {
         toolName: opts.toolName,
-        ...(opts.promptVersion ?? this.promptVersion ? { promptVersion: opts.promptVersion ?? this.promptVersion } : {}),
+        ...((opts.promptVersion ?? this.promptVersion)
+          ? { promptVersion: opts.promptVersion ?? this.promptVersion }
+          : {}),
       },
     });
   }
@@ -146,7 +162,11 @@ export class TraceRecorder {
     return (usage.inputTokens / 1_000_000) * price.input + (usage.outputTokens / 1_000_000) * price.output;
   }
 
-  toCassetteRecord(params: CassetteRecord["params"], events: LoopEvent[], result: CassetteRecord["result"]): CassetteRecord {
+  toCassetteRecord(
+    params: CassetteRecord["params"],
+    events: LoopEvent[],
+    result: CassetteRecord["result"],
+  ): CassetteRecord {
     return { params, events, result };
   }
 
@@ -186,7 +206,9 @@ export class TraceRecorder {
     try {
       await mkdir(this.sessionsDir, { recursive: true });
       const { writeFile } = await import("node:fs/promises");
-      await writeFile(path, JSON.stringify(record, null, 2));
+      let json = JSON.stringify(record, null, 2);
+      if (this.redactor) json = this.redactor.redact(json);
+      await writeFile(path, json);
     } catch {
       // Cassette write failures are also non-fatal.
     }
@@ -242,7 +264,11 @@ export function loadTraceSpansSync(sessionsDir: string, sessionId: string): Trac
   }
 }
 
-export async function loadTraceTree(sessionsDir: string, sessionId: string, turnId?: string): Promise<SpanTreeNode[]> {
+export async function loadTraceTree(
+  sessionsDir: string,
+  sessionId: string,
+  turnId?: string,
+): Promise<SpanTreeNode[]> {
   const spans = await loadTraceSpans(sessionsDir, sessionId);
   const filtered = turnId ? filterSpansByTraceId(spans, turnId) : spans;
   return buildSpanTree(filtered);
@@ -254,7 +280,11 @@ export function loadTraceTreeSync(sessionsDir: string, sessionId: string, turnId
   return buildSpanTree(filtered);
 }
 
-export async function readCassetteRecord(sessionsDir: string, sessionId: string, turnId: string): Promise<CassetteRecord | null> {
+export async function readCassetteRecord(
+  sessionsDir: string,
+  sessionId: string,
+  turnId: string,
+): Promise<CassetteRecord | null> {
   const path = cassettePath(sessionsDir, sessionId, turnId);
   try {
     const text = await readFile(path, "utf8");

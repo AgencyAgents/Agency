@@ -1,26 +1,29 @@
-export type SwarmTodoStatus = "pending" | "in_progress" | "completed" | "ready_for_review";
+export type OrchestraTodoStatus = "pending" | "in_progress" | "completed" | "ready_for_review";
 
-export interface SwarmTodoItem {
+export interface OrchestraTodoItem {
   id: string;
   content: string;
-  status: SwarmTodoStatus;
+  status: OrchestraTodoStatus;
   claimedBy?: string;
 }
 
-export class SwarmTodoStore {
-  private items: SwarmTodoItem[] = [];
-  private persist?: (todos: SwarmTodoItem[]) => Promise<void>;
+export class OrchestraTodoStore {
+  private items: OrchestraTodoItem[] = [];
+  private persist?: (todos: OrchestraTodoItem[]) => Promise<void>;
 
-  constructor(opts?: { persist?: (todos: SwarmTodoItem[]) => Promise<void>; initial?: SwarmTodoItem[] }) {
+  constructor(opts?: {
+    persist?: (todos: OrchestraTodoItem[]) => Promise<void>;
+    initial?: OrchestraTodoItem[];
+  }) {
     if (opts?.initial) this.items = [...opts.initial];
     if (opts?.persist) this.persist = opts.persist;
   }
 
-  list(): SwarmTodoItem[] {
+  list(): OrchestraTodoItem[] {
     return [...this.items];
   }
 
-  replace(items: SwarmTodoItem[]): void {
+  replace(items: OrchestraTodoItem[]): void {
     this.items = [...items];
     void this.persist?.(this.items);
   }
@@ -28,7 +31,8 @@ export class SwarmTodoStore {
   claim(handle: string, id: string): { ok: boolean; reason?: string } {
     const item = this.items.find((t) => t.id === id);
     if (!item) return { ok: false, reason: "not found" };
-    if (item.claimedBy && item.claimedBy !== handle) return { ok: false, reason: `already claimed by ${item.claimedBy}` };
+    if (item.claimedBy && item.claimedBy !== handle)
+      return { ok: false, reason: `already claimed by ${item.claimedBy}` };
     item.claimedBy = handle;
     if (item.status === "pending") item.status = "in_progress";
     void this.persist?.(this.items);
@@ -44,7 +48,7 @@ export class SwarmTodoStore {
     return { ok: true };
   }
 
-  setStatus(handle: string, id: string, status: SwarmTodoStatus): { ok: boolean; reason?: string } {
+  setStatus(handle: string, id: string, status: OrchestraTodoStatus): { ok: boolean; reason?: string } {
     const item = this.items.find((t) => t.id === id);
     if (!item) return { ok: false, reason: "not found" };
     if (status === "completed" && item.claimedBy === handle) {
@@ -56,7 +60,7 @@ export class SwarmTodoStore {
     return { ok: true };
   }
 
-  hydrate(entries: SwarmTodoItem[]): void {
+  hydrate(entries: OrchestraTodoItem[]): void {
     this.items = [...entries];
   }
 }

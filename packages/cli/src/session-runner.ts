@@ -6,6 +6,7 @@ import {
   type ModelPricing,
   type ThinkingLevel,
   type Tokenizer,
+  tokenizerFor,
 } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { ImageBlock } from "@agency/schema";
@@ -27,14 +28,16 @@ export interface CompactionOptions {
 export const DEFAULT_COMPACTION_CONTEXT_WINDOW = 200_000;
 
 /**
- * Proactive compaction is on by default: an approximate tokenizer, the
+ * Proactive compaction is on by default: a family-appropriate tokenizer, the
  * caller's (or fallback) context window, and the offline extractive
  * summarizer, so sessions compact as they approach the window without any
  * caller opting in or any provider round-trip for the summary.
+ * When `family` is provided, the tokenizer is selected per provider family
+ * (openai → BPE, openai-compatible → char/4, anthropic/google → char/4).
  */
-export function defaultCompaction(contextWindow?: number): CompactionOptions {
+export function defaultCompaction(contextWindow?: number, family?: string): CompactionOptions {
   return {
-    tokenizer: createApproximateTokenizer(),
+    tokenizer: family ? tokenizerFor(family) : createApproximateTokenizer(),
     threshold: { contextWindow: contextWindow ?? DEFAULT_COMPACTION_CONTEXT_WINDOW },
     summarize: (text) => Promise.resolve(summarizeTranscript(text)),
   };
@@ -81,7 +84,7 @@ export async function runSessionTurn(
   client: DaemonClient,
   options: RunSessionTurnOptions,
 ): Promise<RunSessionTurnResult> {
-  const compaction = options.compaction ?? defaultCompaction(options.contextWindow);
+  const compaction = options.compaction ?? defaultCompaction(options.contextWindow, options.provider);
 
   const entries = options.store.load(options.sessionId);
   let tipId = options.store.latestTip(entries) ?? null;

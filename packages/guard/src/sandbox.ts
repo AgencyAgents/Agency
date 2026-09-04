@@ -144,7 +144,12 @@ function canonicalPath(path: string): string {
       const real = realpathSync(current);
       if (tail === "") return real;
       return real.endsWith(sep()) ? real + tail : `${real}${sep()}${tail}`;
-    } catch {
+    } catch (err: unknown) {
+      // ENOENT means the component genuinely doesn't exist yet (file to be
+      // created) — walk up to resolve the deepest existing ancestor. Any other
+      // error (EACCES, ELOOP, etc.) means we can't verify the path, so deny.
+      const nodeErr = err as { code?: string };
+      if (nodeErr.code !== "ENOENT") throw err;
       const parent = dirname(current);
       if (parent === current) return resolved; // reached the filesystem root without resolving
       tail = tail === "" ? basename(current) : `${basename(current)}${sep()}${tail}`;

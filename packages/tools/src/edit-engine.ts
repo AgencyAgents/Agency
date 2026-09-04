@@ -1,5 +1,7 @@
-import { AgencyError, ErrorCode } from "@agency/schema";
+import { createHash } from "node:crypto";
 import { t } from "@agency/i18n";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import { canonicalizeLine, canonicalizeText } from "./hashline.ts";
 
 export interface EditRequest {
   oldText: string;
@@ -64,18 +66,67 @@ export function applyEditVerified(
 }
 
 /**
- * Multi-hunk form of applyEditVerified: applies every hunk in order against
- * the working copy, then reads diagnostics once. All-or-nothing falls out of
- * applyEdit's throw-on-reject — a rejected hunk discards the working copy and
- * the caller never writes a partially-edited file.
+ * Multi-hunk form of applyEditVerified: applies every hunk against the
+ * working copy, then reads diagnostics once. Exact-duplicate hunks (same
+ * oldText, newText, and replaceAll) are deduplicated first so a repeated
+ * hunk applies once instead of double-applying or tripping ambiguity.
+ * Remaining hunks are ordered bottom-to-top (by their position in the
+ * original content) so that earlier-line edits are not shifted by
+ * later-line insertions. Overlapping hunks are deduplicated: when two
+ * hunks match overlapping ranges, only the first (bottom-most) is
+ * applied. All-or-nothing falls out of applyEdit's throw-on-reject — a
+ * rejected hunk discards the working copy and the caller never writes a
+ * partially-edited file.
  */
 export function applyEditsVerified(
   content: string,
   hunks: readonly EditHunk[],
   options?: { path?: string; diagnostics?: DiagnosticsProvider },
 ): EditVerificationResult {
+  // Comment-slop autocorrect (item 54): normalize every hunk before any
+  // positioning/dedupe so spans are computed on the clean anchors.
+  const corrected = hunks.map((h) => autocorrectHunk(h).hunk);
+  // Exact-duplicate dedupe (item 56): identical hunks (same oldText,
+  // newText, replaceAll) collapse to one, preserving first-seen order.
+  // Range-overlap dedupe below would also drop them, but making it
+  // explicit keeps duplicates safe if overlap ever hardens to a reject.
+  const seen = new Set<string>();
+  const unique = corrected.filter((h) => {
+    const key = JSON.stringify([h.oldText, h.newText, h.replaceAll ?? false]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  // Find each hunk's position in the original content using all match strategies
+  const positioned: { hunk: EditHunk; start: number; end: number }[] = [];
+
+  for (const hunk of unique) {
+    const pos = findHunkSpan(content, hunk);
+    if (pos === undefined) {
+      // Let applyEdit produce the canonical error for this hunk
+      let current = content;
+      for (const h of unique) current = applyEdit(current, h);
+      const diags = options?.path && options.diagnostics ? options.diagnostics(options.path) : [];
+      return { content: current, warnings: errorDiagnostics(diags) };
+    }
+    positioned.push({ hunk, start: pos.start, end: pos.end });
+  }
+
+  // Sort bottom-to-top by start position (descending); when tied, the
+  // longer span (larger end) is bottom-most and wins on overlap.
+  positioned.sort((a, b) => b.start - a.start || b.end - a.end);
+
+  // Dedupe overlapping hunks: skip hunks whose range overlaps any accepted one
+  const deduped: typeof positioned = [];
+  for (const p of positioned) {
+    const overlaps = deduped.some((d) => p.start < d.end && p.end > d.start);
+    if (!overlaps) deduped.push(p);
+  }
+
+  // Apply in bottom-to-top order
   let current = content;
-  for (const hunk of hunks) current = applyEdit(current, hunk);
+  for (const { hunk } of deduped) current = applyEdit(current, hunk);
+
   const diagnostics = options?.path && options.diagnostics ? options.diagnostics(options.path) : [];
   return { content: current, warnings: errorDiagnostics(diagnostics) };
 }
@@ -99,6 +150,212 @@ function editError(message: string, context: Record<string, unknown>): AgencyErr
   return new AgencyError(ErrorCode.TOOL_ERROR, message, { source: "edit", context });
 }
 
+// ── Hashline content-hash validation ──────────────────────────────────────
+// Each line of oldText is hashed (sha256) after canonicalization (see
+// hashline.ts): line endings normalized, edges trimmed, internal
+// space/tab runs collapsed. Tolerant of indentation drift and
+// whitespace-run differences while still rejecting content changes.
+
+function normalizedLineHash(line: string): string {
+  return createHash("sha256").update(canonicalizeLine(line), "utf8").digest("hex");
+}
+
+/** Compute sha256 hashes for every line in `text` (after normalization). */
+function lineHashes(text: string): string[] {
+  return canonicalizeText(text).split("\n").map(normalizedLineHash);
+}
+
+/**
+ * Find all regions in `content` where consecutive lines have sha256 hashes
+ * matching those of `oldText` (after normalization). Returns the byte spans
+ * of every match, or an empty array when nothing matches.
+ *
+ * This is a fuzzy-anchor strategy: it matches when exact text differs due to
+ * whitespace but the line-by-line content (modulo whitespace) is identical.
+ */
+function findAllHashAnchors(content: string, oldText: string): SpanMatch[] {
+  // Split into lines, tracking each line's byte start and end positions
+  // (end = position after line content, before any \n or \r\n separator)
+  // so spans are correct regardless of line-ending style.
+  const contentLines: string[] = [];
+  const lineStarts: number[] = [0];
+  const lineEnds: number[] = [];
+  const re = /\r\n|\r|\n/;
+  let lastIndex = 0;
+  for (const match of content.matchAll(new RegExp(re.source, "g"))) {
+    contentLines.push(content.slice(lastIndex, match.index));
+    lineEnds.push(match.index);
+    lastIndex = match.index + match[0].length;
+    lineStarts.push(lastIndex);
+  }
+  contentLines.push(content.slice(lastIndex));
+  lineEnds.push(content.length);
+
+  const oldHashes = lineHashes(oldText);
+
+  if (oldHashes.length === 0 || contentLines.length < oldHashes.length) return [];
+
+  const spans: SpanMatch[] = [];
+  for (let i = 0; i <= contentLines.length - oldHashes.length; i++) {
+    let match = true;
+    for (let j = 0; j < oldHashes.length; j++) {
+      if (normalizedLineHash(contentLines[i + j]!) !== oldHashes[j]!) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      spans.push({ start: lineStarts[i]!, end: lineEnds[i + oldHashes.length - 1]! });
+    }
+  }
+  return spans;
+}
+
+function findHashAnchor(content: string, oldText: string): SpanMatch | undefined {
+  const spans = findAllHashAnchors(content, oldText);
+  return spans.length > 0 ? spans[0] : undefined;
+}
+
+/**
+ * Find the byte span of `hunk.oldText` in `content` using all available
+ * match strategies (exact → hashline → whitespace-tolerant regex). Returns
+ * undefined when no strategy finds a unique match.
+ */
+function findHunkSpan(content: string, hunk: EditHunk): SpanMatch | undefined {
+  // Exact match
+  const exact = content.indexOf(hunk.oldText);
+  if (exact !== -1) return { start: exact, end: exact + hunk.oldText.length };
+
+  // Hashline match
+  const hashSpan = findHashAnchor(content, hunk.oldText);
+  if (hashSpan !== undefined) return hashSpan;
+
+  // Whitespace-tolerant regex match (only when unique)
+  const pattern = whitespaceTolerantRegExp(hunk.oldText);
+  if (pattern) {
+    const spans = matchAllSpans(content, pattern);
+    if (spans.length === 1) return spans[0]!;
+  }
+
+  return undefined;
+}
+
+/**
+ * Comment-slop scanner + autocorrect (item 54). Model-generated hunks often
+ * carry trailing junk lines — continuation tokens (`...`, `// ...`),
+ * markdown fences, or merge/diff markers — and flat (zero-indent) `newText`
+ * for line-paired replacements. Both shapes reject at patch time, so hunks
+ * are normalized here before any matching runs. Autocorrect never invents
+ * new rejections: it bails out unchanged when stripping would empty a side.
+ */
+export function isSlopLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return false;
+  if (/^```/.test(trimmed)) return true;
+  if (/^(<{7}|>{7}|\|{7}|={7})/.test(trimmed)) return true;
+  if (/^(@@\s|diff --git\s|index\s[\da-f]+\.\.[\da-f]+|\+\+\+\s|---\s)/.test(trimmed)) return true;
+  if (/^(\.\.\.|…|⋯)+$/.test(trimmed)) return true;
+  const prefixes = ["//", "#", "--", "/*", "*", "<!--", ";;", "%"];
+  const prefix = prefixes.find((p) => trimmed.startsWith(p));
+  if (prefix !== undefined) {
+    let body = trimmed.slice(prefix.length);
+    if (prefix === "/*") body = body.replace(/\*\/\s*$/, "");
+    if (prefix === "<!--") body = body.replace(/-->\s*$/, "");
+    body = body.trim();
+    if (/^(\.\.\.|…|⋯)+$/.test(body)) return true;
+    if (
+      body.length > 0 &&
+      body.length <= 80 &&
+      /(rest|remain|unchang|same|snip|truncat|continu|etc\.?|omit|elid|more\s+(code|below)|follow)/i.test(
+        body,
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+  if (
+    /(\.\.\.|…|⋯)/.test(trimmed) &&
+    trimmed.length <= 80 &&
+    /(rest|remain|unchang|same|snip|truncat|continu|more|below|above)/i.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Strip trailing slop lines from `text`, keeping at least one content line. */
+export function stripTrailingSlop(text: string): { text: string; stripped: string[] } {
+  const hadTrailingNl = text.endsWith("\n");
+  const lines = text.split("\n");
+  let end = hadTrailingNl ? lines.length - 1 : lines.length;
+  const stripped: string[] = [];
+  while (end > 1 && isSlopLine(lines[end - 1]!)) {
+    stripped.unshift(lines[end - 1]!);
+    end -= 1;
+  }
+  if (stripped.length === 0) return { text, stripped };
+  let out = lines.slice(0, end).join("\n");
+  if (hadTrailingNl) out += "\n";
+  return { text: out, stripped };
+}
+
+/**
+ * Paired-replacement indent repair: when `oldText`/`newText` have the same
+ * line count and every non-blank `newText` line is flat (column 0) while the
+ * old side is indented, the model dropped indentation — copy each old line's
+ * indent to its pair. New sides that already carry indent are left alone so
+ * intentional re-indents survive.
+ */
+export function restorePairedIndent(oldText: string, newText: string): string {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  if (oldLines.length !== newLines.length || oldLines.length === 0) return newText;
+  const allFlat = newLines.every((l) => l === "" || !/^[ \t]/.test(l));
+  const someIndented = oldLines.some((l) => /^[ \t]+\S/.test(l));
+  if (!allFlat || !someIndented) return newText;
+  return newLines
+    .map((nl, i) => {
+      if (nl === "" || /^[ \t]/.test(nl)) return nl;
+      return indentOf(oldLines[i] ?? "") + nl;
+    })
+    .join("\n");
+}
+
+export interface HunkAutocorrect {
+  hunk: EditHunk;
+  corrected: boolean;
+  notes: string[];
+}
+
+/** Normalize one hunk: strip trailing slop from both sides, then repair indent. */
+export function autocorrectHunk(hunk: EditHunk): HunkAutocorrect {
+  const notes: string[] = [];
+  let oldText = hunk.oldText;
+  let newText = hunk.newText;
+  const oldStripped = stripTrailingSlop(oldText);
+  if (oldStripped.stripped.length > 0) {
+    oldText = oldStripped.text;
+    notes.push(`stripped ${oldStripped.stripped.length} trailing slop line(s) from oldText`);
+  }
+  const newStripped = stripTrailingSlop(newText);
+  if (newStripped.stripped.length > 0) {
+    newText = newStripped.text;
+    notes.push(`stripped ${newStripped.stripped.length} trailing slop line(s) from newText`);
+  }
+  const restored = restorePairedIndent(oldText, newText);
+  if (restored !== newText) {
+    newText = restored;
+    notes.push("restored indentation for paired replacement");
+  }
+  if (oldText.length === 0 || newText.length === 0 || notes.length === 0) {
+    return { hunk, corrected: false, notes: notes.length === 0 ? notes : [] };
+  }
+  const out: EditHunk = { oldText, newText };
+  if (hunk.replaceAll !== undefined) out.replaceAll = hunk.replaceAll;
+  return { hunk: out, corrected: true, notes };
+}
+
 /**
  * Hash-anchored in effect, not just in name: `oldText` is the anchor. If it
  * doesn't appear in `content` (the file drifted since it was last read), or
@@ -114,31 +371,57 @@ function editError(message: string, context: Record<string, unknown>): AgencyErr
  * never fuzzy about code.
  */
 export function applyEdit(content: string, request: EditRequest): string {
-  if (request.oldText.length === 0) {
+  const normalized = autocorrectHunk(request).hunk;
+  const oldText = normalized.oldText;
+  const newText = normalized.newText;
+  const replaceAll = normalized.replaceAll ?? request.replaceAll;
+  if (oldText.length === 0) {
     throw editError("edit rejected: oldText must not be empty", { oldTextPreview: "" });
   }
 
-  const occurrences = countOccurrences(content, request.oldText);
+  const occurrences = countOccurrences(content, oldText);
 
   if (occurrences === 0) {
-    const fuzzy = fuzzyReplace(content, request);
+    // Try hashline match (sha256 of each line, normalized for whitespace)
+    const hashSpans = findAllHashAnchors(content, oldText);
+    if (hashSpans.length > 0) {
+      if (hashSpans.length > 1 && !replaceAll) {
+        throw editError(t("tool.edit.ambiguous", { count: hashSpans.length }), {
+          oldTextPreview: preview(oldText),
+          occurrences: hashSpans.length,
+          matchedBy: "hashline",
+        });
+      }
+
+      let result = content;
+      for (let i = hashSpans.length - 1; i >= 0; i--) {
+        const span = hashSpans[i]!;
+        const matchedText = content.slice(span.start, span.end);
+        const replacement = buildFuzzyReplacement(matchedText, oldText, newText);
+        result = result.slice(0, span.start) + replacement + result.slice(span.end);
+      }
+      return result;
+    }
+
+    // Fall back to whitespace-tolerant fuzzy match
+    const fuzzy = fuzzyReplace(content, { oldText, newText, replaceAll });
     if (fuzzy !== undefined) return fuzzy;
-    throw editError(t("tool.edit.not_found"), { oldTextPreview: preview(request.oldText) });
+    throw editError(t("tool.edit.not_found"), { oldTextPreview: preview(oldText) });
   }
 
-  if (occurrences > 1 && !request.replaceAll) {
+  if (occurrences > 1 && !replaceAll) {
     throw editError(t("tool.edit.ambiguous", { count: occurrences }), {
-      oldTextPreview: preview(request.oldText),
+      oldTextPreview: preview(oldText),
       occurrences,
     });
   }
 
-  if (request.replaceAll) {
-    return content.split(request.oldText).join(request.newText);
+  if (replaceAll) {
+    return content.split(oldText).join(newText);
   }
 
-  const index = content.indexOf(request.oldText);
-  return content.slice(0, index) + request.newText + content.slice(index + request.oldText.length);
+  const index = content.indexOf(oldText);
+  return content.slice(0, index) + newText + content.slice(index + oldText.length);
 }
 
 interface SpanMatch {

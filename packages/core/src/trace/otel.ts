@@ -19,7 +19,14 @@ export interface OtlpPayload {
         startTimeUnixNano: string;
         endTimeUnixNano: string;
         status: { code: number; message?: string };
-        attributes: Array<{ key: string; value: { stringValue: string } | { doubleValue: number } | { intValue: string } | { boolValue: boolean } }>;
+        attributes: Array<{
+          key: string;
+          value:
+            | { stringValue: string }
+            | { doubleValue: number }
+            | { intValue: string }
+            | { boolValue: boolean };
+        }>;
       }>;
     }>;
   }>;
@@ -47,19 +54,27 @@ function hexToSpanId(spanId: string): string {
 
 function spanKindToOtel(kind: TraceSpan["kind"]): number {
   switch (kind) {
-    case "turn": return 1; // INTERNAL
-    case "model": return 3; // CLIENT
-    case "tool": return 1; // INTERNAL
-    default: return 0;
+    case "turn":
+      return 1; // INTERNAL
+    case "model":
+      return 3; // CLIENT
+    case "tool":
+      return 1; // INTERNAL
+    default:
+      return 0;
   }
 }
 
 function statusToOtel(status: TraceSpan["status"]): { code: number; message?: string } {
   switch (status) {
-    case "ok": return { code: 1 };
-    case "error": return { code: 2, message: "error" };
-    case "cancelled": return { code: 2, message: "cancelled" };
-    default: return { code: 0 };
+    case "ok":
+      return { code: 1 };
+    case "error":
+      return { code: 2, message: "error" };
+    case "cancelled":
+      return { code: 2, message: "cancelled" };
+    default:
+      return { code: 0 };
   }
 }
 
@@ -74,15 +89,31 @@ export function spansToOtlp(spans: TraceSpan[], resourceAttributes?: Record<stri
     endTimeUnixNano: toNanoString(s.endTime),
     status: statusToOtel(s.status),
     attributes: [
-      ...(s.attributes.provider ? [{ key: "provider", value: { stringValue: String(s.attributes.provider) } }] : []),
+      ...(s.attributes.provider
+        ? [{ key: "provider", value: { stringValue: String(s.attributes.provider) } }]
+        : []),
       ...(s.attributes.model ? [{ key: "model", value: { stringValue: String(s.attributes.model) } }] : []),
-      ...(s.attributes.promptVersion ? [{ key: "prompt.version", value: { stringValue: String(s.attributes.promptVersion) } }] : []),
-      ...(s.attributes.toolName ? [{ key: "tool.name", value: { stringValue: String(s.attributes.toolName) } }] : []),
-      ...(s.attributes.inputTokens !== undefined ? [{ key: "tokens.input", value: { intValue: String(s.attributes.inputTokens) } }] : []),
-      ...(s.attributes.outputTokens !== undefined ? [{ key: "tokens.output", value: { intValue: String(s.attributes.outputTokens) } }] : []),
-      ...(s.attributes.cachedInputTokens !== undefined ? [{ key: "tokens.cached_input", value: { intValue: String(s.attributes.cachedInputTokens) } }] : []),
-      ...(s.attributes.cost !== undefined ? [{ key: "cost", value: { doubleValue: s.attributes.cost } }] : []),
-      ...(s.attributes.isError !== undefined ? [{ key: "tool.is_error", value: { boolValue: Boolean(s.attributes.isError) } }] : []),
+      ...(s.attributes.promptVersion
+        ? [{ key: "prompt.version", value: { stringValue: String(s.attributes.promptVersion) } }]
+        : []),
+      ...(s.attributes.toolName
+        ? [{ key: "tool.name", value: { stringValue: String(s.attributes.toolName) } }]
+        : []),
+      ...(s.attributes.inputTokens !== undefined
+        ? [{ key: "tokens.input", value: { intValue: String(s.attributes.inputTokens) } }]
+        : []),
+      ...(s.attributes.outputTokens !== undefined
+        ? [{ key: "tokens.output", value: { intValue: String(s.attributes.outputTokens) } }]
+        : []),
+      ...(s.attributes.cachedInputTokens !== undefined
+        ? [{ key: "tokens.cached_input", value: { intValue: String(s.attributes.cachedInputTokens) } }]
+        : []),
+      ...(s.attributes.cost !== undefined
+        ? [{ key: "cost", value: { doubleValue: s.attributes.cost } }]
+        : []),
+      ...(s.attributes.isError !== undefined
+        ? [{ key: "tool.is_error", value: { boolValue: Boolean(s.attributes.isError) } }]
+        : []),
       { key: "span.kind", value: { stringValue: s.kind } },
     ],
   }));
@@ -115,7 +146,7 @@ export function otlpJsonValid(payload: unknown): boolean {
     if (!rs || typeof rs !== "object") return false;
     const r = rs as Record<string, unknown>;
     if (!r.resource || !Array.isArray((r as { scopeSpans?: unknown }).scopeSpans)) return false;
-    for (const ss of (r.scopeSpans as unknown[])) {
+    for (const ss of r.scopeSpans as unknown[]) {
       if (!ss || typeof ss !== "object") return false;
       const s = ss as Record<string, unknown>;
       if (!Array.isArray((s as { spans?: unknown }).spans)) return false;

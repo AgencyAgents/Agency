@@ -50,7 +50,7 @@ export function buildSpanTree(spans: TraceSpan[]): SpanTreeNode[] {
   const roots: SpanTreeNode[] = [];
   for (const node of byId.values()) {
     if (node.span.parentId && byId.has(node.span.parentId)) {
-      byId.get(node.span.parentId)!.children.push(node);
+      byId.get(node.span.parentId)?.children.push(node);
     } else {
       roots.push(node);
     }

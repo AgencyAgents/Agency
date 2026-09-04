@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, sep } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 
 export interface TrustStore {
@@ -18,19 +18,33 @@ export interface TrustStore {
  * covers the whole tree without per-directory prompts.
  */
 export function createFileTrustStore(storePath: string): TrustStore {
+  let cached: { mtimeMs: number; paths: string[] } | undefined;
+
   function read(): string[] {
-    if (!existsSync(storePath)) return [];
-    try {
-      const parsed = JSON.parse(readFileSync(storePath, "utf8"));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    if (!existsSync(storePath)) {
+      cached = undefined;
       return [];
+    }
+    try {
+      const stat = statSync(storePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs) return cached.paths;
+      const parsed = JSON.parse(readFileSync(storePath, "utf8"));
+      const paths = Array.isArray(parsed) ? parsed : [];
+      cached = { mtimeMs: stat.mtimeMs, paths };
+      return paths;
+    } catch {
+      return cached?.paths ?? [];
     }
   }
 
   function write(paths: string[]): void {
     mkdirSync(dirname(storePath), { recursive: true });
     writeFileSync(storePath, JSON.stringify(paths, null, 2));
+    try {
+      cached = { mtimeMs: statSync(storePath).mtimeMs, paths };
+    } catch {
+      cached = undefined;
+    }
   }
 
   return {
@@ -38,7 +52,7 @@ export function createFileTrustStore(storePath: string): TrustStore {
       const normalized = normalizeDir(path);
       return read().some((trusted) => {
         const dir = normalizeDir(trusted);
-        return dir === normalized || normalized.startsWith(`${dir}/`);
+        return dir === normalized || (dir === sep ? true : normalized.startsWith(`${dir}${sep}`));
       });
     },
     trust(path) {
@@ -70,8 +84,8 @@ function normalizeDir(path: string): string {
     }
     parts.push(segment);
   }
-  const joined = parts.join("/");
-  if (absolute) return `/${joined}`.replace(/\/+$/, "") || "/";
+  const joined = parts.join(sep);
+  if (absolute) return joined ? `${sep}${joined}` : sep;
   return joined;
 }
 

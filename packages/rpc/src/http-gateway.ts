@@ -1,6 +1,11 @@
 import { matchesSubscription } from "./protocol.ts";
 import type { MethodHandler } from "./server.ts";
 
+/** Minimal store interface — the gateway only needs `load()` for replay. */
+export interface SessionStoreLike {
+  load(sessionId: string): { id: string; type: string; createdAt: string; [key: string]: unknown }[];
+}
+
 /**
  * The HTTP + SSE surface alongside the TCP loopback transport (A3, pulled
  * forward so the desktop app has a real client surface): the SAME handler
@@ -34,6 +39,11 @@ export interface HttpGatewayOptions {
    * from other origins. Default true; harmless for a loopback-only daemon.
    */
   cors?: boolean;
+  /**
+   * Optional SessionStore for the /sync-events endpoint. When set, the
+   * gateway can replay session entries as SSE for durable event replay.
+   */
+  store?: SessionStoreLike;
 }
 
 export interface HttpGateway {
@@ -195,6 +205,73 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
     });
   }
 
+  /** GET /sync-events?sessionId=<id> — replay session entries as SSE. */
+  function handleSyncEvents(request: Request, url: URL): Response {
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId) {
+      return json(400, { error: { message: "sessionId query parameter is required" } });
+    }
+
+    const store = options.store;
+    if (!store) {
+      return json(501, { error: { message: "sync-events not available: no session store configured" } });
+    }
+
+    const entries = store.load(sessionId);
+    if (entries.length === 0) {
+      return json(404, { error: { message: `session not found: ${sessionId}` } });
+    }
+
+    const encoder = new TextEncoder();
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false;
+
+        function write(chunk: string): boolean {
+          if (closed) return false;
+          try {
+            controller.enqueue(encoder.encode(chunk));
+            return true;
+          } catch {
+            closed = true;
+            try {
+              controller.close();
+            } catch {}
+            return false;
+          }
+        }
+
+        // Stream each entry as an SSE event.
+        for (const entry of entries) {
+          if (!write(`event: sync-entry\ndata: ${JSON.stringify(entry)}\n\n`)) break;
+        }
+
+        // Signal completion.
+        write(`event: sync-complete\ndata: ${JSON.stringify({ count: entries.length })}\n\n`);
+
+        if (!closed) {
+          closed = true;
+          try {
+            controller.close();
+          } catch {}
+        }
+      },
+    });
+
+    // Bun aborts request.signal when the client connection drops.
+    if (request.signal.aborted) request.signal.addEventListener("abort", () => {});
+    else request.signal.addEventListener("abort", () => {});
+
+    return new Response(body, {
+      headers: withCors({
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      }),
+    });
+  }
+
   /** GET /doc — an OpenAPI description of the gateway's surface. */
   function openApiDocument(): Record<string, unknown> {
     const unauthorized: Record<string, unknown> = {
@@ -284,6 +361,41 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
             },
           },
         },
+        "/sync-events": {
+          get: {
+            summary: "Replay session entries as SSE for durable event replay",
+            description:
+              "text/event-stream. Each entry from the session's JSONL is streamed as " +
+              "an `event: sync-entry` frame with the entry JSON as data. A final " +
+              "`event: sync-complete` frame signals the end of the replay. " +
+              "Requires a SessionStore to be configured on the gateway.",
+            parameters: [
+              {
+                name: "sessionId",
+                in: "query",
+                required: true,
+                schema: { type: "string" },
+                description: "The session ID to replay entries from.",
+              },
+              {
+                name: "token",
+                in: "query",
+                schema: { type: "string" },
+                description: "Alternative to the Authorization header for EventSource clients.",
+              },
+            ],
+            responses: {
+              "200": {
+                description: "SSE stream of session entries",
+                content: { "text/event-stream": { schema: { type: "string" } } },
+              },
+              "400": { description: "Missing sessionId parameter" },
+              "401": unauthorized,
+              "404": { description: "Session not found" },
+              "501": { description: "No session store configured on gateway" },
+            },
+          },
+        },
         "/health": {
           get: {
             summary: "Health check",
@@ -342,6 +454,11 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
         if (request.method === "OPTIONS") {
           return new Response(null, { status: 204, headers: withCors({}) });
         }
+        // Health check is always open — clients probe liveness without a token.
+        if (url.pathname === "/health") {
+          if (request.method !== "GET") return methodNotAllowed("GET");
+          return json(200, { ok: true, subscribers: subscribers.size });
+        }
         if (!authorized(request, url)) {
           return json(
             401,
@@ -357,9 +474,9 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
           case "/events":
             if (request.method !== "GET") return methodNotAllowed("GET");
             return handleEvents(request, url);
-          case "/health":
+          case "/sync-events":
             if (request.method !== "GET") return methodNotAllowed("GET");
-            return json(200, { ok: true, subscribers: subscribers.size });
+            return handleSyncEvents(request, url);
           case "/doc":
             if (request.method !== "GET") return methodNotAllowed("GET");
             return json(200, openApiDocument());

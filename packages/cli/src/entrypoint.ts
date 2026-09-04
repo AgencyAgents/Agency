@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import {
   type Config,
   dataDir,
+  getSessionTitle,
   loadConfig,
   parseModelRef,
   type RetentionPolicy,
@@ -12,7 +13,15 @@ import {
   storagePaths,
 } from "@agency/core";
 import { t } from "@agency/i18n";
-import { createKeychain, type KeychainBackend, resolveApiKey } from "@agency/providers";
+import {
+  BUILTIN_MODELS,
+  createKeychain,
+  defaultModelIDs,
+  type KeychainBackend,
+  OAUTH_PROVIDERS,
+  resolveApiKey,
+  runOAuthFlow,
+} from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
@@ -20,7 +29,7 @@ import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import { runSessionTurn } from "./session-runner.ts";
-import { pruneCommand, storageCommand, whereCommand } from "./storage-commands.ts";
+import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
 
 /**
  * Inlined at compile time by scripts/build.ts (--define); running from source
@@ -38,12 +47,20 @@ Commands:
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
   session list             List sessions for this workspace (id, created, entries)
+  session show <id>        Show session details
+  session rename <id> <title>  Rename a session
+  session fork <id>        Fork (clone) a session under a new id
+  session clone <id> [newId]  Clone a session file under a new id (or the given one)
   session delete <id>      Delete a session by id
-  auth login <provider>    Store an API key for a provider in the OS keychain
+  daemon status            Show daemon status for this workspace
+   auth login <provider>    Store an API key for a provider in the OS keychain
+   auth login <provider> --oauth
+                        OAuth browser flow for anthropic, openai, google, github-copilot
+                        (needs provider.<id>.oauth.clientId in config)
   auth list                Show which providers have a resolvable key
   onboard                  First-run setup: connect, model, trust
   debug                    Write a redacted debug bundle for issue reports
-  update [--rollback]      Update binary from GitHub Releases (SHA-256 verified)
+  update [--rollback]      Update binary from GitHub Releases (ed25519 + SHA-256 verified)
   serve                    Run daemon in foreground (logging to stdout)
 
 Options:
@@ -70,6 +87,7 @@ export interface ParsedArgv {
   model: string | undefined;
   provider: string | undefined;
   print: string | undefined;
+  oauth: boolean;
   images: string[];
   continueLast: boolean;
   session: string | undefined;
@@ -97,6 +115,8 @@ export interface EntrypointDeps {
   ensureClient?: (options: { workspaceRoot: string; instanceDir?: string }) => Promise<DaemonClient>;
   /** Overrides the workspace the command runs in (tests). */
   cwd?: string;
+  /** Overrides the OAuth browser flow for `auth login --oauth` (tests). */
+  oauthFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -122,6 +142,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     model: undefined,
     provider: undefined,
     print: undefined,
+    oauth: false,
     images: [],
     continueLast: false,
     session: undefined,
@@ -162,6 +183,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--continue":
         parsed.continueLast = true;
+        break;
+      case "--oauth":
+        parsed.oauth = true;
         break;
       case "--workspace":
         parsed.workspace = value();
@@ -233,14 +257,23 @@ function flagsFor(parsed: ParsedArgv): Partial<Record<keyof Config, unknown>> {
 
 /** provider+model for a turn: argv wins over config.model (which already
  *  contains the flags layer). A bare --model id (no slash) is only usable
- *  together with --provider. */
-function resolveModelRef(config: Config, parsed: ParsedArgv): { provider: string; model: string } {
+ *  together with --provider. A bare --provider reuses the model id from
+ *  config.model, falling back to that provider's catalog default. */
+function resolveModelRef(
+  config: Config,
+  parsed: ParsedArgv,
+  defaults: Record<string, string> = defaultModelIDs(BUILTIN_MODELS),
+): { provider: string; model: string } {
   if (parsed.provider !== undefined && parsed.model === undefined) {
     const fromConfig = parseModelRef(config.model ?? "");
-    if (!fromConfig) {
-      throw new Error(t("cli.error.provider_without_model", { provider: parsed.provider }));
+    if (fromConfig) {
+      return { provider: parsed.provider, model: fromConfig.model };
     }
-    return { provider: parsed.provider, model: fromConfig.model };
+    const fallback = defaults[parsed.provider];
+    if (fallback) {
+      return { provider: parsed.provider, model: fallback };
+    }
+    throw new Error(t("cli.error.provider_without_model", { provider: parsed.provider }));
   }
   const ref = parseModelRef(config.model ?? "");
   if (!ref) throw new Error(t("cli.error.no_model"));
@@ -257,7 +290,15 @@ async function validateTurnKey(provider: string, config: Config, deps: Entrypoin
   const providerConfig = config.provider[provider];
   const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
   const key =
-    fromDeclaredEnv ?? (await resolveApiKey({ provider, env, keychain, config: providerConfig?.apiKey }));
+    fromDeclaredEnv ??
+    (await resolveApiKey({
+      provider,
+      env,
+      keychain,
+      config: providerConfig?.apiKey,
+      oauthClientId: providerConfig?.oauth?.clientId,
+      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+    }));
   if (key === undefined) throw new Error(t("cli.error.no_key", { provider }));
 }
 
@@ -296,7 +337,14 @@ function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[]
     try {
       const data = readFileSync(p);
       const ext = p.split(".").pop()?.toLowerCase() ?? "";
-      const mime = ext === "png" ? "image/png" : ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+      const mime =
+        ext === "png"
+          ? "image/png"
+          : ext === "jpg" || ext === "jpeg"
+            ? "image/jpeg"
+            : ext === "webp"
+              ? "image/webp"
+              : "image/png";
       blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
     } catch {}
   }
@@ -312,6 +360,7 @@ async function runPrintMode(
   prompt: string,
   deps: EntrypointDeps,
   out: LineSink,
+  err: LineSink,
 ): Promise<number> {
   if (parsed.continueLast && parsed.session !== undefined) {
     throw new Error(t("cli.error.session_conflict"));
@@ -322,6 +371,28 @@ async function runPrintMode(
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
+
+  // Progress events: printed to stderr in text mode, silent in JSON mode.
+  const onEvent =
+    parsed.format === "json"
+      ? undefined
+      : (event: unknown) => {
+          const ev = event as Record<string, unknown>;
+          switch (ev.type) {
+            case "tool_start":
+              err(t("cli.progress.tool", { name: String(ev.name ?? ev.id ?? "?") }));
+              break;
+            case "text_delta":
+              err(t("cli.progress.text", { text: String(ev.text ?? "") }));
+              break;
+            case "heartbeat":
+              err(t("cli.progress.heartbeat"));
+              break;
+            case "turn_complete":
+              err(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
+              break;
+          }
+        };
 
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir);
@@ -337,7 +408,7 @@ async function runPrintMode(
 
     const client = deps.ensureClient
       ? await deps.ensureClient({ workspaceRoot, instanceDir: deps.instanceDir })
-      : (await connectHeadlessClient({ workspaceRoot, instanceDir: deps.instanceDir })).client;
+      : (await connectHeadlessClient({ workspaceRoot, instanceDir: deps.instanceDir, log: err })).client;
     try {
       const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
       const { result, tipId } = await runSessionTurn(client, {
@@ -348,6 +419,7 @@ async function runPrintMode(
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
         userText: prompt,
         images,
+        onEvent,
       });
       printJsonOrText(out, parsed.format, { sessionId, tipId, ...result }, assistantText(result.messages));
       return result.stopReason === "error" ? 1 : 0;
@@ -365,6 +437,7 @@ async function runPrintMode(
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     prompt,
     images,
+    onEvent,
   });
   printJsonOrText(out, parsed.format, result, assistantText(result.messages));
   return result.stopReason === "error" ? 1 : 0;
@@ -372,7 +445,13 @@ async function runPrintMode(
 
 function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {
   if (parsed.format === "json") {
-    out(JSON.stringify(storagePaths(workspaceRootOf(parsed, deps), envOf(deps)), null, 2));
+    out(
+      JSON.stringify(
+        { ...storagePaths(workspaceRootOf(parsed, deps), envOf(deps)), ...wherePaths(envOf(deps)) },
+        null,
+        2,
+      ),
+    );
   } else {
     out(whereCommand(envOf(deps)));
   }
@@ -382,7 +461,7 @@ function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): numb
 async function storageCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): Promise<number> {
   const env = envOf(deps);
   if (parsed.subcommand === "prune") {
-    const output = pruneCommand(parsed.retention, env);
+    const output = await pruneCommand(parsed.retention, env);
     if (parsed.format === "json") out(JSON.stringify({ result: output }, null, 2));
     else out(output);
     return 0;
@@ -395,7 +474,16 @@ async function storageCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSin
   return 0;
 }
 
-function sessionCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink, err: LineSink): number {
+function sessionCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink, err: LineSink): Promise<number> {
+  return runSessionCmd(parsed, deps, out, err);
+}
+
+async function runSessionCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
   const store = new SessionStore(
     deps.sessionsDir ?? storagePaths(workspaceRootOf(parsed, deps), envOf(deps)).sessionsDir,
   );
@@ -405,12 +493,105 @@ function sessionCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink, err
       .list()
       .map((id) => {
         const entries = store.load(id);
-        return { id, createdAt: entries[0]?.createdAt ?? "", entries: entries.length };
+        const title = getSessionTitle(entries);
+        return { id, title: title ?? null, createdAt: entries[0]?.createdAt ?? "", entries: entries.length };
       })
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     if (parsed.format === "json") out(JSON.stringify(rows, null, 2));
     else if (rows.length === 0) out(t("tui.browser.empty"));
-    else for (const row of rows) out(`${row.id}\t${row.createdAt || "-"}\t${row.entries}`);
+    else
+      for (const row of rows) out(`${row.id}\t${row.title ?? "-"}\t${row.createdAt || "-"}\t${row.entries}`);
+    return 0;
+  }
+
+  if (parsed.subcommand === "show") {
+    const id = parsed.args[0];
+    if (id === undefined) {
+      err(t("cli.session.show_usage"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const entries = store.load(id);
+    const title = getSessionTitle(entries);
+    const createdAt = entries[0]?.createdAt ?? "-";
+    if (parsed.format === "json") {
+      out(JSON.stringify({ id, title: title ?? null, createdAt, entries: entries.length }, null, 2));
+    } else {
+      out(t("cli.session.shown", { id, entries: String(entries.length), createdAt }));
+      if (title) out(`  title: ${title}`);
+    }
+    return 0;
+  }
+
+  if (parsed.subcommand === "rename") {
+    const id = parsed.args[0];
+    const newTitle = parsed.args[1];
+    if (id === undefined || newTitle === undefined) {
+      err(t("cli.session.rename_usage"));
+      return 1;
+    }
+    if (newTitle.trim().length === 0) {
+      err(t("cli.session.rename_empty"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const entries = store.load(id);
+    const tipId = store.latestTip(entries) ?? null;
+    await store.append(id, { type: "session_title", parentId: tipId, title: newTitle.trim() });
+    out(
+      parsed.format === "json"
+        ? JSON.stringify({ renamed: id, title: newTitle.trim() }, null, 2)
+        : t("cli.session.renamed", { id, title: newTitle.trim() }),
+    );
+    return 0;
+  }
+
+  if (parsed.subcommand === "fork") {
+    const id = parsed.args[0];
+    if (id === undefined) {
+      err(t("cli.session.fork_usage"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const forkId = `${id}-fork-${Date.now()}`;
+    const entries = store.load(id);
+    store.create(forkId);
+    for (const entry of entries) {
+      await store.append(forkId, entry);
+    }
+    out(
+      parsed.format === "json"
+        ? JSON.stringify({ forkId, sourceId: id }, null, 2)
+        : t("cli.session.forked", { id, forkId }),
+    );
+    return 0;
+  }
+
+  if (parsed.subcommand === "clone") {
+    const id = parsed.args[0];
+    if (id === undefined) {
+      err(t("cli.session.clone_usage"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const meta = store.clone(id, parsed.args[1]);
+    out(
+      parsed.format === "json"
+        ? JSON.stringify({ cloneId: meta.id, sourceId: id }, null, 2)
+        : t("cli.session.cloned", { id, cloneId: meta.id }),
+    );
     return 0;
   }
 
@@ -428,6 +609,20 @@ function sessionCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink, err
     out(
       parsed.format === "json" ? JSON.stringify({ deleted: id }, null, 2) : t("cli.session.deleted", { id }),
     );
+    return 0;
+  }
+
+  // Subcommand --help
+  if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
+    out(`Usage: agency session <subcommand> [args]
+
+Subcommands:
+  list                   List sessions (id, title, created, entries)
+  show <id>              Show session details
+  rename <id> <title>    Rename a session
+  fork <id>              Fork (clone) a session under a new id
+  clone <id> [newId]      Clone a session file under a new (or given) id
+  delete <id>            Delete a session by id`);
     return 0;
   }
 
@@ -459,6 +654,23 @@ async function authCmd(
       err(t("cli.error.auth_login_usage"));
       return 1;
     }
+    if (parsed.oauth) {
+      if (!OAUTH_PROVIDERS[provider]) {
+        err(t("cli.error.auth_oauth_unsupported", { provider }));
+        return 1;
+      }
+      const config = loadConfig({ globalDir: deps.configDir, env });
+      const oauth = config.provider[provider]?.oauth;
+      try {
+        if (deps.oauthFlow) await deps.oauthFlow(provider, keychain);
+        else await runOAuthFlow(provider, keychain, { clientId: oauth?.clientId, baseUrl: oauth?.baseUrl });
+      } catch (error) {
+        err(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+      out(t("cli.auth.oauth_stored", { provider, backend: keychain.name }));
+      return 0;
+    }
     const key = await (deps.keyReader ?? defaultKeyReader)(t("cli.auth.key_prompt", { provider }));
     if (key.length === 0) {
       err(t("tui.connect.no_key"));
@@ -478,7 +690,14 @@ async function authCmd(
       const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
       const key =
         fromDeclaredEnv ??
-        (await resolveApiKey({ provider: id, env, keychain, config: providerConfig?.apiKey }));
+        (await resolveApiKey({
+          provider: id,
+          env,
+          keychain,
+          config: providerConfig?.apiKey,
+          oauthClientId: providerConfig?.oauth?.clientId,
+          oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+        }));
       rows.push({ provider: id, connected: key !== undefined });
     }
     if (parsed.format === "json") {
@@ -498,6 +717,48 @@ async function authCmd(
   throw new Error(t("cli.error.unknown_command", { command: `auth ${parsed.subcommand ?? "(none)"}` }));
 }
 
+async function daemonStatusCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  _err: LineSink,
+): Promise<number> {
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const env = envOf(deps);
+  const { defaultInstanceDir, connectHeadlessClient } = await import("./headless.ts");
+  const instanceDir = deps.instanceDir ?? defaultInstanceDir(env);
+  try {
+    const { port, client } = await connectHeadlessClient({ workspaceRoot, instanceDir });
+    const info = await client.call("ping", {});
+    await client.close();
+    if (parsed.format === "json") {
+      out(
+        JSON.stringify(
+          { status: "running", port, pid: (info as Record<string, unknown>).pid ?? null },
+          null,
+          2,
+        ),
+      );
+    } else {
+      out(
+        t("cli.daemon.status", {
+          status: "running",
+          port: String(port),
+          pid: String((info as Record<string, unknown>).pid ?? "?"),
+        }),
+      );
+    }
+    return 0;
+  } catch {
+    if (parsed.format === "json") {
+      out(JSON.stringify({ status: "not_running" }, null, 2));
+    } else {
+      out(t("cli.daemon.not_running"));
+    }
+    return 0;
+  }
+}
+
 async function dispatch(
   parsed: ParsedArgv,
   deps: EntrypointDeps,
@@ -515,24 +776,73 @@ async function dispatch(
 
   if (parsed.print !== undefined) {
     if (parsed.command !== undefined) throw new Error(t("cli.error.print_with_command"));
-    return runPrintMode(parsed, parsed.print, deps, out);
+    return runPrintMode(parsed, parsed.print, deps, out, err);
   }
   if (parsed.continueLast || parsed.session !== undefined) {
     throw new Error(t("cli.error.continue_requires_print"));
   }
 
   switch (parsed.command) {
-    case undefined:
-      err('Interactive client not included in this build — use `agency -p "prompt"` for headless, `agency --help` for commands.');
-      return 1;
+    case undefined: {
+      // Bare `agency`: health summary, exit 0.
+      const env = envOf(deps);
+      const config = loadConfig({ globalDir: deps.configDir, env });
+      const ref = parseModelRef(config.model ?? "");
+      const modelStr = ref ? `${ref.provider}/${ref.model}` : t("cli.error.no_model");
+      const providerCount = Object.keys(config.provider).length;
+      const connectedCount = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])]
+        .length;
+      const store = new SessionStore(
+        deps.sessionsDir ?? storagePaths(workspaceRootOf(parsed, deps), env).sessionsDir,
+      );
+      const sessionCount = store.list().length;
+      out(t("cli.health.title", { version: VERSION }));
+      out(t("cli.health.model", { model: modelStr }));
+      out(t("cli.health.providers", { connected: String(connectedCount), total: String(providerCount) }));
+      out(t("cli.health.sessions", { count: String(sessionCount) }));
+      out(t("cli.health.hint"));
+      return 0;
+    }
     case "where":
       return whereCmd(parsed, deps, out);
     case "storage":
+      if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
+        out(`Usage: agency storage [subcommand]
+
+Subcommands:
+  (none)               Report storage sizes by category
+  prune                Clear the cache; with --max-age-days or --max-total-mb, prune old sessions
+
+Options:
+  --max-age-days <days>    With prune: delete sessions older than this
+  --max-total-mb <mb>      With prune: delete oldest sessions until under this size`);
+        return 0;
+      }
       return storageCmd(parsed, deps, out);
     case "session":
       return sessionCmd(parsed, deps, out, err);
     case "auth":
+      if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
+        out(`Usage: agency auth <subcommand> [args]
+
+Subcommands:
+  login <provider>     Store an API key for a provider in the OS keychain
+  list                 Show which providers have a resolvable key`);
+        return 0;
+      }
       return authCmd(parsed, deps, out, err);
+    case "daemon":
+      if (parsed.subcommand === "status" || parsed.subcommand === undefined) {
+        return daemonStatusCmd(parsed, deps, out, err);
+      }
+      if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
+        out(`Usage: agency daemon <subcommand>
+
+Subcommands:
+  status               Show daemon status for this workspace`);
+        return 0;
+      }
+      throw new Error(t("cli.error.unknown_command", { command: `daemon ${parsed.subcommand ?? "(none)"}` }));
     case "update": {
       const rollback = parsed.args.includes("--rollback");
       const { runUpdate } = await import("./update.ts");
@@ -578,10 +888,17 @@ export async function runEntrypoint(
   if (!argv.includes("--help") && !argv.includes("-h") && !argv.includes("--version")) {
     try {
       const mod = await import("./update.ts");
-      mod.checkStale(VERSION).then((latest) => {
-        if (latest) out(`Update available: ${VERSION} -> ${latest} (run agency update)`);
-      }).catch(() => {});
-    } catch {}
+      mod
+        .checkStale(VERSION)
+        .then((latest) => {
+          if (latest) out(`Update available: ${VERSION} -> ${latest} (run agency update)`);
+        })
+        .catch(() => {
+          /* best-effort update check: network failures are non-fatal */
+        });
+    } catch {
+      /* best-effort: update module may not be available */
+    }
   }
   try {
     return await dispatch(parseArgv(argv), deps, out, err);

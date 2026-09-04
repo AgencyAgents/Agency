@@ -82,8 +82,7 @@ export const en = {
   // A6: tool RESULT strings route through t(); model-facing descriptions stay English.
   "tool.read.too_large":
     "file is {bytes} bytes, larger than the {limit}-byte read limit; use grep to search it, or read it in slices with offset/limit",
-  "tool.read.slice_truncated":
-    "[truncated at {bytes} bytes; re-read with a larger offset to continue]",
+  "tool.read.slice_truncated": "[truncated at {bytes} bytes; re-read with a larger offset to continue]",
   "tool.write.wrote": "wrote {bytes} bytes to {path}",
   "tool.write.unread_overwrite":
     "[note: {path} existed but was never read this session — read it to confirm the overwrite matches your intent]",
@@ -97,8 +96,7 @@ export const en = {
   "tool.edit.bad_input": "edit rejected: pass either oldText+newText or a non-empty hunks array, not both",
   "tool.edit.empty_hunk": "edit rejected: hunk {index} has empty oldText",
   "tool.bash.background_started": "started background process {id} (pid {pid})",
-  "tool.bash.truncated":
-    "[truncated: output exceeded {bytes} bytes; full output saved to {path}]",
+  "tool.bash.truncated": "[truncated: output exceeded {bytes} bytes; full output saved to {path}]",
   "tool.bash.truncated_no_spill": "[truncated: output exceeded {bytes} bytes]",
   "tool.bash.cancelled": "[cancelled: command aborted before completion]",
   "tool.bash.timeout": "[timeout: command exceeded {ms}ms and was killed]",
@@ -122,6 +120,14 @@ export const en = {
   "tool.question.dismissed": "the user dismissed the question",
   "tool.websearch.not_configured":
     "websearch is not configured; set websearch.endpoint in config to enable it",
+  "tool.lsp.not_configured": "no language servers configured",
+  "tool.lsp.no_server": "no language server handles {path}",
+  "tool.lsp.no_definition": "no definition found for {path} at {line}:{character}",
+  "tool.lsp.no_references": "no references found for {path} at {line}:{character}",
+  "tool.lsp.no_symbols": "no symbols found",
+  "tool.lsp.rename_refused": "language server refused the rename at {path} {line}:{character}",
+  "tool.lsp.no_edits": "rename produced no edits",
+  "tool.lsp.install_recorded": "recorded install decision for {server}: {decision}",
 
   "onboarding.no_credentials": "No provider credentials found. Let's connect one.",
   "onboarding.connect_done": "Connected {provider}.",
@@ -155,10 +161,48 @@ export const en = {
   "cli.error.unknown_session": 'Unknown session "{id}".',
   "cli.error.session_delete_usage": "usage: agency session delete <id>",
   "cli.error.auth_login_usage": "usage: agency auth login <provider>",
+  "cli.error.auth_oauth_unsupported":
+    'OAuth is not supported for "{provider}". Supported: anthropic, openai, google, github-copilot.',
+  "cli.auth.oauth_stored": "OAuth token for {provider} stored in the {backend}.",
   "cli.auth.key_prompt": "API key for {provider}:",
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
   "cli.session.deleted": "Deleted session {id}.",
+  "cli.session.shown": "Session {id}: {entries} entries, created {createdAt}.",
+  "cli.session.renamed": "Session {id} renamed to {title}.",
+  "cli.session.forked": "Forked session {id} as {forkId}.",
+  "cli.session.fork_usage": "usage: agency session fork <id>",
+  "cli.session.cloned": "Cloned session {id} as {cloneId}.",
+  "cli.session.clone_usage": "usage: agency session clone <id> [newId]",
+  "cli.session.show_usage": "usage: agency session show <id>",
+  "cli.session.rename_usage": "usage: agency session rename <id> <title>",
+  "cli.session.no_title": "Session {id} has no title.",
+  "cli.session.rename_empty": "Title cannot be empty.",
+
+  "cli.daemon.status": "Daemon: {status} on port {port} (pid {pid})",
+  "cli.daemon.not_running": "Daemon: not running",
+  "cli.daemon.spawning": "Starting daemon for {workspace}...",
+  "cli.daemon.connected": "Daemon connected on port {port}.",
+  "cli.daemon.timeout":
+    "Daemon did not become ready within {timeout}ms. Check that `bun` is installed and the daemon entry exists at {entry}.",
+  "cli.daemon.status_usage": "usage: agency daemon status",
+
+  "cli.health.title": "Agency {version}",
+  "cli.health.model": "Model: {model}",
+  "cli.health.providers": "Providers: {connected} connected, {total} configured",
+  "cli.health.sessions": "Sessions: {count} in workspace",
+  "cli.health.daemon": "Daemon: {status}",
+  "cli.health.hint": 'Run `agency -p "<prompt>"` for headless or `agency --help` for commands.',
+
+  "cli.progress.tool": "Tool: {name}",
+  "cli.progress.text": "{text}",
+  "cli.progress.heartbeat": ".",
+  "cli.progress.turn_complete": "Turn complete ({reason}).",
+
+  "cli.trust.checking": "Checking trust for {path}...",
+  "cli.trust.prompt": "Trust {path}? (y/N): ",
+  "cli.trust.accepted": "Trusted {path}.",
+  "cli.trust.denied": "Trust denied for {path}.",
 
   "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;

@@ -1,5 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { SandboxBoundary } from "@agency/guard";
+import { AgencyError } from "@agency/schema";
 import { configDir } from "../paths.ts";
 
 export interface CommandTemplate {
@@ -27,7 +29,10 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
       const lines = text.split("\n");
       for (const line of lines.slice(0, 5)) {
         const m = line.match(/^#\s+(.+)/);
-        if (m) { description = m[1]?.trim(); break; }
+        if (m) {
+          description = m[1]?.trim();
+          break;
+        }
       }
       out.push({ name, content: text, path: full, source, description });
     } catch {}
@@ -35,7 +40,10 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
   return out;
 }
 
-export function loadCommands(options: { workspaceRoot: string; configDirOverride?: string }): CommandTemplate[] {
+export function loadCommands(options: {
+  workspaceRoot: string;
+  configDirOverride?: string;
+}): CommandTemplate[] {
   const projectDir = join(options.workspaceRoot, ".agency", "commands");
   const userDir = join(options.configDirOverride ?? configDir(), "commands");
   const project = parseCommandFiles(projectDir, "project");
@@ -57,23 +65,29 @@ export function expandCommand(template: string, args: string, workspaceRoot?: st
   // File references: {{file:path}} or $FILE:path or @file:path — include file content
   // We support {{file:relative/path}} and $FILE:relative/path
   if (workspaceRoot) {
+    const boundary = new SandboxBoundary(workspaceRoot);
     const filePattern = /\{\{file:([^}]+)\}\}/g;
     out = out.replace(filePattern, (_m, p1: string) => {
       try {
-        const filePath = join(workspaceRoot, p1.trim());
-        // Basic containment check: must be inside workspaceRoot or absolute
+        const filePath = boundary.resolvePath(p1.trim());
         const content = readFileSync(filePath, "utf8");
         return content;
-      } catch {
+      } catch (err) {
+        if (err instanceof AgencyError) {
+          return `[[blocked: ${p1} resolves outside workspace]]`;
+        }
         return `[[missing file: ${p1}]]`;
       }
     });
     const dollarFilePattern = /\$FILE:([^\s]+)/g;
     out = out.replace(dollarFilePattern, (_m, p1: string) => {
       try {
-        const filePath = join(workspaceRoot, p1.trim());
+        const filePath = boundary.resolvePath(p1.trim());
         return readFileSync(filePath, "utf8");
-      } catch {
+      } catch (err) {
+        if (err instanceof AgencyError) {
+          return `[[blocked: ${p1} resolves outside workspace]]`;
+        }
         return `[[missing file: ${p1}]]`;
       }
     });

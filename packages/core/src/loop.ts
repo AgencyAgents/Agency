@@ -10,8 +10,8 @@ import {
   withMidStreamRecovery,
 } from "@agency/providers";
 import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
-import { truncateToolResults } from "./truncate.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
+import { truncateToolResults } from "./truncate.ts";
 
 export type ToolHandler = (
   input: Record<string, unknown>,
@@ -69,7 +69,7 @@ export interface RunTurnOptions {
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
   drainMailbox?: () => Message[];
-  /** Swarm control (B3): detects identical tool+input 3x consecutively and
+  /** Orchestra control (B3): detects identical tool+input 3x consecutively and
    *  halts the turn. Opt-in — enabled for dispatched peers only. */
   doomLoopDetection?: boolean;
   /** Correlates tool invocations with the turn that caused them (snapshot
@@ -96,7 +96,11 @@ export interface RunTurnOptions {
   maxToolIterations?: number;
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
-  eventBus?: { emit: (event: string, payload: unknown) => void; emitAsync?: (event: string, payload: unknown) => Promise<void>; emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }> };
+  eventBus?: {
+    emit: (event: string, payload: unknown) => void;
+    emitAsync?: (event: string, payload: unknown) => Promise<void>;
+    emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
+  };
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -150,9 +154,18 @@ export async function runTurn(
   const endTurnOk = () => {
     if (tracer && turnSpanId) {
       try {
-        tracer.endTurnSpan(options.signal?.aborted ? "cancelled" : "ok");
+        tracer.endTurnSpan(options.signal?.aborted ? "cancelled" : "ok", {
+          inputTokens: cumulativeUsage.inputTokens,
+          outputTokens: cumulativeUsage.outputTokens,
+          ...(cumulativeUsage.cachedInputTokens !== undefined
+            ? { cachedInputTokens: cumulativeUsage.cachedInputTokens }
+            : {}),
+          cost: spentCostUsd,
+        });
       } catch {}
-      try { tracer.flushAsync(); } catch {}
+      try {
+        tracer.flushAsync();
+      } catch {}
     }
   };
   const endTurnError = () => {
@@ -160,15 +173,18 @@ export async function runTurn(
       try {
         tracer.endTurnSpan("error");
       } catch {}
-      try { tracer.flushAsync(); } catch {}
+      try {
+        tracer.flushAsync();
+      } catch {}
     }
   };
 
-  // Doom-loop detection is a swarm control (B3): opt-in per turn, enabled for
+  // Doom-loop detection is an orchestra control (B3): opt-in per turn, enabled for
   // dispatched peers. The solo room keeps its existing semantics — a runaway
   // loop is capped by maxToolIterations, not by input-identity heuristics.
   const doomHistory: string[] = [];
-  const doomDetection = options.doomLoopDetection === true;  for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+  const doomDetection = options.doomLoopDetection === true;
+  for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     if (options.drainMailbox) {
       try {
         const injected = options.drainMailbox();
@@ -257,8 +273,14 @@ export async function runTurn(
         if (doomHistory.length >= 3) {
           const last3 = doomHistory.slice(-3);
           if (last3[0] === last3[1] && last3[1] === last3[2]) {
-            options.onEvent?.({ type: "error", code: "doom_loop", message: `doom loop detected: ${tc.name} repeated 3x` });
-            throw Object.assign(new Error(`doom loop: ${tc.name} repeated 3x consecutively`), { code: "doom_loop" });
+            options.onEvent?.({
+              type: "error",
+              code: "doom_loop",
+              message: `doom loop detected: ${tc.name} repeated 3x`,
+            });
+            throw Object.assign(new Error(`doom loop: ${tc.name} repeated 3x consecutively`), {
+              code: "doom_loop",
+            });
           }
         }
       }
@@ -266,7 +288,9 @@ export async function runTurn(
       messages.push({ role: "user", content: results });
     } catch (error) {
       if (tracer && modelSpanId) {
-        try { tracer.endSpan(modelSpanId, { status: "error" }); } catch {}
+        try {
+          tracer.endSpan(modelSpanId, { status: "error" });
+        } catch {}
       }
       endTurnError();
       emitErrorEvent(error, options.onEvent);
@@ -333,10 +357,17 @@ async function runTools(
     if (!parallelSafe(spec, malformed)) {
       if (pending.length > 0) batches.push(pending);
       pending = [];
-      batches.push([{ call, index, ...(malformed !== undefined ? { malformed } : {}), ...(spec ? { spec } : {}) }]);
+      batches.push([
+        { call, index, ...(malformed !== undefined ? { malformed } : {}), ...(spec ? { spec } : {}) },
+      ]);
       return;
     }
-    pending.push({ call, index, ...(malformed !== undefined ? { malformed } : {}), ...(spec ? { spec } : {}) });
+    pending.push({
+      call,
+      index,
+      ...(malformed !== undefined ? { malformed } : {}),
+      ...(spec ? { spec } : {}),
+    });
   });
   if (pending.length > 0) batches.push(pending);
 
@@ -391,7 +422,10 @@ async function runTools(
           result = { content: error instanceof Error ? error.message : String(error), isError: true };
         }
         if (t && spanId) {
-          t.endSpan(spanId, { status: result.isError ? "error" : "ok", attributes: { isError: result.isError } });
+          t.endSpan(spanId, {
+            status: result.isError ? "error" : "ok",
+            attributes: { isError: result.isError },
+          });
         }
         return { item, result };
       }),
@@ -463,8 +497,16 @@ async function executeOne(
       const bus = options.eventBus;
       if (bus) {
         try {
-          bus.emit("permission.asked", { tool: resolved.name, command: subject.command, path: subject.path, decision: "ask" });
-          bus.emit("event", { event: "permission.asked", payload: { tool: resolved.name, command: subject.command, path: subject.path } });
+          bus.emit("permission.asked", {
+            tool: resolved.name,
+            command: subject.command,
+            path: subject.path,
+            decision: "ask",
+          });
+          bus.emit("event", {
+            event: "permission.asked",
+            payload: { tool: resolved.name, command: subject.command, path: subject.path },
+          });
         } catch {}
       }
       const verdict = await options.toolPolicy.check(
@@ -473,8 +515,16 @@ async function executeOne(
       );
       if (bus) {
         try {
-          bus.emit("permission.replied", { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict });
-          bus.emit("event", { event: "permission.replied", payload: { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict } });
+          bus.emit("permission.replied", {
+            tool: resolved.name,
+            command: subject.command,
+            path: subject.path,
+            decision: verdict,
+          });
+          bus.emit("event", {
+            event: "permission.replied",
+            payload: { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict },
+          });
         } catch {}
       }
       if (verdict === "deny") {
@@ -489,7 +539,12 @@ async function executeOne(
   }
 
   if (options.eventBus) {
-    const payload = { tool: resolved.name, input: call.input, sessionId: options.sessionId, turnId: options.turnId };
+    const payload = {
+      tool: resolved.name,
+      input: call.input,
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+    };
     try {
       if (options.eventBus.emitCollect) {
         const { errors } = await options.eventBus.emitCollect("tool.execute.before", payload);
@@ -530,13 +585,23 @@ async function executeOne(
   }
 
   if (options.eventBus) {
-    const afterPayload = { tool: resolved.name, input: call.input, result: { content: result.content, isError: result.isError ?? false }, sessionId: options.sessionId, turnId: options.turnId };
+    const afterPayload = {
+      tool: resolved.name,
+      input: call.input,
+      result: { content: result.content, isError: result.isError ?? false },
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+    };
     try {
       if (options.eventBus.emitAsync) await options.eventBus.emitAsync("tool.execute.after", afterPayload);
       else options.eventBus.emit("tool.execute.after", afterPayload);
     } catch {}
     options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
-    if (!result.isError && (resolved.name === "write" || resolved.name === "edit") && typeof call.input.path === "string") {
+    if (
+      !result.isError &&
+      (resolved.name === "write" || resolved.name === "edit") &&
+      typeof call.input.path === "string"
+    ) {
       try {
         options.eventBus.emit("file.edited", { path: call.input.path });
         options.eventBus.emit("event", { event: "file.edited", payload: { path: call.input.path } });
@@ -656,12 +721,15 @@ async function collectTurn(
         onEvent?.({ type: "thinking_delta", text: event.text });
         break;
       case "thinking_signature": {
-        // Attach to the trailing thinking block, creating a placeholder when
-        // the provider sent the signature without streamed thinking text.
         const last = content[content.length - 1];
         if (last?.type === "thinking" && last.signature === undefined) {
           last.signature = event.signature;
         } else if (last?.type !== "thinking") {
+          content.push({ type: "thinking", text: "", signature: event.signature });
+        } else {
+          // Trailing block already carries a signature: a second signature
+          // without intervening thinking text starts its own placeholder so
+          // no provider-issued signature is ever dropped.
           content.push({ type: "thinking", text: "", signature: event.signature });
         }
         break;
@@ -751,7 +819,17 @@ function repairToolJson(raw: string): Record<string, unknown> | undefined {
 
 function appendText(content: ContentBlock[], type: "text" | "thinking", delta: string): void {
   const last = content[content.length - 1];
-  if (last && last.type === type) {
+  if (last && last.type === "thinking" && type === "thinking") {
+    // Don't merge into a thinking block that's already signature-closed:
+    // a second thinking block with its own signature must remain separate.
+    if (last.signature !== undefined) {
+      content.push({ type: "thinking", text: delta });
+      return;
+    }
+    last.text += delta;
+    return;
+  }
+  if (last && last.type === "text" && type === "text") {
     last.text += delta;
     return;
   }

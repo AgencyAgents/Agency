@@ -63,7 +63,7 @@ export interface ConnectOutcome {
   verified: boolean;
 }
 
-export const OAUTH_PROVIDER_IDS = new Set(["anthropic", "github-copilot"]);
+export const OAUTH_PROVIDER_IDS = new Set(["anthropic", "openai", "google", "github-copilot"]);
 
 export interface ConnectFlowOptions {
   prompter: ConnectPrompter;
@@ -86,9 +86,9 @@ export async function runConnectFlow(options: ConnectFlowOptions): Promise<Conne
   }
 
   if (OAUTH_PROVIDER_IDS.has(providerId) && options.oauth) {
-    const choice = (await options.prompter.line(
-      `Use OAuth for ${providerId}? (type "oauth" for OAuth, Enter for API key)`,
-    ))
+    const choice = (
+      await options.prompter.line(`Use OAuth for ${providerId}? (type "oauth" for OAuth, Enter for API key)`)
+    )
       .trim()
       .toLowerCase();
     if (choice === "oauth" || choice === "o" || choice === "2") {
