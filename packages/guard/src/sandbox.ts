@@ -146,10 +146,16 @@ function canonicalPath(path: string): string {
       return real.endsWith(sep()) ? real + tail : `${real}${sep()}${tail}`;
     } catch (err: unknown) {
       // ENOENT means the component genuinely doesn't exist yet (file to be
-      // created) — walk up to resolve the deepest existing ancestor. Any other
-      // error (EACCES, ELOOP, etc.) means we can't verify the path, so deny.
+      // created), walk up to resolve the deepest existing ancestor. Any other
+      // error (EACCES, ELOOP, etc.) means the path can't be verified, deny it
+      // as an AgencyError so callers see a typed refusal, not a raw fs error.
       const nodeErr = err as { code?: string };
-      if (nodeErr.code !== "ENOENT") throw err;
+      if (nodeErr.code !== "ENOENT") {
+        throw new AgencyError(ErrorCode.PERMISSION_DENIED, `cannot verify path: ${path}`, {
+          source: "sandbox",
+          context: { path, code: nodeErr.code ?? "unknown" },
+        });
+      }
       const parent = dirname(current);
       if (parent === current) return resolved; // reached the filesystem root without resolving
       tail = tail === "" ? basename(current) : `${basename(current)}${sep()}${tail}`;

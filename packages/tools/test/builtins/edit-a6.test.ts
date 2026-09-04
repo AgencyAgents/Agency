@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -15,8 +15,8 @@ afterEach(() => {
 const signal = new AbortController().signal;
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "agency-edit-a6-"));
-  const snapshotDir = mkdtempSync(join(tmpdir(), "agency-edit-a6-snap-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-edit-a6-")));
+  const snapshotDir = realpathSync(mkdtempSync(join(tmpdir(), "agency-edit-a6-snap-")));
   dirs.push(root, snapshotDir);
   const deps: ToolDeps = {
     identity: { type: "user" },

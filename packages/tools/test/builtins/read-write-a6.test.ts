@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -22,7 +22,7 @@ function depsFor(root: string): ToolDeps {
 
 describe("read: offset/limit + line numbers (A6)", () => {
   test("a plain read returns exact content with no line numbers", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-read-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-read-a6-")));
     dirs.push(root);
     writeFileSync(join(root, "a.ts"), "export const x = 1;\n");
     const tool = createReadTool(depsFor(root));
@@ -31,7 +31,7 @@ describe("read: offset/limit + line numbers (A6)", () => {
   });
 
   test("sliced reads carry line numbers usable as edit anchors", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-read-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-read-a6-")));
     dirs.push(root);
     const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`);
     writeFileSync(join(root, "lines.txt"), lines.join("\n"));
@@ -45,7 +45,7 @@ describe("read: offset/limit + line numbers (A6)", () => {
   });
 
   test("a file over the 1MB limit is sliced with line numbers instead of refused", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-read-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-read-a6-")));
     dirs.push(root);
     const lines = Array.from({ length: 100_000 }, (_, i) => `line ${i + 1}`);
     writeFileSync(join(root, "big.txt"), lines.join("\n"));
@@ -63,7 +63,7 @@ describe("read: offset/limit + line numbers (A6)", () => {
   });
 
   test("reading marks the file in the shared ReadState", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-read-a6-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-read-a6-")));
     dirs.push(root);
     writeFileSync(join(root, "a.ts"), "content");
     const readState = new ReadState();
@@ -75,8 +75,8 @@ describe("read: offset/limit + line numbers (A6)", () => {
 
 describe("write: read-before-write guard (A6)", () => {
   test("warns when overwriting a file that was never read; silent once read", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-write-a6-"));
-    const snapshotDir = mkdtempSync(join(tmpdir(), "agency-write-a6-snap-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-write-a6-")));
+    const snapshotDir = realpathSync(mkdtempSync(join(tmpdir(), "agency-write-a6-snap-")));
     dirs.push(root, snapshotDir);
     writeFileSync(join(root, "a.ts"), "original");
 
@@ -95,8 +95,8 @@ describe("write: read-before-write guard (A6)", () => {
   });
 
   test("a brand-new file never triggers the warning; no readState means no guard", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agency-write-a6-"));
-    const snapshotDir = mkdtempSync(join(tmpdir(), "agency-write-a6-snap-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agency-write-a6-")));
+    const snapshotDir = realpathSync(mkdtempSync(join(tmpdir(), "agency-write-a6-snap-")));
     dirs.push(root, snapshotDir);
     writeFileSync(join(root, "b.ts"), "old");
     const deps = depsFor(root);

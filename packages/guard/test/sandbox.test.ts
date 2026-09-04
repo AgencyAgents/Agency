@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -55,7 +55,7 @@ describe("SandboxBoundary.resolvePath symlink handling", () => {
   });
 
   function setup(): { root: string; outside: string } {
-    const dir = mkdtempSync(join(tmpdir(), "agency-sandbox-symlink-"));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "agency-sandbox-symlink-")));
     tempDirs.push(dir);
     const root = join(dir, "workspace");
     const outside = join(dir, "outside");
@@ -181,7 +181,7 @@ describe("SandboxBoundary.resolvePathGated (external_directory)", () => {
   });
 
   function setup(): { root: string; outside: string } {
-    const dir = mkdtempSync(join(tmpdir(), "agency-sandbox-external-"));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "agency-sandbox-external-")));
     tempDirs.push(dir);
     const root = join(dir, "workspace");
     const outside = join(dir, "outside");
