@@ -243,3 +243,131 @@ describe("resolveFamilyPrompt", () => {
     expect(prompt).toBe("You are a nonexistent-role.");
   });
 });
+
+describe("persona-driven role prompts (MECHANICS — anthropic)", () => {
+  const PERSONAS: Record<string, string> = {
+    leader: "strategic commander",
+    planner: "architect",
+    "plan-reviewer": "auditor",
+    coder: "craftsman",
+    executor: "operator",
+    explorer: "scout",
+    researcher: "librarian",
+    "code-reviewer": "inspector",
+  };
+
+  const OUTPUT_CONTRACTS: Record<string, string> = {
+    leader: "[Summary:",
+    planner: "[Plan:",
+    "plan-reviewer": "[Verdict:",
+    coder: "[Files:",
+    executor: "[Exit:",
+    explorer: "[Evidence:",
+    researcher: "[Sources:",
+    "code-reviewer": "[Issues:",
+  };
+
+  for (const [role, persona] of Object.entries(PERSONAS)) {
+    test(`${role} has persona "${persona}" and output contract`, () => {
+      const prompt = resolveFamilyPrompt("anthropic", role);
+      expect(prompt).toContain(persona);
+      expect(prompt).toContain(OUTPUT_CONTRACTS[role]);
+      expect(prompt).toContain("Tools:");
+      expect(prompt).toContain("MUST NOT:");
+      expect(prompt).toContain("Output contract:");
+    });
+  }
+
+  test("room roles (leader, coder, executor) include room protocol", () => {
+    for (const role of ["leader", "coder", "executor"]) {
+      expect(resolveFamilyPrompt("anthropic", role)).toContain("Room protocol:");
+    }
+  });
+
+  test("non-room roles exclude room protocol", () => {
+    for (const role of ["planner", "plan-reviewer", "explorer", "researcher", "code-reviewer"]) {
+      expect(resolveFamilyPrompt("anthropic", role)).not.toContain("Room protocol:");
+    }
+  });
+});
+
+describe("persona-driven role prompts (PRINCIPLE — openai/fallback)", () => {
+  const PERSONAS: Record<string, string> = {
+    leader: "Strategic commander",
+    planner: "Architect",
+    "plan-reviewer": "Auditor",
+    coder: "Craftsman",
+    executor: "Operator",
+    explorer: "Scout",
+    researcher: "Librarian",
+    "code-reviewer": "Inspector",
+  };
+
+  const OUTPUT_CONTRACTS: Record<string, string> = {
+    leader: "[Summary:",
+    planner: "[Plan:",
+    "plan-reviewer": "[Verdict:",
+    coder: "[Files:",
+    executor: "[Exit:",
+    explorer: "[Evidence:",
+    researcher: "[Sources:",
+    "code-reviewer": "[Issues:",
+  };
+
+  for (const [role, persona] of Object.entries(PERSONAS)) {
+    test(`${role} has persona "${persona}" and output contract`, () => {
+      const prompt = resolveFamilyPrompt("openai", role);
+      expect(prompt).toContain(persona);
+      expect(prompt).toContain(OUTPUT_CONTRACTS[role]);
+      expect(prompt).toContain("Tools:");
+      expect(prompt).toContain("MUST NOT");
+      expect(prompt).toContain("Output contract:");
+    });
+  }
+
+  test("principle prompts are concise (one paragraph, no numbered steps)", () => {
+    for (const role of [
+      "leader",
+      "planner",
+      "plan-reviewer",
+      "coder",
+      "executor",
+      "explorer",
+      "researcher",
+      "code-reviewer",
+    ]) {
+      const prompt = resolveFamilyPrompt("openai", role);
+      expect(prompt).not.toMatch(/\d\.\s/);
+      expect(prompt).not.toContain("Your job is to:");
+    }
+  });
+});
+
+describe("cache-prefix order with role prompts", () => {
+  test("familyPresetOverlay (role prompt) appears before instructions in composed output", () => {
+    const composed = composeSystemPrompt({
+      base: "identity",
+      familyPresetOverlay: resolveFamilyPrompt("anthropic", "coder"),
+      instructions: ["custom instructions"],
+      toolDescriptions: ["tool: read"],
+    });
+    const overlayIdx = composed.text.indexOf("craftsman");
+    const instrIdx = composed.text.indexOf("custom instructions");
+    expect(overlayIdx).toBeGreaterThan(0);
+    expect(instrIdx).toBeGreaterThan(overlayIdx);
+  });
+
+  test("context (environment block) is joined last, after role prompt and instructions", () => {
+    const composed = composeSystemPrompt({
+      base: "identity",
+      familyPresetOverlay: resolveFamilyPrompt("anthropic", "coder"),
+      instructions: ["custom instructions"],
+      toolDescriptions: ["tool: read"],
+      context: "<environment>ENV</environment>",
+    });
+    const envIdx = composed.text.indexOf("<environment>");
+    const instrIdx = composed.text.indexOf("custom instructions");
+    expect(envIdx).toBeGreaterThan(instrIdx);
+    expect(composed.text.endsWith("<environment>ENV</environment>")).toBe(true);
+  });
+});
