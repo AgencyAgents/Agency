@@ -6,6 +6,57 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- **Swarm dispatch overhaul**: `packages/core/src/orchestra/room.ts` now
+  routes every turn through a room-typed agent loop (solo, swarm-leader, or
+  swarm-peer) with per-room permission scopes and session isolation. The
+  `OrchestraRoom` manages a shared `AgentRegistry`, mailbox delivery, parallel
+  `PromiseBarrier` for fan-out, and budget enforcement across all peers.
+- **Per-agent permissions**: every dispatched peer carries its own
+  `callingCapabilities` so the guard enforces tool-level, path-level, and
+  command-level rules per agent identity, not per-daemon-default
+  (`packages/guard/src/policy.ts`). Approval grants are session-scoped and
+  persist across daemon restarts (`packages/guard/src/approval.ts`).
+- **HTTP+SSE gateway**: `packages/rpc/src/http-gateway.ts` mounts a full
+  HTTP+SSE transport exposing the RPC surface (tools, sessions, daemon
+  lifecycle) over standard ports, with streaming responses via SSE.
+- **8-agent roster**: category routing expanded to 8 built-in roles (leader,
+  planner, coder, executor, explorer, researcher, code-reviewer,
+  plan-reviewer) each with per-role system prompts routed by model family
+  (`packages/core/src/prompt/compose.ts`). Cross-provider fallback chains
+  span 3+ provider families with aggregate error reporting.
+- **Read-only worktrees**: `packages/core/src/git-worktree.ts` creates
+  isolated git worktrees for dispatched peers, preventing parallel agents
+  from stepping on each other's working tree. Worktrees are cleaned up on
+  session end.
+- **Bash isError + labels**: `packages/tools/src/builtins/bash.ts` now sets
+  `isError` on non-zero exit and attaches a descriptive `label` to every
+  tool call, improving error attribution in swarm results.
+- **Session titles**: `packages/core/src/sessions/titles.ts` auto-generates
+  session titles from the first user message, surfaced in `session list`
+  and the RPC surface.
+- **Ed25519 signing**: `scripts/sign-release.ts` signs release binaries
+  with Ed25519 detached signatures, verified by the install scripts before
+  extraction (`scripts/sign.sh` / `scripts/sign.ps1`).
+- **Sandbox and trust fixes**: `packages/guard/src/sandbox.ts` now returns
+  typed `EACCES` (typed `PermissionDenied` errors) instead of generic
+  rejections. The trust gate (`packages/guard/src/trust.ts`) inherits
+  downward: trusting a parent directory covers all subdirectories.
+- **Zero Biome warnings**: all files pass `biome check --no-errors-on-unmatched` clean with `complexity: { noBannedTypes: "off" }`
+  and strict `noImplicitAnyLet` enforcement. `scripts/sg-helper.ts` codemod
+  tool added for AST-aware slop removal.
+
+### Fixed
+
+- **CI reliability**: `.github/workflows/ci.yml` hardened with cross-platform
+  test isolation, deterministic barrier timing in parallel tests, macOS
+  tmpdir canonicalization, and PowerShell DPAPI import fix for Windows
+  credential encryption.
+- **Backlog closes**: 20+ correctness defects across loop, store, providers,
+  session isolation, sandbox path traversal, bash timeout races, and
+  formatter error propagation.
+
 ### Removed
 
 - `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, swarm, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments now exits 1 with an honest notice; use `agency -p "prompt"` for headless or `agency --help` for commands.

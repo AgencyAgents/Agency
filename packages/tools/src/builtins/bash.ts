@@ -24,6 +24,16 @@ const ABORT_DRAIN_MS = 1_000;
 /** How often a long-running foreground command emits a progress notice. */
 const PROGRESS_TICK_MS = 2_000;
 
+/**
+ * Flush window between the graceful SIGTERM of the process tree and the
+ * SIGKILL of the direct shell on POSIX. TERM'd descendants need a moment to
+ * flush userspace stdio buffers into the pipe and exit so the pipes close and
+ * the in-flight reads settle with the partial output; the SIGKILL that
+ * follows then guarantees the wrapper tail (exit-code/cwd markers) can never
+ * run to a clean exit 0.
+ */
+const POSIX_KILL_FLUSH_MS = 250;
+
 export interface BashState {
   cwd: string;
 }
@@ -91,21 +101,7 @@ export function createBashTool(
       const stdoutText = new Response(proc.stdout).text();
       const stderrText = new Response(proc.stderr).text();
 
-      const killProc = (): void => {
-        // Order matters on Linux: SIGKILL the direct shell FIRST, so its
-        // wrapper tail (the exit-code/cwd marker printf appended by
-        // wrapCommand) can never run to a clean exit 0 after a grandchild
-        // was TERM'd. A TERM-only kill of the grandchild lets
-        // `sh -c "sleep 30; <markers>"` continue to the markers and exit 0,
-        // which wins the completion race below and reads as an empty
-        // success (no [timeout]/[cancelled] label). The tree kill then reaps
-        // grandchildren still holding the output pipes open; the final
-        // direct kill catches a shell that forked between the two.
-        try {
-          proc.kill(9);
-        } catch {
-          // already exited — nothing to reap
-        }
+      const killTree = (): void => {
         // The foreground one-shot subprocess is not tracked by the
         // ProcessManager (its map holds processes meant to outlive a call),
         // but its tree-wide teardown is exactly what abort needs: shell
@@ -118,6 +114,43 @@ export function createBashTool(
         } catch {
           // private helper unreachable — the direct kill below still applies
         }
+      };
+
+      const killProc = async (): Promise<void> => {
+        if (process.platform === "win32") {
+          try {
+            proc.kill(9);
+          } catch {
+            // already exited — nothing to reap
+          }
+          killTree();
+          try {
+            proc.kill(9);
+          } catch {
+            // already exited — nothing to reap
+          }
+          return;
+        }
+        // POSIX ordering: SIGTERM the tree FIRST, while the shell is still
+        // alive and parent-child links are intact. SIGKILLing the shell first
+        // reparents grandchildren to init, so the pgrep -P tree walk inside
+        // killTree finds nothing; the orphaned `sleep` survives holding the
+        // output pipes open, the in-flight reads never settle, the
+        // ABORT_DRAIN_MS fallback resolves to empty strings, and the partial
+        // output already in the pipe is lost. TERM first lets descendants
+        // flush stdio into the pipe and exit so the reads settle with data;
+        // the short flush window below gives them that moment, and the final
+        // SIGKILL of the shell guarantees the wrapper tail (exit-code/cwd
+        // markers) can never run on to a clean exit 0 after a grandchild
+        // was TERM'd (which would win the completion race as an empty
+        // success, without the [timeout]/[cancelled] label).
+        killTree();
+        try {
+          proc.kill(15);
+        } catch {
+          // already exited — nothing to reap
+        }
+        await new Promise((resolve) => setTimeout(resolve, POSIX_KILL_FLUSH_MS));
         try {
           proc.kill(9);
         } catch {
@@ -136,8 +169,11 @@ export function createBashTool(
       let abortFired = false;
       const onAbort = (): void => {
         abortFired = true;
-        killProc();
-        settleAborted();
+        // Settle only after the kill sequence finishes: on POSIX that
+        // includes the flush window, so the abort-branch reads below race
+        // against closing pipes rather than against a shell that has not
+        // been TERM'd yet.
+        void killProc().then(settleAborted, settleAborted);
       };
       if (ctx.signal.aborted) onAbort();
       else ctx.signal.addEventListener("abort", onAbort);
@@ -151,8 +187,7 @@ export function createBashTool(
           ? setTimeout(() => {
               timedOut = true;
               abortFired = true;
-              killProc();
-              settleAborted();
+              void killProc().then(settleAborted, settleAborted);
             }, timeout)
           : undefined;
 
