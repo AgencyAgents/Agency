@@ -33,9 +33,46 @@ describe("collectAgentsFiles", () => {
     expect(files).toEqual([join(root, "packages", "app", "AGENTS.md"), join(root, "AGENTS.md")]);
   });
 
-  test("returns nothing when no AGENTS.md exists", () => {
+  test("discovers CLAUDE.md in the same walk order", () => {
+    const root = setup();
+    mkdirSync(join(root, "packages", "app"), { recursive: true });
+    writeFileSync(join(root, "CLAUDE.md"), "root claude");
+    writeFileSync(join(root, "packages", "app", "CLAUDE.md"), "app claude");
+
+    const files = collectAgentsFiles(join(root, "packages", "app"), root);
+    expect(files).toEqual([join(root, "packages", "app", "CLAUDE.md"), join(root, "CLAUDE.md")]);
+  });
+
+  test("when both exist in the same directory, AGENTS.md comes before CLAUDE.md", () => {
+    const root = setup();
+    mkdirSync(join(root, "packages", "app"), { recursive: true });
+    writeFileSync(join(root, "AGENTS.md"), "root rules");
+    writeFileSync(join(root, "CLAUDE.md"), "root claude");
+    writeFileSync(join(root, "packages", "app", "AGENTS.md"), "app rules");
+    writeFileSync(join(root, "packages", "app", "CLAUDE.md"), "app claude");
+
+    const files = collectAgentsFiles(join(root, "packages", "app"), root);
+    expect(files).toEqual([
+      join(root, "packages", "app", "AGENTS.md"),
+      join(root, "packages", "app", "CLAUDE.md"),
+      join(root, "AGENTS.md"),
+      join(root, "CLAUDE.md"),
+    ]);
+  });
+
+  test("returns nothing when neither AGENTS.md nor CLAUDE.md exists", () => {
     const root = setup();
     expect(collectAgentsFiles(root, root)).toEqual([]);
+  });
+
+  test("CLAUDE.md in subdir with AGENTS.md in root only", () => {
+    const root = setup();
+    mkdirSync(join(root, "packages", "app"), { recursive: true });
+    writeFileSync(join(root, "AGENTS.md"), "root rules");
+    writeFileSync(join(root, "packages", "app", "CLAUDE.md"), "app claude");
+
+    const files = collectAgentsFiles(join(root, "packages", "app"), root);
+    expect(files).toEqual([join(root, "packages", "app", "CLAUDE.md"), join(root, "AGENTS.md")]);
   });
 });
 
@@ -73,6 +110,17 @@ describe("loadInstructions", () => {
     trustStore.trust(root);
 
     expect(loadInstructions(trustStore, root)).toEqual(["root rules", "style rules"]);
+  });
+
+  test("loads CLAUDE.md alongside AGENTS.md, with AGENTS.md first", () => {
+    const root = setup();
+    writeFileSync(join(root, "AGENTS.md"), "root rules");
+    writeFileSync(join(root, "CLAUDE.md"), "root claude");
+
+    const trustStore = createFileTrustStore(join(root, "trust.json"));
+    trustStore.trust(root);
+
+    expect(loadInstructions(trustStore, root)).toEqual(["root rules", "root claude"]);
   });
 
   test("files under the cap load verbatim", () => {

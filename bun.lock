@@ -38,6 +38,7 @@
         "@agency/net": "workspace:*",
         "@agency/providers": "workspace:*",
         "@agency/schema": "workspace:*",
+        "@agency/tools": "workspace:*",
         "jsonc-parser": "^3",
         "zod": "^4",
       },

@@ -6,10 +6,23 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../schema" },
-    { "path": "../i18n" },
-    { "path": "../net" },
-    { "path": "../guard" },
-    { "path": "../providers" }
+    {
+      "path": "../schema"
+    },
+    {
+      "path": "../i18n"
+    },
+    {
+      "path": "../net"
+    },
+    {
+      "path": "../guard"
+    },
+    {
+      "path": "../providers"
+    },
+    {
+      "path": "../tools"
+    }
   ]
 }

@@ -6,13 +6,14 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "@agency/schema": "workspace:*",
-    "@agency/i18n": "workspace:*",
-    "@agency/net": "workspace:*",
+    "@agency/tools": "workspace:*",
     "@agency/guard": "workspace:*",
+    "@agency/schema": "workspace:*",
+    "zod": "^4",
+    "@agency/i18n": "workspace:*",
     "@agency/providers": "workspace:*",
     "jsonc-parser": "^3",
-    "zod": "^4"
+    "@agency/net": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --build",

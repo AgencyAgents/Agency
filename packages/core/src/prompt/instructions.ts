@@ -3,9 +3,9 @@ import { basename, dirname, join } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
 
-/** Per-instruction-file read cap. AGENTS.md is repo-controlled content, so a
- *  multi-gigabyte file (malicious or accidental) would otherwise blow the
- *  prompt — and the daemon's memory — through an unbounded read. */
+/** Per-instruction-file read cap. AGENTS.md / CLAUDE.md is repo-controlled
+ *  content, so a multi-gigabyte file (malicious or accidental) would otherwise
+ *  blow the prompt — and the daemon's memory — through an unbounded read. */
 export const DEFAULT_MAX_INSTRUCTION_BYTES = 64 * 1024;
 
 export interface LoadInstructionsOptions {
@@ -17,21 +17,27 @@ export interface LoadInstructionsOptions {
 
 /** Walks from `fromDir` up to `workspaceRoot`, nearest directory first: a
  *  monorepo package's own AGENTS.md should win over the repo root's, since
- *  composeSystemPrompt appends instructions in the order given here. */
+ *  composeSystemPrompt appends instructions in the order given here. In each
+ *  directory AGENTS.md is checked first, then CLAUDE.md — when both exist the
+ *  caller sees AGENTS.md before CLAUDE.md (documented precedence). */
 export function collectAgentsFiles(fromDir: string, workspaceRoot: string): string[] {
   const found: string[] = [];
   let dir = fromDir;
   for (;;) {
-    const candidate = join(dir, "AGENTS.md");
-    if (existsSync(candidate)) found.push(candidate);
+    const agents = join(dir, "AGENTS.md");
+    if (existsSync(agents)) found.push(agents);
+    const claude = join(dir, "CLAUDE.md");
+    if (existsSync(claude)) found.push(claude);
     if (dir === workspaceRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     if (dir.length < workspaceRoot.length && !workspaceRoot.startsWith(dir)) break;
     dir = parent;
     if (dir.length < workspaceRoot.length) {
-      const cand2 = join(workspaceRoot, "AGENTS.md");
-      if (existsSync(cand2) && !found.includes(cand2)) found.push(cand2);
+      const agents2 = join(workspaceRoot, "AGENTS.md");
+      if (existsSync(agents2) && !found.includes(agents2)) found.push(agents2);
+      const claude2 = join(workspaceRoot, "CLAUDE.md");
+      if (existsSync(claude2) && !found.includes(claude2)) found.push(claude2);
       break;
     }
   }
@@ -69,10 +75,11 @@ function readTextCapped(file: string, maxBytes: number): string {
 }
 
 /**
- * Loads project instructions (AGENTS.md nearest-first, then `.agency/rules/*`),
- * throwing PERMISSION_DENIED if `workspaceRoot` hasn't been explicitly
- * trusted. AGENTS.md is repo-provided content and therefore an injection
- * surface (R2); it must never reach the prompt before that gate passes.
+ * Loads project instructions (AGENTS.md + CLAUDE.md nearest-first, then
+ * `.agency/rules/*`), throwing PERMISSION_DENIED if `workspaceRoot` hasn't
+ * been explicitly trusted. AGENTS.md / CLAUDE.md is repo-provided content and
+ * therefore an injection surface (R2); it must never reach the prompt before
+ * that gate passes.
  */
 export function loadInstructions(
   trustStore: TrustStore,

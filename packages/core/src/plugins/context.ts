@@ -18,9 +18,10 @@ export const PLUGIN_TIERS_IN_ORDER: readonly PluginTier[] = ["project", "user", 
 
 /**
  * Per-contribution read cap. Mirrors `DEFAULT_MAX_INSTRUCTION_BYTES` in
- * `prompt/instructions.ts` (plugin AGENTS.md is the same repo-controlled
- * injection surface, so the same blow-the-prompt hazard applies) without
- * importing it — plugins must not pull the whole prompt module graph.
+ * `prompt/instructions.ts` (plugin AGENTS.md / CLAUDE.md is the same
+ * repo-controlled injection surface, so the same blow-the-prompt hazard
+ * applies) without importing it — plugins must not pull the whole prompt
+ * module graph.
  */
 export const DEFAULT_MAX_PLUGIN_INSTRUCTION_BYTES = 64 * 1024;
 
@@ -110,7 +111,7 @@ export function wrapHookHandler(
   };
 }
 
-/** One plugin's AGENTS.md contribution, already tier-tagged for ordering. */
+/** One plugin's AGENTS.md / CLAUDE.md contribution, already tier-tagged for ordering. */
 export interface PluginAgentsContribution {
   id: string;
   tier: PluginTier;
@@ -139,11 +140,11 @@ export function collectPluginAgentsTexts(
 }
 
 /**
- * Hierarchical AGENTS.md injection: walks `plugins` in load order (which the
- * loader guarantees is project → user → npm) and concatenates each plugin's
- * contribution. One plugin's bad export is isolated — it contributes nothing
- * and the rest still inject. Returns the ordered texts ready to append after
- * `loadInstructions()` output:
+ * Hierarchical AGENTS.md / CLAUDE.md injection: walks `plugins` in load order
+ * (which the loader guarantees is project → user → npm) and concatenates
+ * each plugin's contribution. One plugin's bad export is isolated — it
+ * contributes nothing and the rest still inject. Returns the ordered texts
+ * ready to append after `loadInstructions()` output:
  * `[...loadInstructions(store, root), ...collectPluginInstructions(result.plugins)]`.
  */
 export function collectPluginInstructions(
@@ -202,10 +203,11 @@ export function resolvePluginTierDirs(
 }
 
 /**
- * Tier-level file injection in hierarchical order: `<tierDir>/AGENTS.md` for
- * the project tier first, then the user tier. (npm packages have no shared
- * tier dir — their contributions travel via the `agentsMd` export, ordered by
- * load position.) Missing files are skipped; unreadable ones are isolated.
+ * Tier-level file injection in hierarchical order: `<tierDir>/AGENTS.md` then
+ * `<tierDir>/CLAUDE.md` for the project tier first, then the user tier. (npm
+ * packages have no shared tier dir — their contributions travel via the
+ * `agentsMd` export, ordered by load position.) Missing files are skipped;
+ * unreadable ones are isolated.
  */
 export function collectPluginTierFiles(
   workspaceRoot: string,
@@ -215,13 +217,23 @@ export function collectPluginTierFiles(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_PLUGIN_INSTRUCTION_BYTES;
   const out: string[] = [];
   for (const { dir } of resolvePluginTierDirs(workspaceRoot, configDirOverride)) {
-    const candidate = join(dir, "AGENTS.md");
-    if (!existsSync(candidate)) continue;
-    try {
-      const text = readFileCapped(candidate, maxBytes);
-      if (text.length > 0) out.push(text);
-    } catch (err) {
-      console.error(`[plugins] failed to read plugin tier instructions from ${candidate}:`, err);
+    const agents = join(dir, "AGENTS.md");
+    if (existsSync(agents)) {
+      try {
+        const text = readFileCapped(agents, maxBytes);
+        if (text.length > 0) out.push(text);
+      } catch (err) {
+        console.error(`[plugins] failed to read plugin tier instructions from ${agents}:`, err);
+      }
+    }
+    const claude = join(dir, "CLAUDE.md");
+    if (existsSync(claude)) {
+      try {
+        const text = readFileCapped(claude, maxBytes);
+        if (text.length > 0) out.push(text);
+      } catch (err) {
+        console.error(`[plugins] failed to read plugin tier instructions from ${claude}:`, err);
+      }
     }
   }
   return out;

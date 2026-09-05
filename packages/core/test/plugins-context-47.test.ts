@@ -146,6 +146,22 @@ describe("hierarchical AGENTS.md injection (project → user → npm)", () => {
       rmSync(userConfig, { recursive: true, force: true });
     }
   });
+
+  test("collectPluginTierFiles also discovers CLAUDE.md, AGENTS.md first", () => {
+    const ws = setupWs();
+    const userConfig = mkdtempSync(join(tmpdir(), "agency-plugin-ctx47-claude-"));
+    try {
+      mkdirSync(join(ws, ".agency", "plugins"), { recursive: true });
+      writeFileSync(join(ws, ".agency", "plugins", "AGENTS.md"), "proj-agents");
+      writeFileSync(join(ws, ".agency", "plugins", "CLAUDE.md"), "proj-claude");
+      mkdirSync(join(userConfig, "plugins"), { recursive: true });
+      writeFileSync(join(userConfig, "plugins", "CLAUDE.md"), "usr-claude");
+      expect(collectPluginTierFiles(ws, userConfig)).toEqual(["proj-agents", "proj-claude", "usr-claude"]);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(userConfig, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("capability-scoped PluginHookContext", () => {
