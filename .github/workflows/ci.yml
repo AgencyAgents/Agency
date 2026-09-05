@@ -39,8 +39,13 @@ jobs:
         run: bun run typecheck
       - name: Typecheck tests
         run: bun run typecheck:test
-      - name: Test
-        run: bun test
+      - name: Test (sharded)
+        run: |
+          bun test packages/schema packages/i18n packages/net packages/guard packages/telemetry packages/sdk
+          bun test packages/providers
+          bun test packages/tools
+          bun test packages/core
+          bun test packages/cli packages/rpc scripts
 
   perf:
     name: perf budgets

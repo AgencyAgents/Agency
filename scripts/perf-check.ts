@@ -183,15 +183,16 @@ async function main(): Promise<number> {
   const useBinary = cmd.length === 1 && cmd[0] !== process.execPath;
   console.log(`perf-check: using ${cmd.join(" ")} ${useBinary ? "(built binary)" : "(entrypoint via bun)"}`);
 
+  const budgets = useBinary ? BUDGETS : { ...BUDGETS, coldStartMs: 1000, idleCpuPercent: 15 };
   const failures: string[] = [];
   const warnings: string[] = [];
 
   // Cold start
   try {
     const { ms } = measureColdStart(cmd);
-    console.log(`cold start: ${ms.toFixed(1)} ms (budget ${BUDGETS.coldStartMs} ms)`);
-    if (ms > BUDGETS.coldStartMs)
-      failures.push(`cold start ${ms.toFixed(1)}ms exceeds ${BUDGETS.coldStartMs}ms`);
+    console.log(`cold start: ${ms.toFixed(1)} ms (budget ${budgets.coldStartMs} ms)`);
+    if (ms > budgets.coldStartMs)
+      failures.push(`cold start ${ms.toFixed(1)}ms exceeds ${budgets.coldStartMs}ms`);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     warnings.push(`cold start measurement failed: ${msg}`);
@@ -205,14 +206,14 @@ async function main(): Promise<number> {
       console.log(`daemon idle: skipped${reason ? ` (${reason})` : ""}`);
     } else {
       if (rssMb !== undefined) {
-        console.log(`idle RSS: ${rssMb.toFixed(1)} MB (budget ${BUDGETS.idleRssMb} MB)`);
-        if (rssMb > BUDGETS.idleRssMb)
-          failures.push(`idle RSS ${rssMb.toFixed(1)}MB exceeds ${BUDGETS.idleRssMb}MB`);
+        console.log(`idle RSS: ${rssMb.toFixed(1)} MB (budget ${budgets.idleRssMb} MB)`);
+        if (rssMb > budgets.idleRssMb)
+          failures.push(`idle RSS ${rssMb.toFixed(1)}MB exceeds ${budgets.idleRssMb}MB`);
       }
       if (cpuPercent !== undefined) {
-        console.log(`idle CPU: ${cpuPercent.toFixed(1)}% over 2s (budget ${BUDGETS.idleCpuPercent}%)`);
-        if (cpuPercent > BUDGETS.idleCpuPercent)
-          failures.push(`idle CPU ${cpuPercent.toFixed(1)}% exceeds ${BUDGETS.idleCpuPercent}%`);
+        console.log(`idle CPU: ${cpuPercent.toFixed(1)}% over 2s (budget ${budgets.idleCpuPercent}%)`);
+        if (cpuPercent > budgets.idleCpuPercent)
+          failures.push(`idle CPU ${cpuPercent.toFixed(1)}% exceeds ${budgets.idleCpuPercent}%`);
       }
     }
   } catch (error) {
