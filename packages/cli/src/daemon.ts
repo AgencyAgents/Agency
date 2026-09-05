@@ -1115,6 +1115,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                     } catch {
                       /* best-effort: session may already exist */
                     }
+                    try {
+                      eventBus.emit("subagent.start", {
+                        sessionId: childSessionId,
+                        handle: a.handle,
+                        parentSessionId: sessionId,
+                      });
+                      eventBus.emit("event", {
+                        event: "subagent.start",
+                        payload: { sessionId: childSessionId, handle: a.handle, parentSessionId: sessionId },
+                      });
+                    } catch {}
                     await getOrCreateScope(childSessionId, a.handle);
                     const caps = agent.capabilities;
                     const writeCapable = caps
@@ -1865,7 +1876,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           if (isNewSession) {
             try {
               eventBus.emit("session.created", { sessionId });
+              eventBus.emit("session.start", { sessionId, workspaceRoot: options.workspaceRoot });
               eventBus.emit("event", { event: "session.created", payload: { sessionId } });
+              eventBus.emit("event", {
+                event: "session.start",
+                payload: { sessionId, workspaceRoot: options.workspaceRoot },
+              });
             } catch {}
           }
           if (params.session.length > 0) {
@@ -1997,6 +2013,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   return msgs;
                 };
               })();
+              try {
+                const promptText = (() => {
+                  const m = params.session[params.session.length - 1];
+                  const b = m?.content?.find((c: { type: string }) => c.type === "text") as
+                    | { text?: string }
+                    | undefined;
+                  return typeof b?.text === "string" ? b.text : "";
+                })();
+                eventBus.emit("prompt.submit", { sessionId, prompt: promptText });
+                eventBus.emit("event", {
+                  event: "prompt.submit",
+                  payload: { sessionId, prompt: promptText },
+                });
+              } catch {}
               result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
                 identity,
                 capabilities: effectiveCapabilities,

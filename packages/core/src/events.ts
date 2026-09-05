@@ -28,6 +28,9 @@ export interface AgencyEvents {
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };
   "permission.replied": { tool: string; command?: string; path?: string; decision: string };
   "shell.env": { env: Record<string, string> };
+  "session.start": { sessionId: string; workspaceRoot: string };
+  "prompt.submit": { sessionId: string; prompt: string };
+  "subagent.start": { sessionId: string; handle: string; parentSessionId: string };
   event: { event: string; payload: unknown };
 }
 

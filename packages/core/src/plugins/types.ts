@@ -14,6 +14,9 @@ export const HOOK_NAMES = [
   "permission.asked",
   "permission.replied",
   "shell.env",
+  "session.start",
+  "prompt.submit",
+  "subagent.start",
 ] as const;
 
 export type HookName = (typeof HOOK_NAMES)[number];

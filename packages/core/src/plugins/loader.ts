@@ -15,6 +15,7 @@ import {
   readSiblingAgentsMd,
   wrapHookHandler,
 } from "./context.ts";
+import { discoverSkills, resolveSkillDirs, skillToPlugin } from "./skill.ts";
 import type { LoadedPlugin, PluginDefinition } from "./types.ts";
 
 export interface PluginToolRegistry {
@@ -42,7 +43,7 @@ export interface PluginLoadResult {
   /**
    * Hierarchical AGENTS.md texts in injection order: tier-level AGENTS.md
    * files (project, then user), then per-plugin contributions in load order
-   * (project → user → npm). Append after `loadInstructions()` output.
+   * (project -> user -> npm). Append after `loadInstructions()` output.
    */
   instructions: string[];
 }
@@ -295,6 +296,33 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
         error: String(err),
       });
       if (!logger) console.error(`[plugins] failed to collect instructions from plugin "${src.id}":`, err);
+    }
+  }
+
+  // Skills: scan skills/ directories and convert to plugin entries.
+  // Skills are Markdown files (not JS modules), so they bypass the module
+  // loading pipeline and are converted directly to PluginDefinitions.
+  const skillDirs = resolveSkillDirs(options.workspaceRoot, options.configDirOverride);
+  const skills = discoverSkills(skillDirs, logger);
+  for (const skill of skills) {
+    if (seen.has(skill.name)) {
+      errors.push({ id: skill.name, error: `duplicate skill id "${skill.name}" skipped (${skill.path})` });
+      continue;
+    }
+    seen.add(skill.name);
+
+    const def = skillToPlugin(skill);
+    const unsubscribes: Array<() => void> = [];
+
+    plugins.push({ id: skill.name, path: skill.path, tier: skill.tier, definition: def, unsubscribes });
+
+    try {
+      instructions.push(...collectPluginAgentsTexts(def, maxInstructionBytes, skill.name));
+    } catch (err) {
+      logger?.error(`[plugins] failed to collect instructions from skill "${skill.name}":`, {
+        error: String(err),
+      });
+      if (!logger) console.error(`[plugins] failed to collect instructions from skill "${skill.name}":`, err);
     }
   }
 

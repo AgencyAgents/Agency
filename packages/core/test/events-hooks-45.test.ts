@@ -25,6 +25,9 @@ describe("item 45: plugin hook surface", () => {
       "permission.asked",
       "permission.replied",
       "shell.env",
+      "session.start",
+      "prompt.submit",
+      "subagent.start",
     ] as const) {
       expect([...HOOK_NAMES]).toContain(name);
     }
@@ -84,6 +87,9 @@ describe("item 45: plugin hook surface", () => {
         "permission.asked": async (p) => { (globalThis.__seen45 ||= []).push("permission.asked"); },
         "permission.replied": async (p) => { (globalThis.__seen45 ||= []).push("permission.replied"); },
         "shell.env": async (p) => { (globalThis.__seen45 ||= []).push("shell.env"); },
+        "session.start": async (p) => { (globalThis.__seen45 ||= []).push("session.start"); },
+        "prompt.submit": async (p) => { (globalThis.__seen45 ||= []).push("prompt.submit"); },
+        "subagent.start": async (p) => { (globalThis.__seen45 ||= []).push("subagent.start"); },
         "event": async (p) => { (globalThis.__star45 ||= []).push(1); },
       };`,
     );
@@ -104,6 +110,9 @@ describe("item 45: plugin hook surface", () => {
       await bus.emitAsync("permission.asked", { tool: "bash", decision: "ask" });
       await bus.emitAsync("permission.replied", { tool: "bash", decision: "allow" });
       await bus.emitAsync("shell.env", { env: {} });
+      await bus.emitAsync("session.start", { sessionId: "s1", workspaceRoot: "/test" });
+      await bus.emitAsync("prompt.submit", { sessionId: "s1", prompt: "hello" });
+      await bus.emitAsync("subagent.start", { sessionId: "s2", handle: "agent1", parentSessionId: "s1" });
       expect([...(g.__seen45 as string[])].sort()).toEqual(
         [
           "file.edited",
@@ -112,13 +121,16 @@ describe("item 45: plugin hook surface", () => {
           "session.compacted",
           "session.created",
           "session.idle",
+          "session.start",
+          "prompt.submit",
+          "subagent.start",
           "shell.env",
           "tool.execute.after",
           "tool.execute.before",
         ].sort(),
       );
-      // "event" hook subscribes to "*": fires once per emit above (9).
-      expect((g.__star45 as unknown[]).length).toBe(9);
+      // "event" hook subscribes to "*": fires once per emit above (12).
+      expect((g.__star45 as unknown[]).length).toBe(12);
       // Throwing exact hook does not block the wildcard listener on the same event.
       bus.on("file.edited", () => {
         throw new Error("exact boom");
@@ -155,5 +167,50 @@ describe("item 45: plugin hook surface", () => {
       rmSync(ws, { recursive: true, force: true });
       delete g.__wild45;
     }
+  });
+
+  test("session.start fires with correct payload shape", async () => {
+    const bus = new EventBus();
+    const received: unknown[] = [];
+    bus.on("session.start", async (p) => {
+      received.push(p);
+    });
+    await bus.emitAsync("session.start", { sessionId: "s1", workspaceRoot: "/root" });
+    expect(received.length).toBe(1);
+    expect(received[0]).toEqual({ sessionId: "s1", workspaceRoot: "/root" });
+  });
+
+  test("prompt.submit fires with correct payload shape", async () => {
+    const bus = new EventBus();
+    const received: unknown[] = [];
+    bus.on("prompt.submit", async (p) => {
+      received.push(p);
+    });
+    await bus.emitAsync("prompt.submit", { sessionId: "s1", prompt: "hello world" });
+    expect(received.length).toBe(1);
+    expect(received[0]).toEqual({ sessionId: "s1", prompt: "hello world" });
+  });
+
+  test("subagent.start fires with correct payload shape", async () => {
+    const bus = new EventBus();
+    const received: unknown[] = [];
+    bus.on("subagent.start", async (p) => {
+      received.push(p);
+    });
+    await bus.emitAsync("subagent.start", { sessionId: "s2", handle: "agent1", parentSessionId: "s1" });
+    expect(received.length).toBe(1);
+    expect(received[0]).toEqual({ sessionId: "s2", handle: "agent1", parentSessionId: "s1" });
+  });
+
+  test("new events also fire wildcard * listener", async () => {
+    const bus = new EventBus();
+    const wildcard: string[] = [];
+    bus.on("*", async (p) => {
+      wildcard.push((p as { sessionId?: string }).sessionId ?? "?");
+    });
+    await bus.emitAsync("session.start", { sessionId: "s1", workspaceRoot: "/r" });
+    await bus.emitAsync("prompt.submit", { sessionId: "s1", prompt: "hi" });
+    await bus.emitAsync("subagent.start", { sessionId: "s2", handle: "a", parentSessionId: "s1" });
+    expect(wildcard).toEqual(["s1", "s1", "s2"]);
   });
 });
