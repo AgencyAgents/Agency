@@ -1,5 +1,6 @@
 import type { ApprovalRequest, ApprovalResponse } from "@agency/guard";
 import type { ToolSpec } from "../loop.ts";
+import { checkDepthGate } from "./dispatch-core.ts";
 
 export interface DispatchInput {
   agents: Array<{ handle: string; brief: string; effort?: string }>;
@@ -83,16 +84,26 @@ export function createDispatchTool(deps: {
         requestApproval?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
       };
       const depth = toolCtx.taskDepth ?? 0;
-      // Depth-0 child isolation: subagents (taskDepth > 0) cannot dispatch.
-      if (depth > 0) {
-        return { content: "nested dispatch blocked: subagents cannot dispatch", isError: true };
-      }
-      if (depth >= maxDepth) {
-        return { content: `dispatch depth limit reached (${depth} >= ${maxDepth})`, isError: true };
+      // Single entry depth gate shared with the task tool.
+      const gate = checkDepthGate("dispatch", depth, maxDepth);
+      if (gate) {
+        // Depth-0 child isolation: subagents (taskDepth > 0) cannot dispatch.
+        if (gate.reason === "nested-blocked") {
+          return {
+            content: "nested dispatch blocked: subagents cannot dispatch",
+            isError: true,
+            reason: gate.reason,
+          };
+        }
+        return {
+          content: `dispatch depth limit reached (${depth} >= ${maxDepth})`,
+          isError: true,
+          reason: gate.reason,
+        };
       }
       const agents = (input as DispatchInput)?.agents;
       if (!Array.isArray(agents) || agents.length === 0) {
-        return { content: "dispatch: no agents to dispatch", isError: true };
+        return { content: "dispatch: no agents to dispatch", isError: true, reason: "empty-input" };
       }
       for (const a of agents) {
         if (
@@ -101,7 +112,11 @@ export function createDispatchTool(deps: {
           typeof a?.brief !== "string" ||
           a.brief.length === 0
         ) {
-          return { content: "dispatch: each agent requires a non-empty handle and brief", isError: true };
+          return {
+            content: "dispatch: each agent requires a non-empty handle and brief",
+            isError: true,
+            reason: "invalid-entry",
+          };
         }
       }
       // Depth passes through unchanged here: the daemon spawns each child

@@ -548,7 +548,8 @@ describe("system prompt composition", () => {
       session: [],
     });
 
-    expect(capture.systems[0]).toBe("sys");
+    expect(capture.systems[0]).toContain("sys");
+    expect(capture.systems[0]).toMatch(/<prompt-version>/);
   });
 });
 

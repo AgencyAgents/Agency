@@ -36,21 +36,22 @@ export function createTaskTool(deps: TaskToolDeps): ToolSpec {
     },
     async handler(input, ctx) {
       const depth = ctx.taskDepth ?? 0;
-      // Depth-0 child isolation: subagents (taskDepth > 0) cannot spawn tasks.
       if (depth > 0) {
         return {
           content: "nested task blocked: subagents cannot spawn tasks",
           isError: true,
+          reason: "nested-blocked",
         };
       }
       if (depth >= maxDepth) {
         return {
           content: `task depth limit reached (depth ${depth} >= maxDepth ${maxDepth}): nested task denied`,
           isError: true,
+          reason: "depth-limit",
         };
       }
       if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
-        return { content: "task requires a non-empty prompt", isError: true };
+        return { content: "task requires a non-empty prompt", isError: true, reason: "invalid-entry" };
       }
       return deps.runTask(input, ctx);
     },

@@ -680,6 +680,93 @@ describe("runTurn", () => {
   });
 });
 
+describe("U7: cheap-model routing", () => {
+  function modelCapturingAdapter(seen: string[]): ProviderAdapter {
+    return {
+      family: "fake",
+      async *stream(req: { model: string }): AsyncIterable<StreamEvent> {
+        seen.push(req.model);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+  }
+
+  async function baseOptions(extra: Record<string, unknown>) {
+    return {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "primary-m",
+      apiKey: "key",
+      session: [],
+      ...extra,
+    };
+  }
+
+  test("eligible taskKind routes to the cheap model with a tag, no silent downgrade", async () => {
+    const seen: string[] = [];
+    const events: Array<{ type: string; routed?: string; tag?: string }> = [];
+    const scheduler = new Scheduler();
+    await runTurn(modelCapturingAdapter(seen), scheduler, noopHttp, {
+      ...(await baseOptions({ taskKind: "summary", cheapModel: "cheap-m" })),
+      onEvent: (e) => events.push(e as { type: string; routed?: string; tag?: string }),
+    });
+
+    expect(seen).toEqual(["cheap-m"]);
+    const routes = events.filter((e) => e.type === "model_route");
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes[0]?.routed).toBe("cheap");
+    expect(routes[0]?.tag).toContain("cheap");
+  });
+
+  test("ineligible taskKind stays on primary", async () => {
+    const seen: string[] = [];
+    const scheduler = new Scheduler();
+    await runTurn(modelCapturingAdapter(seen), scheduler, noopHttp, {
+      ...(await baseOptions({ taskKind: "code", cheapModel: "cheap-m" })),
+    });
+
+    expect(seen).toEqual(["primary-m"]);
+  });
+
+  test("explicit override always wins", async () => {
+    const seen: string[] = [];
+    const scheduler = new Scheduler();
+    await runTurn(modelCapturingAdapter(seen), scheduler, noopHttp, {
+      ...(await baseOptions({ taskKind: "summary", cheapModel: "cheap-m", forcePrimary: true })),
+    });
+
+    expect(seen).toEqual(["primary-m"]);
+  });
+
+  test("cheap failure falls back to primary", async () => {
+    const seen: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(req: { model: string }): AsyncIterable<StreamEvent> {
+        seen.push(req.model);
+        if (req.model === "cheap-m") throw new Error("cheap down");
+        yield { type: "text_delta", text: "recovered" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const events: Array<{ type: string; routed?: string; tag?: string }> = [];
+    const scheduler = new Scheduler();
+    const result = await runTurn(adapter, scheduler, noopHttp, {
+      ...(await baseOptions({ taskKind: "title", cheapModel: "cheap-m" })),
+      onEvent: (e) => events.push(e as { type: string; routed?: string; tag?: string }),
+    });
+
+    expect(seen).toEqual(["cheap-m", "primary-m"]);
+    expect(result.stopReason).toBe("end_turn");
+    const routes = events.filter((e) => e.type === "model_route");
+    expect(routes.some((r) => r.routed === "cheap")).toBe(true);
+    expect(routes.some((r) => r.tag?.includes("fallback"))).toBe(true);
+  });
+});
+
 describe("A5: input validation and permissions gating", () => {
   const user = { type: "user" as const };
 

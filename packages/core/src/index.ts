@@ -10,6 +10,7 @@ export * from "./logger.ts";
 export * from "./loop.ts";
 export * from "./orchestra/category-routing.ts";
 export * from "./orchestra/dispatch.ts";
+export * from "./orchestra/dispatch-core.ts";
 export * from "./orchestra/parallel.ts";
 export * from "./orchestra/registry.ts";
 export * from "./orchestra/room.ts";

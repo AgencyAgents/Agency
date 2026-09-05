@@ -10,9 +10,11 @@ import {
   createDispatchTool,
   createRotatingFileSink,
   createWorktree,
+  DispatchStateStore,
   dataDir,
   EventBus,
   expandCommand,
+  formatSkipLine,
   type GitRunner,
   gatherEnvironmentInfo,
   generateTitle,
@@ -36,6 +38,7 @@ import {
   parseModelRef,
   parseSlashInput,
   readCassetteRecord,
+  resolveDispatchTarget,
   resolveSmallModel,
   runTurn,
   SessionStore,
@@ -45,6 +48,7 @@ import {
   storagePaths,
   type ToolSpec,
   TraceRecorder,
+  withPromptVersion,
   withSystemReminders,
   withTrace,
 } from "@agency/core";
@@ -242,7 +246,7 @@ export function resolveSystemPrompt(params: RunTurnParams, options: ResolveSyste
   if (options.mcpFailures) {
     for (const [name, reason] of options.mcpFailures) reminders.push(mcpServerDownReminder(name, reason));
   }
-  return withSystemReminders(composed, reminders).text;
+  return withPromptVersion(withSystemReminders(composed, reminders)).text;
 }
 
 export interface RunTurnRpcResult {
@@ -1078,7 +1082,22 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   (async () => {
                     const agent = orchestraRegistry.get(a.handle);
                     if (!agent) {
-                      dispatchBarrier.complete(slot, `${a.handle}: unknown handle`);
+                      dispatchBarrier.complete(
+                        slot,
+                        formatSkipLine({
+                          index: slot,
+                          handle: a.handle,
+                          reason: "unknown-handle",
+                          detail: `unknown handle: ${a.handle}`,
+                        }),
+                      );
+                      dispatchLog.append({
+                        index: slot,
+                        handle: a.handle,
+                        brief: a.brief,
+                        status: "skipped",
+                        reason: "unknown-handle",
+                      });
                       return;
                     }
                     // Budget caps are checked before spawning: nothing starts once
@@ -1092,8 +1111,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                     ) {
                       dispatchBarrier.complete(
                         slot,
-                        `${a.handle}: orchestra budget exceeded: ${orchestraTotalCost} >= ${dispatchBudgets.orchestraUsd}`,
+                        formatSkipLine({
+                          index: slot,
+                          handle: a.handle,
+                          reason: "orchestra-budget-exceeded",
+                          detail: `orchestra budget exceeded: ${orchestraTotalCost} >= ${dispatchBudgets.orchestraUsd}`,
+                        }),
                       );
+                      dispatchLog.append({
+                        index: slot,
+                        handle: a.handle,
+                        brief: a.brief,
+                        status: "skipped",
+                        reason: "orchestra-budget-exceeded",
+                      });
                       return;
                     }
                     const spentForAgent = orchestraCost.get(agent.sessionId) ?? 0;
@@ -1103,12 +1134,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                     ) {
                       dispatchBarrier.complete(
                         slot,
-                        `${a.handle}: budget exceeded: per-agent ${spentForAgent} >= ${dispatchBudgets.perAgentUsd}`,
+                        formatSkipLine({
+                          index: slot,
+                          handle: a.handle,
+                          reason: "per-agent-budget-exceeded",
+                          detail: `budget exceeded: per-agent ${spentForAgent} >= ${dispatchBudgets.perAgentUsd}`,
+                        }),
                       );
+                      dispatchLog.append({
+                        index: slot,
+                        handle: a.handle,
+                        brief: a.brief,
+                        status: "skipped",
+                        reason: "per-agent-budget-exceeded",
+                      });
                       return;
                     }
+                    const requestedEffort = resolveDispatchTarget(
+                      { handle: a.handle, brief: a.brief, effort: a.effort },
+                      undefined,
+                      {},
+                    ).effort;
                     const effort =
-                      a.effort ?? (agent.effort === "auto" ? classifyEffortFromText(a.brief) : agent.effort);
+                      requestedEffort ??
+                      (agent.effort === "auto" ? classifyEffortFromText(a.brief) : agent.effort);
                     const childSessionId = agent.sessionId;
                     try {
                       todoStore.create(childSessionId);
@@ -1390,6 +1439,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                         slot,
                         `${a.handle}: ${childError instanceof Error ? childError.message : String(childError)}`,
                       );
+                      dispatchLog.append({
+                        index: slot,
+                        handle: a.handle,
+                        brief: a.brief,
+                        status: "dispatched",
+                      });
                     } else {
                       agentStates.set(a.handle, "idle");
                       try {
@@ -1448,6 +1503,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                         slot,
                         `${a.handle} dispatched at ${effort}: ${leanSummary(finalText, 80) || "(no output)"}`,
                       );
+                      dispatchLog.append({
+                        index: slot,
+                        handle: a.handle,
+                        brief: a.brief,
+                        effort,
+                        status: "dispatched",
+                      });
                     }
                   })().catch((error: unknown) => {
                     dispatchBarrier.fail(slot, error);
@@ -1455,6 +1517,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 );
                 await Promise.all(dispatchTasks);
                 const dispatchSettled = await dispatchBarrier.wait();
+                try {
+                  await dispatchLog.save(join(todoSessionsDir, "dispatch-state.json"));
+                } catch {}
                 const lines = dispatchSettled.map((s) =>
                   s.ok
                     ? (s.value as string)
@@ -1543,6 +1608,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   });
   const orchestraCost = new Map<string, number>();
   let orchestraTotalCost = 0;
+  const dispatchLog = new DispatchStateStore();
+  try {
+    const restored = await DispatchStateStore.load(join(todoSessionsDir, "dispatch-state.json"));
+    for (const entry of restored.list()) dispatchLog.append(entry);
+  } catch {}
   const agentMailboxes = new Map<string, import("@agency/schema").Message[]>();
   const agentStates = new Map<string, "idle" | "working" | "blocked" | "failed">();
 

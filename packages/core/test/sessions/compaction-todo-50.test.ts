@@ -84,4 +84,60 @@ describe("todo compaction parity (50)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("U8 target expansion folds messages but keeps every todo_state (sync approximate tokenizer)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-todo-compact-u8-"));
+    try {
+      const store = new SessionStore(dir);
+      const meta = store.create("s1");
+      const tokenizer = createApproximateTokenizer(1);
+
+      let parentId: string | null = null;
+      const append = async (entry: { type: string } & Record<string, unknown>) => {
+        const e = await store.append(meta.id, { ...entry, parentId });
+        parentId = e.id;
+        return e;
+      };
+
+      const todosA = [{ id: "t1", content: "old task", status: "completed", priority: "high" }];
+      const todosB = [
+        { id: "t2", content: "live task", status: "in_progress", claimedBy: "h1", priority: "high" },
+      ];
+      await append({ type: "message", message: userMsg("a".repeat(95)) });
+      await append({ type: "todo_state", todos: todosA });
+      await append({ type: "message", message: userMsg("b".repeat(95)) });
+      await append({ type: "todo_state", todos: todosB });
+      for (let i = 0; i < 8; i++)
+        await append({ type: "message", message: userMsg(`m${i}-`.padEnd(95, "x")) });
+      const entries0 = store.load(meta.id);
+      const tip0 = entries0[entries0.length - 1]?.id ?? "";
+      const beforeTodos = store.chainFor(entries0, tip0).filter((e) => e.type === "todo_state");
+      expect(beforeTodos).toHaveLength(2);
+
+      let calls = 0;
+      const result = await compact(
+        store,
+        meta.id,
+        tip0,
+        tokenizer,
+        { contextWindow: 1000 },
+        async (text) => {
+          calls += 1;
+          return `digest-${calls}-${text.slice(0, 40)}`;
+        },
+        8,
+      );
+      expect(result.compacted).toBe(true);
+      expect(calls).toBeGreaterThanOrEqual(2);
+
+      const entries = store.load(meta.id);
+      const chain = store.chainFor(entries, result.tipId);
+      const afterTodos = chain.filter((e) => e.type === "todo_state") as unknown as Array<{ todos: unknown }>;
+      expect(afterTodos).toHaveLength(2);
+      expect(afterTodos[0]?.todos).toEqual(todosA);
+      expect(afterTodos[1]?.todos).toEqual(todosB);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,15 +1,25 @@
-import type { CallerIdentity, Capabilities, RequestApproval, RiskTier, ToolPolicy } from "@agency/guard";
+import type {
+  ApprovalRequest,
+  CallerIdentity,
+  Capabilities,
+  RequestApproval,
+  RiskTier,
+  ToolPolicy,
+} from "@agency/guard";
 import { isCommandPatternTool, isPathPatternTool, requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
   type ProviderAdapter,
   type Scheduler,
+  selectModel,
   type ThinkingLevel,
   type ToolDefinition,
   type Usage,
+  withCheapFallback,
   withMidStreamRecovery,
 } from "@agency/providers";
 import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
+import { isContextOverflowError } from "./sessions/compaction.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -56,7 +66,8 @@ export type LoopEvent =
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
   | { type: "iteration_limit"; iterations: number }
   | { type: "error"; code: string; message: string }
-  | { type: "retry"; attempt: number; message: string; next?: number };
+  | { type: "retry"; attempt: number; message: string; next?: number }
+  | { type: "model_route"; model: string; routed: "cheap" | "primary"; tag: string };
 
 export interface RunTurnOptions {
   identity: CallerIdentity;
@@ -103,6 +114,9 @@ export interface RunTurnOptions {
     emitAsync?: (event: string, payload: unknown) => Promise<void>;
     emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
   };
+  /** Overflow hook (U8): runs once per turn on context overflow, then the
+   *  provider call is retried exactly once. Absent means overflow throws. */
+  onContextOverflow?: () => Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -111,9 +125,24 @@ export interface RunTurnOptions {
   provider?: string;
   /** Depth of nested task invocations (0 for root, incremented per child). */
   taskDepth?: number;
+  /** Task category for cheap-model routing (title, summary, background go cheap). */
+  taskKind?: string;
+  /** Cheap model id; when set with an eligible taskKind the turn routes cheap. */
+  cheapModel?: string;
+  /** Explicit override; when true the primary model always wins. */
+  forcePrimary?: boolean;
 }
 
 const NEVER_ABORTED = new AbortController().signal;
+
+/** Approval prompt for a tripped doom loop. Asks instead of spinning. */
+export function doomApprovalRequest(toolName: string, repeats: number): ApprovalRequest {
+  return {
+    tool: "doom-loop",
+    title: `doom loop detected: ${toolName} repeated ${repeats}x consecutively. Continue anyway?`,
+    metadata: { toolName, repeats },
+  };
+}
 
 export interface RunTurnResult {
   messages: Message[];
@@ -186,6 +215,54 @@ export async function runTurn(
   // loop is capped by maxToolIterations, not by input-identity heuristics.
   const doomHistory: string[] = [];
   const doomDetection = options.doomLoopDetection === true;
+  const routeSelection = selectModel(options.model, options.cheapModel, {
+    ...(options.taskKind !== undefined ? { kind: options.taskKind } : {}),
+    ...(options.forcePrimary !== undefined ? { forcePrimary: options.forcePrimary } : {}),
+  });
+  const routingActive = options.cheapModel !== undefined;
+  if (routingActive) {
+    options.onEvent?.({
+      type: "model_route",
+      model: routeSelection.model,
+      routed: routeSelection.routed,
+      tag: routeSelection.tag,
+    });
+  }
+  const collectWithFallback = async (): Promise<CollectedTurn> => {
+    const runOne = (model: string): Promise<CollectedTurn> =>
+      scheduler.schedule(
+        () =>
+          collectTurn(
+            adapter,
+            http,
+            {
+              model,
+              apiKey: options.apiKey,
+              system: options.systemPrompt,
+              messages,
+              tools: toolDefs,
+              maxTokens: options.maxTokensPerRequest ?? 8192,
+              thinkingLevel: options.thinkingLevel,
+              signal: options.signal,
+            },
+            options.onEvent,
+          ),
+        {
+          onRetry: (attempt, message, next) => {
+            options.onEvent?.({ type: "retry", attempt, message, next });
+          },
+        },
+      );
+    if (!routingActive || routeSelection.routed !== "cheap") {
+      return runOne(options.model);
+    }
+    const routed = await withCheapFallback(routeSelection, options.model, runOne);
+    if (routed.fellBack) {
+      options.onEvent?.({ type: "model_route", model: routed.model, routed: "primary", tag: routed.tag });
+    }
+    return routed.value;
+  };
+  let overflowRetried = false;
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     if (options.drainMailbox) {
       try {
@@ -203,31 +280,19 @@ export async function runTurn(
     }
     try {
       let turn: CollectedTurn;
-      turn = await scheduler.schedule(
-        () =>
-          collectTurn(
-            adapter,
-            http,
-            {
-              model: options.model,
-              apiKey: options.apiKey,
-              system: options.systemPrompt,
-              messages,
-              tools: toolDefs,
-              maxTokens: options.maxTokensPerRequest ?? 8192,
-              thinkingLevel: options.thinkingLevel,
-              signal: options.signal,
-            },
-            options.onEvent,
-          ),
-        // Per-call observer: the shared instance slot would cross-fire
-        // between concurrent turns on the same scheduler.
-        {
-          onRetry: (attempt, message, next) => {
-            options.onEvent?.({ type: "retry", attempt, message, next });
-          },
-        },
-      );
+      try {
+        turn = await collectWithFallback();
+      } catch (error) {
+        if (overflowRetried || !isContextOverflowError(error) || !options.onContextOverflow) throw error;
+        overflowRetried = true;
+        await options.onContextOverflow();
+        options.onEvent?.({
+          type: "retry",
+          attempt: 1,
+          message: "context overflow: compacted, retrying once",
+        });
+        turn = await collectWithFallback();
+      }
 
       messages.push({ role: "assistant", content: turn.content });
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
@@ -275,14 +340,22 @@ export async function runTurn(
         if (doomHistory.length >= 3) {
           const last3 = doomHistory.slice(-3);
           if (last3[0] === last3[1] && last3[1] === last3[2]) {
+            const doomError = Object.assign(new Error(`doom loop: ${tc.name} repeated 3x consecutively`), {
+              code: "doom_loop",
+            });
             options.onEvent?.({
               type: "error",
               code: "doom_loop",
               message: `doom loop detected: ${tc.name} repeated 3x`,
             });
-            throw Object.assign(new Error(`doom loop: ${tc.name} repeated 3x consecutively`), {
-              code: "doom_loop",
-            });
+            if (options.requestApproval) {
+              const response = await options.requestApproval(doomApprovalRequest(tc.name, 3));
+              if (response !== "reject") {
+                doomHistory.length = 0;
+                break;
+              }
+            }
+            throw doomError;
           }
         }
       }
