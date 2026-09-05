@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{ "type": "command", "command": "echo hello" }],
+    "UserPromptSubmit": [{ "type": "command", "command": "echo world" }],
+    "UnknownEvent": [{ "type": "command", "command": "echo skip" }]
+  }
+}

@@ -15,6 +15,7 @@ export * from "./orchestra/registry.ts";
 export * from "./orchestra/room.ts";
 export * from "./orchestra/todo.ts";
 export * from "./paths.ts";
+export * from "./plugins/importer.ts";
 export * from "./plugins/loader.ts";
 export * from "./plugins/types.ts";
 export * from "./prompt/index.ts";

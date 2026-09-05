@@ -29,6 +29,7 @@ import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
+import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
 
@@ -60,6 +61,9 @@ Commands:
                         OAuth browser flow for anthropic, openai, google, github-copilot
                         (needs provider.<id>.oauth.clientId in config)
   auth list                Show which providers have a resolvable key
+   plugin install <dir> [--overwrite]  Install a Claude Code / Codex plugin
+   plugin list              Show installed skills and plugin modules
+   plugin remove <name>     Remove an installed plugin
   onboard                  First-run setup: connect, model, trust
   debug                    Write a redacted debug bundle for issue reports
   update [--rollback]      Update binary from GitHub Releases (ed25519 + SHA-256 verified)
@@ -90,6 +94,7 @@ export interface ParsedArgv {
   provider: string | undefined;
   print: string | undefined;
   oauth: boolean;
+  overwrite: boolean;
   images: string[];
   continueLast: boolean;
   session: string | undefined;
@@ -150,6 +155,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     print: undefined,
     oauth: false,
     images: [],
+    overwrite: false,
     continueLast: false,
     session: undefined,
     format: "text",
@@ -225,6 +231,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--image":
         parsed.images.push(value());
+        break;
+      case "--overwrite":
+        parsed.overwrite = true;
         break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
@@ -774,6 +783,65 @@ async function daemonStatusCmd(
   }
 }
 
+async function pluginCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+
+  // Subcommand help
+  if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
+    out(`Usage: agency plugin <subcommand> [args]
+
+Subcommands:
+  install <dir> [--overwrite]  Install a Claude Code / Codex plugin
+  list                         Show installed skills and plugin modules
+  remove <name>                Remove an installed plugin`);
+    return 0;
+  }
+
+  if (parsed.subcommand === "install") {
+    const sourceDir = parsed.args[0];
+    if (sourceDir === undefined) {
+      err(t("cli.error.missing_value", { flag: "sourceDir" }));
+      return 1;
+    }
+    try {
+      const report = pluginInstallCmd(sourceDir, workspaceRoot, parsed.overwrite, err);
+      out(report);
+      return 0;
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
+
+  if (parsed.subcommand === "list") {
+    out(pluginListCmd(workspaceRoot));
+    return 0;
+  }
+
+  if (parsed.subcommand === "remove") {
+    const name = parsed.args[0];
+    if (name === undefined) {
+      err("Usage: agency plugin remove <name>");
+      return 1;
+    }
+    try {
+      const msg = pluginRemoveCmd(name, workspaceRoot);
+      out(msg);
+      return 0;
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
+
+  throw new Error(t("cli.error.unknown_command", { command: `plugin ${parsed.subcommand ?? "(none)"}` }));
+}
+
 async function dispatch(
   parsed: ParsedArgv,
   deps: EntrypointDeps,
@@ -889,6 +957,8 @@ Subcommands:
       out(t("debug.written", { path }));
       return 0;
     }
+    case "plugin":
+      return pluginCmd(parsed, deps, out, err);
     default:
       throw new Error(t("cli.error.unknown_command", { command: String(parsed.command) }));
   }
