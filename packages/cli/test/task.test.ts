@@ -341,6 +341,8 @@ describe("task ephemeral workers", () => {
     // Promise that resolves only after BOTH children have started. If tasks ran
     // sequentially, the first would deadlock waiting for the second to start.
     // Completion of both therefore proves overlap without any wall-clock threshold.
+    // The barrier also deadlocks if either child fails before its stream starts,
+    // so the 30s timeout below bounds that into a failure instead of a suite stall.
     let startedCount = 0;
     let barrierResolve!: () => void;
     const barrier = new Promise<void>((resolve) => {
@@ -448,5 +450,5 @@ describe("task ephemeral workers", () => {
       const ce = store.load(cid);
       expect(ce.some((e) => e.type === "message")).toBe(true);
     }
-  });
+  }, 30_000);
 });
