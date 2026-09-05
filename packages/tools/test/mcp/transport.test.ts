@@ -106,8 +106,13 @@ describe("McpTransport HTTP Streamable", () => {
       args: ["-e", "console.error('boom stderr tail'); setTimeout(()=>{}, 80)"],
     });
     await transport.start();
-    await new Promise((r) => setTimeout(r, 200));
-    const tail = transport.stderrTail?.() ?? "";
+    const deadline = Date.now() + 2_000;
+    let tail = "";
+    while (Date.now() < deadline) {
+      tail = transport.stderrTail?.() ?? "";
+      if (tail.includes("boom stderr tail")) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
     expect(tail).toContain("boom stderr tail");
     await transport.close();
   });
