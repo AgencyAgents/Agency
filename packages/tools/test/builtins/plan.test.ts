@@ -1,8 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
+import {
+  evaluatePlanGate,
+  isBlockingSeverity,
+  planIdForPath,
+  readPlanIssues,
+  readPlanRevisions,
+  resubmitPlan,
+  revisePlan,
+  writePlanIssues,
+} from "../../src/builtins/plan.ts";
+import {
+  copyPlanToCanonical,
+  migratePlanDirectory,
+  planModeAllowsTool,
+} from "../../src/builtins/plan-paths.ts";
 import {
   countUnresolvedComments,
   createExecutePlanTool,
@@ -142,5 +157,168 @@ describe("execute_plan", () => {
     const { planPath } = setup();
     writeApprovalRecord(planPath, {});
     expect(readFileSync(`${planPath}.approval.json`, "utf8")).toContain('"hash"');
+  });
+});
+
+describe("plan dir copy-migration", () => {
+  test("copyPlanToCanonical copies the plan without deleting the source", () => {
+    const { root, planPath } = setup();
+    const dest = copyPlanToCanonical(planPath);
+    expect(dest).toBe(join(root, ".opencode", "plans", "ship-the-thing.md"));
+    expect(readFileSync(dest, "utf8")).toBe(PLAN_BODY);
+    expect(existsSync(planPath)).toBe(true);
+  });
+
+  test("copy carries the approval and comments sidecars", () => {
+    const { planPath } = setup();
+    writeApprovalRecord(planPath, { approvedBy: "tester" });
+    writeFileSync(`${planPath}.comments.json`, JSON.stringify({ comments: [] }));
+    const dest = copyPlanToCanonical(planPath);
+    expect(readApprovalRecord(dest)?.approvedBy).toBe("tester");
+    expect(countUnresolvedComments(dest)).toBe(0);
+    expect(existsSync(`${planPath}.approval.json`)).toBe(true);
+  });
+
+  test("migratePlanDirectory copies a legacy dir wholesale and keeps sources", () => {
+    const { root, planPath } = setup();
+    const destDir = join(root, ".opencode", "plans");
+    const copied = migratePlanDirectory(join(root, ".agency", "plans"), destDir);
+    expect(copied).toEqual([join(destDir, "ship-the-thing.md")]);
+    expect(readFileSync(join(destDir, "ship-the-thing.md"), "utf8")).toBe(PLAN_BODY);
+    expect(existsSync(planPath)).toBe(true);
+  });
+});
+
+describe("plan revise roundtrip", () => {
+  test("revise keeps the same path and plan id", () => {
+    const { planPath } = setup();
+    const idBefore = planIdForPath(planPath);
+    revisePlan(planPath, `${PLAN_BODY}\n- [ ] added on revise\n`, "tighten scope");
+    expect(planIdForPath(planPath)).toBe(idBefore);
+    expect(readFileSync(planPath, "utf8")).toContain("added on revise");
+  });
+
+  test("revise appends history entries in order", () => {
+    const { planPath } = setup();
+    expect(readPlanRevisions(planPath)).toEqual([]);
+    const first = revisePlan(planPath, `${PLAN_BODY}\n- [ ] r1\n`, "first pass");
+    const second = revisePlan(planPath, `${PLAN_BODY}\n- [ ] r2\n`, "second pass");
+    const history = readPlanRevisions(planPath);
+    expect(history.length).toBe(2);
+    expect(history.map((r) => r.revision)).toEqual([1, 2]);
+    expect(history[0]?.hash).toBe(first.hash);
+    expect(history[1]?.hash).toBe(second.hash);
+    expect(history[1]?.note).toBe("second pass");
+  });
+
+  test("revise preserves prior hashes while content changes", () => {
+    const { planPath } = setup();
+    const before = planContentHash(readFileSync(planPath, "utf8"));
+    revisePlan(planPath, `${PLAN_BODY}\n- [ ] changed\n`);
+    const history = readPlanRevisions(planPath);
+    expect(history.length).toBe(1);
+    expect(history[0]?.hash).not.toBe(before);
+    expect(planContentHash(readFileSync(planPath, "utf8"))).toBe(history[0]?.hash);
+  });
+});
+
+describe("plan resubmit", () => {
+  test("resubmit returns the current content hash", () => {
+    const { planPath } = setup();
+    revisePlan(planPath, `${PLAN_BODY}\n- [ ] new step\n`);
+    const { hash } = resubmitPlan(planPath);
+    expect(hash).toBe(planContentHash(readFileSync(planPath, "utf8")));
+  });
+
+  test("resubmit clears the stale approval so re-approval is required", async () => {
+    const { planPath, tool, signal, todos } = setup();
+    writeApprovalRecord(planPath, { approvedBy: "tester" });
+    revisePlan(planPath, `${PLAN_BODY}\n- [ ] drift\n`);
+    resubmitPlan(planPath);
+    expect(readApprovalRecord(planPath)).toBeUndefined();
+    const result = await tool.handler({ path: planPath }, { signal });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("no plan_approval record");
+    expect(todos.items).toEqual([]);
+  });
+});
+
+describe("plan severity gate", () => {
+  test("info and low issues pass with advisory reason codes", () => {
+    const { planPath } = setup();
+    writePlanIssues(planPath, [
+      { severity: "info", message: "nit" },
+      { severity: "low", message: "polish" },
+    ]);
+    expect(readPlanIssues(planPath).length).toBe(2);
+    expect(isBlockingSeverity("info")).toBe(false);
+    expect(isBlockingSeverity("low")).toBe(false);
+    const decision = evaluatePlanGate(planPath);
+    expect(decision.pass).toBe(true);
+    expect(["pass-clean", "pass-advisory-only"]).toContain(decision.reason);
+    expect(decision.blocking).toEqual([]);
+  });
+
+  test("high and critical issues fail with blocking reason code", () => {
+    const { planPath } = setup();
+    for (const severity of ["high", "critical"] as const) {
+      writePlanIssues(planPath, [{ severity, message: `${severity} problem` }]);
+      expect(isBlockingSeverity(severity)).toBe(true);
+      const decision = evaluatePlanGate(planPath);
+      expect(decision.pass).toBe(false);
+      expect(decision.reason).toBe("fail-blocking-severity");
+      expect(decision.blocking.map((b) => b.severity)).toEqual([severity]);
+    }
+  });
+
+  test("unresolved comments fail the gate even with no issues", () => {
+    const { planPath } = setup();
+    writeFileSync(
+      `${planPath}.comments.json`,
+      JSON.stringify({ comments: [{ text: "fix", resolved: false }] }),
+    );
+    const decision = evaluatePlanGate(planPath);
+    expect(decision.pass).toBe(false);
+    expect(decision.reason).toBe("fail-unresolved-comments");
+  });
+
+  test("execute_plan refuses a gate-blocked plan with the reason code", async () => {
+    const { planPath, tool, signal, todos } = setup();
+    writeApprovalRecord(planPath, { approvedBy: "tester" });
+    writePlanIssues(planPath, [{ severity: "high", message: "unsafe step" }]);
+    const result = await tool.handler({ path: planPath }, { signal });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("fail-blocking-severity");
+    expect(todos.items).toEqual([]);
+  });
+
+  test("execute_plan runs once blocking issues are cleared and plan is re-approved", async () => {
+    const { planPath, tool, signal, todos } = setup();
+    writeApprovalRecord(planPath, { approvedBy: "tester" });
+    writePlanIssues(planPath, [{ severity: "critical", message: "bad" }]);
+    expect((await tool.handler({ path: planPath }, { signal })).isError).toBe(true);
+    writePlanIssues(planPath, [{ severity: "low", message: "ok now" }]);
+    const result = await tool.handler({ path: planPath }, { signal });
+    expect(result.isError).toBeUndefined();
+    expect(todos.items.length).toBeGreaterThan(0);
+  });
+});
+
+describe("plan mode inspect stays read-only", () => {
+  test("inspect tools stay allowed and writes stay gated", () => {
+    for (const tool of ["read", "glob", "grep", "question", "plan_exit"]) {
+      expect(planModeAllowsTool(tool)).toBe(true);
+    }
+    expect(planModeAllowsTool("write", "src/app.ts")).toBe(false);
+    expect(planModeAllowsTool("edit", "src/app.ts")).toBe(false);
+    expect(planModeAllowsTool("bash")).toBe(false);
+    expect(planModeAllowsTool("execute_plan")).toBe(false);
+  });
+
+  test("plan writes stay inside plan dirs only", () => {
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md")).toBe(true);
+    expect(planModeAllowsTool("write", "src/app.ts")).toBe(false);
+    expect(planModeAllowsTool("edit", ".agency/plans/1-x.md")).toBe(true);
+    expect(planModeAllowsTool("edit", ".omo/plans/1-x.md")).toBe(true);
   });
 });

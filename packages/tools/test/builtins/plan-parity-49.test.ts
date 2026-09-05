@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
+import { planModeAllowsTool, planModeRejectReason, resolvePlanPath } from "../../src/builtins/plan-paths.ts";
 import {
   collapsePlanBlockForScrollback,
   createPlanExitTool,
@@ -64,11 +65,13 @@ describe("plan agent permission gate", () => {
       "*": "deny",
       ".opencode/plans/**": "allow",
       ".agency/plans/**": "allow",
+      ".omo/plans/**": "allow",
     });
     expect(perms.edit).toEqual({
       "*": "deny",
       ".opencode/plans/**": "allow",
       ".agency/plans/**": "allow",
+      ".omo/plans/**": "allow",
     });
     expect(perms.bash).toBe("deny");
   });
@@ -149,5 +152,59 @@ describe("non-interactive force-deny", () => {
     const result = await question.handler({ question: "proceed?", choices: ["Yes", "No"] }, { signal });
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("proceed?");
+  });
+});
+
+describe("plan dir collapse", () => {
+  test("resolvePlanPath redirects legacy and working paths to canonical", () => {
+    expect(resolvePlanPath(".agency/plans/1-x.md")).toBe(".opencode/plans/1-x.md");
+    expect(resolvePlanPath(".omo/plans/1-x.md")).toBe(".opencode/plans/1-x.md");
+    expect(resolvePlanPath(".opencode/plans/1-x.md")).toBe(".opencode/plans/1-x.md");
+  });
+
+  test("resolvePlanPath redirects nested absolute aliases", () => {
+    expect(resolvePlanPath("/root/.agency/plans/a.md")).toBe("/root/.opencode/plans/a.md");
+    expect(resolvePlanPath("C:/work/.omo/plans/a.md")).toBe("C:/work/.opencode/plans/a.md");
+  });
+
+  test("resolvePlanPath leaves non-plan paths alone", () => {
+    expect(resolvePlanPath("src/app.ts")).toBe("src/app.ts");
+  });
+
+  test("isPlanPath accepts the working spelling", () => {
+    expect(isPlanPath(".omo/plans/1-x.md")).toBe(true);
+  });
+
+  test("plan agent permissions allow the working dir", () => {
+    const perms = planAgentPermissions();
+    expect(perms.write).toMatchObject({ ".omo/plans/**": "allow" });
+    expect(perms.edit).toMatchObject({ ".omo/plans/**": "allow" });
+  });
+});
+
+describe("plan mode read-only guard", () => {
+  test("read-only inspection tools are allowed", () => {
+    for (const tool of ["read", "glob", "grep", "question", "plan_exit"]) {
+      expect(planModeAllowsTool(tool)).toBe(true);
+      expect(planModeRejectReason(tool)).toBeUndefined();
+    }
+  });
+
+  test("writes to non-plan paths are rejected", () => {
+    expect(planModeAllowsTool("write", "src/app.ts")).toBe(false);
+    expect(planModeAllowsTool("edit", "src/app.ts")).toBe(false);
+    expect(planModeRejectReason("write", "src/app.ts")).toContain("plan mode");
+  });
+
+  test("writes to plan paths in any spelling are allowed", () => {
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md")).toBe(true);
+    expect(planModeAllowsTool("edit", ".agency/plans/1-x.md")).toBe(true);
+    expect(planModeAllowsTool("write", ".omo/plans/1-x.md")).toBe(true);
+  });
+
+  test("state-changing tools without a plan target are rejected", () => {
+    expect(planModeAllowsTool("bash")).toBe(false);
+    expect(planModeAllowsTool("execute_plan")).toBe(false);
+    expect(planModeAllowsTool("write")).toBe(false);
   });
 });
