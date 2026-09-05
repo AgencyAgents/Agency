@@ -387,3 +387,87 @@ export async function fetchLiveIdsForFamily(
 async function fetchLiveIds(family: string, http: HttpClient, apiKey: string): Promise<string[]> {
   return fetchLiveIdsForFamily(family, http, apiKey);
 }
+
+// ---------------------------------------------------------------------------
+// Provider metadata: per-provider routing facts above the model catalog.
+// Downstream rotation and cheap-model routing read this, not ModelInfo.
+// ---------------------------------------------------------------------------
+
+/** Rate-limit hints for one provider; optional so unknowns stay partial. */
+export interface ProviderRateLimit {
+  readonly requestsPerMinute?: number;
+  readonly tokensPerMinute?: number;
+}
+
+/** Static per-provider facts for routing; plain strings keep it extensible. */
+export interface ProviderMetadata {
+  readonly id: string;
+  readonly family: string;
+  readonly contextWindow: number;
+  readonly costTier: string;
+  readonly authKinds: readonly string[];
+  readonly rateLimit?: ProviderRateLimit;
+}
+
+/** Thrown by getProviderMetadata for ids with no metadata record. */
+export class UnknownProviderError extends Error {
+  readonly providerId: string;
+  constructor(providerId: string) {
+    super(`Unknown provider: ${providerId}`);
+    this.name = "UnknownProviderError";
+    this.providerId = providerId;
+  }
+}
+
+/** Hand-tuned per-provider facts; mirrors the families in BUILTIN_MODELS. */
+export const BUILTIN_PROVIDER_METADATA: readonly ProviderMetadata[] = [
+  {
+    id: "anthropic",
+    family: "anthropic",
+    contextWindow: 200_000,
+    costTier: "premium",
+    authKinds: ["api-key", "oauth"],
+    rateLimit: { requestsPerMinute: 60 },
+  },
+  {
+    id: "openai",
+    family: "openai",
+    contextWindow: 400_000,
+    costTier: "standard",
+    authKinds: ["api-key", "oauth"],
+    rateLimit: { requestsPerMinute: 500 },
+  },
+  {
+    id: "google",
+    family: "google",
+    contextWindow: 1_000_000,
+    costTier: "standard",
+    authKinds: ["api-key", "oauth"],
+    rateLimit: { requestsPerMinute: 300 },
+  },
+  {
+    id: "deepseek",
+    family: "deepseek",
+    contextWindow: 128_000,
+    costTier: "cheap",
+    authKinds: ["api-key"],
+    rateLimit: { requestsPerMinute: 200 },
+  },
+  {
+    id: "glm",
+    family: "glm",
+    contextWindow: 128_000,
+    costTier: "cheap",
+    authKinds: ["api-key"],
+    rateLimit: { requestsPerMinute: 200 },
+  },
+];
+
+const providerMetadataById = new Map(BUILTIN_PROVIDER_METADATA.map((m) => [m.id, m]));
+
+/** Lookup for one provider id; throws UnknownProviderError when absent. */
+export function getProviderMetadata(id: string): ProviderMetadata {
+  const meta = providerMetadataById.get(id);
+  if (!meta) throw new UnknownProviderError(id);
+  return meta;
+}

@@ -21,7 +21,9 @@ import {
   type KeychainBackend,
   OAUTH_PROVIDERS,
   resolveApiKey,
+  runDeviceFlow,
   runOAuthFlow,
+  supportsDeviceFlow,
 } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { Message } from "@agency/schema";
@@ -60,6 +62,8 @@ Commands:
    auth login <provider> --oauth
                         OAuth browser flow for anthropic, openai, google, github-copilot
                         (needs provider.<id>.oauth.clientId in config)
+   auth login <provider> --device
+                        RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
    plugin install <dir> [--overwrite]  Install a Claude Code / Codex plugin
    plugin list              Show installed skills and plugin modules
@@ -94,6 +98,7 @@ export interface ParsedArgv {
   provider: string | undefined;
   print: string | undefined;
   oauth: boolean;
+  device: boolean;
   overwrite: boolean;
   images: string[];
   continueLast: boolean;
@@ -124,6 +129,8 @@ export interface EntrypointDeps {
   cwd?: string;
   /** Overrides the OAuth browser flow for `auth login --oauth` (tests). */
   oauthFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
+  /** Overrides the device flow for `auth login --device` (tests). */
+  deviceFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
   /** Event bus wired into the session-backed store, so compaction of a real
    *  interactive session emits session.compacted instead of firing into the
    *  void. Defaults to a fresh bus per invocation. */
@@ -154,6 +161,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     provider: undefined,
     print: undefined,
     oauth: false,
+    device: false,
     images: [],
     overwrite: false,
     continueLast: false,
@@ -198,6 +206,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--oauth":
         parsed.oauth = true;
+        break;
+      case "--device":
+        parsed.device = true;
         break;
       case "--workspace":
         parsed.workspace = value();
@@ -677,6 +688,32 @@ async function authCmd(
     if (provider === undefined) {
       err(t("cli.error.auth_login_usage"));
       return 1;
+    }
+    if (parsed.device) {
+      if (!OAUTH_PROVIDERS[provider]) {
+        err(t("cli.error.auth_oauth_unsupported", { provider }));
+        return 1;
+      }
+      if (!supportsDeviceFlow(provider)) {
+        err(t("cli.error.auth_oauth_unsupported", { provider }));
+        return 1;
+      }
+      const config = loadConfig({ globalDir: deps.configDir, env });
+      const oauth = config.provider[provider]?.oauth;
+      try {
+        if (deps.deviceFlow) await deps.deviceFlow(provider, keychain);
+        else
+          await runDeviceFlow(provider, keychain, {
+            clientId: oauth?.clientId,
+            baseUrl: oauth?.baseUrl,
+            onUserCode: (info) => out(`${info.userCode} ${info.verificationUri}`),
+          });
+      } catch (error) {
+        err(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+      out(t("cli.auth.oauth_stored", { provider, backend: keychain.name }));
+      return 0;
     }
     if (parsed.oauth) {
       if (!OAUTH_PROVIDERS[provider]) {

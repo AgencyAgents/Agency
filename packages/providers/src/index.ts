@@ -5,6 +5,7 @@ export { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible.ts";
 export * from "./auth/index.ts";
 export * from "./catalog/index.ts";
 export * from "./catalog-cache.ts";
+export * from "./cheap-router.ts";
 export * from "./effort-mapping.ts";
 export * from "./presets.ts";
 export * from "./registry.ts";

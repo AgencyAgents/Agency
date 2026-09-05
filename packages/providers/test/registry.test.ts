@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { HttpClient } from "@agency/net";
-import { ModelRegistry } from "../src/registry.ts";
+import { getProviderMetadata, ModelRegistry, UnknownProviderError } from "../src/registry.ts";
 
 describe("ModelRegistry", () => {
   test("lists the built-in catalog, optionally filtered by family", () => {
@@ -52,5 +52,26 @@ describe("ModelRegistry", () => {
 
     expect(registry.get("gemini-3-flash")).toBeDefined();
     expect(registry.get("models/gemini-3-flash")).toBeUndefined();
+  });
+});
+
+describe("provider metadata", () => {
+  test("lookup returns the typed record for a known provider", () => {
+    const meta = getProviderMetadata("anthropic");
+    expect(meta.id).toBe("anthropic");
+    expect(meta.family).toBe("anthropic");
+    expect(meta.authKinds).toContain("api-key");
+  });
+
+  test("unknown provider id throws an error naming the id", () => {
+    expect(() => getProviderMetadata("not-a-real-provider")).toThrow(UnknownProviderError);
+    expect(() => getProviderMetadata("not-a-real-provider")).toThrow("not-a-real-provider");
+  });
+
+  test("records carry window and cost fields for routing", () => {
+    const meta = getProviderMetadata("openai");
+    expect(meta.contextWindow).toBeGreaterThan(0);
+    expect(typeof meta.costTier).toBe("string");
+    expect(meta.costTier.length).toBeGreaterThan(0);
   });
 });

@@ -16,6 +16,8 @@ export interface OAuthProviderConfig {
   clientId: string;
   scopes: string[];
   redirectPath?: string;
+  /** RFC 8628 device authorization endpoint. Presence opts the provider in. */
+  deviceAuthorizationUrl?: string;
   /** Optional base URL override. When set, authorizeUrl and tokenUrl are derived from it
    *  by appending /authorize and /token respectively. Useful for self-hosted gateways
    *  or OpenAI-compatible endpoints with custom OAuth paths. */
@@ -44,6 +46,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
   "github-copilot": {
     authorizeUrl: "https://github.com/login/oauth/authorize",
     tokenUrl: "https://github.com/login/oauth/access_token",
+    deviceAuthorizationUrl: "https://github.com/login/device/code",
     clientId: "agency-copilot-oauth",
     scopes: ["copilot"],
   },
@@ -401,4 +404,176 @@ export async function runOAuthFlow(
   } finally {
     close();
   }
+}
+
+export interface DeviceAuthorization {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export interface DeviceFlowCallbacks {
+  clientId?: string;
+  baseUrl?: string;
+  httpFetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  onUserCode?: (info: { userCode: string; verificationUri: string }) => void;
+}
+
+// Device flow opt-in: a provider participates only when configured.
+export function supportsDeviceFlow(provider: string, overrides?: ProviderOAuthOverrides): boolean {
+  const base = OAUTH_PROVIDERS[provider];
+  if (!base) return false;
+  return resolveProviderOAuthConfig(provider, overrides).deviceAuthorizationUrl !== undefined;
+}
+
+const DEFAULT_DEVICE_INTERVAL_S = 5;
+const SLOW_DOWN_BACKOFF_S = 5;
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Starts the RFC 8628 device authorization on the provider endpoint.
+export async function requestDeviceAuthorization(
+  provider: string,
+  httpFetch: typeof fetch = fetch,
+  overrides?: ProviderOAuthOverrides,
+): Promise<DeviceAuthorization> {
+  const resolved = resolveProviderOAuthConfig(provider, overrides);
+  assertClientIdConfigured(resolved, provider);
+  if (!resolved.deviceAuthorizationUrl) {
+    throw new AgencyError(ErrorCode.AUTH, `Device flow not supported for provider "${provider}"`, {
+      source: "oauth",
+    });
+  }
+  const res = await httpFetch(resolved.deviceAuthorizationUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ client_id: resolved.clientId, scope: resolved.scopes.join(" ") }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new AgencyError(ErrorCode.AUTH, `Device authorization failed: ${res.status} ${text}`, {
+      source: "oauth",
+    });
+  }
+  const body = (await res.json()) as {
+    device_code?: string;
+    user_code?: string;
+    verification_uri?: string;
+    verification_uri_complete?: string;
+    expires_in?: number;
+    interval?: number;
+  };
+  if (!body.device_code || !body.user_code || !body.verification_uri) {
+    throw new AgencyError(ErrorCode.AUTH, "Device authorization returned an incomplete response", {
+      source: "oauth",
+    });
+  }
+  return {
+    deviceCode: body.device_code,
+    userCode: body.user_code,
+    verificationUri: body.verification_uri,
+    verificationUriComplete: body.verification_uri_complete,
+    expiresIn: body.expires_in ?? 1800,
+    interval: body.interval ?? DEFAULT_DEVICE_INTERVAL_S,
+  };
+}
+
+// Polls the token endpoint until approval, denial, or expiry.
+export async function pollDeviceToken(
+  provider: string,
+  device: DeviceAuthorization,
+  httpFetch: typeof fetch = fetch,
+  options: { clientId?: string; baseUrl?: string; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<OAuthToken> {
+  const resolved = resolveProviderOAuthConfig(provider, {
+    clientId: options.clientId,
+    baseUrl: options.baseUrl,
+  });
+  assertClientIdConfigured(resolved, provider);
+  const sleep = options.sleep ?? defaultSleep;
+  const deadline = Date.now() + device.expiresIn * 1000;
+  let intervalS = device.interval > 0 ? device.interval : DEFAULT_DEVICE_INTERVAL_S;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      throw new AgencyError(ErrorCode.AUTH, `Device authorization expired for provider "${provider}"`, {
+        source: "oauth",
+      });
+    }
+    const res = await httpFetch(resolved.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        client_id: resolved.clientId,
+        device_code: device.deviceCode,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      error?: string;
+    };
+    if (body.access_token) {
+      return {
+        type: "oauth",
+        accessToken: body.access_token,
+        refreshToken: body.refresh_token ?? "",
+        expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
+      };
+    }
+    if (body.error === "authorization_pending") {
+      await sleep(intervalS * 1000);
+      continue;
+    }
+    if (body.error === "slow_down") {
+      intervalS += SLOW_DOWN_BACKOFF_S;
+      await sleep(intervalS * 1000);
+      continue;
+    }
+    if (body.error === "access_denied") {
+      throw new AgencyError(ErrorCode.AUTH, `Device authorization denied for provider "${provider}"`, {
+        source: "oauth",
+      });
+    }
+    if (body.error === "expired_token") {
+      throw new AgencyError(ErrorCode.AUTH, `Device code expired for provider "${provider}"`, {
+        source: "oauth",
+      });
+    }
+    throw new AgencyError(
+      ErrorCode.AUTH,
+      `Device poll failed for provider "${provider}": ${res.status} ${body.error ?? res.statusText}`,
+      { source: "oauth" },
+    );
+  }
+}
+
+// Runs request, user-code display, poll, then stores in the oauth slot.
+export async function runDeviceFlow(
+  provider: string,
+  keychain: KeychainBackend,
+  options: DeviceFlowCallbacks = {},
+): Promise<OAuthToken> {
+  const device = await requestDeviceAuthorization(provider, options.httpFetch, {
+    clientId: options.clientId,
+    baseUrl: options.baseUrl,
+  });
+  options.onUserCode?.({
+    userCode: device.userCode,
+    verificationUri: device.verificationUriComplete ?? device.verificationUri,
+  });
+  const token = await pollDeviceToken(provider, device, options.httpFetch, {
+    clientId: options.clientId,
+    baseUrl: options.baseUrl,
+    sleep: options.sleep,
+  });
+  await storeOAuthToken(keychain, provider, token);
+  return token;
 }
