@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connectToDaemon } from "../src/client.ts";
+import { connectToDaemon, type DaemonClient } from "../src/client.ts";
 import { ensureDaemon } from "../src/instance.ts";
-import { startDaemonServer } from "../src/server.ts";
+import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -55,41 +55,56 @@ describe("concurrent RPC", () => {
     const instanceDir = tmp("agency-concur-inst-");
     const ws = tmp("agency-concur-ws-");
     let spawnCount = 0;
+    // Tracked so the test closes the daemon deterministically instead of
+    // leaving it listening on a timer: a stray server + its sockets keep
+    // the bun process alive after the summary on Windows CI.
+    const spawned: DaemonServer[] = [];
+    const spawnSettled: Promise<void>[] = [];
     const spawn = (file: string) => {
       spawnCount += 1;
       // Simulate daemon start: write instance file with a random port server
       // We'll use startDaemonServer directly and write file via helper.
-      void (async () => {
-        const s = await startDaemonServer({
-          token: "tok",
-          handlers: {
-            async ping() {
-              return { ok: true };
+      spawnSettled.push(
+        (async () => {
+          const s = await startDaemonServer({
+            token: "tok",
+            handlers: {
+              async ping() {
+                return { ok: true };
+              },
             },
-          },
-        });
-        const { writeInstanceFile } = await import("../src/instance.ts");
-        writeInstanceFile(file, {
-          port: s.port,
-          pid: process.pid,
-          startedAt: new Date().toISOString(),
-          version: (await import("../src/protocol.ts")).PROTOCOL_VERSION,
-          token: "tok",
-        });
-        // Keep server open for test duration; close after
-        setTimeout(() => void s.close(), 5000);
-      })();
+          });
+          spawned.push(s);
+          const { writeInstanceFile } = await import("../src/instance.ts");
+          writeInstanceFile(file, {
+            port: s.port,
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+            version: (await import("../src/protocol.ts")).PROTOCOL_VERSION,
+            token: "tok",
+          });
+        })(),
+      );
     };
 
-    const results = await Promise.all([
-      ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
-      ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
-      ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
-    ]);
-    const ports = results.map((r) => r.port);
-    expect(new Set(ports).size).toBe(1);
-    expect(spawnCount).toBeGreaterThanOrEqual(1);
-    expect(spawnCount).toBeLessThanOrEqual(3);
-    for (const r of results) await r.client.close();
+    const pendingClients: DaemonClient[] = [];
+    try {
+      const results = await Promise.all([
+        ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
+        ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
+        ensureDaemon({ workspaceRoot: ws, instanceDir, spawnDaemon: spawn }),
+      ]);
+      for (const r of results) pendingClients.push(r.client);
+      const ports = results.map((r) => r.port);
+      expect(new Set(ports).size).toBe(1);
+      expect(spawnCount).toBeGreaterThanOrEqual(1);
+      expect(spawnCount).toBeLessThanOrEqual(3);
+    } finally {
+      await Promise.all(spawnSettled);
+      // Servers before clients: destroy while client sockets are fully
+      // open (same Windows TCP teardown race as server-client.test.ts).
+      for (const s of spawned.splice(0)) await s.close();
+      for (const c of pendingClients.splice(0)) await c.close();
+    }
   }, 15000);
 });

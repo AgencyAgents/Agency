@@ -67,12 +67,21 @@ interface ClientConnection {
  */
 export async function startDaemonServer(options: DaemonServerOptions): Promise<DaemonServer> {
   const clients = new Map<string, ClientConnection>();
+  // Every accepted socket, handshaked or not: close() must destroy these
+  // too, otherwise a peer that connected but never sent hello wedges
+  // server.close() (node:net waits for untracked connections to end).
+  const allSockets = new Set<Socket>();
+  // Set by close(): requests arriving after this are dropped rather than
+  // dispatched, so shutdown never flushes a response the caller must not
+  // see (a dead daemon rejects in-flight calls instead of answering them).
+  let closing = false;
 
   function setClientCount() {
     options.onClientCount?.(clients.size);
   }
 
   const server = createServer((socket) => {
+    allSockets.add(socket);
     const conn: ClientConnection = {
       id: randomUUID(),
       socket,
@@ -115,6 +124,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
 
         switch (message.type) {
           case "request": {
+            if (closing) break; // shutdown in progress: never answer again
             const handler = options.handlers[message.method];
             if (!handler) {
               conn.writer.write(
@@ -168,6 +178,7 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
     });
 
     socket.on("close", () => {
+      allSockets.delete(socket);
       if (clients.delete(conn.id)) {
         setClientCount();
         options.onClientDisconnect?.(conn.id);
@@ -199,7 +210,16 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
       }
     },
     close() {
-      for (const conn of clients.values()) conn.socket.destroy();
+      // Destroy synchronously: a dead daemon rejects in-flight calls
+      // instead of answering them, so teardown must land in the same tick
+      // as the call — any yield lets a buffered response flush first.
+      // (Destroying while the peer's graceful FIN is mid-flight races
+      // Bun's Windows TCP teardown, so callers close the server before
+      // their clients, never after.)
+      closing = true;
+      for (const socket of allSockets) {
+        if (!socket.destroyed) socket.destroy();
+      }
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

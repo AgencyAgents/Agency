@@ -16,8 +16,13 @@ import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
 const servers: DaemonServer[] = [];
 const dirs: string[] = [];
+// Spawn completions, drained in afterEach before closing servers: the
+// fake daemon resolves asynchronously, so awaiting these guarantees no
+// server lands in `servers` after the splice and leaks a live listener.
+const pendingSpawns: Promise<DaemonServer>[] = [];
 
 afterEach(async () => {
+  await Promise.all(pendingSpawns.splice(0));
   for (const server of servers.splice(0)) await server.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -29,16 +34,19 @@ function tempDir(): string {
 }
 
 function fakeSpawnDaemon(instanceFile: string) {
-  startDaemonServer({ handlers: { ping: async () => "pong" } }).then((server) => {
-    servers.push(server);
-    writeInstanceFile(instanceFile, {
-      port: server.port,
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      version: PROTOCOL_VERSION,
-      token: newInstanceToken(),
-    });
-  });
+  pendingSpawns.push(
+    startDaemonServer({ handlers: { ping: async () => "pong" } }).then((server) => {
+      servers.push(server);
+      writeInstanceFile(instanceFile, {
+        port: server.port,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        version: PROTOCOL_VERSION,
+        token: newInstanceToken(),
+      });
+      return server;
+    }),
+  );
 }
 
 describe("daemon lifecycle constants (item 42)", () => {

@@ -283,11 +283,28 @@ export async function connectToDaemon(
         closedByClient = true;
         clearPing();
         writer?.reset();
-        if (!socket || socket.destroyed) {
+        const sock = socket;
+        if (!sock || sock.destroyed) {
           resolve();
           return;
         }
-        socket.end(() => resolve());
+        // Resolve on the first of graceful-FIN ack or socket teardown: a
+        // peer that already RST the connection never answers FIN, and on
+        // Windows the end() callback alone can then pend forever — wedging
+        // test afterEach hooks and the whole process with it.
+        let done = false;
+        const finish = () => {
+          if (!done) {
+            done = true;
+            resolve();
+          }
+        };
+        sock.once("close", finish);
+        try {
+          sock.end(finish);
+        } catch {
+          finish();
+        }
       });
     },
   };

@@ -2,15 +2,25 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DaemonClient } from "../src/client.ts";
 import { ensureDaemon, hashWorkspaceRoot, writeInstanceFile } from "../src/instance.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
 const servers: DaemonServer[] = [];
+const clients: DaemonClient[] = [];
 const dirs: string[] = [];
+// Spawn completions, drained in afterEach before closing servers: the
+// fake daemon resolves asynchronously, so awaiting these guarantees no
+// server lands in `servers` after the splice and leaks a live listener.
+const pendingSpawns: Promise<DaemonServer>[] = [];
 
 afterEach(async () => {
+  // Servers before clients (same Windows TCP teardown race as
+  // server-client.test.ts): destroy while client sockets are fully open.
+  await Promise.all(pendingSpawns.splice(0));
   for (const server of servers.splice(0)) await server.close();
+  for (const client of clients.splice(0)) await client.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -23,15 +33,18 @@ function tempDir(): string {
 /** Stands in for "spawn a real OS process": starts an in-process daemon and
  *  writes its own instance file, exactly as a real spawned daemon would. */
 function fakeSpawnDaemon(instanceFile: string) {
-  startDaemonServer({ handlers: { ping: async () => "pong" } }).then((server) => {
-    servers.push(server);
-    writeInstanceFile(instanceFile, {
-      port: server.port,
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      version: PROTOCOL_VERSION,
-    });
-  });
+  pendingSpawns.push(
+    startDaemonServer({ handlers: { ping: async () => "pong" } }).then((server) => {
+      servers.push(server);
+      writeInstanceFile(instanceFile, {
+        port: server.port,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        version: PROTOCOL_VERSION,
+      });
+      return server;
+    }),
+  );
 }
 
 describe("hashWorkspaceRoot", () => {
@@ -51,6 +64,7 @@ describe("ensureDaemon", () => {
       instanceDir: tempDir(),
       spawnDaemon: fakeSpawnDaemon,
     });
+    clients.push(client);
     expect(await client.call("ping", {})).toBe("pong");
   });
 
@@ -73,6 +87,7 @@ describe("ensureDaemon", () => {
         spawnCalled = true;
       },
     });
+    clients.push(client);
 
     expect(spawnCalled).toBe(false);
     expect(await client.call("ping", {})).toBe("already-running");
@@ -100,6 +115,7 @@ describe("ensureDaemon", () => {
         fakeSpawnDaemon(file);
       },
     });
+    clients.push(client);
 
     expect(spawnCalled).toBe(true);
     expect(await client.call("ping", {})).toBe("pong");
@@ -109,6 +125,7 @@ describe("ensureDaemon", () => {
     const instanceDir = tempDir();
     const a = await ensureDaemon({ workspaceRoot: "/repo/one", instanceDir, spawnDaemon: fakeSpawnDaemon });
     const b = await ensureDaemon({ workspaceRoot: "/repo/two", instanceDir, spawnDaemon: fakeSpawnDaemon });
+    clients.push(a.client, b.client);
 
     expect(a.port).not.toBe(b.port);
     expect(await a.client.call("ping", {})).toBe("pong");

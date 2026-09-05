@@ -137,12 +137,15 @@ describe("POST /rpc", () => {
 
     const badJson = await rpc(server, "{not json");
     expect(badJson.status).toBe(400);
+    await badJson.text();
 
     const notAnObject = await rpc(server, [1, 2, 3]);
     expect(notAnObject.status).toBe(400);
+    await notAnObject.text();
 
     const missingMethod = await rpc(server, { id: "x", params: {} });
     expect(missingMethod.status).toBe(400);
+    await missingMethod.text();
   });
 
   test("GET /rpc is a 405 with an Allow header", async () => {
@@ -152,6 +155,7 @@ describe("POST /rpc", () => {
     const res = await fetch(`${base(server)}/rpc`);
     expect(res.status).toBe(405);
     expect(res.headers.get("Allow")).toBe("POST");
+    await res.text();
   });
 });
 
@@ -285,12 +289,15 @@ describe("GET /events (SSE)", () => {
 
   test("subscriberCount tracks concurrent subscriptions", async () => {
     const server = startHttpGateway({ handlers: {} });
+    servers.push(server);
     const resA = await fetch(`${base(server)}/events?stream=turn.a`);
-    await fetch(`${base(server)}/events?stream=turn.b`);
+    const resB = await fetch(`${base(server)}/events?stream=turn.b`);
     await waitFor(() => server.subscriberCount === 2);
 
     await resA.body!.cancel();
     await waitFor(() => server.subscriberCount === 1);
+    await resB.body!.cancel();
+    await waitFor(() => server.subscriberCount === 0);
   });
 });
 
@@ -310,16 +317,20 @@ describe("auth", () => {
     const noHeader = await rpc(server, { id: "req-1", method: "ping" });
     expect(noHeader.status).toBe(401);
     expect(noHeader.headers.get("WWW-Authenticate")).toBe("Bearer");
+    await noHeader.text();
 
     const wrongToken = await rpc(server, { id: "req-1", method: "ping" }, { Authorization: "Bearer nope" });
     expect(wrongToken.status).toBe(401);
+    await wrongToken.text();
 
     // Health is always open — clients probe liveness without a token.
     const health = await fetch(`${base(server)}/health`);
     expect(health.status).toBe(200);
+    await health.text();
 
     const events = await fetch(`${base(server)}/events?stream=turn.abc`);
     expect(events.status).toBe(401);
+    await events.text();
   });
 
   test("the correct bearer token is accepted on every endpoint", async () => {
@@ -354,6 +365,7 @@ describe("auth", () => {
 
     const wrong = await fetch(`${base(server)}/events?stream=turn.abc&token=nope`);
     expect(wrong.status).toBe(401);
+    await wrong.text();
   });
 
   test("CORS preflight is answered before auth", async () => {
@@ -453,6 +465,7 @@ describe("GET /sync-events (SSE replay)", () => {
 
     const noAuth = await fetch(`${base(server)}/sync-events?sessionId=test`);
     expect(noAuth.status).toBe(401);
+    await noAuth.text();
 
     const withAuth = await fetch(`${base(server)}/sync-events?sessionId=test&token=secret`);
     expect(withAuth.status).toBe(200);
@@ -466,5 +479,6 @@ describe("GET /sync-events (SSE replay)", () => {
     const res = await fetch(`${base(server)}/sync-events`, { method: "POST" });
     expect(res.status).toBe(405);
     expect(res.headers.get("Allow")).toBe("GET");
+    await res.text();
   });
 });

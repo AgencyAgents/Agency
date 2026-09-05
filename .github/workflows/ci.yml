@@ -46,7 +46,17 @@ jobs:
           bun test packages/tools
           bun test packages/core
           bun test packages/cli
-          bun test packages/rpc scripts
+      # The rpc/scripts shard runs one bun process per test file: a leaked
+      # socket/timer in any single file used to wedge the whole shard on
+      # Windows (bun never exits after the summary). The runner below gives
+      # every file a fresh process with a 60s wall-clock timeout and
+      # retries ONLY a Bun runtime crash ("Bun has crashed") or a timeout
+      # — genuine assertion failures fail fast. Bun 1.4.0 segfaults
+      # intermittently in its Windows TCP teardown when a test file's
+      # socket churn collides with process exit (heap-layout dependent);
+      # revisit when the Bun pin moves past the upstream fix.
+      - name: Test (rpc shard, per-file)
+        run: bun scripts/run-test-file.ts --timeout-ms 60000 --retries 2 packages/rpc/test scripts
 
   perf:
     name: perf budgets
