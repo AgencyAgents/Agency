@@ -45,7 +45,8 @@ jobs:
           bun test packages/providers
           bun test packages/tools
           bun test packages/core
-          bun test packages/cli packages/rpc scripts
+          bun test packages/cli
+          bun test packages/rpc scripts
 
   perf:
     name: perf budgets
