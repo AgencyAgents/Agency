@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import {
   type Config,
   dataDir,
+  EventBus,
   getSessionTitle,
   loadConfig,
   parseModelRef,
@@ -46,7 +47,8 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
-  session list             List sessions for this workspace (id, created, entries)
+   session list [query]     List sessions for this workspace (id, title, created, entries);
+                        optional query filters by title (id fallback), case-insensitive
   session show <id>        Show session details
   session rename <id> <title>  Rename a session
   session fork <id>        Fork (clone) a session under a new id
@@ -117,6 +119,10 @@ export interface EntrypointDeps {
   cwd?: string;
   /** Overrides the OAuth browser flow for `auth login --oauth` (tests). */
   oauthFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
+  /** Event bus wired into the session-backed store, so compaction of a real
+   *  interactive session emits session.compacted instead of firing into the
+   *  void. Defaults to a fresh bus per invocation. */
+  bus?: EventBus;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -395,7 +401,9 @@ async function runPrintMode(
         };
 
   if (parsed.continueLast || parsed.session !== undefined) {
-    const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir);
+    const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
+      bus: deps.bus ?? new EventBus(),
+    });
     let sessionId = parsed.session;
     if (sessionId === undefined) {
       sessionId = latestSessionId(store);
@@ -489,6 +497,7 @@ async function runSessionCmd(
   );
 
   if (parsed.subcommand === "list") {
+    const query = parsed.args[0]?.toLowerCase();
     const rows = store
       .list()
       .map((id) => {
@@ -496,6 +505,12 @@ async function runSessionCmd(
         const title = getSessionTitle(entries);
         return { id, title: title ?? null, createdAt: entries[0]?.createdAt ?? "", entries: entries.length };
       })
+      .filter(
+        (row) =>
+          query === undefined ||
+          row.id.toLowerCase().includes(query) ||
+          (row.title?.toLowerCase().includes(query) ?? false),
+      )
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     if (parsed.format === "json") out(JSON.stringify(rows, null, 2));
     else if (rows.length === 0) out(t("tui.browser.empty"));

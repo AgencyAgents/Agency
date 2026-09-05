@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 function tempRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "agency-tools-e2e-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agency-tools-e2e-")));
   dirs.push(dir);
   return dir;
 }

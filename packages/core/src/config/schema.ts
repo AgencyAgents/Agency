@@ -241,11 +241,129 @@ export interface AgentConfig {
 }
 
 /**
- * Default roster shipped with every fresh config — empty until the user
- * explicitly adds agents with provider, model, and effort. No hardcoded
- * defaults: every agent is a clean slate.
+ * Starter roster shipped with every fresh config: 8 named roles, each an
+ * ordinary `{role, provider, model, effort}` entry additionally carrying the
+ * `permissions` map the Phase 2 gate reads per agent (unlisted tools are
+ * denied, so each map is the role's full tool allowlist). Handles double as
+ * role names. Leader is enabled, satisfying the schema's leader requirement.
  */
-export const DEFAULT_ROSTER: Record<string, AgentConfig> = {};
+export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
+  leader: {
+    role: "leader",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      write: "allow",
+      edit: "allow",
+      bash: "allow",
+      glob: "allow",
+      grep: "allow",
+      fetch: "allow",
+      websearch: "allow",
+      dispatch: "allow",
+      task: "allow",
+      todo_read: "allow",
+      todo_write: "allow",
+      process_output: "allow",
+      process_list: "allow",
+      process_kill: "allow",
+    },
+  },
+  planner: {
+    role: "planner",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      write: { "*": "deny", ".agency/plans/**": "allow" },
+      edit: { "*": "deny", ".agency/plans/**": "allow" },
+    },
+  },
+  "plan-reviewer": {
+    role: "plan-reviewer",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+    },
+  },
+  coder: {
+    role: "coder",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      write: { "*": "allow", ".agency/plans/**": "deny" },
+      edit: { "*": "allow", ".agency/plans/**": "deny" },
+      bash: "allow",
+    },
+  },
+  executor: {
+    role: "executor",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      bash: "allow",
+      process_output: "allow",
+      process_list: "allow",
+      process_kill: "allow",
+    },
+  },
+  explorer: {
+    role: "explorer",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "low",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+    },
+  },
+  researcher: {
+    role: "researcher",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      fetch: "allow",
+      websearch: "allow",
+    },
+  },
+  "code-reviewer": {
+    role: "code-reviewer",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      bash: "allow",
+    },
+  },
+};
 
 export const defaultConfig: Config = ConfigSchema.parse({
   schemaVersion: CONFIG_SCHEMA_VERSION,

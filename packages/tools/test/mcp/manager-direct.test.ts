@@ -277,3 +277,50 @@ describe("mcpIdentityFor", () => {
     expect(mcpIdentityFor("srv3")).toEqual({ type: "agent", name: "main" });
   });
 });
+
+describe("mcp identity threading to the wire", () => {
+  test("tools/call params carry the calling agent's handle per call, not the startup identity", async () => {
+    const seenParams: Record<string, unknown>[] = [];
+    let handler: ((msg: Record<string, unknown>) => void) | undefined;
+    const transport: McpTransport = {
+      async start() {},
+      async send(message: Record<string, unknown>) {
+        const id = message.id as number;
+        if (message.method === "initialize") handler?.({ jsonrpc: "2.0", id, result: {} });
+        else if (message.method === "tools/list")
+          handler?.({ jsonrpc: "2.0", id, result: { tools: [{ name: "t" }] } });
+        else if (message.method === "tools/call") {
+          seenParams.push(message.params as Record<string, unknown>);
+          handler?.({ jsonrpc: "2.0", id, result: { content: "ok" } });
+        }
+      },
+      onMessage(h) {
+        handler = h;
+      },
+      onClose() {},
+      async close() {},
+    };
+    const mgr = await startMcpServers({
+      servers: { srv: { command: "fake" } },
+      capabilities: FULL_CAPABILITIES,
+      transportFor: () => transport,
+    });
+    expect(mgr.tools.length).toBe(1);
+    const tool = mgr.tools[0]!;
+    await tool.handler({} as Record<string, unknown>, {
+      signal: new AbortController().signal,
+      agentHandle: "alice",
+    });
+    await tool.handler({} as Record<string, unknown>, {
+      signal: new AbortController().signal,
+      agentHandle: "bob",
+    });
+    expect(seenParams.length).toBe(2);
+    const callers = seenParams.map((p) => (p._meta as Record<string, unknown>)?.caller);
+    expect(callers).toEqual([
+      { type: "agent", name: "alice" },
+      { type: "agent", name: "bob" },
+    ]);
+    await mgr.dispose();
+  });
+});

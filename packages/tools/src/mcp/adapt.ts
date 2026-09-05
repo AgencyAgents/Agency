@@ -11,7 +11,8 @@ export interface McpToolDefinition {
 export interface AdaptOptions {
   serverName: string;
   riskTier: "safe" | "moderate" | "dangerous";
-  identity: CallerIdentity;
+  /** Resolves the caller identity per call from the acting agent's handle. */
+  identityFor: (handle?: string) => CallerIdentity;
   capabilities: Capabilities;
 }
 
@@ -53,7 +54,8 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
     renderCall: (input) => `${options.serverName}.${def.name} ${JSON.stringify(input)}`,
     renderResult: (result) => result.content,
     async handler(input, ctx) {
-      const result = await client.callTool(def.name, input, ctx.signal);
+      const caller = options.identityFor(ctx.agentHandle);
+      const result = await client.callTool(def.name, input, ctx.signal, { identity: caller });
       return { content: renderMcpContent(result.content), isError: Boolean(result.isError) };
     },
   };

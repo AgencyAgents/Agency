@@ -24,16 +24,16 @@ export function isPlanWorkflowPhase(value: string): value is PlanWorkflowPhase {
   return (PLAN_WORKFLOW_PHASES as readonly string[]).includes(value);
 }
 
-export class SessionReminders {
-  static apply(composed: ComposedPrompt, reminders: readonly SystemReminder[]): ComposedPrompt {
+export const SessionReminders = {
+  apply(composed: ComposedPrompt, reminders: readonly SystemReminder[]): ComposedPrompt {
     return withSystemReminders(composed, reminders);
-  }
+  },
 
-  static planWorkflow(phase: PlanWorkflowPhase): SystemReminder {
+  planWorkflow(phase: PlanWorkflowPhase): SystemReminder {
     return planWorkflowReminder(phase);
-  }
+  },
 
-  static allPlanPhases(): SystemReminder[] {
+  allPlanPhases(): SystemReminder[] {
     return allPlanWorkflowReminders();
-  }
-}
+  },
+};

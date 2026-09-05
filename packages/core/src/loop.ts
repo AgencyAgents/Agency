@@ -20,6 +20,8 @@ export type ToolHandler = (
     turnId?: string;
     cwd?: string;
     sessionId?: string;
+    /** Agent handle active for this call, derived from the turn identity. */
+    agentHandle?: string;
     toolCallId?: string;
     requestApproval?: RequestApproval;
     onProgress?: (message: string) => void;
@@ -568,6 +570,7 @@ async function executeOne(
     turnId: options.turnId,
     cwd: options.cwd,
     sessionId: options.sessionId,
+    agentHandle: options.identity.type === "agent" ? options.identity.name : undefined,
     toolCallId: call.id,
     requestApproval: options.requestApproval,
     taskDepth: options.taskDepth,

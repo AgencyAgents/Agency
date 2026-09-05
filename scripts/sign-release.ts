@@ -3,6 +3,7 @@
  *
  * Usage: bun scripts/sign-release.ts --file <artifact> [--key <base64-private-key>]
  *        bun scripts/sign-release.ts --file <artifact> --print-public-key
+ *        bun scripts/sign-release.ts --derive-public-key [--key <base64-private-key>]
  *
  * The private key is read from (in order):
  *   1. --key argument (PKCS8 DER, base64-encoded)
@@ -94,10 +95,16 @@ export function checksumLine(assetName: string, assetBuf: Buffer, signature: Buf
   return `${sha256}  ${assetName}  ed25519:${signature.toString("base64")}`;
 }
 
-function parseArgs(argv: string[]): { file: string; keyB64?: string; printPublicKey: boolean } {
+function parseArgs(argv: string[]): {
+  file: string;
+  keyB64?: string;
+  printPublicKey: boolean;
+  derivePublicKey: boolean;
+} {
   let file = "";
   let keyB64: string | undefined;
   let printPublicKey = false;
+  let derivePublicKey = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--file") {
@@ -108,18 +115,19 @@ function parseArgs(argv: string[]): { file: string; keyB64?: string; printPublic
       i++;
     } else if (arg === "--print-public-key") {
       printPublicKey = true;
+    } else if (arg === "--derive-public-key") {
+      derivePublicKey = true;
     }
   }
-  if (!file)
+  if (!file && !derivePublicKey)
     throw new Error(
-      "Usage: bun scripts/sign-release.ts --file <artifact> [--key <base64-key>] [--print-public-key]",
+      "Usage: bun scripts/sign-release.ts --file <artifact> [--key <base64-key>] [--print-public-key] | --derive-public-key [--key <base64-key>]",
     );
-  return { file: resolve(file), keyB64, printPublicKey };
+  return { file: file ? resolve(file) : "", keyB64, printPublicKey, derivePublicKey };
 }
 
 function main(): void {
-  const { file, keyB64, printPublicKey } = parseArgs(process.argv.slice(2));
-  const assetBuf = readFileSync(file);
+  const { file, keyB64, printPublicKey, derivePublicKey } = parseArgs(process.argv.slice(2));
 
   const encodedKey = keyB64 ?? process.env.AGENCY_UPDATE_PRIVATE_KEY;
   if (!encodedKey) {
@@ -128,6 +136,16 @@ function main(): void {
     );
   }
   const privateKey = privateKeyFromB64(encodedKey);
+
+  // Derive-only mode for CI: print the SPKI DER b64 public key with no
+  // side effects (no .sig, no checksum output). The release workflow uses
+  // this to embed the production public key at compile time.
+  if (derivePublicKey) {
+    console.log(publicKeyB64FromPrivate(privateKey));
+    return;
+  }
+
+  const assetBuf = readFileSync(file);
 
   const { signature, publicKeyB64 } = signAsset(assetBuf, privateKey);
   if (printPublicKey) {

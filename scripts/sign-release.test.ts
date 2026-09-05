@@ -121,4 +121,19 @@ describe("sign-release CLI end to end", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("--derive-public-key prints the SPKI b64 with no side effects", async () => {
+    const { privateB64 } = freshKeypair();
+    const expected = publicKeyB64FromPrivate(privateKeyFromB64(privateB64));
+    const proc = Bun.spawn(["bun", "scripts/sign-release.ts", "--derive-public-key"], {
+      cwd: process.cwd(),
+      env: { ...process.env, AGENCY_UPDATE_PRIVATE_KEY: privateB64 },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const code = await proc.exited;
+    expect(code).toBe(0);
+    const out = (await new Response(proc.stdout).text()).trim();
+    expect(out).toBe(expected);
+  });
 });

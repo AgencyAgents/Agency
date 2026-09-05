@@ -33,6 +33,9 @@ export function createDispatchTool(deps: {
   return {
     name: "dispatch",
     description: "Dispatch peer agents by handle with a brief; effort override for auto agents.",
+    // Moderate, not safe: dispatch spawns real subagent turns. The gate
+    // allows orchestration tools by default in trusted workspaces.
+    riskTier: "moderate",
     inputSchema: {
       type: "object",
       properties: {
@@ -64,7 +67,9 @@ export function createDispatchTool(deps: {
         .map((l) => l.trim())
         .filter(Boolean);
       if (lines.length === 0) return "dispatch: no agents";
-      if (lines.length === 1) return `◐ ${summarizeOneLine(lines[0]!)}`;
+      const first = lines.at(0);
+      if (!first) return "dispatch: no agents";
+      if (lines.length === 1) return `◐ ${summarizeOneLine(first)}`;
       const preview = lines
         .slice(0, 2)
         .map((l) => summarizeOneLine(l, 80))

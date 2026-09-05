@@ -44,7 +44,7 @@ jobs:
       AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -65,6 +65,17 @@ jobs:
           else
             echo "VERSION=$(bun --print "require('./package.json').version")" >> "$GITHUB_ENV"
           fi
+      - name: Derive update public key
+        # Production binaries must embed the production public key at compile
+        # time (scripts/build.ts inlines AGENCY_UPDATE_PUBLIC_KEY via --define).
+        # Deriving it from the private-key secret keeps a single secret as the
+        # source of truth; without the secret the dev key applies (dev only).
+        if: env.AGENCY_UPDATE_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
+        run: |
+          echo "AGENCY_UPDATE_PUBLIC_KEY=$(bun scripts/sign-release.ts --derive-public-key)" >> "$GITHUB_ENV"
       - name: Build binaries
         shell: bash
         run: bun scripts/build.ts --targets "${{ matrix.targets }}" --version "$VERSION" --outdir dist
@@ -121,7 +132,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

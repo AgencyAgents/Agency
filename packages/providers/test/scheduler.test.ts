@@ -76,22 +76,35 @@ describe("Scheduler retry behavior", () => {
   test("caps a hostile server-provided retryAfterMs at maxDelayMs", async () => {
     const scheduler = new Scheduler({ baseDelayMs: 1000, maxDelayMs: 50, maxAttempts: 2 });
     let calls = 0;
+    let retryNext: number | undefined;
     const start = Date.now();
 
-    await scheduler.schedule(async () => {
-      calls += 1;
-      if (calls === 1) {
-        // "Retry after 24 hours" must not hang the turn for a day.
-        throw new AgencyError(ErrorCode.RATE_LIMIT, "429", {
-          source: "test",
-          context: { retryAfterMs: 86_400_000 },
-        });
-      }
-      return "ok";
-    });
+    await scheduler.schedule(
+      async () => {
+        calls += 1;
+        if (calls === 1) {
+          // "Retry after 24 hours" must not hang the turn for a day.
+          throw new AgencyError(ErrorCode.RATE_LIMIT, "429", {
+            source: "test",
+            context: { retryAfterMs: 86_400_000 },
+          });
+        }
+        return "ok";
+      },
+      {
+        onRetry: (_attempt, _message, next) => {
+          retryNext = next;
+        },
+      },
+    );
 
     expect(calls).toBe(2);
-    expect(Date.now() - start).toBeLessThan(2000);
+    // Deterministic cap assertion: the scheduled retry deadline honors the
+    // 50ms ceiling instead of the 24h header. The wall-clock backstop stays
+    // generous so slow CI never flakes on timing.
+    expect(retryNext).toBeDefined();
+    expect(retryNext! - start).toBeLessThanOrEqual(50 + 1000);
+    expect(Date.now() - start).toBeLessThan(5000);
   });
 });
 

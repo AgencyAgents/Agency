@@ -611,11 +611,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
    * Phase 2 enforcement that makes per-agent tool policies real.
    */
   function gateForAgent(handle: string): PermissionsGate {
-    const cfg = config as unknown as {
-      agents?: Record<string, { permissions?: Record<string, ToolPermissionValue> }>;
-    };
-    const agentPermissions = cfg.agents?.[handle]?.permissions;
-    if (agentPermissions) {
+    const agentPermissions = config.agents?.[handle]?.permissions as
+      | Record<string, ToolPermissionValue>
+      | undefined;
+    if (agentPermissions !== undefined) {
       return new PermissionsGate({
         permissions: agentPermissions,
         workspaceRoot: options.workspaceRoot,
@@ -1262,7 +1261,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                     let childError: unknown;
                     try {
                       childResult = await runTurn(adapter, scheduler, http, {
-                        identity,
+                        identity: { type: "agent", name: a.handle },
                         capabilities: agentCaps,
                         toolPolicy: agentGate,
                         eventBus,
@@ -1458,6 +1457,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         } catch {}
       } catch {}
       (scope as { tools: ToolSpec[] }).tools = scope.registry.list() as unknown as ToolSpec[];
+      const ownerHandle = orchestraRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+      if (ownerHandle) {
+        const ownerGate = gateForAgent(ownerHandle);
+        if (ownerGate !== gate) {
+          (scope as { tools: ToolSpec[] }).tools = (scope as unknown as { tools: ToolSpec[] }).tools.filter(
+            (t) => ownerGate.toolOffered(t.name, t.riskTier),
+          );
+        }
+      }
       return scope;
     })();
     scopePromises.set(sessionId, promise);
@@ -1470,9 +1478,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
   }
 
-  function sessionToolsFor(list: ToolSpec[]): readonly string[] | "*" {
-    const offered = list.filter((t) => gate.toolOffered(t.name, t.riskTier));
+  function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate = gate): readonly string[] | "*" {
+    const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
     return offered.length === list.length ? ("*" as const) : offered.map((t) => t.name);
+  }
+
+  function gateForSession(sessionId: string): PermissionsGate {
+    const ownerHandle = orchestraRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+    return ownerHandle ? gateForAgent(ownerHandle) : gate;
   }
 
   const commands = loadCommands({
@@ -1487,11 +1500,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       return { tools: sessionToolsFor(tools), pathScopes: "*", network: "*" };
     }
     const sid = sessionId ?? "default";
+    const sessionGate = gateForSession(sid);
     const cached = sessionScopes.get(sid);
-    if (cached) return { tools: sessionToolsFor(cached.tools), pathScopes: "*", network: "*" };
+    if (cached) return { tools: sessionToolsFor(cached.tools, sessionGate), pathScopes: "*", network: "*" };
     try {
       const scope = await getOrCreateScope(sid);
-      return { tools: sessionToolsFor(scope.tools), pathScopes: "*", network: "*" };
+      return { tools: sessionToolsFor(scope.tools, sessionGate), pathScopes: "*", network: "*" };
     } catch {
       return { tools: "*", pathScopes: "*", network: "*" };
     }
@@ -1776,12 +1790,26 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           })();
           const mentioned = parseHandles(lastUserText).filter((h) => orchestraRegistry.has(h));
           if (mentioned.length === 1) {
-            const agent = orchestraRegistry.get(mentioned[0]!)!;
-            resolvedProvider = agent.provider;
-            resolvedModel = agent.model ?? "";
-            if (agent.effort === "auto" && !resolvedThinkingLevel) {
-              // Directly-addressed agent with auto effort: use keyword heuristic
-              resolvedThinkingLevel = classifyEffortFromText(lastUserText) as string;
+            const handle = mentioned.at(0);
+            const agent = handle !== undefined ? orchestraRegistry.get(handle) : undefined;
+            if (agent) {
+              resolvedProvider = agent.provider;
+              resolvedModel = agent.model ?? "";
+              if (agent.effort === "auto" && !resolvedThinkingLevel) {
+                // Directly-addressed agent with auto effort (no dispatcher):
+                // traced small-model classification, keyword heuristic fallback.
+                resolvedThinkingLevel = await classifyEffortWithSmallModel(lastUserText, {
+                  config: config as Record<string, unknown>,
+                  adapterFor,
+                  http,
+                  apiKey,
+                  providers: providers as Record<
+                    string,
+                    { apiKey?: string; family?: string; baseUrl?: string }
+                  >,
+                  traceRecorder,
+                });
+              }
             }
           } else if (mentioned.length === 0 && params.thinkingLevel === undefined) {
             const cfgAgents = (config as unknown as { agents?: Record<string, { effort: string }> }).agents;
@@ -1934,10 +1962,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
             const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
+            const sessionGate = gateForSession(sessionId);
             const effectiveTools =
               builtinsMode && turnScope
-                ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
-                : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+                ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
+                : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
             activeTurnMeta.set(params.turnId, {
               capabilities: effectiveCapabilities,
               tools: effectiveTools,
@@ -1971,7 +2000,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
                 identity,
                 capabilities: effectiveCapabilities,
-                toolPolicy: gate,
+                toolPolicy: sessionGate,
                 requestApproval,
                 eventBus,
                 drainMailbox: mailboxDrain,
@@ -2041,14 +2070,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                 return k ?? apiKey;
               })();
               if (fbApiKey) redactor.registerSecret(fbApiKey);
+              const sessionGate = gateForSession(sessionId);
               const fallbackCapabilities =
                 params.capabilities ??
                 (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
               const fallbackMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
               const fallbackTools =
                 builtinsMode && turnScope
-                  ? turnScope.tools.filter((t) => gate.toolOffered(t.name, t.riskTier))
-                  : tools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+                  ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
+                  : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
               activeTurnMeta.set(params.turnId, {
                 capabilities: fallbackCapabilities,
                 tools: fallbackTools,
@@ -2067,7 +2097,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                   {
                     identity,
                     capabilities: fallbackCapabilities,
-                    toolPolicy: gate,
+                    toolPolicy: sessionGate,
                     requestApproval,
                     eventBus,
                     systemPrompt: resolveSystemPrompt(params, {
@@ -2168,6 +2198,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               | { text?: string }
               | undefined;
             if (firstUserText?.text) {
+              const titlePrompt = firstUserText.text;
               const smallModelRef = resolveSmallModel(config);
               if (smallModelRef) {
                 (async () => {
@@ -2184,7 +2215,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
                       ...oauthOverridesFor(smallModelRef.provider, providers),
                     });
                     if (smallApiKey) {
-                      const title = await generateTitle(firstUserText.text!, {
+                      const title = await generateTitle(titlePrompt, {
                         config,
                         http,
                         apiKey: smallApiKey,
@@ -2249,6 +2280,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       const controller = activeControllers.get(turnId);
       if (!controller) return { cancelled: false };
       controller.abort();
+      // A turn parked at the ask gate awaits an approval promise the abort
+      // signal alone never settles, so without this run_turn would hang past
+      // cancellation. Refusing the pending asks lets the loop observe the
+      // abort and finish instead of deadlocking.
+      for (const manager of approvalManagers.values()) manager.rejectTurn(turnId);
       return { cancelled: true };
     },
 
@@ -2472,7 +2508,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           const childScope = sessionScopes.get(childSessionId);
           const childTools = childScope?.tools ?? [];
           const agentGate = gateForAgent(handle);
-          const offeredTools = childTools.filter((t) => agentGate.toolOffered(t.name, t.riskTier));
+          const offeredTools = childTools
+            .filter((t) => agentGate.toolOffered(t.name, t.riskTier))
+            // Depth-0 child isolation: subagents cannot dispatch or spawn tasks.
+            .filter((t) => t.name !== "dispatch" && t.name !== "task");
           const agentCaps = capabilitiesForAgent(agentGate, childTools);
 
           const agentSystemPrompt = composeSystemPrompt({
@@ -2487,7 +2526,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           let childError: unknown;
           try {
             childResult = await runTurn(adapter, scheduler, http, {
-              identity,
+              identity: { type: "agent", name: handle },
               capabilities: agentCaps,
               toolPolicy: agentGate,
               eventBus,
@@ -2507,6 +2546,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
               cwd: options.workspaceRoot,
               taskDepth: 1,
               doomLoopDetection: true,
+              drainMailbox: () => {
+                const drained: import("@agency/schema").Message[] = [];
+                const box = agentMailboxes.get(handle);
+                if (box && box.length > 0) {
+                  drained.push(...box);
+                  box.length = 0;
+                }
+                const reg = orchestraRegistry.get(handle)?.mailbox;
+                if (reg && reg.length > 0) {
+                  drained.push(...reg);
+                  reg.length = 0;
+                }
+                return drained;
+              },
               onEvent: (ev) => {
                 childEvents.push(ev);
               },

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, EventBus, SessionStore } from "@agency/core";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { RunTurnRpcResult } from "../src/daemon.ts";
@@ -620,6 +620,48 @@ describe("-p headless mode", () => {
     const runTurn = fake.calls.find((c) => c.method === "run_turn");
     expect(runTurn).toBeDefined();
     expect((runTurn!.params as { session: unknown[] }).session).toHaveLength(1);
+  });
+
+  test("a session-backed turn that triggers compaction emits session.compacted on the wired bus", async () => {
+    const fake = fakeClient();
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    // Six long messages: over the 200k default window (google family counts
+    // char/4, so 6 x 120k chars ~= 180k tokens >= 160k proactive threshold)
+    // with more than keepLastN (4) messages, so there is something to summarize.
+    const seed = new SessionStore(sessionsDir);
+    seed.create("big-session");
+    let parentId: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const appended = await seed.append("big-session", {
+        type: "message",
+        parentId,
+        message: {
+          role: i % 2 ? "assistant" : "user",
+          content: [{ type: "text", text: `message-${i} ${"x".repeat(120_000)}` }],
+        },
+      });
+      parentId = appended.id;
+    }
+    const seen: Array<{ event: string; payload: unknown }> = [];
+    const bus = new EventBus();
+    bus.on("session.compacted", (payload) => {
+      seen.push({ event: "session.compacted", payload });
+    });
+    const { deps } = capture();
+    const code = await runEntrypoint(
+      ["-p", "follow-up", "--model", "google/fake-1", "--session", "big-session", "--format", "json"],
+      {
+        ...baseDeps({ env: { AGENCY_GOOGLE_API_KEY: "sk-test" } }),
+        ...deps,
+        sessionsDir,
+        ensureClient: async () => fake.client,
+        bus,
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(seen).toHaveLength(1);
+    expect((seen[0]!.payload as { sessionId: string }).sessionId).toBe("big-session");
   });
 
   test("--continue resumes the most recent session", async () => {

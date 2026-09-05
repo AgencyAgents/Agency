@@ -61,13 +61,18 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
   const configByIndex = new Map<number, LspServerConfig>();
   const failures = new Map<number, string>();
   const installDecisions = new Map<string, LspInstallDecision>();
-  for (let i = 0; i < normalizedServers.length; i++) configByIndex.set(i, normalizedServers[i]!);
+  for (let i = 0; i < normalizedServers.length; i++) {
+    const cfg = normalizedServers[i];
+    if (cfg !== undefined) configByIndex.set(i, cfg);
+  }
 
   const findConfig = (path: string): { config: LspServerConfig; index: number } | undefined => {
     const ext = extension(path);
     const index = normalizedServers.findIndex((server) => server.extensions.includes(ext));
     if (index === -1) return undefined;
-    return { config: normalizedServers[index]!, index };
+    const config = normalizedServers[index];
+    if (config === undefined) return undefined;
+    return { config, index };
   };
 
   const clientFor = (path: string): LspClient | undefined => {

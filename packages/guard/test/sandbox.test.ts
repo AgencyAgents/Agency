@@ -65,7 +65,11 @@ describe("SandboxBoundary.resolvePath symlink handling", () => {
   }
 
   function link(target: string, path: string): void {
-    symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+    symlinkSync(target, path, linkType());
+  }
+
+  function linkType(): "junction" | "dir" {
+    return process.platform === "win32" ? "junction" : "dir";
   }
 
   test("a symlink inside the root pointing outside it is rejected", () => {
@@ -134,14 +138,71 @@ describe("SandboxBoundary.resolvePath symlink handling", () => {
     }
   });
 
-  test("normal ENOENT on non-existent file still resolves through ancestor", () => {
+  test("a dangling symlink inside the root is denied, not resolved literally", () => {
+    const { root } = setup();
+    // The link exists but its target does not: realpathSync reports ENOENT,
+    // which must not be mistaken for "a file a tool is about to create" —
+    // resolving the link literally would hide its target from contains() and
+    // let a later write follow the link outside the root.
+    symlinkSync(join(root, "no-such-target"), join(root, "sub", "escape"), linkType());
+    const boundary = new SandboxBoundary(root);
+
+    const err = (() => {
+      try {
+        boundary.resolvePath(join("sub", "escape", "file.txt"));
+        return undefined;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(AgencyError);
+    expect((err as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
+  });
+
+  test("a dangling symlink pointing outside the root is denied", () => {
+    const { root, outside } = setup();
+    symlinkSync(join(outside, "no-such-target"), join(root, "sub", "escape"), linkType());
+    const boundary = new SandboxBoundary(root);
+
+    expect(() => boundary.resolvePath(join("sub", "escape", "file.txt"))).toThrow(AgencyError);
+  });
+
+  test("a symlink loop (ELOOP) is denied with a typed refusal", () => {
+    const { root } = setup();
+    symlinkSync(join(root, "sub", "b"), join(root, "sub", "a"), linkType());
+    symlinkSync(join(root, "sub", "a"), join(root, "sub", "b"), linkType());
+    const boundary = new SandboxBoundary(root);
+
+    const err = (() => {
+      try {
+        boundary.resolvePath(join("sub", "a", "file.txt"));
+        return undefined;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(AgencyError);
+    expect((err as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
+  });
+
+  test("a symlink chain through several links to outside the root is denied", () => {
+    const { root, outside } = setup();
+    symlinkSync(outside, join(root, "sub", "c"), linkType());
+    symlinkSync(join(root, "sub", "c"), join(root, "sub", "b"), linkType());
+    symlinkSync(join(root, "sub", "b"), join(root, "sub", "a"), linkType());
+    const boundary = new SandboxBoundary(root);
+
+    expect(() => boundary.resolvePath(join("sub", "a", "file.txt"))).toThrow(AgencyError);
+  });
+
+  test("a multi-level not-yet-existing path with no links still resolves", () => {
     const { root } = setup();
     const boundary = new SandboxBoundary(root);
 
-    // A path that doesn't exist yet (file to be created) must still resolve
-    // to the correct in-root path — ENOENT on the final component is expected.
-    expect(boundary.resolvePath(join("sub", "brand-new-dir", "new-file.ts"))).toBe(
-      join(root, "sub", "brand-new-dir", "new-file.ts"),
+    // Genuinely absent intermediate directories (no symlink involved) keep
+    // resolving: tools create parent directories after the containment check.
+    expect(boundary.resolvePath(join("new-dir", "nested", "file.ts"))).toBe(
+      join(root, "new-dir", "nested", "file.ts"),
     );
   });
 });

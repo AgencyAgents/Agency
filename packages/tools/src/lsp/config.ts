@@ -44,7 +44,9 @@ export function normalizeLspServers(raw: LspServersConfig): NormalizedLspServerC
     let prefixArgs: string[] = [];
     if (Array.isArray(cfg.command)) {
       if (cfg.command.length === 0) throw new Error(`lspServers.${name}.command must not be empty`);
-      command = cfg.command[0]!;
+      const head = cfg.command.at(0);
+      if (!head) throw new Error(`lspServers.${name}.command must not be empty`);
+      command = head;
       prefixArgs = cfg.command.slice(1);
     } else {
       command = cfg.command;

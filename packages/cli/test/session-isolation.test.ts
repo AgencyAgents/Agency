@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 function tempRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "agency-iso-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agency-iso-")));
   dirs.push(dir);
   return dir;
 }
@@ -127,12 +127,17 @@ describe("B1 per-session isolation", () => {
 
     const pwdA = pwdResult(r1!, 3);
     const pwdB = pwdResult(r2!, 3);
-    const dirAPattern = /[\\/]a(\r|\n|$)/;
-    const dirBPattern = /[\\/]b(\r|\n|$)/;
-    expect(pwdA).toMatch(dirAPattern);
-    expect(pwdB).toMatch(dirBPattern);
-    expect(pwdA).not.toMatch(dirBPattern);
-    expect(pwdB).not.toMatch(dirAPattern);
+    const normalizePwd = (s: string): string => s.replace(/\r\n?/g, "\n");
+    const pwdANorm = normalizePwd(pwdA);
+    const pwdBNorm = normalizePwd(pwdB);
+    const dirAPattern = /[\\/]a(\n|$)/;
+    const dirBPattern = /[\\/]b(\n|$)/;
+    expect(pwdANorm).toMatch(dirAPattern);
+    expect(pwdBNorm).toMatch(dirBPattern);
+    expect(pwdANorm).not.toMatch(dirBPattern);
+    expect(pwdBNorm).not.toMatch(dirAPattern);
+    expect(pwdANorm).not.toContain("[cwd kept");
+    expect(pwdBNorm).not.toContain("[cwd kept");
   }, 30_000);
 
   test("a narrowed-capability turn is denied a tool the parent can use", async () => {

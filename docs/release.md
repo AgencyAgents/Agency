@@ -43,6 +43,17 @@ Other scripts: `scripts/perf-check.ts` — perf budgets checked in CI (see below
 
 Each signs every `dist/agency-*` artifact for its platform. Missing secrets skip signing without failing the build.
 
+## Update signing (ed25519)
+
+Release artifacts carry detached ed25519 signatures so `agency update` can verify before installing:
+
+- `scripts/sign-release.ts --file <artifact>` reads the PKCS8 DER base64 private key from `--key` or `AGENCY_UPDATE_PRIVATE_KEY` (no dev fallback — it fails closed), self-verifies the 64-byte signature against the derived public key *before* writing any checksum output, then writes `<artifact>.sig` plus a `<sha256>  <name>  ed25519:<sig-b64>` line in `dist/checksums-signed.txt`.
+- `bun scripts/sign-release.ts --file <artifact> --print-public-key` prints the SPKI DER b64 public key to embed as `AGENCY_UPDATE_PUBLIC_KEY` (also inlined at compile time by `scripts/build.ts` via `--define`; the compiled-in dev key in `packages/cli/src/update-public-key.ts` applies to dev builds only).
+- CI derives the public key itself: `release.yml` runs `bun scripts/sign-release.ts --derive-public-key` (side-effect-free, prints only the SPKI DER b64) ahead of the build and exports it as `AGENCY_UPDATE_PUBLIC_KEY`, so production binaries embed the production key with `AGENCY_UPDATE_PRIVATE_KEY` as the single secret source of truth.
+- **Explicit follow-up (ops, cannot be done from code): provision the `AGENCY_UPDATE_PRIVATE_KEY` secret** (PKCS8 DER base64, 48 bytes) in the GitHub repository settings. Until it exists, the ed25519 sign step is skipped by its `if` condition, `checksums-signed.txt` fragments are absent, and `agency update` against such a release fails closed at the signature gate. Generate with `bun -e` + `node:crypto generateKeyPairSync("ed25519", ...)` (see `sign-release.test.ts#freshKeypair`), keep the private key out of the repo, and verify the first tagged release carries `.sig` sidecars plus a merged `checksums-signed.txt`.
+- The client (`packages/cli/src/update.ts`) verifies the ed25519 signature (`.sig` first, inline `ed25519:` field fallback) *before* the SHA-256 checksum, backs up the running binary to `.previous`, and supports `agency update --rollback`.
+- `release.yml` uploads per-OS `checksums-signed-<os>.txt` fragments (same-named files would overwrite each other on artifact merge), merges them into `checksums-signed.txt` in the release job, and publishes binaries + `.sig` + `checksums-signed.txt` + `checksums.txt` + SBOM. `checksums.txt` covers install payloads only, never `.sig` sidecars.
+
 ## SBOM
 
 `scripts/sbom.ts` produces CycloneDX 1.5 (`bomFormat: CycloneDX`) from `bun.lock` (parsed as JSONC). Components cover every non-workspace package (with `sha512` integrity from the lockfile) plus workspace packages at the release version. The `bom-ref` is `pkg:npm/<name>@<version>` (`@` scopes percent-encoded). With `--reproducible`, `metadata.timestamp` is omitted and `serialNumber` is a deterministic UUIDv5 over the document content.
@@ -51,7 +62,7 @@ Each signs every `dist/agency-*` artifact for its platform. Missing secrets skip
 
 - `CI` (`.github/workflows/ci.yml`): matrix `ubuntu/macos/windows`, Bun 1.4.0, steps `lint` / `typecheck` / `typecheck:test` / `test` (20 min timeout). Branch+PR trigger, stale-run cancellation.
 - `Perf` budgets: non-blocking CI job runs `scripts/perf-check.ts` (cold start, idle RSS, zero-CPU-at-idle; single sample, generous thresholds; skips when the binary is absent).
-- `Release` (`.github/workflows/release.yml`): triggered on `v*` tags and `workflow_dispatch` (`dry_run` flag). Matrix builds on three runners for the five targets, then lint/typecheck/test, derives `VERSION` from the tag or `package.json`, `bun scripts/build.ts`, per-platform signing (conditional on secrets), and upload of `dist/agency-*` artifacts. A `sbom` job builds `dist/agency.cdx.json` in parallel. The `release` job (only on tag push) downloads and merges artifacts, runs `sha256sum agency-* agency.cdx.json > checksums.txt`, and publishes `gh release create` with `agency-*`, `checksums.txt`, and `agency.cdx.json`.
+- `Release` (`.github/workflows/release.yml`): triggered on `v*` tags and `workflow_dispatch` (`dry_run` flag). Matrix builds on three runners for the five targets, then lint/typecheck/test, derives `VERSION` from the tag or `package.json`, `bun scripts/build.ts`, per-platform signing (conditional on secrets), ed25519 signing via `scripts/sign-release.ts` (conditional on `AGENCY_UPDATE_PRIVATE_KEY`), and upload of `dist/agency-*` plus `dist/checksums-signed-*.txt` artifacts. A `sbom` job builds `dist/agency.cdx.json` in parallel. The `release` job (only on tag push) downloads and merges artifacts, merges the signed-checksum fragments into `checksums-signed.txt`, runs `sha256sum` over install payloads into `checksums.txt`, and publishes `gh release create` with binaries, `.sig` files, both checksum manifests, and `agency.cdx.json`.
 
 ## Install verification
 

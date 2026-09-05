@@ -123,7 +123,8 @@ export class SessionProjector {
     const events: SessionEvent[] = [];
 
     for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i]!;
+      const entry = entries.at(i);
+      if (!entry) continue;
       const timestamp = entry.createdAt;
 
       // First entry → Created

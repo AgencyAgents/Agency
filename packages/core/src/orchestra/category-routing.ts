@@ -149,7 +149,7 @@ export function normalizeCategory(raw: unknown): TaskCategory {
 /** Routing decision for a category; returns a copy so callers cannot mutate the map. */
 export function routeForCategory(category: unknown): CategoryRoute {
   const key = normalizeCategory(category);
-  const route = CATEGORY_ROUTES[key]!;
+  const route = CATEGORY_ROUTES[key] ?? CATEGORY_ROUTES.unspecified;
   return { ...route, fallback: route.fallback.map((f) => ({ ...f })) };
 }
 
@@ -208,7 +208,8 @@ export async function runWithCategoryFallback<T>(
   const chain = filterChainByProviders(fallbackChainFor(route.category), opts.availableProviders);
   const errors: unknown[] = [];
   for (let i = 0; i < chain.length; i++) {
-    const hop = chain[i]!;
+    const hop = chain.at(i);
+    if (!hop) continue;
     try {
       return await fn({
         provider: hop.provider,

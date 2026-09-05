@@ -119,6 +119,7 @@ export async function runSessionTurn(
   try {
     const params: RunTurnParams = {
       turnId,
+      sessionId: options.sessionId,
       provider: options.provider,
       model: options.model,
       systemPrompt: options.systemPrompt,

@@ -899,4 +899,55 @@ describe("A5: input validation and permissions gating", () => {
       expect(toolResult.content).toBe("/repo|ses-1|call_1|function|turn-9");
     }
   });
+
+  test("tool contexts carry the agent handle from an agent turn identity", async () => {
+    const spec: ToolSpec = {
+      name: "read",
+      description: "reads a file",
+      inputSchema: { type: "object", properties: { path: { type: "string" } } },
+      handler: async (_input, ctx) => ({ content: `handle=${ctx.agentHandle ?? "none"}` }),
+    };
+
+    const agentResult = await runTurn(
+      toolThenDoneAdapter("read", { path: "a.ts" }),
+      new Scheduler(),
+      noopHttp,
+      {
+        identity: { type: "agent", name: "coder" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [spec],
+        model: "m",
+        apiKey: "k",
+        session: [],
+      },
+    );
+    const agentToolResult = agentResult.messages[1]?.content[0];
+    if (agentToolResult?.type === "tool_result") {
+      expect(agentToolResult.content).toBe("handle=coder");
+    } else {
+      expect.unreachable("expected a tool_result message");
+    }
+
+    const userResult = await runTurn(
+      toolThenDoneAdapter("read", { path: "a.ts" }),
+      new Scheduler(),
+      noopHttp,
+      {
+        identity: user,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [spec],
+        model: "m",
+        apiKey: "k",
+        session: [],
+      },
+    );
+    const userToolResult = userResult.messages[1]?.content[0];
+    if (userToolResult?.type === "tool_result") {
+      expect(userToolResult.content).toBe("handle=none");
+    } else {
+      expect.unreachable("expected a tool_result message");
+    }
+  });
 });

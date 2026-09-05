@@ -195,14 +195,22 @@ describe("PermissionsGate", () => {
     expect(await gate.check({ tool: "read", riskTier: "safe" }, undefined)).toBe("allow");
   });
 
-  test("trust gate denies a tool with no riskTier set (undefined treated as unsafe)", async () => {
+  test("trust gate denies a tool with null riskTier (unsafe by default)", async () => {
     const trustPath = join(root, "trust.json");
     const gate = new PermissionsGate({
       workspaceRoot: root,
       trust: { store: createFileTrustStore(trustPath), root, required: true },
     });
-    // A plugin tool without riskTier must be denied in an untrusted workspace
-    expect(await gate.check({ tool: "some-plugin-tool" }, undefined)).toBe("deny");
+    expect(
+      await gate.check({ tool: "some-plugin-tool", riskTier: null as unknown as undefined }, undefined),
+    ).toBe("deny");
+  });
+
+  test("a missing riskTier fails safe to ask instead of silently allowing", () => {
+    const gate = new PermissionsGate({ workspaceRoot: root });
+    expect(gate.decisionFor({ tool: "some-plugin-tool" })).toBe("ask");
+    // The tool is still offered (ask is not deny); the per-call gate decides.
+    expect(gate.toolOffered("some-plugin-tool")).toBe(true);
   });
 
   test("external_directory: bare decision and directory-glob map", () => {

@@ -92,6 +92,20 @@ export function createBashTool(
       const stderrText = new Response(proc.stderr).text();
 
       const killProc = (): void => {
+        // Order matters on Linux: SIGKILL the direct shell FIRST, so its
+        // wrapper tail (the exit-code/cwd marker printf appended by
+        // wrapCommand) can never run to a clean exit 0 after a grandchild
+        // was TERM'd. A TERM-only kill of the grandchild lets
+        // `sh -c "sleep 30; <markers>"` continue to the markers and exit 0,
+        // which wins the completion race below and reads as an empty
+        // success (no [timeout]/[cancelled] label). The tree kill then reaps
+        // grandchildren still holding the output pipes open; the final
+        // direct kill catches a shell that forked between the two.
+        try {
+          proc.kill(9);
+        } catch {
+          // already exited — nothing to reap
+        }
         // The foreground one-shot subprocess is not tracked by the
         // ProcessManager (its map holds processes meant to outlive a call),
         // but its tree-wide teardown is exactly what abort needs: shell
@@ -119,7 +133,9 @@ export function createBashTool(
         settleAborted = resolve;
       });
       let timedOut = false;
+      let abortFired = false;
       const onAbort = (): void => {
+        abortFired = true;
         killProc();
         settleAborted();
       };
@@ -134,6 +150,7 @@ export function createBashTool(
         timeout !== undefined
           ? setTimeout(() => {
               timedOut = true;
+              abortFired = true;
               killProc();
               settleAborted();
             }, timeout)
@@ -148,7 +165,7 @@ export function createBashTool(
         : undefined;
 
       try {
-        const outcome = await Promise.race([
+        let outcome = await Promise.race([
           Promise.all([stdoutText, stderrText, proc.exited]).then(([stdout, stderr]) => ({
             aborted: false as const,
             stdout,
@@ -169,6 +186,16 @@ export function createBashTool(
             return { aborted: true as const, stdout, stderr };
           }),
         ]);
+        // Abort intent wins over a simultaneous clean exit. On Linux the
+        // killed shell's wrapper tail can beat SIGKILL to a marker-printed
+        // exit 0 (or the abort signal can land just as the pipes close), so
+        // the normal branch may win the race above even though onAbort ran.
+        // Coercing here keeps the [timeout]/[cancelled] label and the
+        // Phase 6 isError contract while retaining whatever partial output
+        // the completed read captured.
+        if (!outcome.aborted && (timedOut || abortFired)) {
+          outcome = { aborted: true as const, stdout: outcome.stdout, stderr: outcome.stderr };
+        }
 
         const { output, cwd, exitCode } = parseShellOutput(outcome.stdout, state.cwd);
         // A cancelled command keeps no cwd side-effect: its wrapper may not
@@ -197,9 +224,10 @@ export function createBashTool(
           combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;
         }
 
-        // Timeouts are labeled outcomes, not errors. Nonzero exits and user
-        // aborts surface as errors so callers react instead of continuing.
-        const failed = !timedOut && (exitCode !== 0 || outcome.aborted);
+        // Abort (user cancellation or timeout kill) and non-zero exit
+        // surface as errors so callers react instead of continuing;
+        // partial output is retained alongside the label.
+        const failed = outcome.aborted || exitCode !== 0;
         return failed
           ? { content: truncateResult(combined), isError: true as const }
           : { content: truncateResult(combined) };

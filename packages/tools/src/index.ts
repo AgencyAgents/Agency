@@ -1,5 +1,6 @@
 export * from "./builtin-set.ts";
 export { type BashState, createBashTool } from "./builtins/bash.ts";
+export { type BrowserAction, createBrowserTool } from "./builtins/browser.ts";
 export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";
 export { createGlobTool } from "./builtins/glob.ts";
@@ -47,6 +48,19 @@ export {
 export { createWebSearchTool, type WebSearchConfig } from "./builtins/websearch.ts";
 export { createWriteTool } from "./builtins/write.ts";
 export * from "./contract.ts";
+export {
+  addDiffComment,
+  countUnresolvedComments as countUnresolvedDiffComments,
+  createDiffApproval,
+  type DiffApprovalRecord,
+  type DiffComment,
+  listDiffComments,
+  MAX_DIFF_BYTES,
+  MAX_DIFF_LINES,
+  renderSideBySide,
+  resolveDiffComment,
+  type SideBySideOptions,
+} from "./diff-review.ts";
 export * from "./edit-engine.ts";
 export * from "./formatter.ts";
 export * from "./gitignore.ts";

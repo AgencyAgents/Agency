@@ -34,7 +34,9 @@ function findAgencyCmd(): string[] {
 
 function measureColdStart(cmd: string[]): { ms: number; ok: boolean } {
   const start = performance.now();
-  const result = spawnSync(cmd[0]!, [...cmd.slice(1), "--version"], {
+  const bin = cmd.at(0);
+  if (!bin) throw new Error("perf-check: empty command");
+  const result = spawnSync(bin, [...cmd.slice(1), "--version"], {
     timeout: 5000,
     stdio: "pipe",
   });
@@ -147,7 +149,8 @@ async function measureDaemonIdle(): Promise<{
           },
         );
         const m = out.stdout.match(/WorkingSetSize=(\d+)/);
-        if (m) rssMb = Number.parseInt(m[1]!, 10) / (1024 * 1024);
+        const digits = m?.at(1);
+        if (digits) rssMb = Number.parseInt(digits, 10) / (1024 * 1024);
       } catch {}
     }
 

@@ -99,14 +99,16 @@ export function clampEffortForModel(effort: EffortLevel, model?: ModelInfo): Eff
   // "auto" on a model without variable reasoning → nearest fixed level
   if (effort === "auto") {
     // Prefer "off" when model can't think, otherwise the highest supported
-    return supported.includes("off") ? "off" : supported[supported.length - 1]!;
+    if (supported.includes("off")) return "off";
+    return supported.at(-1) ?? "off";
   }
 
   // Find nearest by index in EFFORT_LEVELS order
   const targetIdx = EFFORT_LEVELS.indexOf(effort);
-  if (targetIdx === -1) return supported[0]!; // shouldn't happen, but be safe
+  const fallback = supported.at(0);
+  if (targetIdx === -1) return fallback ?? "off"; // shouldn't happen, but be safe
 
-  let best = supported[0]!;
+  let best: EffortLevel = fallback ?? "off";
   let bestDist = Infinity;
   for (const s of supported) {
     const sIdx = EFFORT_LEVELS.indexOf(s);

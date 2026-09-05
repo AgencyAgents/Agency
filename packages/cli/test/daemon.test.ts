@@ -107,6 +107,9 @@ describe("createAgentDaemon", () => {
       name: "slow",
       description: "waits for cancellation",
       inputSchema: {},
+      // Explicit tier: a missing tier fails safe to ask, which would park
+      // this turn at the approval gate instead of running the tool.
+      riskTier: "safe",
       handler: (_input, ctx) =>
         new Promise((resolve) => {
           ctx.signal.addEventListener("abort", () => {
@@ -151,6 +154,36 @@ describe("createAgentDaemon", () => {
     expect(cancelResult).toEqual({ cancelled: true });
     expect(sawAbort).toBe(true);
   });
+
+  test("cancel_turn settles a run_turn parked at the approval gate", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
+      tools: [dangerousTool],
+    });
+
+    const events: Array<{ type: string; requestId?: string }> = [];
+    client.on("turn.ask-cancel", (payload) => events.push(payload as { type: string }));
+    const runPromise = client.call("run_turn", {
+      turnId: "ask-cancel",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (events.some((e) => e.type === "approval_requested")) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(events.some((e) => e.type === "approval_requested")).toBe(true);
+
+    const cancelResult = await client.call("cancel_turn", { turnId: "ask-cancel" });
+    expect(cancelResult).toEqual({ cancelled: true });
+    const result = (await runPromise) as RunTurnRpcResult;
+    expect(result.cancelled).toBe(true);
+  }, 30_000);
 
   test("cancel_turn for an unknown turnId reports not cancelled instead of erroring", async () => {
     const { client } = await startFakeDaemon();
@@ -1370,5 +1403,86 @@ describe("classifyEffortWithSmallModel", () => {
     expect(spans.length).toBe(1);
     expect(spans[0]!.name).toBe("effort-classification");
     expect(spans[0]!.status).toBe("error");
+  });
+});
+
+describe("directly-addressed auto-effort agent classification", () => {
+  test("uses the traced small-model pass, not the keyword heuristic", async () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), "agency-effort-direct-cfg-"));
+    dirs.push(cfgDir);
+    writeFileSync(
+      join(cfgDir, "config.jsonc"),
+      JSON.stringify({
+        schemaVersion: 2,
+        small_model: "openai/small-classifier",
+        agents: {
+          leader: {
+            role: "GeneralDispatcher",
+            provider: "anthropic",
+            model: "main-model",
+            effort: "low",
+            enabled: true,
+          },
+          worker: {
+            role: "Worker",
+            provider: "anthropic",
+            model: "main-model",
+            effort: "auto",
+            enabled: true,
+          },
+        },
+      }),
+    );
+    const approvalsDir = mkdtempSync(join(tmpdir(), "agency-effort-direct-appr-"));
+    dirs.push(approvalsDir);
+    const classifiedPrompts: string[] = [];
+    const mainThinking: unknown[] = [];
+    const classifierAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        classifiedPrompts.push(
+          request.messages
+            .map((m) => m.content.map((b) => (b as { text?: string }).text ?? "").join(""))
+            .join("\n"),
+        );
+        yield { type: "text_delta", text: "high" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 2 } };
+      },
+    };
+    const mainAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        mainThinking.push(request.thinkingLevel);
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 2 } };
+      },
+    };
+    const daemon = await createAgentDaemon({
+      workspaceRoot: "/repo/fake",
+      instanceFile: tempInstanceFile(),
+      adapterFor: (provider: string) => (provider === "openai" ? classifierAdapter : mainAdapter),
+      http: noopHttp,
+      approvalsDir,
+      configDir: cfgDir,
+    });
+    daemons.push(daemon);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+    clients.push(client);
+
+    // "fix a typo" is what the keyword heuristic scores "low"; the small
+    // model says "high" — the turn must run at "high" to prove the model
+    // was consulted for this no-dispatcher case.
+    await client.call("run_turn", {
+      turnId: "effort-direct-1",
+      provider: "anthropic",
+      model: "main-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "@worker fix a typo" }] }],
+    });
+
+    expect(classifiedPrompts.length).toBe(1);
+    expect(classifiedPrompts[0]).toContain("Classify the effort");
+    expect(mainThinking[0]).toBe("high");
   });
 });

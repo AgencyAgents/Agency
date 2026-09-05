@@ -12,6 +12,7 @@ export * from "./orchestra/category-routing.ts";
 export * from "./orchestra/dispatch.ts";
 export * from "./orchestra/parallel.ts";
 export * from "./orchestra/registry.ts";
+export * from "./orchestra/room.ts";
 export * from "./orchestra/todo.ts";
 export * from "./paths.ts";
 export * from "./plugins/loader.ts";

@@ -109,6 +109,13 @@ export const en = {
   "tool.glob.no_matches": "no files matched",
   "tool.glob.truncated": "[truncated at {count} results]",
   "tool.fetch.truncated": "[truncated at {chars} characters]",
+  "tool.browser.truncated": "[truncated at {chars} characters]",
+  "tool.browser.no_page": "browser has no open page: call navigate with a URL first",
+  "tool.browser.screenshot_unavailable":
+    "screenshots need a chromium runtime, which this zero-dependency build does not bundle; use snapshot for the accessibility-tree view",
+  "tool.browser.file_denied":
+    "browser denied file:// URL: local file access stays inside the sandbox via the read tool",
+  "tool.browser.closed": "browser page closed",
   "tool.todo.empty": "(empty)",
   "tool.todo.updated": "updated {count} todo item(s)",
   "tool.todo.invalid": "todo_write rejected: {detail}",

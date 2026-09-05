@@ -93,6 +93,18 @@ describe("createBashTool", () => {
     expect(result.isError).toBe(true);
   }, 30_000);
 
+  test("a timeout kill is reported and sets isError with partial output retained", async () => {
+    const { tool } = setup();
+    const command =
+      process.platform === "win32"
+        ? `Write-Output 'partial-output-before-timeout'; Start-Sleep -Seconds 30`
+        : `echo partial-output-before-timeout; sleep 30`;
+    const result = await tool.handler({ command, timeout: 8_000 }, { signal });
+    expect(result.content).toContain("partial-output-before-timeout");
+    expect(result.content).toContain("[timeout");
+    expect(result.isError).toBe(true);
+  }, 60_000);
+
   test("a zero exit code is not reported (only nonzero is noteworthy)", async () => {
     const { tool } = setup();
     const result = await tool.handler({ command: "echo ok" }, { signal });

@@ -15,6 +15,12 @@ export interface ToolContext {
   cwd?: string;
   /** Session this tool call belongs to (session-scoped grants key off it). */
   sessionId?: string;
+  /**
+   * Agent handle active for this call (e.g. "coder" for a dispatched peer's
+   * turn). MCP tools resolve their caller identity from it per call so the
+   * identity on the wire is the acting agent, never a startup-baked default.
+   */
+  agentHandle?: string;
   /** The provider's tool-call id; correlates asks and results with the call. */
   toolCallId?: string;
   /** Depth of the current task chain (0 for the root turn). */

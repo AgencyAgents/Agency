@@ -2,8 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PermissionsGate } from "@agency/guard";
 import { configFlags, loadConfig } from "../src/config/loader.ts";
-import { DEFAULT_ROSTER, parseModelRef } from "../src/config/schema.ts";
+import { type AgentConfig, DEFAULT_ROSTER, parseModelRef } from "../src/config/schema.ts";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "agency-config-test-"));
@@ -265,16 +266,174 @@ describe("loadConfig", () => {
 });
 
 describe("DEFAULT_ROSTER", () => {
-  test("is empty (no default values)", () => {
-    expect(Object.keys(DEFAULT_ROSTER)).toEqual([]);
+  const EXPECTED_HANDLES = [
+    "leader",
+    "planner",
+    "plan-reviewer",
+    "coder",
+    "executor",
+    "explorer",
+    "researcher",
+    "code-reviewer",
+  ];
+
+  /** Mirrors daemon.ts gateForAgent: per-agent map with absentToolsDenied. */
+  function gateFor(entry: AgentConfig, workspaceRoot: string): PermissionsGate {
+    return new PermissionsGate({
+      permissions: (entry.permissions ?? {}) as Record<string, "allow" | "ask" | "deny">,
+      workspaceRoot,
+      absentToolsDenied: true,
+    });
+  }
+
+  test("ships the 8-agent starter roster", () => {
+    expect(Object.keys(DEFAULT_ROSTER).sort()).toEqual([...EXPECTED_HANDLES].sort());
   });
 
-  test("fresh config with no agents key gets empty roster on load", () => {
+  test("every roster entry is an enabled {role, provider, model, effort} entry with permissions", () => {
+    for (const handle of EXPECTED_HANDLES) {
+      const entry = DEFAULT_ROSTER[handle];
+      expect(entry).toBeDefined();
+      expect(entry!.role).toBe(handle);
+      expect(entry!.provider).toBe("anthropic");
+      expect(entry!.model).toBe("claude-sonnet-5");
+      expect(typeof entry!.effort).toBe("string");
+      expect(entry!.enabled).toBe(true);
+      expect(entry!.permissions).toBeDefined();
+      expect(Object.keys(entry!.permissions!)).not.toEqual([]);
+    }
+  });
+
+  test("fresh config with no agents key gets the 8-agent default roster on load", () => {
     const dir = tempDir();
     cleanup.push(dir);
     const config = loadConfig({ globalDir: dir, env: {} });
     expect(config.agents).toBeDefined();
-    expect(Object.keys(config.agents!)).toEqual([]);
+    expect(Object.keys(config.agents!).sort()).toEqual([...EXPECTED_HANDLES].sort());
+    expect(config.agents!.leader?.enabled).toBe(true);
+  });
+
+  test("default roster passes validation (leader present and enabled)", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents!.leader).toBeDefined();
+    expect(config.agents!.leader?.enabled).toBe(true);
+  });
+
+  test("leader gets full access (Phase 2 gate offers every core + orchestration tool)", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.leader!, dir);
+    for (const tool of [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "glob",
+      "grep",
+      "fetch",
+      "websearch",
+      "dispatch",
+      "task",
+      "todo_read",
+      "todo_write",
+      "process_output",
+      "process_list",
+      "process_kill",
+    ]) {
+      expect(gate.toolOffered(tool)).toBe(true);
+    }
+  });
+
+  test("planner gets read/glob/grep plus plans-dir writes, no bash", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.planner!, dir);
+    expect(gate.toolOffered("read")).toBe(true);
+    expect(gate.toolOffered("glob")).toBe(true);
+    expect(gate.toolOffered("grep")).toBe(true);
+    expect(gate.toolOffered("bash")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(true);
+    expect(gate.decisionFor({ tool: "write", path: ".agency/plans/topic.md" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "write", path: "src/a.ts" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "edit", path: ".agency/plans/topic.md" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "edit", path: "src/a.ts" })).toBe("deny");
+  });
+
+  test("plan-reviewer gets read/glob/grep only", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER["plan-reviewer"]!, dir);
+    expect(gate.toolOffered("read")).toBe(true);
+    expect(gate.toolOffered("glob")).toBe(true);
+    expect(gate.toolOffered("grep")).toBe(true);
+    expect(gate.toolOffered("bash")).toBe(false);
+    expect(gate.toolOffered("write")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(false);
+  });
+
+  test("coder gets read/write/edit/bash minus the plans directory", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.coder!, dir);
+    for (const tool of ["read", "write", "edit", "bash", "glob", "grep"]) {
+      expect(gate.toolOffered(tool)).toBe(true);
+    }
+    expect(gate.decisionFor({ tool: "write", path: "src/a.ts" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "write", path: ".agency/plans/topic.md" })).toBe("deny");
+    expect(gate.decisionFor({ tool: "edit", path: "src/a.ts" })).toBe("allow");
+    expect(gate.decisionFor({ tool: "edit", path: ".agency/plans/topic.md" })).toBe("deny");
+  });
+
+  test("executor gets bash plus background-process tools, no write/edit", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.executor!, dir);
+    expect(gate.toolOffered("bash")).toBe(true);
+    expect(gate.toolOffered("process_output")).toBe(true);
+    expect(gate.toolOffered("process_list")).toBe(true);
+    expect(gate.toolOffered("process_kill")).toBe(true);
+    expect(gate.toolOffered("write")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(false);
+  });
+
+  test("explorer gets read/glob/grep only", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.explorer!, dir);
+    expect(gate.toolOffered("read")).toBe(true);
+    expect(gate.toolOffered("glob")).toBe(true);
+    expect(gate.toolOffered("grep")).toBe(true);
+    expect(gate.toolOffered("bash")).toBe(false);
+    expect(gate.toolOffered("write")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(false);
+  });
+
+  test("researcher gets fetch/websearch only, no codebase read", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER.researcher!, dir);
+    expect(gate.toolOffered("fetch")).toBe(true);
+    expect(gate.toolOffered("websearch")).toBe(true);
+    expect(gate.toolOffered("read")).toBe(false);
+    expect(gate.toolOffered("bash")).toBe(false);
+    expect(gate.toolOffered("write")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(false);
+    expect(gate.toolOffered("glob")).toBe(false);
+    expect(gate.toolOffered("grep")).toBe(false);
+  });
+
+  test("code-reviewer gets read/glob/grep plus bash, no write/edit", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const gate = gateFor(DEFAULT_ROSTER["code-reviewer"]!, dir);
+    expect(gate.toolOffered("read")).toBe(true);
+    expect(gate.toolOffered("glob")).toBe(true);
+    expect(gate.toolOffered("grep")).toBe(true);
+    expect(gate.toolOffered("bash")).toBe(true);
+    expect(gate.toolOffered("write")).toBe(false);
+    expect(gate.toolOffered("edit")).toBe(false);
   });
 
   test("user-supplied agents in config are NOT overridden by DEFAULT_ROSTER", () => {
@@ -377,12 +536,12 @@ describe("DEFAULT_ROSTER", () => {
     expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("at least one agent must be enabled");
   });
 
-  test("empty roster passes validation (no defaults)", () => {
+  test("default roster passes validation (leader present and enabled)", () => {
     const dir = tempDir();
     cleanup.push(dir);
     const config = loadConfig({ globalDir: dir, env: {} });
     expect(config.agents).toBeDefined();
-    expect(Object.keys(config.agents!)).toEqual([]);
+    expect(Object.keys(config.agents!).length).toBe(8);
   });
 
   test("provider is optional — agent can be defined without provider", () => {

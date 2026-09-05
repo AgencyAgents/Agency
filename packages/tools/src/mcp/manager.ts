@@ -91,7 +91,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       const spec = adaptMcpTool(client, def, {
         serverName,
         riskTier: config.riskTier ?? "moderate",
-        identity: identityFor(serverName),
+        identityFor: (handle?: string) => identityFor(serverName, handle),
         capabilities: options.capabilities,
       });
       const registeredName = spec.name;
@@ -131,7 +131,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
           const spec = adaptMcpTool(client, def, {
             serverName,
             riskTier: config.riskTier ?? "moderate",
-            identity: identityFor(serverName),
+            identityFor: (handle?: string) => identityFor(serverName, handle),
             capabilities: options.capabilities,
           });
           if (registry) {
@@ -206,7 +206,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       clients.set(name, client);
 
       client.onListChanged(() => {
-        void refreshTools(name, config, client!);
+        if (client) void refreshTools(name, config, client);
       });
       transport.onClose?.(() => {
         if (disposed) return;

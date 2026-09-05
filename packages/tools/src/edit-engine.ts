@@ -199,13 +199,18 @@ function findAllHashAnchors(content: string, oldText: string): SpanMatch[] {
   for (let i = 0; i <= contentLines.length - oldHashes.length; i++) {
     let match = true;
     for (let j = 0; j < oldHashes.length; j++) {
-      if (normalizedLineHash(contentLines[i + j]!) !== oldHashes[j]!) {
+      const contentLine = contentLines[i + j];
+      const oldHash = oldHashes[j];
+      if (contentLine === undefined || oldHash === undefined || normalizedLineHash(contentLine) !== oldHash) {
         match = false;
         break;
       }
     }
     if (match) {
-      spans.push({ start: lineStarts[i]!, end: lineEnds[i + oldHashes.length - 1]! });
+      const spanStart = lineStarts[i];
+      const spanEnd = lineEnds[i + oldHashes.length - 1];
+      if (spanStart === undefined || spanEnd === undefined) continue;
+      spans.push({ start: spanStart, end: spanEnd });
     }
   }
   return spans;
@@ -234,7 +239,7 @@ function findHunkSpan(content: string, hunk: EditHunk): SpanMatch | undefined {
   const pattern = whitespaceTolerantRegExp(hunk.oldText);
   if (pattern) {
     const spans = matchAllSpans(content, pattern);
-    if (spans.length === 1) return spans[0]!;
+    if (spans.length === 1) return spans.at(0);
   }
 
   return undefined;
@@ -290,8 +295,10 @@ export function stripTrailingSlop(text: string): { text: string; stripped: strin
   const lines = text.split("\n");
   let end = hadTrailingNl ? lines.length - 1 : lines.length;
   const stripped: string[] = [];
-  while (end > 1 && isSlopLine(lines[end - 1]!)) {
-    stripped.unshift(lines[end - 1]!);
+  while (end > 1) {
+    const lastKept = lines[end - 1];
+    if (lastKept === undefined || !isSlopLine(lastKept)) break;
+    stripped.unshift(lastKept);
     end -= 1;
   }
   if (stripped.length === 0) return { text, stripped };
@@ -395,7 +402,8 @@ export function applyEdit(content: string, request: EditRequest): string {
 
       let result = content;
       for (let i = hashSpans.length - 1; i >= 0; i--) {
-        const span = hashSpans[i]!;
+        const span = hashSpans[i];
+        if (span === undefined) continue;
         const matchedText = content.slice(span.start, span.end);
         const replacement = buildFuzzyReplacement(matchedText, oldText, newText);
         result = result.slice(0, span.start) + replacement + result.slice(span.end);
@@ -454,7 +462,8 @@ function whitespaceTolerantRegExp(oldText: string): RegExp | undefined {
     let source = "[ \\t]*";
     let i = 0;
     while (i < withoutLeading.length) {
-      const ch = withoutLeading[i]!;
+      const ch = withoutLeading[i];
+      if (ch === undefined) break;
       if (ch === " " || ch === "\t") {
         const before = withoutLeading[i - 1];
         let j = i;
@@ -549,7 +558,7 @@ function buildFuzzyReplacement(matchedText: string, oldText: string, newText: st
     if (canPreserve) {
       let rebuilt = matchedParsed.leading + (newParsed.tokens[0] ?? "");
       for (let j = 0; j < matchedParsed.seps.length && j < newParsed.tokens.length - 1; j++) {
-        rebuilt += matchedParsed.seps[j]! + (newParsed.tokens[j + 1] ?? "");
+        rebuilt += (matchedParsed.seps[j] ?? "") + (newParsed.tokens[j + 1] ?? "");
       }
       // If matched had trailing whitespace and new did not, ignore trailing
       outLines.push(rebuilt);
@@ -592,7 +601,8 @@ function fuzzyReplace(content: string, request: EditRequest): string | undefined
 
   let result = content;
   for (let i = spans.length - 1; i >= 0; i--) {
-    const span = spans[i]!;
+    const span = spans[i];
+    if (span === undefined) continue;
     const matchedText = content.slice(span.start, span.end);
     const replacement = buildFuzzyReplacement(matchedText, request.oldText, request.newText);
     result = result.slice(0, span.start) + replacement + result.slice(span.end);

@@ -59,6 +59,7 @@ export function expandCommand(template: string, args: string, workspaceRoot?: st
   let out = template;
   // $ARGUMENTS placeholder substitution (also ${ARGUMENTS} and $ARGUMENTS)
   out = out.replaceAll("$ARGUMENTS", args);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal ${ARGUMENTS} placeholder, not a template string
   out = out.replaceAll("${ARGUMENTS}", args);
   out = out.replaceAll("$ARGS", args);
 

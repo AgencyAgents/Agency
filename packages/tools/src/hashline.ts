@@ -126,11 +126,13 @@ export function parseHashlineChunks(formatted: string): ParsedHashlineChunk[] {
     const startLine = Number(open[1]);
     const endLine = Number(open[2]);
     const lineCount = Number(open[3]);
-    const hash = open[4]!;
+    const hash = open[4] ?? "";
     const body: string[] = [];
     i += 1;
     while (i < lines.length && lines[i] !== "</hashline>") {
-      body.push(lines[i]!);
+      const line = lines[i];
+      if (line === undefined) break;
+      body.push(line);
       i += 1;
     }
     i += 1; // skip </hashline> (or run off the end)
@@ -167,30 +169,56 @@ function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
   // LCS length table
   const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
-    const row = dp[i]!;
-    const nextRow = dp[i + 1]!;
+    const row = dp[i];
+    const nextRow = dp[i + 1];
+    if (row === undefined || nextRow === undefined) continue;
     for (let j = m - 1; j >= 0; j--) {
-      row[j] = oldLines[i] === newLines[j] ? nextRow[j + 1]! + 1 : Math.max(nextRow[j]!, row[j + 1]!);
+      const oldLine = oldLines[i];
+      const newLine = newLines[j];
+      row[j] =
+        oldLine !== undefined && oldLine === newLine
+          ? (nextRow[j + 1] ?? 0) + 1
+          : Math.max(nextRow[j] ?? 0, row[j + 1] ?? 0);
     }
   }
   const ops: DiffOp[] = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (oldLines[i] === newLines[j]) {
-      ops.push({ kind: "equal", line: oldLines[i]! });
+    const oldLine = oldLines[i];
+    const newLine = newLines[j];
+    if (oldLine !== undefined && oldLine === newLine) {
+      ops.push({ kind: "equal", line: oldLine });
       i += 1;
       j += 1;
-    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
-      ops.push({ kind: "del", line: oldLines[i]! });
+    } else if ((dp[i + 1]?.[j] ?? 0) >= (dp[i]?.[j + 1] ?? 0)) {
+      const delLine = oldLines[i];
+      if (delLine === undefined) {
+        i += 1;
+        continue;
+      }
+      ops.push({ kind: "del", line: delLine });
       i += 1;
     } else {
-      ops.push({ kind: "ins", line: newLines[j]! });
+      const insLine = newLines[j];
+      if (insLine === undefined) {
+        j += 1;
+        continue;
+      }
+      ops.push({ kind: "ins", line: insLine });
       j += 1;
     }
   }
-  while (i < n) ops.push({ kind: "del", line: oldLines[i++]! });
-  while (j < m) ops.push({ kind: "ins", line: newLines[j++]! });
+  while (i < n) {
+    const line = oldLines[i++];
+    if (line === undefined) continue;
+    ops.push({ kind: "del", line });
+  }
+  while (j < m) {
+    const line = newLines[j++];
+    if (line === undefined) continue;
+    ops.push({ kind: "ins", line });
+  }
   return ops;
 }
 
@@ -223,11 +251,12 @@ export function unifiedDiff(oldText: string, newText: string, options?: UnifiedD
 
   // Group changed ops into hunks joined by ≤ 2*ctx equal lines (index ranges).
   const ranges: Array<{ start: number; end: number }> = [];
-  let hunkStart = Math.max(0, changeIdx[0]! - ctx);
-  let hunkEnd = Math.min(ops.length, changeIdx[0]! + 1 + ctx);
+  const firstChange = changeIdx[0] ?? 0;
+  let hunkStart = Math.max(0, firstChange - ctx);
+  let hunkEnd = Math.min(ops.length, firstChange + 1 + ctx);
   for (let k = 1; k < changeIdx.length; k++) {
-    const prev = changeIdx[k - 1]!;
-    const cur = changeIdx[k]!;
+    const prev = changeIdx[k - 1] ?? 0;
+    const cur = changeIdx[k] ?? 0;
     if (cur - prev <= ctx * 2 + 1) {
       hunkEnd = Math.min(ops.length, cur + 1 + ctx);
     } else {
@@ -245,7 +274,8 @@ export function unifiedDiff(oldText: string, newText: string, options?: UnifiedD
     let oldStartLine = 1;
     let newStartLine = 1;
     for (let q = 0; q < start; q++) {
-      const op = ops[q]!;
+      const op = ops[q];
+      if (op === undefined) continue;
       if (op.kind === "equal" || op.kind === "del") oldStartLine += 1;
       if (op.kind === "equal" || op.kind === "ins") newStartLine += 1;
     }

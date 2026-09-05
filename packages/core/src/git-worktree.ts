@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -53,6 +53,73 @@ export async function createWorktree(cwd: string, path: string, branch?: string)
 export async function removeWorktree(cwd: string, path: string, force = false): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), path];
   await execFileAsync("git", args, { cwd });
+}
+
+/**
+ * Restores owner-writability across a worktree previously locked down with
+ * {@link makeWorktreeReadOnly}. Required before removal: `git worktree
+ * remove` cannot delete read-only files (Windows read-only attribute, POSIX
+ * write-less directories), so cleanup must restore first.
+ *
+ * @param worktreePath - Absolute path to the git worktree root.
+ */
+export function restoreWorktreeWritable(worktreePath: string): void {
+  const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+  const root = worktreePath.replace(/\\/g, sep);
+  const restoreRecursive = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return; // permission error or gone — stop descending
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      try {
+        const st = statSync(full);
+        if (st.isDirectory()) {
+          restoreRecursive(full);
+          chmodSync(full, st.mode | 0o700);
+        } else {
+          chmodSync(full, st.mode | 0o200);
+        }
+        if (isWin) {
+          execFileSync("attrib", ["-r", full], { windowsHide: true });
+        }
+      } catch {
+        // Stale symlink, race, or permission — skip.
+      }
+    }
+  };
+  restoreRecursive(root);
+  if (isWin) {
+    try {
+      execFileSync("attrib", ["-r", root], { windowsHide: true });
+    } catch {
+      // best-effort: root attr is advisory, removal proceeds regardless
+    }
+  }
+}
+
+/**
+ * Removes a read-only worktree: restores writability first (see
+ * {@link restoreWorktreeWritable}) so `git worktree remove --force` can
+ * delete the locked files, then removes it. If git already unregistered the
+ * worktree (a previous remove deleted the metadata but not the locked
+ * files), falls back to recursive delete plus `git worktree prune`.
+ */
+export async function removeReadOnlyWorktree(cwd: string, path: string): Promise<void> {
+  restoreWorktreeWritable(path);
+  try {
+    await removeWorktree(cwd, path, true);
+  } catch {
+    rmSync(path, { recursive: true, force: true });
+    try {
+      await execFileAsync("git", ["worktree", "prune"], { cwd });
+    } catch {
+      // best-effort: the files are gone, stale metadata is harmless
+    }
+  }
 }
 
 /**

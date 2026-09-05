@@ -46,7 +46,7 @@ function fakeTransport(responses: Record<string, unknown>): McpTransport {
 }
 
 describe("createBuiltinTools", () => {
-  test("without mcpServers the set is the fourteen built-ins with no failures", async () => {
+  test("without mcpServers the set is the fifteen built-ins with no failures", async () => {
     const root = mkdtempSync(join(tmpdir(), "agency-builtin-set-"));
     dirs.push(root);
 
@@ -59,6 +59,7 @@ describe("createBuiltinTools", () => {
 
     expect(builtins.tools.map((t: { name: string }) => t.name).sort()).toEqual([
       "bash",
+      "browser",
       "edit",
       "execute_plan",
       "fetch",

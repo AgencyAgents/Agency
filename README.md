@@ -1,7 +1,7 @@
 # Agency
 
 A headless backend coding harness: daemon, RPC, HTTP+SSE gateway, real provider
-support, tools, MCP/LSP, swarm, traces, permissions, and a headless CLI.
+support, tools, MCP/LSP, orchestra, traces, permissions, and a headless CLI.
 The interactive frontend is not included in this build — it follows separately.
 Built for Windows, macOS, and Linux with equal standing.
 

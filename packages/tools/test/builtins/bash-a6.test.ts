@@ -47,7 +47,9 @@ describe("bash: timeout + spill + progress (A6)", () => {
 
     expect(result.content).toContain("[timeout");
     expect(result.content).toContain("1000ms");
-    expect(result.isError).toBeFalsy();
+    // Phase 6 contract: abort (including a timeout kill) surfaces as an
+    // error while retaining partial output alongside the label.
+    expect(result.isError).toBe(true);
   }, 30_000);
 
   test("a fast command is unaffected by a generous timeout", async () => {
@@ -94,7 +96,11 @@ describe("process_* builtins (A6)", () => {
     managers.push(started);
 
     const shell = resolveShell(process.platform);
-    const command = process.platform === "win32" ? "ping -n 30 127.0.0.1" : "sleep 30";
+    // The background command must print first: the output poll below waits
+    // for content, and a silent `sleep 30` never produces any, so the poll
+    // runs past the runner's default 5s test timeout on every platform.
+    const command =
+      process.platform === "win32" ? "echo ready; ping -n 30 127.0.0.1" : "echo ready; sleep 30";
     const proc = started.spawn([shell.command, ...shell.buildArgs(command)], { cwd: root });
 
     const list = await createProcessListTool(started).handler({}, { signal });
@@ -108,11 +114,12 @@ describe("process_* builtins (A6)", () => {
       if (!seen.startsWith("no output yet")) break;
       await new Promise((r) => setTimeout(r, 200));
     }
-    expect(seen).not.toContain("no output yet");
+    expect(seen).toContain("ready");
 
     const kill = await createProcessKillTool(deps, started).handler({ id: proc.id }, { signal });
     expect(kill.content).toContain("killed process");
-  });
+    expect(started.list().find((p) => p.id === proc.id)?.running).toBe(false);
+  }, 30_000);
 
   test("unknown ids fail with a clear error", async () => {
     const { deps, manager } = setup();

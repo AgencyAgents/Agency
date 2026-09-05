@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RequestApproval } from "./approval.ts";
@@ -117,7 +117,23 @@ export class SandboxBoundary {
 
   private contains(resolved: string): boolean {
     const normalizedRoot = this.canonicalRoot();
-    return resolved === normalizedRoot || resolved.startsWith(`${normalizedRoot}${sep()}`);
+    if (resolved === normalizedRoot || resolved.startsWith(`${normalizedRoot}${sep()}`)) return true;
+    // Windows: TEMP (and thus workspaceRoot) is often the 8.3 short form
+    // (C:\Users\RUNNER~1\...) while PowerShell reports the long form
+    // (C:\Users\runneradmin\...). realpathSync preserves the short form;
+    // only realpathSync.native resolves via GetFinalPathNameByHandle.
+    // Fall back to a native-aware, case-insensitive compare so the same
+    // directory under either spelling stays contained. The fast path above
+    // already accepted exact matches (e.g. new files under a short root),
+    // so this only widens genuinely equivalent spellings.
+    if (process.platform !== "win32") return false;
+    try {
+      const a = windowsCompareKey(resolved);
+      const b = windowsCompareKey(normalizedRoot);
+      return a === b || a.startsWith(`${b}\\`);
+    } catch {
+      return false;
+    }
   }
 
   private canonicalRoot(): string {
@@ -129,11 +145,31 @@ function sep(): string {
   return process.platform === "win32" ? "\\" : "/";
 }
 
+function windowsCompareKey(p: string): string {
+  let candidate = p.replace(/\//g, "\\");
+  const native = (realpathSync as unknown as { native?: (s: string) => string }).native;
+  if (typeof native === "function") {
+    try {
+      candidate = native(candidate);
+    } catch {
+      // Missing file: keep input; exact-match fast path already handled it.
+    }
+  }
+  if (candidate.startsWith("\\\\?\\")) candidate = candidate.slice(4);
+  if (candidate.startsWith("UNC\\")) candidate = `\\${candidate.slice(4)}`;
+  return candidate.replace(/\//g, "\\").toLowerCase();
+}
+
 /**
  * Canonicalizes `path` through realpath so symlinked components are dereferenced.
- * Not-yet-existing components (a file a tool is about to create) can't be
- * dereferenced, so the deepest existing ancestor is resolved instead and the
- * missing tail re-appended — that still catches a symlinked parent directory.
+ * A missing final component (a file a tool is about to create) resolves through
+ * the deepest existing ancestor with the missing tail re-appended; genuinely
+ * absent intermediate directories resolve the same way, since tools create
+ * parents after the containment check. Anything the filesystem refuses to
+ * resolve — EACCES on a permission-restricted directory, ELOOP on a symlink
+ * chain, or a dangling link (ENOENT from realpath but present to lstat, so
+ * re-appending it literally would hide its target from `contains()`) — is
+ * denied with a typed refusal, never a raw fs error.
  */
 function canonicalPath(path: string): string {
   const resolved = resolve(path);
@@ -145,12 +181,8 @@ function canonicalPath(path: string): string {
       if (tail === "") return real;
       return real.endsWith(sep()) ? real + tail : `${real}${sep()}${tail}`;
     } catch (err: unknown) {
-      // ENOENT means the component genuinely doesn't exist yet (file to be
-      // created), walk up to resolve the deepest existing ancestor. Any other
-      // error (EACCES, ELOOP, etc.) means the path can't be verified, deny it
-      // as an AgencyError so callers see a typed refusal, not a raw fs error.
       const nodeErr = err as { code?: string };
-      if (nodeErr.code !== "ENOENT") {
+      if (nodeErr.code !== "ENOENT" || isDanglingLink(current)) {
         throw new AgencyError(ErrorCode.PERMISSION_DENIED, `cannot verify path: ${path}`, {
           source: "sandbox",
           context: { path, code: nodeErr.code ?? "unknown" },
@@ -161,5 +193,25 @@ function canonicalPath(path: string): string {
       tail = tail === "" ? basename(current) : `${basename(current)}${sep()}${tail}`;
       current = parent;
     }
+  }
+}
+
+/**
+ * True when `current` exists as a link realpath cannot see through (dangling
+ * target): lstat observes the link itself where realpath reported ENOENT. A
+ * non-ENOENT lstat failure is unverifiable either way, so it also denies.
+ */
+function isDanglingLink(current: string): boolean {
+  try {
+    lstatSync(current);
+    return true;
+  } catch (err: unknown) {
+    if ((err as { code?: string }).code !== "ENOENT") {
+      throw new AgencyError(ErrorCode.PERMISSION_DENIED, `cannot verify path: ${current}`, {
+        source: "sandbox",
+        context: { path: current, code: (err as { code?: string }).code ?? "unknown" },
+      });
+    }
+    return false;
   }
 }

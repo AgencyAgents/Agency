@@ -13,14 +13,18 @@ describe("PendingRequestManager", () => {
     expect(manager.has(1)).toBe(true);
     expect(manager.size).toBe(2);
 
-    first.promise.then((value) => {
-      expect(value).toBe("result");
-    });
     expect(manager.resolve(1, "result")).toBe(true);
 
-    await first.promise;
+    await expect(first.promise).resolves.toBe("result");
     expect(manager.has(1)).toBe(false);
     expect(manager.size).toBe(1);
+
+    // Every registration must settle: an unsettled entry's timer fires later
+    // as an unhandled rejection, which the runner attributes to whatever test
+    // happens to be running then (a 1000ms stray failing an unrelated suite).
+    expect(manager.resolve(2, "second-result")).toBe(true);
+    await expect(second.promise).resolves.toBe("second-result");
+    expect(manager.size).toBe(0);
   });
 
   test("reject rejects with the given error and cleans up", async () => {

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { CallerIdentity } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { type BashState, createBashTool } from "./builtins/bash.ts";
+import { createBrowserTool } from "./builtins/browser.ts";
 import { createEditTool } from "./builtins/edit.ts";
 import { createFetchTool } from "./builtins/fetch.ts";
 import { createGlobTool } from "./builtins/glob.ts";
@@ -34,10 +35,15 @@ import { SnapshotStore } from "./snapshot.ts";
 /**
  * Per-session isolated state and tool set.
  *
- * Each daemon session (room) gets its own SessionScope so concurrent agents
- * never corrupt each other's mutable state:
+ * A session is a Room execution context (see RoomStore in
+ * @agency/core's orchestra/room.ts): the room is the persistent shared
+ * abstraction — shared goal, member roster, shared todos, mailbox
+ * broadcast — while the SessionScope is the per-member isolated slice of
+ * runtime state that lets concurrent room members run without corrupting
+ * each other's mutable state:
  * - bashState.cwd: one cwd per session (previously one mutable string daemon-wide)
- * - TodoStore: one todo list per session (previously shared)
+ * - TodoStore: one todo list per session (previously shared; the room-level
+ *   shared list lives on the Room, this store is the member's working view)
  * - ProcessManager: one process table per session (previously shared)
  * - SnapshotStore journal: per-instance in-memory journal (content-addressed blobs
  *   on disk are shared — hash-referenced, safe to share — but the undo/journal
@@ -72,6 +78,11 @@ export interface SessionScope {
   mcp?: McpManager;
   mcpIdentityFor: (serverName: string, handle?: string) => CallerIdentity;
   lspRegistry?: LspRegistry;
+  /**
+   * Owning room id when this session runs as a member of a Room
+   * (orchestra/room.ts). Undefined for standalone sessions.
+   */
+  roomId?: string;
   dispose(): Promise<void>;
 }
 
@@ -163,6 +174,7 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
   registry.register(createGrepTool(options.deps));
   registry.register(createGlobTool(options.deps));
   registry.register(createFetchTool(options.deps, options.http));
+  registry.register(createBrowserTool(options.deps, options.http));
   registry.register(createTodoReadTool(todos));
   registry.register(createTodoWriteTool(todos));
   registry.register(createExecutePlanTool(options.deps, todos));

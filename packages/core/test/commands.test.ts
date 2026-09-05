@@ -17,7 +17,9 @@ describe("slash commands", () => {
     expect(expandCommand(tmpl, "my feature")).toBe("Review: my feature\nDone");
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal ${ARGUMENTS} placeholder in test name, not a template
   test("${ARGUMENTS} and $ARGS substitution", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal ${ARGUMENTS} placeholder string, not a template
     expect(expandCommand("args=${ARGUMENTS}", "hello")).toBe("args=hello");
     expect(expandCommand("args=$ARGS", "hello")).toBe("args=hello");
   });

@@ -1,8 +1,23 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeWorktreeReadOnly } from "../src/git-worktree.ts";
+import {
+  createWorktree,
+  listWorktrees,
+  makeWorktreeReadOnly,
+  removeReadOnlyWorktree,
+  restoreWorktreeWritable,
+} from "../src/git-worktree.ts";
+
+let gitAvailable = false;
+try {
+  execFileSync("git", ["--version"], { stdio: "ignore" });
+  gitAvailable = true;
+} catch {
+  gitAvailable = false;
+}
 
 describe("makeWorktreeReadOnly", () => {
   const dirs: string[] = [];
@@ -145,4 +160,104 @@ describe("makeWorktreeReadOnly", () => {
     writeFileSync(join(scratchAbs, "output.txt"), "works");
     expect(readFileSync(join(scratchAbs, "output.txt"), "utf8")).toBe("works");
   });
+});
+
+describe("restoreWorktreeWritable", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of dirs.splice(0)) {
+      try {
+        restoreWorktreeWritable(d);
+      } catch {}
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+
+  it("makes a hardened worktree writable again so cleanup can delete it", () => {
+    const root = mkdtempSync(join(tmpdir(), "wt-restore-"));
+    dirs.push(root);
+    writeFileSync(join(root, "readme.md"), "content");
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "index.ts"), "const x = 1;");
+
+    makeWorktreeReadOnly(root, ".agency/scratch/x");
+    expect(() => writeFileSync(join(root, "readme.md"), "new")).toThrow();
+
+    restoreWorktreeWritable(root);
+
+    writeFileSync(join(root, "readme.md"), "new");
+    expect(readFileSync(join(root, "readme.md"), "utf8")).toBe("new");
+    writeFileSync(join(root, "src", "index.ts"), "const x = 2;");
+    expect(() => accessSync(join(root, "readme.md"), constants.W_OK)).not.toThrow();
+  });
+});
+
+describe("removeReadOnlyWorktree", () => {
+  it.skipIf(!gitAvailable)(
+    "removes a hardened real git worktree (plain remove would fail with Permission denied)",
+    async () => {
+      const repo = mkdtempSync(join(tmpdir(), "wt-rm-repo-"));
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: repo });
+        execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: repo });
+        execFileSync("git", ["config", "user.name", "qa"], { cwd: repo });
+        writeFileSync(join(repo, "app.ts"), "export const v = 1;\n");
+        execFileSync("git", ["add", "."], { cwd: repo });
+        execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
+
+        const wtPath = join(repo, ".agency", "worktrees", "reviewer");
+        await createWorktree(repo, wtPath);
+        makeWorktreeReadOnly(wtPath, join(".agency", "scratch", "reviewer"));
+        expect(() => writeFileSync(join(wtPath, "app.ts"), "HACKED")).toThrow();
+
+        await removeReadOnlyWorktree(repo, wtPath);
+
+        const listed = await listWorktrees(repo);
+        expect(listed.some((w) => w.path === wtPath)).toBe(false);
+      } finally {
+        try {
+          restoreWorktreeWritable(repo);
+        } catch {}
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!gitAvailable)(
+    "falls back to recursive delete when git already unregistered the worktree",
+    async () => {
+      const repo = mkdtempSync(join(tmpdir(), "wt-rm-fb-"));
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: repo });
+        execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: repo });
+        execFileSync("git", ["config", "user.name", "qa"], { cwd: repo });
+        writeFileSync(join(repo, "app.ts"), "export const v = 1;\n");
+        execFileSync("git", ["add", "."], { cwd: repo });
+        execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
+
+        const wtPath = join(repo, ".agency", "worktrees", "reviewer");
+        await createWorktree(repo, wtPath);
+        makeWorktreeReadOnly(wtPath, join(".agency", "scratch", "reviewer"));
+
+        // Simulate a partial cleanup: unregister the worktree in git metadata
+        // while the locked files remain on disk.
+        restoreWorktreeWritable(join(repo, ".git", "worktrees"));
+        rmSync(join(repo, ".git", "worktrees", "reviewer"), { recursive: true, force: true });
+
+        await removeReadOnlyWorktree(repo, wtPath);
+
+        expect(() => accessSync(wtPath, constants.F_OK)).toThrow();
+        const listed = await listWorktrees(repo);
+        expect(listed.some((w) => w.path === wtPath)).toBe(false);
+      } finally {
+        try {
+          restoreWorktreeWritable(repo);
+        } catch {}
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 });

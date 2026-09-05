@@ -145,7 +145,7 @@ export class TraceRecorder {
   }
 
   getSpans(): TraceSpan[] {
-    return this.order.map((id) => this.spans.get(id)!).filter(Boolean);
+    return this.order.map((id) => this.spans.get(id)).filter((s): s is TraceSpan => s !== undefined);
   }
 
   getTree(traceId?: string): SpanTreeNode[] {

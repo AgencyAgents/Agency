@@ -71,6 +71,16 @@ const PATH_PATTERN_TOOLS = new Set(["write", "edit", "read", "execute_plan"]);
 /** Tools whose pattern maps match command strings. */
 const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
 
+/**
+ * First-party orchestration tools. They spawn bounded subagent turns (budgets,
+ * depth bounds, and per-agent gates are the controls), so the gate allows them
+ * by default in workspaces where mutating tools may run. Explicit config
+ * entries still win (including `deny`), per-agent maps still filter unlisted
+ * tools, and the trust gate in `check` still denies them in untrusted
+ * workspaces — this allow is unreachable there.
+ */
+const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "task"]);
+
 export function isPathPatternTool(tool: string): boolean {
   return PATH_PATTERN_TOOLS.has(tool);
 }
@@ -354,6 +364,7 @@ export class PermissionsGate implements ToolPolicy {
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
       if (this.options.absentToolsDenied) return "deny";
+      if (ORCHESTRATION_TOOLS.has(request.tool) && this.workspaceAllowsOrchestration()) return "allow";
       const decision = this.defaultFor(request.riskTier);
       if (decision === "allow" && this.isEnvRead(request)) return "deny";
       return decision;
@@ -400,9 +411,13 @@ export class PermissionsGate implements ToolPolicy {
   ): Promise<"allow" | "deny"> {
     // Trust gate: mutating or executing tools require a trusted workspace.
     // Read-only (`safe`) tools still work — refusing trust leaves a usable,
-    // read-only session instead of a dead one.
+    // read-only session instead of a dead one. Only an explicit "safe" tier
+    // passes: a missing or unrecognized tier is untrusted input (a dynamically
+    // loaded plugin tool is the obvious source — `riskTier` is an
+    // interface-only guarantee, never runtime-validated), so it defaults to
+    // unsafe and is denied here.
     const trust = this.options.trust;
-    if (trust?.required && request.riskTier !== "safe") {
+    if (trust?.required && (request.riskTier ?? "dangerous") !== "safe") {
       if (!trust.store.isTrusted(trust.root)) return "deny";
     }
 
@@ -448,7 +463,28 @@ export class PermissionsGate implements ToolPolicy {
     return false;
   }
 
+  /**
+   * Verdict for a tool with no configured permission: `safe` tools run,
+   * everything else asks. A missing tier is untrusted input, so it fails safe
+   * to `ask` rather than silently allowing.
+   */
   private defaultFor(riskTier?: RiskTier): Decision {
-    return riskTier === "moderate" || riskTier === "dangerous" ? "ask" : "allow";
+    return riskTier === "safe" ? "allow" : "ask";
+  }
+
+  /**
+   * True when the workspace may run mutating tools: trust gating is off, or
+   * the trust store marks this root trusted. Absent trust options fail closed.
+   * Mirrors the trust gate in `check`, so this allow never widens it.
+   */
+  private workspaceAllowsOrchestration(): boolean {
+    const trust = this.options.trust;
+    if (!trust) return false;
+    if (!trust.required) return true;
+    try {
+      return trust.store.isTrusted(trust.root);
+    } catch {
+      return false;
+    }
   }
 }

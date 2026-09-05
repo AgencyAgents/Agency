@@ -1,3 +1,4 @@
+import type { CallerIdentity } from "@agency/guard";
 import { counterIds, PendingRequestManager } from "@agency/net";
 import type { McpToolDefinition } from "./adapt.ts";
 import type { McpTransport } from "./transport.ts";
@@ -44,12 +45,16 @@ export class McpClient {
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    opts: { identity?: CallerIdentity } = {},
   ): Promise<{ content: unknown; isError?: boolean }> {
-    const result = (await this.request(
-      "tools/call",
-      { name, arguments: args },
-      { timeoutMs: this.toolCallTimeoutMs, signal },
-    )) as {
+    const params: Record<string, unknown> = { name, arguments: args };
+    if (opts.identity) {
+      params._meta = { caller: { ...opts.identity } };
+    }
+    const result = (await this.request("tools/call", params, {
+      timeoutMs: this.toolCallTimeoutMs,
+      signal,
+    })) as {
       content?: unknown;
       isError?: boolean;
     };

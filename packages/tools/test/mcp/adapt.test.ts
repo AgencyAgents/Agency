@@ -11,7 +11,7 @@ import type { McpClient } from "../../src/mcp/client.ts";
 const OPTIONS: AdaptOptions = {
   serverName: "srv",
   riskTier: "moderate",
-  identity: { type: "agent", name: "main" },
+  identityFor: (_handle?: string) => ({ type: "agent", name: _handle ?? "main" }),
   capabilities: FULL_CAPABILITIES,
 };
 
@@ -86,5 +86,29 @@ describe("adaptMcpTool handler", () => {
     const result = await spec.handler({}, { signal: new AbortController().signal });
     expect(result.content).toBe("");
     expect(result.isError).toBe(true);
+  });
+
+  test("resolves caller identity per call from ctx.agentHandle, never baked at adapt time", async () => {
+    const seen: unknown[] = [];
+    const client = {
+      callTool: async (
+        _name: string,
+        _args: unknown,
+        _signal?: AbortSignal,
+        opts?: { identity?: { type: string; name: string } },
+      ) => {
+        seen.push(opts?.identity);
+        return { content: "ok" };
+      },
+    } as unknown as McpClient;
+    const spec = adaptMcpTool(client, def, OPTIONS);
+    await spec.handler({}, { signal: new AbortController().signal, agentHandle: "alice" });
+    await spec.handler({}, { signal: new AbortController().signal, agentHandle: "bob" });
+    await spec.handler({}, { signal: new AbortController().signal });
+    expect(seen).toEqual([
+      { type: "agent", name: "alice" },
+      { type: "agent", name: "bob" },
+      { type: "agent", name: "main" },
+    ]);
   });
 });

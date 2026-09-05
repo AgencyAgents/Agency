@@ -95,8 +95,10 @@ export class ApprovalManager {
   private saveGrants(): void {
     const path = this.grantsPath;
     if (!path) return;
+    const dir = this.approvalsDir;
+    if (!dir) return;
     try {
-      mkdirSync(this.approvalsDir!, { recursive: true });
+      mkdirSync(dir, { recursive: true });
       writeFileSync(path, JSON.stringify([...this.grants]));
     } catch {
       // Best-effort persistence — failure must not break the running daemon.

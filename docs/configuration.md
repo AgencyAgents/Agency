@@ -11,7 +11,7 @@ Agency loads one `Config` from stacked layers, lowest to highest:
 
 Layers merge with `deepMergeLayer`: plain objects recurse (e.g. `provider.<id>` extends rather than replaces), arrays and scalars replace.
 
-Global `configDir` per OS: Windows `%APPDATA%/Agency`, other platforms `~/.config/agency` (Linux respects `XDG_CONFIG_HOME`, macOS currently uses `~/.config/agency`). Project config is always `.agency/config.jsonc` under the workspace root.
+Global `configDir` per OS: Windows `%APPDATA%/Agency`, other platforms `~/.config/agency` (Linux respects `XDG_CONFIG_HOME`). macOS note: only the *config* file lives under `~/.config/agency`; user data goes to `~/Library/Application Support/Agency` and the regenerable cache to `~/Library/Caches/Agency` (see `agency where`). Project config is always `.agency/config.jsonc` under the workspace root.
 
 Schema version is `2`; older files migrate via `configMigrations`. Validation is Zod (`ConfigSchema`); an invalid file throws.
 
@@ -39,11 +39,11 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only; default `powershell` |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
-| `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Swarm roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
+| `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Orchestra roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
 | `leader` | string | — | Handle of leader agent; defaults to first roster entry |
-| `budgets` | `{perAgentUsd?, swarmUsd?}` | — | Token/cost ceilings per agent and swarm-wide |
+| `budgets` | `{perAgentUsd?, orchestraUsd?}` | — | Token/cost ceilings per agent and orchestra-wide |
 
-### Agents presets (swarm roster)
+### Agents presets (orchestra roster)
 
 Starter roster presets are editable config examples, not hardcoded. Example:
 
@@ -60,7 +60,7 @@ Starter roster presets are editable config examples, not hardcoded. Example:
     "warden": { "role": "reviewer", "provider": "openai", "model": "gpt-5.2", "effort": "high", "permissions": { "write": "deny", "edit": "deny" } }
   },
   "leader": "marshal",
-  "budgets": { "perAgentUsd": 5, "swarmUsd": 20 }
+  "budgets": { "perAgentUsd": 5, "orchestraUsd": 20 }
 }
 ```
 
@@ -68,7 +68,21 @@ Worktree isolation: agents with write capabilities get `.agency/worktrees/<handl
 
 ### ProviderConfig (`provider.<id>`)
 
-`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default `openai-compatible` for config-defined providers), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
+`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default `openai-compatible` for config-defined providers), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
+
+### OAuth (`provider.<id>.oauth`)
+
+`agency auth login <provider> --oauth` runs the PKCE browser flow for `anthropic`, `openai`, `google`, or `github-copilot` and stores the token in the OS keychain under the single canonical `<provider>:oauth` slot. The shipped client ids are placeholders: register an OAuth app at the provider's developer console and provision it via config:
+
+```jsonc
+{
+  "provider": {
+    "anthropic": { "oauth": { "clientId": "your-client-id" } }
+  }
+}
+```
+
+Without a configured `clientId` the login and any token refresh fail with an explicit auth error (a failed refresh never silently reuses the stale token — re-run `auth login <provider> --oauth`). `baseUrl` optionally points the authorize/token endpoints at a self-hosted gateway (`<baseUrl>/authorize`, `<baseUrl>/token`).
 
 ## Environment variable overrides
 
@@ -88,7 +102,7 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 ## Providers and models
 
-`--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
+`--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
 
 ## Permissions
 

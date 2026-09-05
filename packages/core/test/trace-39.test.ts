@@ -119,7 +119,7 @@ describe("item 39: observability spans", () => {
     recorder.endSpan(m, { attributes: { cost: 0.01, inputTokens: 5, outputTokens: 5 } });
     recorder.endTurnSpan();
     // Non-blocking: returns void synchronously, never throws.
-    const ret: void = recorder.flushAsync();
+    const ret = recorder.flushAsync();
     expect(ret).toBeUndefined();
     // Swallow: explicit flush also resolves (never rejects) despite bad dir.
     await recorder.flush();

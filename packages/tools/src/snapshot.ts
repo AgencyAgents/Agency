@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { AgencyError, ErrorCode } from "@agency/schema";
 
 export interface SnapshotEntry {
   /** Content hash of the file at the moment it was captured. */
@@ -24,6 +34,30 @@ interface JournalRecord {
 
 export interface UndoOutcome {
   path: string;
+}
+
+/** One file captured inside a shadow commit: latest known hash per path. */
+export interface ShadowCommitFile {
+  path: string;
+  hash: string;
+}
+
+/**
+ * Content-addressed checkpoint manifest written by `shadowCommit`.
+ * `commitHash` is the sha256 of the canonical `{ sessionId, message,
+ * createdAt, files }` payload, so identical checkpoints share one file.
+ */
+export interface ShadowCommitManifest {
+  commitHash: string;
+  sessionId: string;
+  message: string;
+  createdAt: string;
+  files: ShadowCommitFile[];
+}
+
+export interface ShadowCommitOutcome {
+  commitHash: string;
+  files: ShadowCommitFile[];
 }
 
 function contentHash(content: string): string {
@@ -204,6 +238,86 @@ export class SnapshotStore {
   /** Journal length, for tests and callers that want to know undo depth. */
   get depth(): number {
     return this.journal.length;
+  }
+
+  /**
+   * Journal-only checkpoint over the latest known state per path (each
+   * path's most recent afterHash, else its before hash). Writes a
+   * content-addressed manifest to `<storeDir>/shadow-commits/<hash>.json`
+   * and appends the same record to `<storeDir>/shadow-journal.jsonl`;
+   * both writes are best-effort and never throw. No git command runs
+   * here — the daemon has no git write permission by default.
+   *
+   * Future git integration: when a session gains git write permission, a
+   * caller can materialize a real commit from the manifest by checking
+   * out each file's blob content (`read({hash, path, capturedAt})`) and
+   * running `git commit` itself; `commitHash` then serves as the
+   * journal-to-commit correlation id (e.g. in the commit message).
+   */
+  shadowCommit(sessionId: string, message: string): ShadowCommitOutcome {
+    if (sessionId.trim().length === 0) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, "shadow commit requires a non-empty session id", {
+        source: "snapshot",
+        context: {},
+      });
+    }
+    if (message.trim().length === 0) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, "shadow commit requires a non-empty message", {
+        source: "snapshot",
+        context: { sessionId },
+      });
+    }
+    const latest = new Map<string, string>();
+    for (const record of this.journal) {
+      latest.set(record.before.path, record.afterHash ?? record.before.hash);
+    }
+    const files: ShadowCommitFile[] = [...latest.entries()]
+      .map(([path, hash]) => ({ path, hash }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const createdAt = new Date().toISOString();
+    const commitHash = createHash("sha256")
+      .update(JSON.stringify({ sessionId, message, createdAt, files }), "utf8")
+      .digest("hex");
+    const manifest: ShadowCommitManifest = { commitHash, sessionId, message, createdAt, files };
+    try {
+      mkdirSync(join(this.storeDir, "shadow-commits"), { recursive: true });
+      writeFileSync(
+        join(this.storeDir, "shadow-commits", `${commitHash}.json`),
+        JSON.stringify(manifest, null, 2),
+        "utf8",
+      );
+      appendFileSync(join(this.storeDir, "shadow-journal.jsonl"), `${JSON.stringify(manifest)}\n`, "utf8");
+    } catch (error) {
+      console.warn(
+        `[snapshot] shadow commit persist failed for session ${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return { commitHash, files };
+  }
+
+  /** Reads a persisted shadow-commit manifest, if the hash exists. */
+  readShadowCommit(commitHash: string): ShadowCommitManifest | undefined {
+    const file = join(this.storeDir, "shadow-commits", `${commitHash}.json`);
+    if (!existsSync(file)) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+      if (typeof parsed !== "object" || parsed === null) return undefined;
+      const m = parsed as Record<string, unknown>;
+      if (
+        typeof m.commitHash !== "string" ||
+        typeof m.sessionId !== "string" ||
+        typeof m.message !== "string" ||
+        typeof m.createdAt !== "string" ||
+        !Array.isArray(m.files)
+      ) {
+        return undefined;
+      }
+      return parsed as ShadowCommitManifest;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
