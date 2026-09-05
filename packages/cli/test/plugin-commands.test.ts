@@ -33,6 +33,7 @@ function capture() {
       err: (line: string) => {
         errLines.push(line);
       },
+      cwd: undefined as string | undefined,
     },
   };
 }
