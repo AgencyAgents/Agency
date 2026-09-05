@@ -127,3 +127,27 @@ export function formatCacheHitRate(rate: number | undefined): string {
   if (rate === undefined) return "n/a";
   return `${Math.round(rate * 100)}%`;
 }
+
+/** Feedback paths with usage instrumentation. One event per route. */
+export type FeedbackRoute = "route" | "compact" | "dispatch" | "gate";
+
+/** Every instrumented feedback path. Coverage tests assert this stays stable. */
+export const FEEDBACK_ROUTES: readonly FeedbackRoute[] = ["route", "compact", "dispatch", "gate"];
+
+/** Telemetry event name for a feedback path. Codes only, never content. */
+export function feedbackEventName(route: FeedbackRoute): string {
+  return `feedback.${route}`;
+}
+
+/** Records one scalar-only usage event for a feedback path. No-op when off. */
+export function recordFeedbackUsage(
+  telemetry: { record(name: string, fields?: Record<string, string | number | boolean | null>): void },
+  route: FeedbackRoute,
+  fields: { reason?: string; detail?: string } = {},
+): void {
+  telemetry.record(feedbackEventName(route), {
+    route,
+    ...(fields.reason === undefined ? {} : { reason: fields.reason }),
+    ...(fields.detail === undefined ? {} : { detail: fields.detail }),
+  });
+}

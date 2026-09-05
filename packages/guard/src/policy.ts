@@ -488,3 +488,15 @@ export class PermissionsGate implements ToolPolicy {
     }
   }
 }
+
+/** User-facing one-line rendering of a skip reason. Keeps the reason token. */
+export function formatSkipForDisplay(reason: string, detail: string, handle?: string): string {
+  const who = handle ?? "request";
+  return `${who}: [skip:${reason}] ${detail}`;
+}
+
+/** User-facing one-line rendering of a plan gate reason. Keeps the reason. */
+export function formatGateForDisplay(reason: string, detail: string): string {
+  const verdict = reason.startsWith("fail-") ? "blocked" : "passed";
+  return `plan gate ${verdict} [${reason}]: ${detail}`;
+}

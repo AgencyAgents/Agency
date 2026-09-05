@@ -14,9 +14,13 @@ export {
 export {
   appendUsageEntry,
   cacheHitRate,
+  FEEDBACK_ROUTES,
+  type FeedbackRoute,
+  feedbackEventName,
   formatCacheHitRate,
   formatCostUsd,
   isUsageEntry,
+  recordFeedbackUsage,
   type SessionUsageTotals,
   SessionUsageTracker,
   turnCostUsd,

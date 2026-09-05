@@ -211,3 +211,43 @@ export function createDiffApproval(id: string, diff: string, approver = "user"):
     approvedAt: new Date().toISOString(),
   };
 }
+
+/** Diff gate outcome. Uses the plan gate vocabulary on purpose. */
+export type DiffGateReason = "pass-clean" | "fail-unresolved-comments";
+
+/** Gate decision for a diff target: pass flag plus reason and count. */
+export interface DiffGateDecision {
+  pass: boolean;
+  reason: DiffGateReason;
+  unresolved: number;
+}
+
+/** Evaluate the comment gate for a diff target. Passes when none unresolved. */
+export function evaluateDiffGate(targetPath: string): DiffGateDecision {
+  const unresolved = countUnresolvedComments(targetPath);
+  if (unresolved > 0) return { pass: false, reason: "fail-unresolved-comments", unresolved };
+  return { pass: true, reason: "pass-clean", unresolved };
+}
+
+/** User-facing one-line rendering of a diff gate decision. Keeps the reason. */
+export function formatDiffGateForDisplay(decision: DiffGateDecision): string {
+  const verdict = decision.pass ? "passed" : "blocked";
+  return `diff gate ${verdict} [${decision.reason}]: ${decision.unresolved} unresolved comment(s)`;
+}
+
+/** Approve an exact diff text, refusing while comments stay unresolved. */
+export function approveDiffWithComments(
+  id: string,
+  diff: string,
+  targetPath: string,
+  approver = "user",
+): DiffApprovalRecord {
+  const gate = evaluateDiffGate(targetPath);
+  if (!gate.pass) {
+    throw diffError(
+      `cannot approve diff: ${gate.unresolved} unresolved comment(s): resolve them before approving`,
+      { id },
+    );
+  }
+  return createDiffApproval(id, diff, approver);
+}
