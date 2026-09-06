@@ -512,6 +512,10 @@ export interface DaemonContext {
   defaultCapabilitiesSync: Capabilities;
   approvalsFor: (sessionId: string) => ApprovalManager;
   approvalManagers: Map<string, ApprovalManager>;
+  /** Pre-turn tips per session, pushed by session_send and popped by undo_run. */
+  turnCheckpoints: Map<string, Array<string | null>>;
+  /** Merged catalog models with config overrides (offline, never fetched). */
+  listModels: () => ModelInfo[];
   activeControllers: Map<string, AbortController>;
   turnOwners: Map<string, string>;
   activeTurnMeta: Map<string, ActiveTurnMeta>;

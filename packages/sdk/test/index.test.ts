@@ -54,6 +54,6 @@ describe("AgencyClient", () => {
   });
 
   test("protocol version is exported through the SDK's dependency", () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 });

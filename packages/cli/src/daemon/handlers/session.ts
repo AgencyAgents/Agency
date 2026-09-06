@@ -5,9 +5,9 @@ import {
   generateTitle,
   getSessionTitle,
   newEntryId,
+  projectSessionView,
   resolveSmallModel,
   runChildTurn,
-  SessionProjector,
   summarizeTranscript,
   type ToolSpec,
 } from "@agency/core";
@@ -89,7 +89,15 @@ export async function generateSessionTitle(
 }
 
 export function registerSessionHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
-  const { approvalManagers, broadcast, providers, sessionInboxes, sessionScopes, todoStore } = ctx;
+  const {
+    approvalManagers,
+    broadcast,
+    providers,
+    sessionInboxes,
+    sessionScopes,
+    todoStore,
+    turnCheckpoints,
+  } = ctx;
   handlers.session_delete = async (rawParams) => {
     const { sessionId } = rawParams as { sessionId: string };
     if (!sessionId)
@@ -154,15 +162,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INTERNAL, "session_show requires sessionId", {
         source: "session",
       });
-    const entries = todoStore.load(sessionId);
-    if (entries.length === 0)
+    const view = projectSessionView(todoStore, sessionId, tipId);
+    if (!view)
       throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
         source: "session",
       });
-    const last = entries[entries.length - 1];
-    const tip = tipId ?? todoStore.latestTip(entries) ?? last?.id ?? "";
-    const projection = new SessionProjector(todoStore).projectChain(sessionId, tip);
-    return { sessionId, entries, tipId: tip, messages: todoStore.messagesFor(entries, tip), projection };
+    return view;
   };
   handlers.session_send = async (rawParams, context) => {
     const p = rawParams as SessionSendParams;
@@ -182,6 +187,10 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     const summarize = (text: string): Promise<string> => Promise.resolve(summarizeTranscript(text));
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
+    // undo_run restores this tip, so the whole turn (user text included) rolls back.
+    const checkpoints = turnCheckpoints.get(p.sessionId) ?? [];
+    checkpoints.push(tipId);
+    turnCheckpoints.set(p.sessionId, checkpoints);
     if (tipId) {
       const outcome = await compact(store, p.sessionId, tipId, tokenizer, threshold, summarize);
       tipId = outcome.tipId;

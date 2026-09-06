@@ -181,7 +181,14 @@ describe("GET /health and GET /doc", () => {
 
     const doc = (await res.json()) as { openapi: string; paths: Record<string, unknown> };
     expect(doc.openapi).toBe("3.1.0");
-    expect(Object.keys(doc.paths).sort()).toEqual(["/doc", "/events", "/health", "/rpc", "/sync-events"]);
+    expect(Object.keys(doc.paths).sort()).toEqual([
+      "/auth/mint",
+      "/doc",
+      "/events",
+      "/health",
+      "/rpc",
+      "/sync-events",
+    ]);
   });
 
   test("unknown paths are a JSON 404", async () => {
@@ -207,7 +214,9 @@ describe("GET /events (SSE)", () => {
     server.publish("turn.abc", { type: "text_delta", text: "hi" });
     const acc = await collectSse(res, (text) => text.includes("event: turn.abc"));
 
-    expect(acc).toContain('event: turn.abc\ndata: {"type":"text_delta","text":"hi"}\n\n');
+    expect(acc).toContain("event: turn.abc\n");
+    expect(acc).toContain('data: {"type":"text_delta","text":"hi"}');
+    expect(acc).toMatch(/id: \d+\nevent: turn\.abc\n/);
   });
 
   test("a bare turn id in the subscription matches turn.<id> events", async () => {
@@ -261,7 +270,8 @@ describe("GET /events (SSE)", () => {
 
     const res = await fetch(`${base(server)}/events?stream=turn.abc`);
     const acc = await collectSse(res, (text) => text.includes(": keepalive"), 2_000);
-    expect(acc).toContain(": connected");
+    expect(acc).toContain("retry:");
+    expect(acc).toContain("event: state");
     expect(acc).toContain(": keepalive");
   });
 
@@ -273,7 +283,7 @@ describe("GET /events (SSE)", () => {
     await server.close();
     const acc = await readToEnd(res);
 
-    expect(acc).toContain(": connected");
+    expect(acc).toContain("event: state");
     expect(server.subscriberCount).toBe(0);
   });
 
@@ -355,44 +365,113 @@ describe("auth", () => {
     await events.body!.cancel();
   });
 
-  test("the ?token= query param is accepted for EventSource-style clients", async () => {
+  test("the ?token= query param is rejected with the v2 removal note", async () => {
     const server = startHttpGateway({ handlers: {}, token: "secret" });
     servers.push(server);
 
     const events = await fetch(`${base(server)}/events?stream=turn.abc&token=secret`);
-    expect(events.status).toBe(200);
-    await events.body!.cancel();
-
-    const wrong = await fetch(`${base(server)}/events?stream=turn.abc&token=nope`);
-    expect(wrong.status).toBe(401);
-    await wrong.text();
+    expect(events.status).toBe(401);
+    const body = (await events.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("query-string bearer was removed");
   });
 
-  test("CORS preflight is answered before auth", async () => {
-    const server = startHttpGateway({ handlers: {}, token: "secret" });
+  test("CORS preflight echoes only allowlisted origins", async () => {
+    const server = startHttpGateway({
+      handlers: {},
+      token: "secret",
+      allowedOrigins: ["http://localhost:5173"],
+    });
     servers.push(server);
 
-    const res = await fetch(`${base(server)}/rpc`, {
+    const allowed = await fetch(`${base(server)}/rpc`, {
       method: "OPTIONS",
       headers: { Origin: "http://localhost:5173", "Access-Control-Request-Method": "POST" },
     });
-    expect(res.status).toBe(204);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
+
+    const denied = await fetch(`${base(server)}/rpc`, {
+      method: "OPTIONS",
+      headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" },
+    });
+    expect(denied.status).toBe(204);
+    expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  test("POST /auth/mint exchanges the bootstrap token for a scoped token", async () => {
+    const server = startHttpGateway({ handlers: { ping: async () => "pong" }, token: "bootstrap" });
+    servers.push(server);
+
+    const denied = await fetch(`${base(server)}/auth/mint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scopes: ["events"] }),
+    });
+    expect(denied.status).toBe(401);
+    await denied.text();
+
+    const res = await fetch(`${base(server)}/auth/mint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer bootstrap" },
+      body: JSON.stringify({ scopes: ["events"] }),
+    });
+    expect(res.status).toBe(200);
+    const minted = (await res.json()) as { token: string; scopes: string[]; expiresAt: number };
+    expect(typeof minted.token).toBe("string");
+    expect(minted.scopes).toEqual(["events"]);
+    expect(minted.expiresAt).toBeGreaterThan(Date.now());
+
+    const events = await fetch(`${base(server)}/events?stream=turn.abc`, {
+      headers: { Authorization: `Bearer ${minted.token}` },
+    });
+    expect(events.status).toBe(200);
+    await events.body!.cancel();
+
+    const rpcRes = await rpc(
+      server,
+      { id: "req-1", method: "ping" },
+      { Authorization: `Bearer ${minted.token}` },
+    );
+    expect(rpcRes.status).toBe(401);
+    await rpcRes.text();
   });
 });
 
 describe("CORS", () => {
-  test("responses carry CORS headers for webview clients", async () => {
+  test("allowlisted origins are echoed, others get no CORS headers", async () => {
+    const server = startHttpGateway({
+      handlers: { ping: async () => "pong" },
+      allowedOrigins: ["http://localhost:5173"],
+    });
+    servers.push(server);
+
+    const allowed = await fetch(`${base(server)}/health`, {
+      headers: { Origin: "http://localhost:5173" },
+    });
+    expect(allowed.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
+    await allowed.text();
+
+    const denied = await fetch(`${base(server)}/health`, {
+      headers: { Origin: "https://evil.example" },
+    });
+    expect(denied.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    await denied.text();
+  });
+
+  test("no allowlist means no Access-Control-Allow-Origin anywhere", async () => {
     const server = startHttpGateway({ handlers: { ping: async () => "pong" } });
     servers.push(server);
 
     const res = await rpc(server, { id: "req-1", method: "ping" });
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   test("CORS can be disabled", async () => {
-    const server = startHttpGateway({ handlers: { ping: async () => "pong" }, cors: false });
+    const server = startHttpGateway({
+      handlers: { ping: async () => "pong" },
+      cors: false,
+      allowedOrigins: ["http://localhost:5173"],
+    });
     servers.push(server);
 
     const res = await rpc(server, { id: "req-1", method: "ping" });
@@ -467,7 +546,9 @@ describe("GET /sync-events (SSE replay)", () => {
     expect(noAuth.status).toBe(401);
     await noAuth.text();
 
-    const withAuth = await fetch(`${base(server)}/sync-events?sessionId=test&token=secret`);
+    const withAuth = await fetch(`${base(server)}/sync-events?sessionId=test`, {
+      headers: { Authorization: "Bearer secret" },
+    });
     expect(withAuth.status).toBe(200);
     await withAuth.body!.cancel();
   });

@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Message } from "@agency/schema";
 import { migrate } from "@agency/schema";
@@ -113,7 +113,7 @@ export class SessionStore {
    * and order-preserving under await-sequential use: each append is a
    * complete line, so a crash can only ever leave the tail line truncated.
    * Callers that need entry A ordered before entry B must await A before
-   * starting B — the returned promise is the ordering point.
+   * starting B: the returned promise is the ordering point.
    */
   async append(
     sessionId: string,
@@ -235,7 +235,7 @@ export class SessionStore {
 
   /** The most recently created tip: the branch `/resume` continues by default.
    *  Same-millisecond entries (identical createdAt) tie-break by position in
-   *  `entries` — file order, i.e. creation order — so the result never depends
+   *  `entries` (file order, i.e. creation order), so the result never depends
    *  on sort stability or locale. */
   latestTip(entries: SessionEntry[]): string | undefined {
     const tipIds = new Set(this.tips(entries));
@@ -296,6 +296,29 @@ export class SessionStore {
   /** Raw entries for `/export`, unknown types included verbatim (R5). */
   export(sessionId: string): SessionEntry[] {
     return this.load(sessionId);
+  }
+
+  /**
+   * Roll a session back to `tipId` (null clears it): only the tip ancestry
+   * is kept, so an undone turn leaves no orphaned entries behind.
+   */
+  async rollback(sessionId: string, tipId: string | null): Promise<SessionEntry[]> {
+    const entries = this.load(sessionId);
+    if (tipId !== null && !entries.some((e) => e.id === tipId)) {
+      throw new Error(`unknown tip: ${tipId}`);
+    }
+    const kept = tipId === null ? [] : this.chainFor(entries, tipId);
+    const path = sessionPath(this.sessionsDir, sessionId);
+    await mkdir(this.sessionsDir, { recursive: true });
+    const lockPath = `${path}.lock`;
+    await this.acquireLock(lockPath);
+    try {
+      await writeFile(path, kept.map((e) => `${JSON.stringify(e)}\n`).join(""));
+      this.caches.delete(sessionId);
+      return kept;
+    } finally {
+      this.releaseLock(lockPath);
+    }
   }
 
   private parseLines(text: string, sessionId: string, firstLine: number): SessionEntry[] {

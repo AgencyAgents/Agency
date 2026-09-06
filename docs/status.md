@@ -13,17 +13,17 @@ implemented. Unwired rows name what stands in for the mechanism today.
 | planDispatchBatch and DispatchStateStore | Yes, with tests | No: the daemon reimplements the unknown-handle and budget skips inline | Board as the delegation ledger |
 | Category routing and runWithCategoryFallback | Yes, with tests | No: the daemon retries one configured fallback_model once | Capability routing behind the delegation check |
 | Cheap routing (selectModel, withCheapFallback) | Yes, with tests | Partial: honored inside runTurn via taskKind and cheapModel, which the daemon never sets | Digest builder giving cheap models a real job |
-| Phantom RPCs (models_list, session_list, session_get, session_export, prompt) | No: absent from the handler table | No | session_send, single projectors, versioned event catalog |
+| Session and config surface (session_list, session_create, session_export, session_rename, models_list, config_get, config_set, permissions_list, todo_read, todo_write, cost_report, undo_run, prompt_inspect) | Yes, with tests | Yes: served over /rpc and the SDK surface | Phase 8 generalizes undo_run to team runs; Phase 9 adds budgets, caps, and cache-premium accounting |
 | `session_send` with daemon-owned sessions | Yes: `session_send` owns store, history, tokenizer, compaction, appends, and usage, with tests | Yes: `runSessionTurn` is a thin consumer sending text and streaming events; `run_turn` keeps its caller-owned shape | The two-crossing boundary protocol |
 | Team isolation (per-team sessions, worktrees, inboxes) | Yes: children keyed by parent session, handle, and batch with namespaced worktrees and fail-closed creation | Yes: dispatch and dispatch_compare isolate sessions, worktrees, inboxes, and cost per parent; SessionScope teamId marks child scopes | Disjoint path scopes plus lead-owned integration |
-| Resumable events across reconnects | Partial: sync-events replays persisted entries | No: live events carry no IDs and reconnects replay nothing | Snapshot-plus-tail resume with Last-Event-ID |
-| SDK (connect, createAgencyClient) | Yes | Yes: wraps run_turn, cancel_turn, and providers_list with event subscription | Types generated from the versioned event catalog |
+| Resumable events across reconnects | Yes: EventRing issues monotonic ids with retry frames, Last-Event-ID gap-tails, the state frame covers over-buffer reconnects | Yes: /events serves ids, retry, backlog, and state on every connect | None |
+| SDK (connect, createAgencyClient, createSurfaceClient) | Yes: generated.ts emits every RPC method plus GatewayEvent types from /doc | Yes: the SDK-only script drives create, send, stream, approve, cost report, export | None |
 | Headless permission modes (`PermissionMode`) and bounded approvals | Yes, with tests | Yes: --permission-mode selects ask, allow-edits, or deny; `createPending` fails closed with a typed reason | Headless runs that never stall on an ask |
 | At-handle routing (`parseHandles`) | Yes | Yes: lone mentions rewrite provider, model, and effort inline, including through `session_send` | Selection model with escalation never a user choice |
 | Compaction (0.9 trigger, 0.7 target, 20K cap) | Yes | Yes daemon-side via `session_send` (proactive plus reactive `onContextOverflow`); `run_turn` keeps `needsCompaction` for caller-owned turns | Item-aware agent windows plus cache-event accounting |
 | OAuth (PKCE plus device flow) | Yes | Blocked: all shipped client IDs are placeholders rejected by assertClientIdConfigured | Same flows once the user registers an app |
 | Scheduler multi-key rotation (scheduleWithKeys) | Yes, with tests | No | Model ladder escalation across families |
 | Progress checklist store | Yes, with tests | No runtime consumer | Progress file as the board substrate |
-| Session projector (`SessionProjector`) | Yes, with tests | Yes: `session_show` returns the `projectChain` projection | Single projection behind session reads |
+| Session projector (SessionProjector, projectSessionView) | Yes, with tests | Yes: session_show and the SSE state frame both render through projectSessionView | None |
 | dispatch_compare via spawnParallel | Yes | Yes: the only production caller of spawnParallel | Lateral delegation replacing fan-out |
 | checkDepthGate | Yes | Yes: called by the dispatch tool | Flat team with no depth counter |

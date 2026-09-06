@@ -5,12 +5,15 @@ import type { Message, StopReason } from "@agency/schema";
 export type { DaemonClient } from "@agency/rpc";
 export { connectToDaemon } from "@agency/rpc";
 export type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
+export * from "./generated.ts";
+
+import { createSurfaceClient, type SurfaceClient } from "./generated.ts";
 
 /**
  * The SDK's own view of the daemon's wire contract (R12: versioned SDK types).
  * Structurally compatible with what the daemon's run_turn handler accepts;
  * the RPC layer validates nothing beyond the transport, so a mismatch here is
- * a runtime error at the daemon, by design — the SDK is a thin client, not a
+ * a runtime error at the daemon by design: the SDK is a thin client, not a
  * second schema.
  */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -93,6 +96,8 @@ export interface AgencyClient {
   runTurn(params: RunTurnParams, onEvent?: (event: TurnEvent) => void): Promise<RunTurnResult>;
   cancelTurn(turnId: string): Promise<{ cancelled: boolean }>;
   listProviders(): Promise<ProvidersListResult>;
+  /** Every RPC method from /doc, over this client's transport. */
+  surface: SurfaceClient;
   call(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
   on(event: string, handler: (payload: unknown) => void): () => void;
   close(): Promise<void>;
@@ -124,6 +129,8 @@ export function createAgencyClient(client: DaemonClient): AgencyClient {
     async listProviders() {
       return (await client.call(PROVIDERS_LIST_METHOD, {})) as ProvidersListResult;
     },
+
+    surface: createSurfaceClient((method, params) => client.call(method, params)),
 
     call: (method, params, timeoutMs) => client.call(method, params, timeoutMs),
     on: (event, handler) => client.on(event, handler),

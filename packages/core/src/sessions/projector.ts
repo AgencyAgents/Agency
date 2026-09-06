@@ -1,9 +1,10 @@
+import type { Message } from "@agency/schema";
 import type { AgentLifecycleEntry, MessageEntry, SessionEntry } from "./entry.ts";
 import { isAgentLifecycleEntry, isMessageEntry } from "./entry.ts";
 import type { SessionStore } from "./store.ts";
 
 /**
- * A projected session event — a higher-level interpretation of the raw JSONL
+ * A projected session event: a higher-level interpretation of the raw JSONL
  * entries that the SessionStore persists. The projector reads the append-only
  * log and emits these events in chronological order, purely in-memory, with
  * no persistence or DB dependency.
@@ -77,8 +78,8 @@ export type SessionEvent =
 
 /**
  * In-memory SessionProjector that reads SessionStore JSONL entries and
- * projects them into a timeline of SessionEvents. Pure in-memory — no DB,
- * no persistence — operates over the existing JSONL via SessionStore.
+ * projects them into a timeline of SessionEvents. Pure in-memory (no DB,
+ * no persistence) operating over the existing JSONL via SessionStore.
  */
 export class SessionProjector {
   constructor(private readonly store: SessionStore) {}
@@ -92,7 +93,7 @@ export class SessionProjector {
     const entries = this.store.load(sessionId);
 
     if (entries.length === 0) {
-      // Session might have been deleted — check if it's known at all.
+      // Session might have been deleted: check if it's known at all.
       if (!this.store.list().includes(sessionId)) {
         return [
           {
@@ -168,7 +169,7 @@ export class SessionProjector {
           case "idle":
             events.push({ type: "Ended", sessionId, timestamp, stepId, entry });
             break;
-          // "blocked" — no direct event mapping, falls through
+          // "blocked" has no direct event mapping, falls through
         }
       }
 
@@ -192,4 +193,35 @@ export class SessionProjector {
 
     return events;
   }
+}
+
+/** The single render projection behind every session read. */
+export interface SessionView {
+  sessionId: string;
+  entries: SessionEntry[];
+  tipId: string;
+  messages: Message[];
+  projection: SessionEvent[];
+}
+
+/**
+ * Full read view for one session tip, null when unknown. session_show and
+ * the SSE state frame both render through this, never around it.
+ */
+export function projectSessionView(
+  store: SessionStore,
+  sessionId: string,
+  tipId?: string,
+): SessionView | null {
+  const entries = store.load(sessionId);
+  if (entries.length === 0) return null;
+  const last = entries[entries.length - 1];
+  const tip = tipId ?? store.latestTip(entries) ?? last?.id ?? "";
+  return {
+    sessionId,
+    entries,
+    tipId: tip,
+    messages: store.messagesFor(entries, tip),
+    projection: new SessionProjector(store).projectChain(sessionId, tip),
+  };
 }

@@ -1,7 +1,11 @@
+import { EVENT_RETRY_MS, EVENT_RING_SIZE } from "./catalog.ts";
+import { EventRing, sseFrame } from "./event-buffer.ts";
+import { buildGatewayDocument } from "./gateway-doc.ts";
 import { matchesSubscription } from "./protocol.ts";
 import type { MethodHandler } from "./server.ts";
+import { MintedTokenStore, scopeGrants } from "./tokens.ts";
 
-/** Minimal store interface — the gateway only needs `load()` for replay. */
+/** Minimal store interface: the gateway only needs `load()` for replay. */
 export interface SessionStoreLike {
   load(sessionId: string): { id: string; type: string; createdAt: string; [key: string]: unknown }[];
 }
@@ -12,11 +16,16 @@ export interface SessionStoreLike {
  * table the TCP server dispatches, exposed as JSON-RPC-style HTTP endpoints,
  * with daemon events pushed as `text/event-stream` frames.
  *
- * Unlike the TCP transport — which broadcasts every event frame to every
- * connected client and lets each client filter locally — an SSE connection
+ * Unlike the TCP transport (which broadcasts every event frame to every
+ * connected client and lets each client filter locally), an SSE connection
  * here subscribes to specific streams (`GET /events?stream=<name>`), and
  * `publish()` fans an event out only to the subscriptions it matches. Two
  * terminals on one workspace therefore see only their own turn streams.
+ *
+ * Resumability: every published event takes a monotonic id from a bounded
+ * per-key ring. A reconnect carrying Last-Event-ID gap-tails the missed
+ * frames; a reconnect past the retained tail gets the `state` snapshot
+ * instead, so it renders correctly without replaying a run.
  *
  * This is one adapter over the shared handlers, not a second implementation:
  * callers wire `startDaemonServer({ handlers })` and `createHttpGateway({
@@ -27,23 +36,29 @@ export interface HttpGatewayOptions {
   /** The shared method table (same object the TCP server was given). */
   handlers: Record<string, MethodHandler>;
   /**
-   * When set, every request must present `Authorization: Bearer <token>`
-   * (or `?token=<token>` for clients like native EventSource that cannot
-   * set headers). When unset the gateway accepts anonymous callers.
+   * Bootstrap credential from the instance file. Presented ONLY as
+   * `Authorization: Bearer` (mint scoped tokens for everything else).
+   * When unset the gateway accepts anonymous callers.
    */
   token?: string;
   /** Interval between SSE keepalive comments; 0 disables. Default 15s. */
   keepAliveMs?: number;
-  /**
-   * Emit CORS headers and answer preflights, for webview clients served
-   * from other origins. Default true; harmless for a loopback-only daemon.
-   */
+  /** Emit CORS headers; the allowlist decides which origins get them. */
   cors?: boolean;
-  /**
-   * Optional SessionStore for the /sync-events endpoint. When set, the
-   * gateway can replay session entries as SSE for durable event replay.
-   */
+  /** Origins echoed back as Access-Control-Allow-Origin; empty means none. */
+  allowedOrigins?: string[];
+  /** Optional SessionStore for the /sync-events endpoint. */
   store?: SessionStoreLike;
+  /** Per-key ring bound for resumable events. Default 256. */
+  ringSize?: number;
+  /** SSE `retry:` hint in ms served on connect. Default 3000. */
+  retryMs?: number;
+  /** Maps an event name to its ring key (usually a session id). */
+  sessionForEvent?: (event: string) => string | undefined;
+  /** Connect-time snapshot behind the `state` frame (turns, approvals, agents, cost). */
+  stateSnapshot?: (sessionId?: string) => unknown;
+  /** Default TTL for minted tokens. */
+  mintTtlMs?: number;
 }
 
 export interface HttpGateway {
@@ -81,35 +96,78 @@ function errorPayload(error: unknown): { message: string; code?: string } {
   return code === undefined ? { message } : { message, code };
 }
 
+const QUERY_BEARER_GONE =
+  "query-string bearer was removed in protocol v2: send Authorization: Bearer or mint a scoped token via POST /auth/mint";
+
 export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
   const keepAliveMs = options.keepAliveMs ?? 15_000;
   const cors = options.cors ?? true;
+  const allowedOrigins = options.allowedOrigins ?? [];
+  const retryMs = options.retryMs ?? EVENT_RETRY_MS;
+  const ring = new EventRing(options.ringSize ?? EVENT_RING_SIZE);
+  const minted = new MintedTokenStore();
   const subscribers = new Set<SseClient>();
 
-  function withCors(headers: Record<string, string>): Record<string, string> {
+  function withCors(headers: Record<string, string>, request?: Request): Record<string, string> {
     if (!cors) return headers;
-    headers["Access-Control-Allow-Origin"] = "*";
-    headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-    headers["Access-Control-Max-Age"] = "86400";
+    const origin = request?.headers.get("origin") ?? "";
+    if (origin !== "" && allowedOrigins.includes(origin)) {
+      headers["Access-Control-Allow-Origin"] = origin;
+      headers.Vary = "Origin";
+    }
     return headers;
   }
 
-  function json(status: number, body: unknown, extra?: Record<string, string>): Response {
+  function corsPreflight(request: Request): Record<string, string> {
+    const base: Record<string, string> = {};
+    if (!cors) return base;
+    const origin = request.headers.get("origin") ?? "";
+    if (origin !== "" && allowedOrigins.includes(origin)) {
+      base["Access-Control-Allow-Origin"] = origin;
+      base["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+      base["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+      base["Access-Control-Max-Age"] = "86400";
+      base.Vary = "Origin";
+    }
+    return base;
+  }
+
+  function json(status: number, body: unknown, request?: Request, extra?: Record<string, string>): Response {
     return new Response(JSON.stringify(body), {
       status,
-      headers: withCors({ "Content-Type": "application/json", ...extra }),
+      headers: withCors({ "Content-Type": "application/json", ...extra }, request),
     });
   }
 
-  function authorized(request: Request, url: URL): boolean {
-    if (!options.token) return true;
-    if (request.headers.get("authorization") === `Bearer ${options.token}`) return true;
-    // Native EventSource cannot set headers; the query param is its only way in.
-    return url.searchParams.get("token") === options.token;
+  /** Bearer scopes for this request, or null when anonymous. */
+  function bearerScopes(request: Request): readonly string[] | null {
+    if (!options.token) return ["*"];
+    const header = request.headers.get("authorization") ?? "";
+    const prefix = "Bearer ";
+    if (!header.startsWith(prefix)) return null;
+    const presented = header.slice(prefix.length);
+    if (presented === options.token) return ["*"];
+    return minted.scopesFor(presented);
   }
 
-  /** POST /rpc — the same request/response semantics as the TCP transport:
+  /** Header-only auth: the query-string bearer is gone since v2. */
+  function authorized(request: Request, url: URL, need: string): Response | null {
+    if (url.searchParams.has("token")) {
+      return json(401, { error: { message: QUERY_BEARER_GONE } }, request, {
+        "WWW-Authenticate": "Bearer",
+      });
+    }
+    if (!options.token) return null;
+    const scopes = bearerScopes(request);
+    if (scopes === null || !scopeGrants(scopes, need)) {
+      return json(401, { error: { message: "unauthorized: missing or invalid bearer token" } }, request, {
+        "WWW-Authenticate": "Bearer",
+      });
+    }
+    return null;
+  }
+
+  /** POST /rpc: the same request/response semantics as the TCP transport:
    *  `{ id, method, params }` in, `{ id, result }` out, handler throws and
    *  unknown methods surfacing as `{ id, error: { message, code? } }`. */
   async function handleRpc(request: Request): Promise<Response> {
@@ -117,36 +175,71 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
     try {
       body = JSON.parse(await request.text());
     } catch {
-      return json(400, { id: null, error: { message: "request body must be valid JSON" } });
+      return json(400, { id: null, error: { message: "request body must be valid JSON" } }, request);
     }
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return json(400, { id: null, error: { message: "request body must be a JSON object" } });
+      return json(400, { id: null, error: { message: "request body must be a JSON object" } }, request);
     }
     const { id, method, params } = body as Record<string, unknown>;
     if (typeof method !== "string" || method.length === 0) {
-      return json(400, { id: id ?? null, error: { message: 'request body must include a string "method"' } });
+      return json(
+        400,
+        { id: id ?? null, error: { message: 'request body must include a string "method"' } },
+        request,
+      );
     }
 
     const handler = options.handlers[method];
     if (!handler) {
-      return json(404, { id: id ?? null, error: { message: `unknown method: ${method}` } });
+      return json(404, { id: id ?? null, error: { message: `unknown method: ${method}` } }, request);
     }
 
     try {
       const result = await handler(params, { clientId: "http" });
-      return json(200, { id: id ?? null, result });
+      return json(200, { id: id ?? null, result }, request);
     } catch (error: unknown) {
-      return json(500, { id: id ?? null, error: errorPayload(error) });
+      return json(500, { id: id ?? null, error: errorPayload(error) }, request);
     }
   }
 
-  /** GET /events?stream=<name> — a per-client SSE subscription. */
+  /** POST /auth/mint: bootstrap token in, short-lived scoped token out. */
+  async function handleMint(request: Request): Promise<Response> {
+    if (!options.token) return json(400, { error: { message: "mint unavailable: no token configured" } });
+    const header = request.headers.get("authorization") ?? "";
+    if (header !== `Bearer ${options.token}`) {
+      return json(401, { error: { message: "mint requires the bootstrap token" } }, request, {
+        "WWW-Authenticate": "Bearer",
+      });
+    }
+    let body: { scopes?: unknown; ttlMs?: unknown } = {};
+    try {
+      const text = await request.text();
+      if (text.length > 0) body = JSON.parse(text) as typeof body;
+    } catch {
+      return json(400, { error: { message: "request body must be valid JSON" } }, request);
+    }
+    const scopes = Array.isArray(body.scopes)
+      ? body.scopes.filter((s): s is string => typeof s === "string")
+      : ["*"];
+    const ttlMs = typeof body.ttlMs === "number" ? body.ttlMs : options.mintTtlMs;
+    const token = minted.mint(scopes.length > 0 ? scopes : ["*"], ttlMs);
+    return json(200, { token: token.token, scopes: [...token.scopes], expiresAt: token.expiresAt }, request);
+  }
+
+  /** GET /events?stream=<name>: a per-client SSE subscription. */
   function handleEvents(request: Request, url: URL): Response {
     const streams = url.searchParams
       .getAll("stream")
       .flatMap((value) => value.split(","))
       .map((value) => value.trim())
       .filter((value) => value.length > 0);
+    const sessionId = url.searchParams.get("sessionId") ?? undefined;
+    const lastEventId = parseLastEventId(request.headers.get("last-event-id"));
+    const match = (event: string): boolean => matchesSubscription(streams, event);
+    // Gap-tail only over retained ids; anything older renders from state.
+    const backlog =
+      lastEventId !== undefined && ring.covers(lastEventId) ? ring.since(lastEventId, match) : [];
+    const snapshot = options.stateSnapshot?.(sessionId) ?? {};
 
     const encoder = new TextEncoder();
     let client: SseClient | undefined;
@@ -184,7 +277,11 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
 
         client = { streams, write, close: cleanup };
         subscribers.add(client);
-        write(": connected\n\n");
+        write(`retry: ${retryMs}\n\n`);
+        write(`event: state\ndata: ${JSON.stringify(snapshot)}\n\n`);
+        for (const entry of backlog) {
+          if (!write(sseFrame(entry.id, entry.event, entry.payload))) break;
+        }
       },
       cancel() {
         client?.close();
@@ -197,19 +294,22 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
     else request.signal.addEventListener("abort", () => client?.close());
 
     return new Response(body, {
-      headers: withCors({
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      }),
+      headers: withCors(
+        {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+        request,
+      ),
     });
   }
 
-  /** GET /sync-events?sessionId=<id> — replay session entries as SSE. */
+  /** GET /sync-events?sessionId=<id>: replay session entries as SSE. */
   function handleSyncEvents(request: Request, url: URL): Response {
     const sessionId = url.searchParams.get("sessionId");
     if (!sessionId) {
-      return json(400, { error: { message: "sessionId query parameter is required" } });
+      return json(400, { error: { message: "sessionId query parameter is required" } }, request);
     }
 
     const store = options.store;
@@ -264,186 +364,21 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
     else request.signal.addEventListener("abort", () => {});
 
     return new Response(body, {
-      headers: withCors({
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      }),
+      headers: withCors(
+        {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+        request,
+      ),
     });
   }
 
-  /** GET /doc — an OpenAPI description of the gateway's surface. */
-  function openApiDocument(): Record<string, unknown> {
-    const unauthorized: Record<string, unknown> = {
-      description: "Missing or invalid bearer token (only when the daemon was started with a token)",
-    };
-    return {
-      openapi: "3.1.0",
-      info: {
-        title: "Agency Daemon Gateway",
-        version: "0.1.0",
-        description:
-          "HTTP + SSE transport for the Agency daemon: the same handler table the " +
-          "TCP loopback transport serves, exposed as JSON-RPC-style HTTP endpoints. " +
-          "Bound to loopback only. Auth is active only when the daemon was started " +
-          "with a per-instance token.",
-      },
-      paths: {
-        "/rpc": {
-          post: {
-            summary: "Call a daemon RPC method",
-            description:
-              "Body: { id?, method, params? }. Success: { id, result }. Handler throws " +
-              "surface as { id, error: { message, code? } }; the payload shape matches " +
-              "the TCP transport's response_error frames.",
-            requestBody: {
-              required: true,
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: { id: {}, method: { type: "string" }, params: {} },
-                    required: ["method"],
-                  },
-                },
-              },
-            },
-            responses: {
-              "200": {
-                description: "Handler succeeded",
-                content: {
-                  "application/json": {
-                    schema: {
-                      type: "object",
-                      properties: { id: {}, result: {} },
-                      required: ["id", "result"],
-                    },
-                  },
-                },
-              },
-              "400": { description: "Malformed request body" },
-              "401": unauthorized,
-              "404": { description: "Unknown method" },
-              "500": { description: "Handler threw" },
-            },
-          },
-        },
-        "/events": {
-          get: {
-            summary: "Subscribe to daemon events over SSE",
-            description:
-              "text/event-stream. Each frame is `event: <name>` + `data: <json>`. " +
-              "Subscribe with ?stream=<name> (repeatable): a value matches events by " +
-              "exact name, and a bare turn id also matches its `turn.<id>` events. " +
-              "Omitting stream receives every event. Keepalive comments are sent " +
-              "periodically; reconnects do not replay missed events.",
-            parameters: [
-              {
-                name: "stream",
-                in: "query",
-                required: false,
-                schema: { type: "array", items: { type: "string" } },
-                description: "Event names (or bare turn ids) to subscribe to; omit for all events.",
-              },
-              {
-                name: "token",
-                in: "query",
-                schema: { type: "string" },
-                description: "Alternative to the Authorization header for EventSource clients.",
-              },
-            ],
-            responses: {
-              "200": {
-                description: "SSE stream of daemon events",
-                content: { "text/event-stream": { schema: { type: "string" } } },
-              },
-              "401": unauthorized,
-            },
-          },
-        },
-        "/sync-events": {
-          get: {
-            summary: "Replay session entries as SSE for durable event replay",
-            description:
-              "text/event-stream. Each entry from the session's JSONL is streamed as " +
-              "an `event: sync-entry` frame with the entry JSON as data. A final " +
-              "`event: sync-complete` frame signals the end of the replay. " +
-              "Requires a SessionStore to be configured on the gateway.",
-            parameters: [
-              {
-                name: "sessionId",
-                in: "query",
-                required: true,
-                schema: { type: "string" },
-                description: "The session ID to replay entries from.",
-              },
-              {
-                name: "token",
-                in: "query",
-                schema: { type: "string" },
-                description: "Alternative to the Authorization header for EventSource clients.",
-              },
-            ],
-            responses: {
-              "200": {
-                description: "SSE stream of session entries",
-                content: { "text/event-stream": { schema: { type: "string" } } },
-              },
-              "400": { description: "Missing sessionId parameter" },
-              "401": unauthorized,
-              "404": { description: "Session not found" },
-              "501": { description: "No session store configured on gateway" },
-            },
-          },
-        },
-        "/health": {
-          get: {
-            summary: "Health check",
-            responses: {
-              "200": {
-                description: "Daemon is serving",
-                content: {
-                  "application/json": {
-                    schema: {
-                      type: "object",
-                      properties: { ok: { type: "boolean" }, subscribers: { type: "integer" } },
-                      required: ["ok"],
-                    },
-                  },
-                },
-              },
-              "401": unauthorized,
-            },
-          },
-        },
-        "/doc": {
-          get: {
-            summary: "This document",
-            description: "The gateway's OpenAPI description (the document being served).",
-            responses: {
-              "200": {
-                description: "OpenAPI document",
-                content: { "application/json": { schema: { type: "object" } } },
-              },
-              "401": unauthorized,
-            },
-          },
-        },
-      },
-      components: {
-        securitySchemes: {
-          bearerAuth: {
-            type: "http",
-            scheme: "bearer",
-            description: "Active only when the daemon was started with a token.",
-          },
-        },
-      },
-    };
-  }
-
-  function methodNotAllowed(allow: string): Response {
-    return json(405, { error: { message: `method not allowed; use ${allow}` } }, { Allow: allow });
+  function methodNotAllowed(request: Request, allow: string): Response {
+    return json(405, { error: { message: `method not allowed; use ${allow}` } }, request, {
+      Allow: allow,
+    });
   }
 
   return {
@@ -452,44 +387,46 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
       try {
         // Preflights are answered before auth: they carry no credentials by spec.
         if (request.method === "OPTIONS") {
-          return new Response(null, { status: 204, headers: withCors({}) });
+          return new Response(null, { status: 204, headers: corsPreflight(request) });
         }
-        // Health check is always open — clients probe liveness without a token.
+        // Health check is always open (clients probe liveness without a token).
         if (url.pathname === "/health") {
-          if (request.method !== "GET") return methodNotAllowed("GET");
-          return json(200, { ok: true, subscribers: subscribers.size });
+          if (request.method !== "GET") return methodNotAllowed(request, "GET");
+          return json(200, { ok: true, subscribers: subscribers.size }, request);
         }
-        if (!authorized(request, url)) {
-          return json(
-            401,
-            { error: { message: "unauthorized: missing or invalid bearer token" } },
-            { "WWW-Authenticate": "Bearer" },
-          );
+        if (url.pathname === "/auth/mint") {
+          if (request.method !== "POST") return methodNotAllowed(request, "POST");
+          return await handleMint(request);
         }
+        const need = url.pathname === "/events" || url.pathname === "/sync-events" ? "events" : "rpc";
+        const rejection = authorized(request, url, need);
+        if (rejection) return rejection;
 
         switch (url.pathname) {
           case "/rpc":
-            if (request.method !== "POST") return methodNotAllowed("POST");
+            if (request.method !== "POST") return methodNotAllowed(request, "POST");
             return await handleRpc(request);
           case "/events":
-            if (request.method !== "GET") return methodNotAllowed("GET");
+            if (request.method !== "GET") return methodNotAllowed(request, "GET");
             return handleEvents(request, url);
           case "/sync-events":
-            if (request.method !== "GET") return methodNotAllowed("GET");
+            if (request.method !== "GET") return methodNotAllowed(request, "GET");
             return handleSyncEvents(request, url);
           case "/doc":
-            if (request.method !== "GET") return methodNotAllowed("GET");
-            return json(200, openApiDocument());
+            if (request.method !== "GET") return methodNotAllowed(request, "GET");
+            return json(200, buildGatewayDocument(Object.keys(options.handlers)), request);
           default:
-            return json(404, { error: { message: `no such endpoint: ${url.pathname}` } });
+            return json(404, { error: { message: `no such endpoint: ${url.pathname}` } }, request);
         }
       } catch (error: unknown) {
-        return json(500, { error: errorPayload(error) });
+        return json(500, { error: errorPayload(error) }, request);
       }
     },
 
     publish(event, payload) {
-      const frame = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+      const key = options.sessionForEvent?.(event) ?? "global";
+      const id = ring.append(event, payload, key);
+      const frame = sseFrame(id, event, payload);
       for (const client of [...subscribers]) {
         if (matchesSubscription(client.streams, event)) client.write(frame);
       }
@@ -503,6 +440,12 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
       return subscribers.size;
     },
   };
+}
+
+function parseLastEventId(header: string | null): number | undefined {
+  if (header === null || header.trim() === "") return undefined;
+  const id = Number(header.trim());
+  return Number.isInteger(id) && id >= 0 ? id : undefined;
 }
 
 export interface HttpGatewayServerOptions extends HttpGatewayOptions {

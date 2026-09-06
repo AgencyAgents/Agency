@@ -61,8 +61,8 @@ export interface RespondOutcome {
 /**
  * Session-scoped approval state: the "always allow" grants and the pending
  * asks awaiting a user response. One instance per session, owned by the
- * daemon — grants persist to disk per-session so "always" survives daemon
- * restart.
+ * daemon, with grants persisted to disk per-session so "always" survives
+ * daemon restart.
  */
 export class ApprovalManager {
   private readonly grants = new Set<string>();
@@ -98,7 +98,7 @@ export class ApprovalManager {
       const keys: string[] = JSON.parse(data);
       for (const key of keys) this.grants.add(key);
     } catch {
-      // File doesn't exist or is corrupt — start with empty grants.
+      // File doesn't exist or is corrupt, so start with empty grants.
     }
   }
 
@@ -112,7 +112,7 @@ export class ApprovalManager {
       mkdirSync(dir, { recursive: true });
       writeFileSync(path, JSON.stringify([...this.grants]));
     } catch {
-      // Best-effort persistence — failure must not break the running daemon.
+      // Best-effort persistence: failure must not break the running daemon.
     }
   }
 
@@ -155,6 +155,11 @@ export class ApprovalManager {
     return { id, promise };
   }
 
+  /** Every ask still awaiting an answer, oldest first. */
+  listPending(): { id: string; request: ApprovalRequest; turnId?: string }[] {
+    return [...this.pending.values()].map(({ id, request, turnId }) => ({ id, request, turnId }));
+  }
+
   /** How the ask with that id settled, if it already settled. */
   closeReason(id: string): ApprovalCloseReason | undefined {
     return this.closeReasons.get(id);
@@ -162,7 +167,7 @@ export class ApprovalManager {
 
   /**
    * Answers a pending ask. `always` also records the session grant and
-   * retroactively resolves every other pending ask matching the same subject —
+   * retroactively resolves every other pending ask matching the same subject:
    * two terminals asking for the same command queue one prompt, not two.
    */
   respond(id: string, decision: ApprovalResponse): RespondOutcome {

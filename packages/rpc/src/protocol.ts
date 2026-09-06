@@ -3,13 +3,13 @@
  * talk to a daemon on a different version rather than risk corrupting state;
  * see the hello handshake in server.ts/client.ts.
  *
- * Every addition in the A3 hardening round (subscribe/unsubscribe, ping/pong,
- * hello.token / hello_ack.authorized) is ADDITIVE: an old peer ignores the new
- * fields and message types, so mixed-version pairs still interoperate and the
- * version stays at 1. A version bump is only warranted when an existing
- * message's semantics change.
+ * v2 removed the HTTP `?token=` query-string bearer (use the Authorization
+ * header or a minted scoped token from POST /auth/mint); every addition in
+ * the A3 hardening round (subscribe/unsubscribe, ping/pong, hello.token /
+ * hello_ack.authorized) was ADDITIVE, so v1 pairs interoperated and the
+ * version stayed at 1 until this removal.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /**
  * Named RPC methods the daemon answers. The transport itself stays generic

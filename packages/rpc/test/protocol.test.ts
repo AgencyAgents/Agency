@@ -4,15 +4,15 @@ import { encodeFrame, FrameDecoder, matchesSubscription, PROTOCOL_VERSION } from
 describe("encodeFrame", () => {
   test("serializes a message with a trailing newline", () => {
     const frame = encodeFrame({ type: "hello", version: PROTOCOL_VERSION });
-    expect(frame).toBe('{"type":"hello","version":1}\n');
+    expect(frame).toBe(`{"type":"hello","version":${PROTOCOL_VERSION}}\n`);
   });
 });
 
 describe("FrameDecoder", () => {
   test("decodes a single complete frame", () => {
     const decoder = new FrameDecoder();
-    const messages = decoder.push('{"type":"hello","version":1}\n');
-    expect(messages).toEqual([{ type: "hello", version: 1 }]);
+    const messages = decoder.push(`{"type":"hello","version":${PROTOCOL_VERSION}}\n`);
+    expect(messages).toEqual([{ type: "hello", version: PROTOCOL_VERSION }]);
   });
 
   test("decodes multiple frames delivered in one chunk", () => {

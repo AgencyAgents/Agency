@@ -13,7 +13,6 @@ import {
   loadCommands,
   loadConfig,
   loadPlugins,
-  parseModelRef,
   SessionStore,
   storagePaths,
   type ToolSpec,
@@ -31,15 +30,7 @@ import {
 } from "@agency/guard";
 
 import { createHttpClient } from "@agency/net";
-import {
-  BUILTIN_MODELS,
-  createKeychain,
-  type KeychainBackend,
-  loadCachedCatalog,
-  type ModelInfo,
-  mergeCatalogWithConfig,
-  Scheduler,
-} from "@agency/providers";
+import { createKeychain, type KeychainBackend, Scheduler } from "@agency/providers";
 import {
   type DaemonServer,
   type HttpGatewayServer,
@@ -61,9 +52,12 @@ import {
   gateForSession as sessionGateFor,
   sessionToolsFor,
 } from "./handlers/session.ts";
+import { registerSurfaceHandlers } from "./handlers/surface.ts";
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
+import { createModelCatalog } from "./model-catalog.ts";
+import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
   type AgentDaemon,
@@ -112,35 +106,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const http = options.http ?? createHttpClient();
 
   // Model metadata for pre-flight accounting (max output tokens, pricing):
-  // resolved offline from the on-disk catalog cache (populated by the
-  // /models picker's providers_list fetch) or the build-time snapshot, with
-  // config model overrides merged on top. The turn path never fetches.
-  let mergedCatalog: ModelInfo[] | undefined;
-  const ensureCatalog = (): ModelInfo[] => {
-    if (!mergedCatalog) {
-      mergedCatalog = mergeCatalogWithConfig(
-        loadCachedCatalog(join(dataDir(), "cache"))?.models ?? BUILTIN_MODELS,
-        providers,
-      );
-    }
-    return mergedCatalog;
-  };
-  const catalogModel = (provider: string, model: string): ModelInfo | undefined => {
-    return ensureCatalog().find((m) => m.id === model && m.family === provider);
-  };
-  /**
-   * Resolves an agent's model when it's not explicitly set:
-   * 1. Use global config.model if its provider matches the agent's provider.
-   * 2. Fall back to the first catalog model for that provider.
-   * 3. Return empty string (dispatch will fail with a clear error).
-   */
-  const resolveAgentModel = (provider: string, model?: string): string => {
-    if (model) return model;
-    const ref = parseModelRef(config.model ?? "");
-    if (ref && ref.provider === provider) return ref.model;
-    const first = ensureCatalog().find((m) => m.family === provider);
-    return first?.id ?? "";
-  };
+  // resolved offline, never fetched on the turn path.
+  const models = createModelCatalog(providers, config);
+  const catalogModel = models.catalogModel;
+  const resolveAgentModel = models.resolveAgentModel;
 
   const identity = options.identity ?? { type: "user" as const };
   const idleLingerMs = options.idleLingerMs ?? DEFAULT_IDLE_LINGER_MS;
@@ -500,6 +469,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     defaultCapabilitiesSync,
     approvalsFor,
     approvalManagers,
+    turnCheckpoints: new Map<string, Array<string | null>>(),
+    listModels: models.listModels,
     activeControllers,
     turnOwners,
     activeTurnMeta,
@@ -525,6 +496,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   registerTurnHandlers(handlers, ctx);
   registerSessionHandlers(handlers, ctx);
+  registerSurfaceHandlers(handlers, ctx);
   registerTraceHandlers(handlers, ctx);
   registerPlanHandlers(handlers, ctx);
   registerCommandHandlers(handlers, ctx);
@@ -560,9 +532,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   // Mount the HTTP+SSE gateway on the same handler table and auth token as
   // the TCP transport, so both transports answer the same RPC surface.
+  const corsOrigins = (config as unknown as { http?: { corsOrigins?: string[] } }).http?.corsOrigins;
   httpGateway = startHttpGateway({
     handlers,
     token: authToken,
+    store: todoStore,
+    sessionForEvent: (event) => sessionKeyForEvent(ctx, event),
+    stateSnapshot: (sessionId) => buildStateSnapshot(ctx, sessionId),
+    ...(corsOrigins === undefined ? {} : { allowedOrigins: corsOrigins }),
   });
 
   /** Broadcasts an event to both TCP and HTTP+SSE subscribers. */
