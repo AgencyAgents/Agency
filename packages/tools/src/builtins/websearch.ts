@@ -53,5 +53,5 @@ export function createWebSearchTool(deps: ToolDeps, http: HttpClient, config: We
       return { content };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

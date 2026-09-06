@@ -32,7 +32,7 @@ function writeConfigDir(config: Record<string, unknown>): string {
 
 const PRICED_MODEL = "claude-sonnet-5";
 
-function orchestraCfg(extra?: Record<string, unknown>) {
+function teamCfg(extra?: Record<string, unknown>) {
   return {
     agents: {
       leader: {
@@ -123,7 +123,7 @@ async function startDaemon(opts: {
     instanceFile: join(tempDir("agency-dh35-inst-"), "instance.json"),
     adapterFor: () => counting,
     http: noopHttp,
-    configDir: writeConfigDir(orchestraCfg(opts.budgets ? { budgets: opts.budgets } : undefined)),
+    configDir: writeConfigDir(teamCfg(opts.budgets ? { budgets: opts.budgets } : undefined)),
     sessionsDir,
   });
   daemons.push(daemon);
@@ -164,14 +164,14 @@ describe("dispatch hardening (item 35)", () => {
       expect(a.costUsd).toBeGreaterThan(0);
     }
     // traceRecorder per child: one trace file per dispatched session.
-    expect(existsSync(join(sessionsDir, "orchestra-w1.trace.jsonl"))).toBe(true);
-    expect(existsSync(join(sessionsDir, "orchestra-w2.trace.jsonl"))).toBe(true);
+    expect(existsSync(join(sessionsDir, "team-w1.trace.jsonl"))).toBe(true);
+    expect(existsSync(join(sessionsDir, "team-w2.trace.jsonl"))).toBe(true);
   });
 
-  it("dispatch_compare refuses once the orchestra budget is hit (no spawn, no model call)", async () => {
+  it("dispatch_compare refuses once the team budget is hit (no spawn, no model call)", async () => {
     let calls = 0;
     const { client } = await startDaemon({
-      budgets: { orchestraUsd: 0.001 },
+      budgets: { teamUsd: 0.001 },
       adapter: {
         family: "fake",
         async *stream(): AsyncIterable<StreamEvent> {
@@ -191,7 +191,7 @@ describe("dispatch hardening (item 35)", () => {
     const second = (await client.call("dispatch_compare", { handles: ["w1"], prompt: "p" })) as {
       results: Array<{ handle: string; result: string }>;
     };
-    expect(second.results[0]!.result).toMatch(/orchestra budget exceeded/);
+    expect(second.results[0]!.result).toMatch(/team budget exceeded/);
     expect(calls).toBe(1);
   });
 

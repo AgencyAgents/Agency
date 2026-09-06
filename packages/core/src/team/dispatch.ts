@@ -127,5 +127,5 @@ export function createDispatchTool(deps: {
         requestApproval: toolCtx.requestApproval,
       });
     },
-  } as unknown as ToolSpec;
+  };
 }

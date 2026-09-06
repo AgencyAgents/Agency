@@ -14,8 +14,10 @@ export const PROMPT_VERSION = "1.0.0";
  * intact.
  */
 export function withPromptVersion(composed: ComposedPrompt): ComposedPrompt {
+  const tag = `<prompt-version>${PROMPT_VERSION}</prompt-version>`;
   return {
     ...composed,
-    text: `${composed.text}\n\n<prompt-version>${PROMPT_VERSION}</prompt-version>`,
+    segments: [...composed.segments, { stability: "dynamic", text: tag }],
+    text: `${composed.text}\n\n${tag}`,
   };
 }

@@ -33,7 +33,7 @@ export function createProcessOutputTool(processManager: ProcessManager): ToolSpe
       return { content: logs };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createProcessListTool(processManager: ProcessManager): ToolSpec {
@@ -56,7 +56,7 @@ export function createProcessListTool(processManager: ProcessManager): ToolSpec 
       return { content: lines.join("\n") };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createProcessKillTool(_deps: ToolDeps, processManager: ProcessManager): ToolSpec {
@@ -90,7 +90,7 @@ export function createProcessKillTool(_deps: ToolDeps, processManager: ProcessMa
       return { content: t("tool.process.killed", { id }) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createProcessTools(deps: ToolDeps, processManager: ProcessManager): ToolSpec[] {

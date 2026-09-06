@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { classifyEffortFromText } from "@agency/providers";
 import { ConfigSchema } from "../src/config/schema.ts";
 import { runTurn } from "../src/loop.ts";
-import { AgentRegistry, parseHandles } from "../src/orchestra/registry.ts";
-import { OrchestraTodoStore } from "../src/orchestra/todo.ts";
 import { SESSION_SCHEMA_VERSION } from "../src/sessions/entry.ts";
+import { AgentRegistry, parseHandles } from "../src/team/registry.ts";
+import { BoardStore } from "../src/team/todo.ts";
 
-describe("orchestra", () => {
+describe("team", () => {
   it("SESSION_SCHEMA_VERSION bumped to 2", () => expect(SESSION_SCHEMA_VERSION).toBe(2));
   it("handle validation", () => {
     expect(() =>
@@ -44,8 +44,8 @@ describe("orchestra", () => {
     expect(r.drain("a").length).toBe(1);
     expect(r.drain("a").length).toBe(0);
   });
-  it("orchestra todo claim sets claimedBy + pending→in_progress, release clears", () => {
-    const s = new OrchestraTodoStore();
+  it("team todo claim sets claimedBy + pending→in_progress, release clears", () => {
+    const s = new BoardStore();
     s.replace([{ id: "1", content: "t", status: "pending" }]);
     expect(s.claim("a", "1").ok).toBe(true);
     const claimed = s.list().find((t) => t.id === "1");
@@ -57,15 +57,15 @@ describe("orchestra", () => {
     expect(s.release("a", "1").ok).toBe(true);
     expect(s.list().find((t) => t.id === "1")?.claimedBy).toBeUndefined();
   });
-  it("orchestra todo claim does not regress non-pending status", () => {
-    const s = new OrchestraTodoStore();
+  it("team todo claim does not regress non-pending status", () => {
+    const s = new BoardStore();
     s.replace([{ id: "1", content: "t", status: "ready_for_review" }]);
     expect(s.claim("a", "1").ok).toBe(true);
     expect(s.list().find((t) => t.id === "1")?.status).toBe("ready_for_review");
   });
-  it("orchestra todo persist callback fires on claim/release/setStatus/replace", async () => {
+  it("team todo persist callback fires on claim/release/setStatus/replace", async () => {
     const seen: { id: string; status: string; claimedBy?: string }[][] = [];
-    const s = new OrchestraTodoStore({
+    const s = new BoardStore({
       persist: async (todos) => {
         seen.push(todos.map((t) => ({ ...t })));
       },
@@ -85,7 +85,7 @@ describe("orchestra", () => {
     expect(s.setStatus("b", "1", "completed").ok).toBe(true);
   });
   it("ready_for_review gate", () => {
-    const s = new OrchestraTodoStore();
+    const s = new BoardStore();
     s.replace([{ id: "1", content: "t", status: "pending" }]);
     s.claim("a", "1");
     expect(s.setStatus("a", "1", "completed").ok).toBe(false);

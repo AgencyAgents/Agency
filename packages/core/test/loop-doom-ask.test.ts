@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { HttpClient } from "@agency/net";
 import { Scheduler } from "@agency/providers";
-import { doomApprovalRequest, runTurn, type ToolSpec } from "../src/loop.ts";
+import { doomApprovalRequest, runTurn } from "../src/loop.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const user = { type: "user" } as const;
@@ -44,7 +44,7 @@ const readTool = {
   inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
   handler: async () => ({ content: "ok" }),
   riskTier: "safe",
-} as unknown as ToolSpec;
+};
 
 function baseOptions(extra: Record<string, unknown> = {}) {
   return {

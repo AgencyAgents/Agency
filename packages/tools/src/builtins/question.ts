@@ -2,10 +2,10 @@ import { t } from "@agency/i18n";
 import type { ToolSpec } from "../contract.ts";
 import { str, summarize } from "../render.ts";
 
-interface QuestionInput {
+type QuestionInput = {
   question: string;
   choices?: string[];
-}
+};
 
 /**
  * Poses a structured clarifying question: the result content carries the
@@ -58,5 +58,5 @@ export function createQuestionTool(opts: { nonInteractive?: boolean } = {}): Too
       return { content: lines.join("\n") };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

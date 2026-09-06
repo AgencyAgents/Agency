@@ -115,5 +115,5 @@ export function createReadTool(deps: ToolDeps, options?: ReadToolOptions): ToolS
       return { content: numberedSlice(content, offset, limit) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

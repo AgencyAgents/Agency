@@ -2,18 +2,25 @@ import { anthropicAdapter } from "./adapters/anthropic.ts";
 import { googleAdapter } from "./adapters/google.ts";
 import { openaiAdapter } from "./adapters/openai.ts";
 import { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible.ts";
+import type { CachePolicy } from "./cache-policy.ts";
 import type { ProviderAdapter } from "./types.ts";
 
-export type CacheStrategy =
-  /** Agency marks explicit breakpoints in the request (Anthropic's cache_control). */
-  | "explicit-breakpoints"
-  /** The provider caches automatically server-side; nothing for Agency to mark. */
-  | "automatic";
+export const ANTHROPIC_CACHE_POLICY: CachePolicy = {
+  minTokens: 1024,
+  sharedPrefixTtlSeconds: 3600,
+  tailTtlSeconds: 300,
+};
+
+export const AUTOMATIC_CACHE_POLICY: CachePolicy = {
+  minTokens: 1024,
+  sharedPrefixTtlSeconds: 3600,
+  tailTtlSeconds: 300,
+};
 
 export interface FamilyPreset {
   readonly family: string;
   readonly adapter: ProviderAdapter;
-  readonly cacheStrategy: CacheStrategy;
+  readonly cachePolicy: CachePolicy;
   /** True if streamed tool calls can interleave by index (OpenAI); false if
    *  each call arrives complete and self-contained (Anthropic, Google). */
   readonly streamsParallelToolCallDeltas: boolean;
@@ -22,21 +29,21 @@ export interface FamilyPreset {
 export const anthropicPreset: FamilyPreset = {
   family: "anthropic",
   adapter: anthropicAdapter,
-  cacheStrategy: "explicit-breakpoints",
+  cachePolicy: ANTHROPIC_CACHE_POLICY,
   streamsParallelToolCallDeltas: false,
 };
 
 export const openaiPreset: FamilyPreset = {
   family: "openai",
   adapter: openaiAdapter,
-  cacheStrategy: "automatic",
+  cachePolicy: AUTOMATIC_CACHE_POLICY,
   streamsParallelToolCallDeltas: true,
 };
 
 export const googlePreset: FamilyPreset = {
   family: "google",
   adapter: googleAdapter,
-  cacheStrategy: "automatic",
+  cachePolicy: AUTOMATIC_CACHE_POLICY,
   streamsParallelToolCallDeltas: false,
 };
 
@@ -45,7 +52,7 @@ export function createOpenAiCompatiblePreset(family: string, baseUrl: string): F
   return {
     family,
     adapter: createOpenAiCompatibleAdapter(family, baseUrl),
-    cacheStrategy: "automatic",
+    cachePolicy: AUTOMATIC_CACHE_POLICY,
     streamsParallelToolCallDeltas: true,
   };
 }

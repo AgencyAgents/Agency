@@ -19,13 +19,13 @@ export interface EditToolOptions {
   readState?: ReadState;
 }
 
-interface EditInput {
+type EditInput = {
   path: string;
   oldText?: string;
   newText?: string;
   hunks?: EditHunk[];
   replaceAll?: boolean;
-}
+};
 
 function hasHunks(input: EditInput): boolean {
   return Array.isArray(input.hunks) && input.hunks.length > 0;
@@ -149,5 +149,5 @@ export function createEditTool(
       }
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

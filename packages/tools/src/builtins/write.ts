@@ -61,5 +61,5 @@ export function createWriteTool(
       return { content };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

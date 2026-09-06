@@ -8,7 +8,7 @@ import {
   leanSummary,
   PromiseBarrier,
   spawnParallel,
-} from "../src/orchestra/parallel.ts";
+} from "../src/team/parallel.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

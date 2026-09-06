@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dispatchProgress, parsePlanChecklist } from "../src/boulder/checklist.ts";
-import { BoulderStore } from "../src/boulder/store.ts";
+import { dispatchProgress, parsePlanChecklist } from "../src/progress/checklist.ts";
+import { ProgressStore } from "../src/progress/store.ts";
 
 const PLAN = [
   "# demo - Work Plan",
   "## Todos",
   "- [x] 1. First task",
   "- [ ] 2. Second task",
-  "- [ ] 48. Boulder persistent state: introduce timers",
+  "- [ ] 48. Progress persistent state: introduce timers",
   "## Final verification wave",
   "- [ ] F1. Audit",
   "- [x] F2. Quality",
@@ -49,22 +49,22 @@ describe("plan-checklist parser", () => {
   });
 });
 
-describe("BoulderStore persistent state", () => {
+describe("ProgressStore persistent state", () => {
   function workRoot(): string {
-    return mkdtempSync(join(tmpdir(), "agency-boulder-"));
+    return mkdtempSync(join(tmpdir(), "agency-progress-"));
   }
 
   test("timers persist across restarts with live elapsed while running", () => {
     const root = workRoot();
     try {
       let now = 1_000_000;
-      const a = new BoulderStore(root, { now: () => now });
+      const a = new ProgressStore(root, { now: () => now });
       a.startTask("todos:2", { label: "2", title: "Second task", agent: "junior" });
       a.save();
       expect(existsSync(join(root, ".omo", "boulder.json"))).toBe(true);
 
       now += 5_000;
-      const b = new BoulderStore(root, { now: () => now });
+      const b = new ProgressStore(root, { now: () => now });
       expect(b.getTask("todos:2")?.status).toBe("running");
       expect(b.elapsedMs("todos:2")).toBe(5_000);
 
@@ -73,7 +73,7 @@ describe("BoulderStore persistent state", () => {
       expect(done.ended_at).toBeDefined();
       b.save();
 
-      const c = new BoulderStore(root, { now: () => now + 60_000 });
+      const c = new ProgressStore(root, { now: () => now + 60_000 });
       expect(c.getTask("todos:2")?.status).toBe("completed");
       expect(c.elapsedMs("todos:2")).toBe(5_000);
     } finally {
@@ -84,11 +84,11 @@ describe("BoulderStore persistent state", () => {
   test("restart does not reset a running start timestamp", () => {
     const root = workRoot();
     try {
-      const a = new BoulderStore(root, { now: () => 1000 });
-      a.startTask("todos:48", { label: "48", title: "Boulder" });
+      const a = new ProgressStore(root, { now: () => 1000 });
+      a.startTask("todos:48", { label: "48", title: "Progress" });
       a.save();
-      const b = new BoulderStore(root, { now: () => 2000 });
-      b.startTask("todos:48", { label: "48", title: "Boulder" });
+      const b = new ProgressStore(root, { now: () => 2000 });
+      b.startTask("todos:48", { label: "48", title: "Progress" });
       expect(b.getTask("todos:48")?.started_at).toBe(new Date(1000).toISOString());
       expect(b.elapsedMs("todos:48")).toBe(1000);
     } finally {
@@ -99,7 +99,7 @@ describe("BoulderStore persistent state", () => {
   test("syncFromChecklist + nextDispatchable drive dispatch", () => {
     const root = workRoot();
     try {
-      const store = new BoulderStore(root);
+      const store = new ProgressStore(root);
       const checklist = parsePlanChecklist(PLAN);
       const updated = store.syncFromChecklist(checklist);
       expect(updated).toContain("todos:1");
@@ -118,11 +118,11 @@ describe("BoulderStore persistent state", () => {
   test("notepad learnings append creates dir + file", () => {
     const root = workRoot();
     try {
-      const store = new BoulderStore(root, { now: () => Date.parse("2026-09-04T12:00:00.000Z") });
-      const file = store.appendLearning("demo-plan", "shipped boulder timers");
+      const store = new ProgressStore(root, { now: () => Date.parse("2026-09-04T12:00:00.000Z") });
+      const file = store.appendLearning("demo-plan", "shipped progress timers");
       expect(file).toBe(join(root, ".omo", "notepads", "demo-plan", "learnings.md"));
       const text = readFileSync(file, "utf8");
-      expect(text).toContain("shipped boulder timers");
+      expect(text).toContain("shipped progress timers");
       expect(text).toContain("2026-09-04");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -141,7 +141,7 @@ describe("BoulderStore persistent state", () => {
       };
       mkdirSync(join(root, ".omo"), { recursive: true });
       writeFileSync(join(root, ".omo", "boulder.json"), JSON.stringify(legacy), "utf8");
-      const store = new BoulderStore(root);
+      const store = new ProgressStore(root);
       store.startTask("todos:9", { label: "9", title: "Keep me" });
       store.save();
       const roundTripped = JSON.parse(readFileSync(join(root, ".omo", "boulder.json"), "utf8")) as Record<
@@ -164,7 +164,7 @@ describe("BoulderStore persistent state", () => {
     try {
       mkdirSync(join(root, ".omo"), { recursive: true });
       writeFileSync(join(root, ".omo", "boulder.json"), "{not json", "utf8");
-      const store = new BoulderStore(root);
+      const store = new ProgressStore(root);
       expect(store.getTask("todos:1")).toBeUndefined();
       expect(store.elapsedMs("todos:1")).toBe(0);
     } finally {

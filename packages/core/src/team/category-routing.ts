@@ -1,7 +1,7 @@
 /**
  * Category routing + delegate fallback (item 51).
  *
- * Maps a Boulder/dispatch task category to an optimized primary
+ * Maps a Progress/dispatch task category to an optimized primary
  * provider+model+temperature, plus a cross-provider fallback chain so a
  * single provider outage never strands a delegate turn. Additive only:
  * existing dispatch/loop/daemon routing is untouched; callers opt in via

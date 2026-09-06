@@ -70,8 +70,24 @@ describe("gatherEnvironmentInfo", () => {
     });
     expect(info.cwd).toBe("/repo");
     expect(info.platform).toContain(process.platform);
-    expect(info.date).toMatch(/^\d{4}-09-02 \d{2}:\d{2} UTC[+-]\d{2}:\d{2}$/);
+    expect(info.date).toBe("2026-09-02");
     expect(info.git).toEqual({ branch: "main", dirty: true, changedFiles: 1, detached: false });
+  });
+
+  test("date-only granularity keeps the environment block cache-stable within a day", () => {
+    const noon = gatherEnvironmentInfo({
+      cwd: "/repo",
+      now: new Date("2026-09-02T12:34:56"),
+      git: () => null,
+    });
+    const evening = gatherEnvironmentInfo({
+      cwd: "/repo",
+      now: new Date("2026-09-02T23:01:05"),
+      git: () => null,
+    });
+    expect(noon.date).toBe("2026-09-02");
+    expect(evening.date).toBe(noon.date);
+    expect(buildEnvironmentBlock(noon)).toBe(buildEnvironmentBlock(evening));
   });
 
   test("a failing git runner (no repo, no git binary, timeout) just omits the git section", () => {
@@ -106,7 +122,7 @@ describe("buildEnvironmentBlock", () => {
     const block = buildEnvironmentBlock({
       platform: "win32 10.0.26100 x64",
       cwd: "C:\\repo",
-      date: "2026-09-02 12:34 UTC+02:00",
+      date: "2026-09-02",
       git: { branch: "main", dirty: true, changedFiles: 2, detached: false },
     });
     expect(block).toBe(
@@ -114,7 +130,7 @@ describe("buildEnvironmentBlock", () => {
         "<environment>",
         "os: win32 10.0.26100 x64",
         "cwd: C:\\repo",
-        "date: 2026-09-02 12:34 UTC+02:00",
+        "date: 2026-09-02",
         "git: branch main (dirty, 2 changed files)",
         "</environment>",
       ].join("\n"),
@@ -125,7 +141,7 @@ describe("buildEnvironmentBlock", () => {
     const block = buildEnvironmentBlock({
       platform: "linux 6.8 x64",
       cwd: "/tmp/x",
-      date: "2026-09-02 10:00 UTC+00:00",
+      date: "2026-09-02",
     });
     expect(block).not.toContain("git:");
     expect(block).not.toContain("branch");
@@ -135,7 +151,7 @@ describe("buildEnvironmentBlock", () => {
     const detached = buildEnvironmentBlock({
       platform: "darwin 24 x64",
       cwd: "/repo",
-      date: "2026-09-02 10:00 UTC+00:00",
+      date: "2026-09-02",
       git: { branch: "HEAD", dirty: false, changedFiles: 0, detached: true },
     });
     expect(detached).toContain("git: branch HEAD (detached, clean)");
@@ -143,7 +159,7 @@ describe("buildEnvironmentBlock", () => {
     const one = buildEnvironmentBlock({
       platform: "darwin 24 x64",
       cwd: "/repo",
-      date: "2026-09-02 10:00 UTC+00:00",
+      date: "2026-09-02",
       git: { branch: "main", dirty: true, changedFiles: 1, detached: false },
     });
     expect(one).toContain("git: branch main (dirty, 1 changed file)");
@@ -153,14 +169,12 @@ describe("buildEnvironmentBlock", () => {
     const block = buildEnvironmentBlock({
       platform: "win32 10.0.26100 x64",
       cwd: "C:\\repo",
-      date: "2026-09-02 12:34 UTC+02:00",
+      date: "2026-09-02",
       shell: "PowerShell",
     });
     const lines = block.split("\n");
     expect(lines).toContain("shell: PowerShell");
-    expect(lines.indexOf("shell: PowerShell")).toBeGreaterThan(
-      lines.indexOf("date: 2026-09-02 12:34 UTC+02:00"),
-    );
+    expect(lines.indexOf("shell: PowerShell")).toBeGreaterThan(lines.indexOf("date: 2026-09-02"));
   });
 
   test("omits the shell line when the caller passes no label", () => {

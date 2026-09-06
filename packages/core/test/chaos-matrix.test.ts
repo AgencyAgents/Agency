@@ -17,13 +17,13 @@ import {
   type PlanGateDecision,
   writePlanIssues,
 } from "@agency/tools/src/builtins/plan.ts";
+import { isContextOverflowError } from "../src/sessions/compaction.ts";
 import {
   DISPATCH_SKIP_REASONS,
   type DispatchSkipReason,
   formatSkipLine,
   planDispatchBatch,
-} from "../src/orchestra/dispatch-core.ts";
-import { isContextOverflowError } from "../src/sessions/compaction.ts";
+} from "../src/team/dispatch-core.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -287,7 +287,7 @@ describe("Chaos: dispatch skip storm", () => {
       "unknown-handle",
       "nested-blocked",
       "depth-limit",
-      "orchestra-budget-exceeded",
+      "team-budget-exceeded",
       "per-agent-budget-exceeded",
     ];
     expect(reasons).toEqual([...DISPATCH_SKIP_REASONS]);
@@ -349,16 +349,16 @@ describe("Chaos: dispatch skip storm", () => {
     expect(formatSkipLine(plan.skips[0]!)).toContain("[skip:depth-limit]");
   });
 
-  test("orchestra-budget-exceeded skip when total spend over limit", () => {
+  test("team-budget-exceeded skip when total spend over limit", () => {
     const plan = planDispatchBatch([{ handle: "agent1", brief: "work" }], {
       resolveHandle: () => ({ handle: "agent1" }),
-      budgets: { orchestraUsd: 0.01 },
-      orchestraTotal: 0.02,
+      budgets: { teamUsd: 0.01 },
+      teamTotal: 0.02,
     });
     expect(plan.targets).toEqual([]);
     expect(plan.skips).toHaveLength(1);
-    expect(plan.skips[0]?.reason).toBe("orchestra-budget-exceeded");
-    expect(formatSkipLine(plan.skips[0]!)).toContain("[skip:orchestra-budget-exceeded]");
+    expect(plan.skips[0]?.reason).toBe("team-budget-exceeded");
+    expect(formatSkipLine(plan.skips[0]!)).toContain("[skip:team-budget-exceeded]");
   });
 
   test("per-agent-budget-exceeded skip when agent spend over limit", () => {

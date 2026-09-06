@@ -1,5 +1,5 @@
 /**
- * Plan-checklist parser for Boulder persistent state (item 48).
+ * Plan-checklist parser for Progress persistent state (item 48).
  *
  * Plan files carry two checkbox columns:
  * - `## Todos` — the numbered dispatch queue (`- [ ] 1. title`, `- [x] 2. ...`)

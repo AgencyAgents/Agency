@@ -10,7 +10,7 @@ export type DispatchSkipReason =
   | "unknown-handle"
   | "nested-blocked"
   | "depth-limit"
-  | "orchestra-budget-exceeded"
+  | "team-budget-exceeded"
   | "per-agent-budget-exceeded";
 
 /** Every known skip reason. Coverage tests assert this list stays stable. */
@@ -20,7 +20,7 @@ export const DISPATCH_SKIP_REASONS: readonly DispatchSkipReason[] = [
   "unknown-handle",
   "nested-blocked",
   "depth-limit",
-  "orchestra-budget-exceeded",
+  "team-budget-exceeded",
   "per-agent-budget-exceeded",
 ];
 
@@ -127,9 +127,9 @@ export interface PlanDispatchOptions {
   defaults?: DispatchDefaults;
   taskDepth?: number;
   maxDepth?: number;
-  budgets?: { perAgentUsd?: number; orchestraUsd?: number };
+  budgets?: { perAgentUsd?: number; teamUsd?: number };
   perAgentSpend?: Map<string, number>;
-  orchestraTotal?: number;
+  teamTotal?: number;
 }
 
 export interface DispatchPlan {
@@ -175,7 +175,7 @@ export function planDispatchBatch(
   const targets: ResolvedDispatchTarget[] = [];
   const skips: DispatchSkip[] = [];
   // Running totals so accepted targets consume budget mid-batch.
-  let runningOrchestra = opts.orchestraTotal ?? 0;
+  let runningTeam = opts.teamTotal ?? 0;
   const runningPerAgent = new Map(opts.perAgentSpend);
   requests.forEach((r, index) => {
     if (
@@ -201,12 +201,12 @@ export function planDispatchBatch(
       });
       return;
     }
-    if (opts.budgets?.orchestraUsd !== undefined && runningOrchestra >= opts.budgets.orchestraUsd) {
+    if (opts.budgets?.teamUsd !== undefined && runningTeam >= opts.budgets.teamUsd) {
       skips.push({
         index,
         handle: r.handle,
-        reason: "orchestra-budget-exceeded",
-        detail: `orchestra budget exceeded: ${runningOrchestra} >= ${opts.budgets.orchestraUsd}`,
+        reason: "team-budget-exceeded",
+        detail: `team budget exceeded: ${runningTeam} >= ${opts.budgets.teamUsd}`,
       });
       return;
     }
@@ -223,7 +223,7 @@ export function planDispatchBatch(
     const resolved = resolveDispatchTarget(r, agent, opts.defaults);
     targets.push({ ...resolved, index });
     const cost = r.costUsd ?? 0;
-    runningOrchestra += cost;
+    runningTeam += cost;
     runningPerAgent.set(r.handle, spent + cost);
   });
   return { targets, skips };

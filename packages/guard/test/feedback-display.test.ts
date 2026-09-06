@@ -8,7 +8,7 @@ const SKIP_REASONS = [
   "unknown-handle",
   "nested-blocked",
   "depth-limit",
-  "orchestra-budget-exceeded",
+  "team-budget-exceeded",
   "per-agent-budget-exceeded",
 ] as const;
 

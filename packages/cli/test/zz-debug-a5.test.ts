@@ -43,7 +43,7 @@ test("debug a5 ask path", async () => {
     inputSchema: { type: "object" },
     riskTier: "dangerous",
     handler: async () => ({ content: "ran rm -rf build" }),
-  } as unknown as ToolSpec;
+  };
   const daemon = await createAgentDaemon({
     workspaceRoot: "/repo/fake",
     instanceFile: join(dir, "i.json"),

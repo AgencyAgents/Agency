@@ -68,7 +68,7 @@ digest, the lead reads the report, the human reads all of it.
 ## 7.4 The board is the delegation ledger
 
 The shared todo store becomes the coordination substrate. It already has
-the right semantics in `OrchestraTodoStore`: four statuses, claimed-by,
+the right semantics in `BoardStore`: four statuses, claimed-by,
 exclusive claim, release restricted to the claimant, and a claimant that
 cannot close its own item.
 

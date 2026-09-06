@@ -273,7 +273,7 @@ describe("per-agent permissions", () => {
       apiKey: "key",
       systemPrompt: "sys",
       session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
-      sessionId: "orchestra-planner",
+      sessionId: "team-planner",
     })) as RunTurnRpcResult;
     expect(result.stopReason).toBe("end_turn");
 
@@ -305,7 +305,7 @@ describe("per-agent permissions", () => {
       apiKey: "key",
       systemPrompt: "sys",
       session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
-      sessionId: "orchestra-coder",
+      sessionId: "team-coder",
     })) as RunTurnRpcResult;
     expect(result.stopReason).toBe("end_turn");
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { Message } from "@agency/schema";
 import { runTurn } from "../src/loop.ts";
-import { AgentRegistry } from "../src/orchestra/registry.ts";
+import { AgentRegistry } from "../src/team/registry.ts";
 
 const msg = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
 
-describe("orchestra mailbox correctness (item 36)", () => {
+describe("team mailbox correctness (item 36)", () => {
   it("mailbox keyed by handle: enqueue to one handle never leaks to another", () => {
     const r = new AgentRegistry();
     r.register({

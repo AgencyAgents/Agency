@@ -63,5 +63,5 @@ export function createFetchTool(deps: ToolDeps, http: HttpClient): ToolSpec {
       };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

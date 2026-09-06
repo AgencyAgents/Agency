@@ -4,6 +4,7 @@ import {
   EMPTY_CATCH_PATTERN,
   EMPTY_CATCH_PATTERNS,
   fallbackEmptyCatch,
+  findSilentPersistenceCatches,
   normalizeLang,
   SG_BINARIES,
   SG_LANGS,
@@ -63,5 +64,16 @@ describe("sg-helper structural search (item 58)", () => {
     const matches = fallbackEmptyCatch("scripts/fixtures/sg-empty-catch.ts");
     expect(matches.length).toBe(2);
     expect(matches.map((m: SgMatch) => m.line)).toEqual([4, 11]);
+  });
+
+  test("enforcement flags the silent persistence catch, not the logged one", () => {
+    const hits = findSilentPersistenceCatches("scripts/fixtures/sg-persistence.ts");
+    expect(hits.length).toBe(1);
+    expect(hits[0]?.kind).toBe("empty-catch");
+    expect(hits[0]?.line).toBe(11);
+  });
+
+  test("daemon persistence paths stay logged", () => {
+    expect(findSilentPersistenceCatches("packages/cli/src/daemon.ts")).toEqual([]);
   });
 });

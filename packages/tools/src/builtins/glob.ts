@@ -68,5 +68,5 @@ export function createGlobTool(deps: ToolDeps): ToolSpec {
       return { content: results.join("\n") + suffix };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

@@ -8,7 +8,7 @@ import {
   runWithCategoryFallback,
   TASK_CATEGORIES,
   temperatureFor,
-} from "../src/orchestra/category-routing.ts";
+} from "../src/team/category-routing.ts";
 
 describe("category routing map (item 51)", () => {
   test("covers all five categories with model+temperature", () => {

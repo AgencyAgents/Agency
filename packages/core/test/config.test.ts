@@ -487,7 +487,7 @@ describe("DEFAULT_ROSTER", () => {
     expect(config.agents!.helper?.enabled).toBe(false);
   });
 
-  test("disabled agent is not registered in orchestra (config still has it)", () => {
+  test("disabled agent is not registered in team (config still has it)", () => {
     const dir = tempDir();
     cleanup.push(dir);
     writeFileSync(

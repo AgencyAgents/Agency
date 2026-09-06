@@ -501,8 +501,8 @@ describe("system prompt composition", () => {
     const system = capture.systems[0] ?? "";
     const order = [
       system.indexOf("IDENTITY"),
-      system.indexOf("ROLE"),
       system.indexOf("INSTR1"),
+      system.indexOf("ROLE"),
       system.indexOf("<environment>"),
     ];
     expect(order).toEqual([...order].sort((a, b) => a - b));

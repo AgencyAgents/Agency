@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BUILTIN_MODELS, type ModelInfo } from "@agency/providers";
-import { CATEGORY_ROUTES, resolveCategoryRoutes } from "../src/orchestra/category-routing.ts";
+import { CATEGORY_ROUTES, resolveCategoryRoutes } from "../src/team/category-routing.ts";
 
 function model(overrides: Partial<ModelInfo> & Pick<ModelInfo, "id" | "family">): ModelInfo {
   return {

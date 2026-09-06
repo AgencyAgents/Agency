@@ -7,7 +7,7 @@ import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import {
   type AgentDaemon,
-  checkOrchestraBudgets,
+  checkTeamBudgets,
   createAgentDaemon,
   type RunTurnRpcResult,
 } from "../src/daemon.ts";
@@ -91,13 +91,13 @@ function toolResultOf(result: RunTurnRpcResult): { isError?: boolean; content?: 
   return undefined;
 }
 
-describe("checkOrchestraBudgets", () => {
+describe("checkTeamBudgets", () => {
   test("throws per-agent when that handle already spent its cap", () => {
     expect(() =>
-      checkOrchestraBudgets({
+      checkTeamBudgets({
         budgets: { perAgentUsd: 1 },
         perAgentSpend: new Map([["worker", 1.5]]),
-        orchestraTotal: 0,
+        teamTotal: 0,
         handles: ["worker"],
       }),
     ).toThrow("budget exceeded");
@@ -105,10 +105,10 @@ describe("checkOrchestraBudgets", () => {
 
   test("throws per-agent at exactly the cap", () => {
     expect(() =>
-      checkOrchestraBudgets({
+      checkTeamBudgets({
         budgets: { perAgentUsd: 2 },
         perAgentSpend: new Map([["worker", 2]]),
-        orchestraTotal: 0,
+        teamTotal: 0,
         handles: ["worker"],
       }),
     ).toThrow("per-agent worker");
@@ -116,47 +116,47 @@ describe("checkOrchestraBudgets", () => {
 
   test("other handles under cap do not trip the per-agent check", () => {
     expect(() =>
-      checkOrchestraBudgets({
+      checkTeamBudgets({
         budgets: { perAgentUsd: 1 },
         perAgentSpend: new Map([["leader", 5]]),
-        orchestraTotal: 0,
+        teamTotal: 0,
         handles: ["worker"],
       }),
     ).not.toThrow();
   });
 
-  test("throws orchestra when the running total hit the cap", () => {
+  test("throws team when the running total hit the cap", () => {
     expect(() =>
-      checkOrchestraBudgets({
-        budgets: { orchestraUsd: 3 },
+      checkTeamBudgets({
+        budgets: { teamUsd: 3 },
         perAgentSpend: new Map(),
-        orchestraTotal: 3,
+        teamTotal: 3,
         handles: ["worker"],
       }),
-    ).toThrow("orchestra budget exceeded");
+    ).toThrow("team budget exceeded");
   });
 
   test("passes under both caps and with no budgets configured", () => {
     expect(() =>
-      checkOrchestraBudgets({
-        budgets: { perAgentUsd: 10, orchestraUsd: 100 },
+      checkTeamBudgets({
+        budgets: { perAgentUsd: 10, teamUsd: 100 },
         perAgentSpend: new Map([["worker", 1]]),
-        orchestraTotal: 5,
+        teamTotal: 5,
         handles: ["worker"],
       }),
     ).not.toThrow();
     expect(() =>
-      checkOrchestraBudgets({
+      checkTeamBudgets({
         budgets: undefined,
         perAgentSpend: new Map(),
-        orchestraTotal: 999,
+        teamTotal: 999,
         handles: ["worker"],
       }),
     ).not.toThrow();
   });
 });
 
-describe("orchestra budgets in daemon", () => {
+describe("team budgets in daemon", () => {
   test("dispatch blocked by per-agent cap returns isError and spawns nothing", async () => {
     const sessionsDir = mkdtempSync(join(tmpdir(), "agency-b38-sess-"));
     dirs.push(sessionsDir);
@@ -201,13 +201,13 @@ describe("orchestra budgets in daemon", () => {
     expect(runs).toBe(1);
   });
 
-  test("orchestra cap already spent makes run_turn throw before any dispatch", async () => {
+  test("team cap already spent makes run_turn throw before any dispatch", async () => {
     const daemon = await createAgentDaemon({
       workspaceRoot: "/repo/fake",
       instanceFile: tempInstanceFile(),
       adapterFor: () => dispatchAdapter({ agents: [{ handle: "worker", brief: "do work" }] }),
       http: noopHttp,
-      configDir: writeConfigDir({ ...roster, budgets: { orchestraUsd: 0 } }),
+      configDir: writeConfigDir({ ...roster, budgets: { teamUsd: 0 } }),
     });
     daemons.push(daemon);
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
@@ -216,7 +216,7 @@ describe("orchestra budgets in daemon", () => {
     let caught: unknown;
     try {
       await client.call("run_turn", {
-        turnId: "b38-orchestra",
+        turnId: "b38-team",
         provider: "anthropic",
         model: "claude",
         apiKey: "key",
@@ -226,7 +226,7 @@ describe("orchestra budgets in daemon", () => {
     } catch (e) {
       caught = e;
     }
-    expect(String((caught as Error)?.message ?? caught)).toContain("orchestra budget exceeded");
+    expect(String((caught as Error)?.message ?? caught)).toContain("team budget exceeded");
   });
 
   test("costUsdForHandle sums every model trace span", async () => {

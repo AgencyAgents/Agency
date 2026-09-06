@@ -1,29 +1,29 @@
-export type OrchestraTodoStatus = "pending" | "in_progress" | "completed" | "ready_for_review";
+export type BoardStatus = "pending" | "in_progress" | "completed" | "ready_for_review";
 
-export interface OrchestraTodoItem {
+export interface BoardItem {
   id: string;
   content: string;
-  status: OrchestraTodoStatus;
+  status: BoardStatus;
   claimedBy?: string;
 }
 
-export class OrchestraTodoStore {
-  private items: OrchestraTodoItem[] = [];
-  private persist?: (todos: OrchestraTodoItem[]) => Promise<void>;
+export class BoardStore {
+  private items: BoardItem[] = [];
+  private persist?: (todos: BoardItem[]) => Promise<void>;
 
   constructor(opts?: {
-    persist?: (todos: OrchestraTodoItem[]) => Promise<void>;
-    initial?: OrchestraTodoItem[];
+    persist?: (todos: BoardItem[]) => Promise<void>;
+    initial?: BoardItem[];
   }) {
     if (opts?.initial) this.items = [...opts.initial];
     if (opts?.persist) this.persist = opts.persist;
   }
 
-  list(): OrchestraTodoItem[] {
+  list(): BoardItem[] {
     return [...this.items];
   }
 
-  replace(items: OrchestraTodoItem[]): void {
+  replace(items: BoardItem[]): void {
     this.items = [...items];
     void this.persist?.(this.items);
   }
@@ -48,7 +48,7 @@ export class OrchestraTodoStore {
     return { ok: true };
   }
 
-  setStatus(handle: string, id: string, status: OrchestraTodoStatus): { ok: boolean; reason?: string } {
+  setStatus(handle: string, id: string, status: BoardStatus): { ok: boolean; reason?: string } {
     const item = this.items.find((t) => t.id === id);
     if (!item) return { ok: false, reason: "not found" };
     if (status === "completed" && item.claimedBy === handle) {
@@ -60,7 +60,7 @@ export class OrchestraTodoStore {
     return { ok: true };
   }
 
-  hydrate(entries: OrchestraTodoItem[]): void {
+  hydrate(entries: BoardItem[]): void {
     this.items = [...entries];
   }
 }

@@ -202,6 +202,134 @@ export function fallbackEmptyCatch(
   return out;
 }
 
+/** Calls that must never fail silently: session, dispatch, and trace writes. */
+export const PERSISTENCE_MARKERS = [
+  "todoStore.",
+  "dispatchLog.",
+  "writeCassette",
+  "TraceRecorder",
+  "SessionStore",
+];
+
+export interface SilentPersistenceCatch {
+  file: string;
+  line: number;
+  kind: "empty-catch" | "silent-reject";
+  text: string;
+}
+
+const SILENT_REJECT_RE = /\.catch\(\(\) => \{\s*\}\)/;
+const COMMENT_ONLY_RE = /^\s*(\/\*.*\*\/|\/\/.*)?\s*$/;
+const CATCH_OPEN_RE = /^\s*\}\s*catch\s*(\([^)]*\))?\s*\{\s*$/;
+const PERSIST_CALL_RE = /\.(append|save|create)\(|writeCassette\(|new TraceRecorder\(/;
+
+/** Line of the try that opens the block closed at catchLine, or -1. */
+function enclosingTry(lines: string[], catchLine: number): number {
+  let depth = 1;
+  for (let k = catchLine - 1; k >= Math.max(0, catchLine - 60); k--) {
+    const line = lines[k] ?? "";
+    depth += (line.match(/\}/g) ?? []).length - (line.match(/\{/g) ?? []).length;
+    if (depth === 0 && /\btry\b/.test(line)) return k;
+    if (depth < 0) return -1;
+  }
+  return -1;
+}
+
+/** Heuristic gate: an empty catch or arg-less .catch on a persistence call. */
+export function findSilentPersistenceCatches(
+  root: string,
+  extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"],
+): SilentPersistenceCatch[] {
+  const out: SilentPersistenceCatch[] = [];
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry === "node_modules" || entry === ".git" || entry === "dist") continue;
+      const full = join(dir, entry);
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(full);
+      else if (extensions.some((e) => full.endsWith(e))) files.push(full);
+    }
+  };
+  try {
+    if (statSync(root).isFile()) files.push(root);
+    else walk(root);
+  } catch {
+    return [];
+  }
+  for (const file of files) {
+    let lines: string[];
+    try {
+      lines = readFileSync(file, "utf8").split("\n");
+    } catch {
+      continue;
+    }
+    const nearMarker = (from: number, to: number): boolean => {
+      let sawMarker = false;
+      let sawCall = false;
+      for (let j = Math.max(0, from); j <= Math.min(lines.length - 1, to); j++) {
+        const text = lines[j] ?? "";
+        if (PERSISTENCE_MARKERS.some((m) => text.includes(m))) sawMarker = true;
+        if (PERSIST_CALL_RE.test(text)) sawCall = true;
+      }
+      return sawMarker && sawCall;
+    };
+    const blockHasPersistCall = (from: number, to: number): boolean => {
+      for (let j = Math.max(0, from); j <= Math.min(lines.length - 1, to); j++) {
+        if (PERSIST_CALL_RE.test(lines[j] ?? "")) return true;
+      }
+      return false;
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      TS_EMPTY_CATCH_RE.lastIndex = 0;
+      if (TS_EMPTY_CATCH_RE.test(line)) {
+        const from = enclosingTry(lines, i);
+        if (from >= 0 && nearMarker(from, i)) {
+          out.push({ file, line: i + 1, kind: "empty-catch", text: line.trim() });
+        }
+        continue;
+      }
+      if (CATCH_OPEN_RE.test(line)) {
+        let j = i + 1;
+        while (j < lines.length && (lines[j] ?? "").trim() === "") j++;
+        if ((lines[j] ?? "").trim() === "}") {
+          const from = enclosingTry(lines, i);
+          if (from >= 0 && nearMarker(from, i)) {
+            out.push({ file, line: i + 1, kind: "empty-catch", text: line.trim() });
+          }
+        }
+        continue;
+      }
+      if (SILENT_REJECT_RE.test(line)) {
+        if (nearMarker(i - 6, i) && blockHasPersistCall(i - 6, i)) {
+          out.push({ file, line: i + 1, kind: "silent-reject", text: line.trim() });
+        }
+        continue;
+      }
+      if (/\.catch\(\(\w*\)? => \{$/.test(line.trim())) {
+        let j = i + 1;
+        while (j < lines.length && COMMENT_ONLY_RE.test(lines[j] ?? "")) j++;
+        if ((lines[j] ?? "").trim() === "});" && nearMarker(i - 6, j) && blockHasPersistCall(i - 6, j)) {
+          out.push({ file, line: i + 1, kind: "silent-reject", text: line.trim() });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function printUsage(): void {
   console.log(
     [
@@ -210,6 +338,7 @@ function printUsage(): void {
       "  bun scripts/sg-helper.ts --pattern '<pattern>' --lang <lang> [path]",
       "  bun scripts/sg-helper.ts --pattern '<p>' --lang <lang> --rewrite '<r>' [path]",
       "  bun scripts/sg-helper.ts --empty-catch --lang ts [path]",
+      "  bun scripts/sg-helper.ts --enforce-persistence [path]",
       "  bun scripts/sg-helper.ts --langs",
       "",
       `Pattern uses AST metavariables ($VAR, $$$ARGS). Empty catch (ts): ${EMPTY_CATCH_PATTERN}`,
@@ -226,6 +355,13 @@ if (import.meta.main) {
   if (argv.includes("--langs")) {
     console.log([...SG_LANGS].join("\n"));
     process.exit(0);
+  }
+  if (argv.includes("--enforce-persistence")) {
+    const target = argv.filter((a) => !a.startsWith("--"))[0] ?? "packages/cli/src";
+    const hits = findSilentPersistenceCatches(target);
+    for (const h of hits) console.log(`${h.file}:${h.line} [${h.kind}] ${h.text}`);
+    console.log(`# ${hits.length} silent persistence catch(es)`);
+    process.exit(hits.length > 0 ? 2 : 0);
   }
   const flag = (name: string): string | undefined => {
     const i = argv.indexOf(name);

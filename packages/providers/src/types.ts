@@ -1,5 +1,6 @@
 import type { HttpClient } from "@agency/net";
 import type { Message, StopReason } from "@agency/schema";
+import type { CachePolicy, CacheSegment } from "./cache-policy.ts";
 
 /** Unified across every provider's native reasoning-effort knob (Pi's scale). */
 export const ThinkingLevel = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -15,6 +16,10 @@ export interface ProviderRequest {
   model: string;
   apiKey: string;
   system?: string;
+  /** Ordered composer segments; adapters with explicit breakpoints consume these. */
+  systemSegments?: CacheSegment[];
+  /** Minimum cacheable size; defaults to the active policy when absent. */
+  cachePolicy?: CachePolicy;
   messages: Message[];
   tools?: ToolDefinition[];
   maxTokens: number;

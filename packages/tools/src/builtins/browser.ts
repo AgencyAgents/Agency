@@ -12,10 +12,10 @@ const MAX_SNAPSHOT_LINKS = 200;
 
 export type BrowserAction = "navigate" | "snapshot" | "screenshot" | "close";
 
-interface BrowserInput {
+type BrowserInput = {
   action: BrowserAction;
   url?: string;
-}
+};
 
 interface StoredPage {
   url: string;
@@ -177,5 +177,5 @@ export function createBrowserTool(deps: ToolDeps, http: HttpClient): ToolSpec {
       return { content: cap(summary, readTruncated).content };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

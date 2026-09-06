@@ -120,7 +120,7 @@ export function createLspGotoDefinitionTool(options: LspToolsOptions): ToolSpec 
       return { content: locations.map((l) => formatLocation(l.path, l.line, l.character)).join("\n") };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createLspFindReferencesTool(options: LspToolsOptions): ToolSpec {
@@ -167,7 +167,7 @@ export function createLspFindReferencesTool(options: LspToolsOptions): ToolSpec 
       return { content: locations.map((l) => formatLocation(l.path, l.line, l.character)).join("\n") };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createLspSymbolsTool(options: LspToolsOptions): ToolSpec {
@@ -240,7 +240,7 @@ export function createLspSymbolsTool(options: LspToolsOptions): ToolSpec {
       return { content: t("tool.lsp.no_symbols"), isError: true };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createLspPrepareRenameTool(options: LspToolsOptions): ToolSpec {
@@ -289,7 +289,7 @@ export function createLspPrepareRenameTool(options: LspToolsOptions): ToolSpec {
       return { content: prepared.placeholder !== undefined ? `${range} ${prepared.placeholder}` : range };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createLspRenameTool(options: LspToolsOptions): ToolSpec {
@@ -340,7 +340,7 @@ export function createLspRenameTool(options: LspToolsOptions): ToolSpec {
       };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createLspInstallDecisionTool(options: LspToolsOptions): ToolSpec {
@@ -382,7 +382,7 @@ export function createLspInstallDecisionTool(options: LspToolsOptions): ToolSpec
       return { content: t("tool.lsp.install_recorded", { server, decision }) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 /**

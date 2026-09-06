@@ -472,7 +472,7 @@ export function createPlanExitTool(deps: ToolDeps, opts: { nonInteractive?: bool
       return { content: planApprovedMessage(plan) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 /** Approve & execute: approved plan hash matches, unchecked steps become todos. */
@@ -557,5 +557,5 @@ export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpe
       };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

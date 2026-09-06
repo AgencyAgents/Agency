@@ -9,6 +9,7 @@ import type {
 import { isCommandPatternTool, isPathPatternTool, requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
+  type CacheSegment,
   type ProviderAdapter,
   type Scheduler,
   selectModel,
@@ -23,28 +24,36 @@ import { isContextOverflowError } from "./sessions/compaction.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
-export type ToolHandler = (
-  input: Record<string, unknown>,
-  ctx: {
-    signal: AbortSignal;
-    turnId?: string;
-    cwd?: string;
-    sessionId?: string;
-    /** Agent handle active for this call, derived from the turn identity. */
-    agentHandle?: string;
-    toolCallId?: string;
-    requestApproval?: RequestApproval;
-    onProgress?: (message: string) => void;
-  },
-) => Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
-
-export interface ToolSpec extends ToolDefinition {
-  handler: ToolHandler;
+export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinition {
+  handler(
+    input: Input & Record<string, unknown>,
+    ctx: {
+      signal: AbortSignal;
+      turnId?: string;
+      cwd?: string;
+      sessionId?: string;
+      /** Agent handle active for this call, derived from the turn identity. */
+      agentHandle?: string;
+      toolCallId?: string;
+      requestApproval?: RequestApproval;
+      onProgress?: (message: string) => void;
+    },
+  ): Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
+  renderCall?(input: Input & Record<string, unknown>): string;
+  renderResult?(result: {
+    content: string;
+    isError?: boolean;
+    images?: ImageBlock[];
+    input?: Record<string, unknown>;
+  }): string;
   /** How risky this tool is by nature; the permission gate and the trust
    *  gate both consume it (`safe` runs freely, the rest asks and needs a
    *  trusted workspace). Unclassified tools are treated as ungated. */
   riskTier?: RiskTier;
 }
+
+/** Erased tool type for registries holding mixed-input tools. */
+export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
 
 export interface Budget {
   maxTokens?: number;
@@ -73,6 +82,7 @@ export interface RunTurnOptions {
   identity: CallerIdentity;
   capabilities: Capabilities;
   systemPrompt: string;
+  systemSegments?: CacheSegment[];
   tools: ToolSpec[];
   model: string;
   apiKey: string;
@@ -82,7 +92,7 @@ export interface RunTurnOptions {
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
   drainMailbox?: () => Message[];
-  /** Orchestra control (B3): detects identical tool+input 3x consecutively and
+  /** Team control (B3): detects identical tool+input 3x consecutively and
    *  halts the turn. Opt-in — enabled for dispatched peers only. */
   doomLoopDetection?: boolean;
   /** Correlates tool invocations with the turn that caused them (snapshot
@@ -210,7 +220,7 @@ export async function runTurn(
     }
   };
 
-  // Doom-loop detection is an orchestra control (B3): opt-in per turn, enabled for
+  // Doom-loop detection is an team control (B3): opt-in per turn, enabled for
   // dispatched peers. The solo room keeps its existing semantics — a runaway
   // loop is capped by maxToolIterations, not by input-identity heuristics.
   const doomHistory: string[] = [];
@@ -239,6 +249,7 @@ export async function runTurn(
               model,
               apiKey: options.apiKey,
               system: options.systemPrompt,
+              ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
               messages,
               tools: toolDefs,
               maxTokens: options.maxTokensPerRequest ?? 8192,

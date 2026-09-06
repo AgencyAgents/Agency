@@ -1,5 +1,11 @@
 import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import {
+  isCacheable,
+  MIN_CACHEABLE_TOKENS,
+  SHARED_PREFIX_TTL_SECONDS,
+  splitStableDynamic,
+} from "../cache-policy.ts";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
@@ -47,7 +53,23 @@ function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
     }));
 }
 
-function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
+function toGeminiTools(request: ProviderRequest): Record<string, unknown>[] | undefined {
+  if (!request.tools?.length) return undefined;
+  return [
+    {
+      functionDeclarations: request.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      })),
+    },
+  ];
+}
+
+function buildRequestBody(
+  request: ProviderRequest,
+  opts: { cachedContent?: string; systemText?: string } = {},
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     contents: toGeminiContents(request.messages),
     generationConfig: {
@@ -59,26 +81,68 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
     },
   };
 
-  if (request.system) {
-    // Gemini has no per-request cache marker; its implicit caching keys off
-    // the same stable prefix (system instruction, then tools), so the order
-    // here is the cache-relevant part.
-    body.systemInstruction = { parts: [{ text: request.system }] };
+  if (opts.cachedContent) body.cachedContent = opts.cachedContent;
+
+  const system = opts.systemText ?? request.system;
+  if (system) {
+    body.systemInstruction = { parts: [{ text: system }] };
   }
 
-  if (request.tools?.length) {
-    body.tools = [
-      {
-        functionDeclarations: request.tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          parameters: t.inputSchema,
-        })),
-      },
-    ];
-  }
+  const tools = toGeminiTools(request);
+  if (tools && !opts.cachedContent) body.tools = tools;
 
   return body;
+}
+
+interface PrefixCacheEntry {
+  name: string;
+  expiresAt: number;
+}
+
+const prefixCache = new Map<string, PrefixCacheEntry>();
+
+function hashPrefix(model: string, text: string): string {
+  let hash = 5381;
+  const input = `${model}\n${text}`;
+  for (let i = 0; i < input.length; i++) hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
+  return `agency-${(hash >>> 0).toString(36)}`;
+}
+
+async function explicitPrefixCache(
+  request: ProviderRequest,
+  http: HttpClient,
+  stable: string,
+  minTokens: number,
+): Promise<string | undefined> {
+  if (!isCacheable(stable, minTokens)) return undefined;
+  const key = hashPrefix(request.model, stable);
+  const hit = prefixCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.name;
+  const ttlSeconds =
+    request.systemSegments?.find((s) => s.stability !== "dynamic" && s.ttlSeconds !== undefined)
+      ?.ttlSeconds ??
+    request.cachePolicy?.sharedPrefixTtlSeconds ??
+    SHARED_PREFIX_TTL_SECONDS;
+  try {
+    const res = await http.fetch(`${BASE_URL.replace("/models", "")}/cachedContents?key=${request.apiKey}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: `models/${request.model}`,
+        systemInstruction: { parts: [{ text: stable }] },
+        tools: toGeminiTools(request),
+        ttl: `${ttlSeconds}s`,
+      }),
+      signal: request.signal,
+    });
+    if (!res.ok) return undefined;
+    const payload = (await res.json().catch(() => undefined)) as { name?: string } | undefined;
+    if (!payload?.name) return undefined;
+    prefixCache.set(key, { name: payload.name, expiresAt: Date.now() + ttlSeconds * 1000 });
+    return payload.name;
+  } catch {
+    return undefined;
+  }
 }
 
 const FINISH_REASON: Record<string, StopReason> = {
@@ -150,11 +214,22 @@ interface GeminiChunk {
 }
 
 async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
+  const minTokens = request.cachePolicy?.minTokens ?? MIN_CACHEABLE_TOKENS;
+  let cachedContent: string | undefined;
+  let dynamicSystem: string | undefined;
+  if (request.systemSegments) {
+    const { stable, dynamic } = splitStableDynamic(request.systemSegments);
+    cachedContent = await explicitPrefixCache(request, http, stable, minTokens);
+    if (cachedContent && dynamic) dynamicSystem = dynamic;
+    else if (!cachedContent) dynamicSystem = [stable, dynamic].filter(Boolean).join("\n\n") || undefined;
+  }
   const url = `${BASE_URL}/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
   const res = await http.fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildRequestBody(request)),
+    body: JSON.stringify(
+      buildRequestBody(request, cachedContent ? { cachedContent, systemText: dynamicSystem } : {}),
+    ),
     signal: request.signal,
   });
 

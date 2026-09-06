@@ -9,13 +9,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 ### Changed
 
 - **Dispatch path**: `packages/cli/src/daemon.ts` runs delegation inline:
-  `dispatch` tool with depth-1 nesting block, per-agent and orchestra
+  `dispatch` tool with depth-1 nesting block, per-agent and team
   budget caps, cost forecast with approval gate, and concurrent peer turns
-  with lean briefs (`packages/core/src/orchestra/parallel.ts`).
+  with lean briefs (`packages/core/src/team/parallel.ts`).
   `dispatch_compare` fans one prompt out to several handles via
   `spawnParallel`. A lone `@handle` mention routes the turn to that
   agent's provider, model, and effort (`parseHandles` at daemon.ts:1872).
-  `planDispatchBatch` in `packages/core/src/orchestra/dispatch-core.ts`
+  `planDispatchBatch` in `packages/core/src/team/dispatch-core.ts`
   exists with 7 skip codes but has no runtime caller; the daemon
   reimplements the unknown-handle and budget skips inline.
 - **Per-agent permissions**: every dispatched peer carries its own

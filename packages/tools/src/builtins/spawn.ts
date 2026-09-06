@@ -1,7 +1,7 @@
 import type { ToolContext, ToolSpec } from "../contract.ts";
 import { summarize } from "../render.ts";
 
-export interface TaskToolDeps {
+export interface SpawnToolDeps {
   maxDepth?: number;
   runTask: (
     input: { prompt: string; tools?: string[]; model?: string },
@@ -9,10 +9,10 @@ export interface TaskToolDeps {
   ) => Promise<{ content: string; isError?: boolean }>;
 }
 
-export function createTaskTool(deps: TaskToolDeps): ToolSpec {
+export function createSpawnTool(deps: SpawnToolDeps): ToolSpec {
   const maxDepth = deps.maxDepth ?? 1;
   const spec: ToolSpec<{ prompt: string; tools?: string[]; model?: string }> = {
-    name: "task",
+    name: "spawn",
     description:
       "Spawns an ephemeral worker child session with isolated context. The prompt is the task. Optionally restrict tools via allowlist; model may be overridden. Returns only the worker's final text.",
     inputSchema: {
@@ -29,34 +29,34 @@ export function createTaskTool(deps: TaskToolDeps): ToolSpec {
       required: ["prompt"],
     },
     riskTier: "safe",
-    renderCall: (input) => `task ${summarize(input.prompt.slice(0, 80))}`,
+    renderCall: (input) => `spawn ${summarize(input.prompt.slice(0, 80))}`,
     renderResult: (result) => {
-      if (result.isError) return `task failed: ${summarize(result.content)}`;
-      return `◐ task · ${summarize(result.content)}`;
+      if (result.isError) return `spawn failed: ${summarize(result.content)}`;
+      return `◐ spawn · ${summarize(result.content)}`;
     },
     async handler(input, ctx) {
       const depth = ctx.taskDepth ?? 0;
       if (depth > 0) {
         return {
-          content: "nested task blocked: subagents cannot spawn tasks",
+          content: "nested spawn blocked: subagents cannot spawn workers",
           isError: true,
           reason: "nested-blocked",
         };
       }
       if (depth >= maxDepth) {
         return {
-          content: `task depth limit reached (depth ${depth} >= maxDepth ${maxDepth}): nested task denied`,
+          content: `spawn depth limit reached (depth ${depth} >= maxDepth ${maxDepth}): nested spawn denied`,
           isError: true,
           reason: "depth-limit",
         };
       }
       if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
-        return { content: "task requires a non-empty prompt", isError: true, reason: "invalid-entry" };
+        return { content: "spawn requires a non-empty prompt", isError: true, reason: "invalid-entry" };
       }
       return deps.runTask(input, ctx);
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function extractFinalText(

@@ -131,7 +131,7 @@ export function createTodoReadTool(store: TodoStore): ToolSpec {
       return { content: lines.join("\n") };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }
 
 export function createTodoWriteTool(store: TodoStore): ToolSpec {
@@ -181,5 +181,5 @@ export function createTodoWriteTool(store: TodoStore): ToolSpec {
       return { content: t("tool.todo.updated", { count: input.items.length }) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

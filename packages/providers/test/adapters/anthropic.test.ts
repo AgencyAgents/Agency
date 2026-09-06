@@ -267,18 +267,19 @@ describe("anthropicAdapter", () => {
       },
     };
 
+    const pad = (s: string): string => s + "x".repeat(4200);
     await collect(
       anthropicAdapter.stream(
         {
           ...baseRequest,
           tools: [
-            { name: "read", description: "reads", inputSchema: {} },
-            { name: "edit", description: "edits", inputSchema: {} },
+            { name: "read", description: pad("reads"), inputSchema: {} },
+            { name: "edit", description: pad("edits"), inputSchema: {} },
           ],
           messages: [
-            { role: "user", content: [{ type: "text", text: "first" }] },
-            { role: "assistant", content: [{ type: "text", text: "hi" }] },
-            { role: "user", content: [{ type: "text", text: "latest question" }] },
+            { role: "user", content: [{ type: "text", text: pad("first") }] },
+            { role: "assistant", content: [{ type: "text", text: pad("hi") }] },
+            { role: "user", content: [{ type: "text", text: pad("latest question") }] },
           ],
         },
         http,
@@ -290,6 +291,35 @@ describe("anthropicAdapter", () => {
     expect(body.tools[0].cache_control).toBeUndefined();
     const lastUser = body.messages.at(-1).content.at(-1);
     expect(lastUser.cache_control).toEqual({ type: "ephemeral" });
+    const settledUser = body.messages.at(0).content.at(-1);
+    expect(settledUser.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  test("below-minimum segments emit no cache_control markers", async () => {
+    let capturedBody: string | undefined;
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        capturedBody = init?.body as string;
+        return sseResponse("");
+      },
+    };
+
+    await collect(
+      anthropicAdapter.stream(
+        {
+          ...baseRequest,
+          systemSegments: [
+            { stability: "shared", text: "tiny prefix" },
+            { stability: "dynamic", text: "tiny env" },
+          ],
+          tools: [{ name: "read", description: "reads", inputSchema: {} }],
+        },
+        http,
+      ),
+    );
+
+    const body = JSON.parse(capturedBody!);
+    expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 
   test("a mid-stream connection drop propagates out of the adapter (core salvages it)", async () => {

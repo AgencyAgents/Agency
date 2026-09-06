@@ -1,0 +1,406 @@
+import {
+  composeSystemPrompt,
+  generateTitle,
+  getSessionTitle,
+  newEntryId,
+  resolveSmallModel,
+  runChildTurn,
+  type ToolSpec,
+} from "@agency/core";
+import type { Capabilities, PermissionsGate } from "@agency/guard";
+import { type KeychainBackend, resolveApiKey } from "@agency/providers";
+import type { MethodHandler } from "@agency/rpc";
+import type { Message } from "@agency/schema";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import {
+  createSpawnTool,
+  extractFinalText,
+  type SessionScope,
+  type ToolSpec as ToolsToolSpec,
+} from "@agency/tools";
+import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+
+export async function generateSessionTitle(
+  ctx: DaemonContext,
+  params: RunTurnParams,
+  sessionId: string,
+): Promise<void> {
+  const { adapterFor, config, getKeychain, http, providers, todoStore } = ctx;
+  if (!getSessionTitle(todoStore.load(sessionId))) {
+    const firstUserMsg = params.session.find((m: Message) => m.role === "user");
+    const firstUserText = firstUserMsg?.content?.find((b: { type: string }) => b.type === "text") as
+      | { text?: string }
+      | undefined;
+    if (firstUserText?.text) {
+      const titlePrompt = firstUserText.text;
+      const smallModelRef = resolveSmallModel(config);
+      if (smallModelRef) {
+        (async () => {
+          try {
+            let kc: KeychainBackend | undefined;
+            try {
+              kc = await getKeychain();
+            } catch {}
+            const smallApiKey = await resolveApiKey({
+              provider: smallModelRef.provider,
+              env: process.env,
+              keychain: kc,
+              config: providers[smallModelRef.provider]?.apiKey,
+              ...oauthOverridesFor(smallModelRef.provider, providers),
+            });
+            if (smallApiKey) {
+              const title = await generateTitle(titlePrompt, {
+                config,
+                http,
+                apiKey: smallApiKey,
+                providerConfig: providers,
+                adapterFor: (p: string) => adapterFor(p),
+              });
+              if (title) {
+                const tip = todoStore.latestTip(todoStore.load(sessionId)) ?? null;
+                await todoStore.append(sessionId, { type: "session_title", parentId: tip, title });
+              }
+            }
+          } catch {
+            // Title generation failure must not fail the turn
+          }
+        })();
+      }
+    }
+  }
+}
+
+export function registerSessionHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
+  const { approvalManagers, sessionScopes, todoStore } = ctx;
+  handlers.session_delete = async (rawParams) => {
+    const { sessionId } = rawParams as { sessionId: string };
+    if (!sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_delete requires sessionId", {
+        source: "session",
+      });
+    const scope = sessionScopes.get(sessionId);
+    if (scope) {
+      try {
+        await scope.dispose();
+      } catch {}
+      sessionScopes.delete(sessionId);
+    }
+    approvalManagers.delete(sessionId);
+    try {
+      todoStore.delete(sessionId);
+    } catch {}
+    return { deleted: true };
+  };
+  handlers.session_fork = async (rawParams) => {
+    const { sessionId, fromTipId, label } = rawParams as {
+      sessionId: string;
+      fromTipId?: string;
+      label?: string;
+    };
+    if (!sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_fork requires sessionId", {
+        source: "session",
+      });
+    if (todoStore.load(sessionId).length === 0)
+      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+        source: "session",
+      });
+    const entry = await todoStore.fork(sessionId, {
+      ...(fromTipId === undefined ? {} : { fromTipId }),
+      ...(label === undefined ? {} : { label }),
+    });
+    return { forked: true, sessionId, tipId: entry.id };
+  };
+  handlers.session_clone = async (rawParams) => {
+    const { sessionId, newSessionId } = rawParams as {
+      sessionId: string;
+      newSessionId?: string;
+    };
+    if (!sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_clone requires sessionId", {
+        source: "session",
+      });
+    if (todoStore.load(sessionId).length === 0)
+      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+        source: "session",
+      });
+    const meta = todoStore.clone(
+      sessionId,
+      typeof newSessionId === "string" && newSessionId.length > 0 ? newSessionId : undefined,
+    );
+    return { cloned: true, sessionId: meta.id };
+  };
+  handlers.session_show = async (rawParams) => {
+    const { sessionId, tipId } = rawParams as { sessionId: string; tipId?: string };
+    if (!sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_show requires sessionId", {
+        source: "session",
+      });
+    const entries = todoStore.load(sessionId);
+    if (entries.length === 0)
+      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+        source: "session",
+      });
+    const last = entries[entries.length - 1];
+    const tip = tipId ?? todoStore.latestTip(entries) ?? last?.id ?? "";
+    return { sessionId, entries, tipId: tip, messages: todoStore.messagesFor(entries, tip) };
+  };
+}
+
+export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): readonly string[] | "*" {
+  const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
+  return offered.length === list.length ? ("*" as const) : offered.map((t) => t.name);
+}
+
+export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {
+  const { gate, gateForAgent, teamRegistry } = ctx;
+  const ownerHandle = teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+  return ownerHandle ? gateForAgent(ownerHandle) : gate;
+}
+
+export async function defaultCapabilitiesForSession(
+  ctx: DaemonContext,
+  sessionId?: string,
+): Promise<Capabilities> {
+  const { builtinsMode, gate, getOrCreateScope, options, sessionScopes, tools } = ctx;
+  if (options.capabilities) return options.capabilities;
+  if (!builtinsMode) {
+    return { tools: sessionToolsFor(tools, gate), pathScopes: "*", network: "*" };
+  }
+  const sid = sessionId ?? "default";
+  const sessionGate = gateForSession(ctx, sid);
+  const cached = sessionScopes.get(sid);
+  if (cached) return { tools: sessionToolsFor(cached.tools, sessionGate), pathScopes: "*", network: "*" };
+  try {
+    const scope = await getOrCreateScope(sid);
+    return { tools: sessionToolsFor(scope.tools, sessionGate), pathScopes: "*", network: "*" };
+  } catch {
+    return { tools: "*", pathScopes: "*", network: "*" };
+  }
+}
+
+export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): ToolsToolSpec {
+  const {
+    activeTurnMeta,
+    adapterFor,
+    catalogModel,
+    config,
+    createTraceRecorder,
+    eventBus,
+    gate,
+    getKeychain,
+    getOrCreateScope,
+    http,
+    identity,
+    options,
+    providers,
+    redactor,
+    schedulerFor,
+    sessionScopes,
+    todoSessionsDir,
+    todoStore,
+    warnPersistence,
+  } = daemon;
+  const spawnMaxDepth = (config as unknown as { spawn?: { maxDepth?: number } }).spawn?.maxDepth ?? 1;
+  return createSpawnTool({
+    maxDepth: spawnMaxDepth,
+    runTask: async (input, ctx) => {
+      const parentTurnId = ctx.turnId;
+      const parentSessionId = ctx.sessionId ?? "default";
+      const meta = parentTurnId ? activeTurnMeta.get(parentTurnId) : undefined;
+      const parentDepth = ctx.taskDepth ?? meta?.taskDepth ?? 0;
+      const parentProvider = meta?.provider ?? "anthropic";
+      const parentModel = meta?.model ?? "test-model";
+      const parentApiKey = meta?.apiKey ?? "";
+      const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
+      const parentTools = meta?.tools ?? scope.registry.list();
+
+      let childProvider = parentProvider;
+      let childModel = parentModel;
+      if (typeof input.model === "string" && input.model.length > 0) {
+        const slash = input.model.indexOf("/");
+        if (slash > 0) {
+          childProvider = input.model.slice(0, slash);
+          childModel = input.model.slice(slash + 1);
+        } else {
+          childModel = input.model;
+        }
+      }
+
+      let childApiKey = parentApiKey;
+      if (childProvider !== parentProvider) {
+        try {
+          const kc = await getKeychain();
+          const k = await resolveApiKey({
+            provider: childProvider,
+            env: process.env,
+            keychain: kc,
+            config: providers[childProvider]?.apiKey,
+            ...oauthOverridesFor(childProvider, providers),
+          });
+          if (k) {
+            childApiKey = k;
+            redactor.registerSecret(k);
+          }
+        } catch {}
+      }
+
+      const childSessionId = newEntryId();
+      const childTurnId = newEntryId();
+      const startMs = Date.now();
+      try {
+        todoStore.create(childSessionId);
+      } catch (error: unknown) {
+        warnPersistence("todoStore.create", error);
+      }
+      await getOrCreateScope(childSessionId);
+
+      const baseTools = parentTools;
+      let childTools: ToolSpec[];
+      if (Array.isArray(input.tools) && input.tools.length > 0) {
+        const allow = new Set(input.tools);
+        childTools = baseTools.filter((t) => allow.has(t.name));
+        if (!allow.has("spawn") && childTools.some((t) => t.name === "spawn")) {
+          childTools = childTools.filter((t) => t.name !== "spawn");
+        }
+      } else {
+        childTools = baseTools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+      }
+      // Depth-0 child isolation: subagents cannot dispatch or spawn.
+      childTools = childTools.filter((t) => t.name !== "dispatch" && t.name !== "spawn");
+
+      const childCapTools = childTools.map((t) => t.name);
+      const childCaps: Capabilities = {
+        tools: childCapTools.length > 0 ? childCapTools : ("*" as const),
+        pathScopes: parentCaps.pathScopes,
+        network: parentCaps.network,
+      };
+
+      const workerPrompt = composeSystemPrompt({
+        base: "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
+        instructions: [],
+        toolDescriptions: [],
+      });
+
+      const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
+
+      const childModelInfo = catalogModel(childProvider, childModel);
+      const childTurn = await runChildTurn(
+        { http, eventBus, createTraceRecorder },
+        {
+          adapter: adapterFor(childProvider),
+          scheduler: schedulerFor(childProvider),
+          session: freshSession,
+          systemPrompt: workerPrompt.text,
+          systemSegments: workerPrompt.segments,
+          tools: childTools,
+          model: childModel,
+          apiKey: childApiKey,
+          provider: childProvider,
+          identity,
+          capabilities: childCaps,
+          toolPolicy: gate,
+          budget: meta?.budget,
+          pricePerMTok: childModelInfo
+            ? {
+                input: childModelInfo.pricing.inputPerMTok,
+                output: childModelInfo.pricing.outputPerMTok,
+              }
+            : undefined,
+          maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+          turnId: childTurnId,
+          sessionId: childSessionId,
+          cwd: options.workspaceRoot,
+          taskDepth: parentDepth + 1,
+          doomLoopDetection: true,
+          signal: ctx.signal,
+          trace: {
+            sessionsDir: todoSessionsDir,
+            sessionId: childSessionId,
+            traceId: childTurnId,
+            provider: childProvider,
+            model: childModel,
+          },
+        },
+      );
+      const childResult = childTurn.result;
+      const childError = childTurn.error;
+      const childEvents = childTurn.events;
+      const childTraceRecorder = childTurn.traceRecorder;
+      {
+        const durationMs = Date.now() - startMs;
+        const finalText = childResult ? extractFinalText(childResult.messages) : "";
+        const collapsed =
+          (finalText || (childError instanceof Error ? childError.message : String(childError ?? "")))
+            .split("\n")[0]
+            ?.slice(0, 500) ?? "";
+        try {
+          const parentLatestTip = todoStore.latestTip(todoStore.load(parentSessionId)) ?? null;
+          await todoStore.append(parentSessionId, {
+            type: "task_result",
+            parentId: parentLatestTip,
+            tool: "spawn",
+            childSessionId,
+            childTurnId,
+            durationMs,
+            summary: collapsed || finalText.slice(0, 500),
+            prompt: input.prompt.slice(0, 200),
+          });
+        } catch (error: unknown) {
+          warnPersistence("task_result append", error);
+        }
+        try {
+          if (childResult) {
+            let childParentId: string | null = null;
+            const msgs = childResult.messages;
+            for (const msg of msgs) {
+              const appended = await todoStore.append(childSessionId, {
+                type: "message",
+                parentId: childParentId,
+                message: msg,
+              });
+              childParentId = appended.id;
+            }
+          }
+        } catch (error: unknown) {
+          warnPersistence("child messages append", error);
+        }
+        try {
+          if (childTraceRecorder && childResult) {
+            const rec = childTraceRecorder.toCassetteRecord(
+              {
+                provider: childProvider,
+                model: childModel,
+                systemPrompt: workerPrompt.text,
+                session: freshSession,
+              },
+              childEvents,
+              childResult,
+            );
+            await childTraceRecorder.writeCassette(childTurnId, rec);
+          }
+        } catch (error: unknown) {
+          warnPersistence("cassette write", error);
+        }
+        try {
+          const cs = sessionScopes.get(childSessionId);
+          if (cs) {
+            try {
+              await cs.dispose();
+            } catch {}
+            sessionScopes.delete(childSessionId);
+          }
+        } catch {}
+      }
+
+      if (childError) {
+        return {
+          content: childError instanceof Error ? childError.message : String(childError),
+          isError: true,
+        };
+      }
+      const finalText = extractFinalText(childResult?.messages ?? []);
+      return { content: finalText || "(no output)" };
+    },
+  });
+}

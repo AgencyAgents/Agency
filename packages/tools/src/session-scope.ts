@@ -35,15 +35,15 @@ import { SnapshotStore } from "./snapshot.ts";
 /**
  * Per-session isolated state and tool set.
  *
- * A session is a Room execution context (see RoomStore in
- * @agency/core's orchestra/room.ts): the room is the persistent shared
+ * A session is a Team execution context (see TeamStore in
+ * @agency/core's team/room.ts): the room is the persistent shared
  * abstraction — shared goal, member roster, shared todos, mailbox
  * broadcast — while the SessionScope is the per-member isolated slice of
  * runtime state that lets concurrent room members run without corrupting
  * each other's mutable state:
  * - bashState.cwd: one cwd per session (previously one mutable string daemon-wide)
  * - TodoStore: one todo list per session (previously shared; the room-level
- *   shared list lives on the Room, this store is the member's working view)
+ *   shared list lives on the Team, this store is the member's working view)
  * - ProcessManager: one process table per session (previously shared)
  * - SnapshotStore journal: per-instance in-memory journal (content-addressed blobs
  *   on disk are shared — hash-referenced, safe to share — but the undo/journal
@@ -79,10 +79,10 @@ export interface SessionScope {
   mcpIdentityFor: (serverName: string, handle?: string) => CallerIdentity;
   lspRegistry?: LspRegistry;
   /**
-   * Owning room id when this session runs as a member of a Room
-   * (orchestra/room.ts). Undefined for standalone sessions.
+   * Owning team id when this session runs as a member of a Team
+   * (team/room.ts). Undefined for standalone sessions.
    */
-  roomId?: string;
+  teamId?: string;
   dispose(): Promise<void>;
 }
 

@@ -117,13 +117,8 @@ export function buildEnvironmentBlock(info: EnvironmentInfo): string {
   return lines.join("\n");
 }
 
-/** Local date + minute-granularity time + UTC offset, e.g.
- *  "2026-09-02 14:23 UTC+02:00" — timezone-independent of the locale. */
+/** Local date only, e.g. "2026-09-02": coarse enough to keep the system cache. */
 function formatDate(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes < 0 ? "-" : "+";
-  const abs = Math.abs(offsetMinutes);
-  const utc = `UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())} ${utc}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }

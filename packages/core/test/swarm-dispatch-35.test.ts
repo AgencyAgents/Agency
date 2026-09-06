@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDispatchTool } from "../src/orchestra/dispatch.ts";
+import { createDispatchTool } from "../src/team/dispatch.ts";
 import {
   DISPATCH_SKIP_REASONS,
   type DispatchSkipReason,
@@ -10,7 +10,7 @@ import {
   formatSkipLine,
   planDispatchBatch,
   resolveDispatchTarget,
-} from "../src/orchestra/dispatch-core.ts";
+} from "../src/team/dispatch-core.ts";
 
 function handlerOf(tool: unknown) {
   return (
@@ -160,7 +160,7 @@ describe("unified dispatch path U9", () => {
       "empty-input",
       "invalid-entry",
       "nested-blocked",
-      "orchestra-budget-exceeded",
+      "team-budget-exceeded",
       "per-agent-budget-exceeded",
       "unknown-handle",
     ];
@@ -182,10 +182,10 @@ describe("unified dispatch path U9", () => {
     expect(deep.skips[0]!.reason).toBe("depth-limit");
     const orch = planDispatchBatch([{ handle: "a", brief: "b" }], {
       resolveHandle: get,
-      orchestraTotal: 5,
-      budgets: { orchestraUsd: 1 },
+      teamTotal: 5,
+      budgets: { teamUsd: 1 },
     });
-    expect(orch.skips[0]!.reason).toBe("orchestra-budget-exceeded");
+    expect(orch.skips[0]!.reason).toBe("team-budget-exceeded");
     const perAgent = planDispatchBatch([{ handle: "a", brief: "b" }], {
       resolveHandle: get,
       perAgentSpend: new Map([["a", 5]]),
@@ -245,7 +245,7 @@ describe("dispatch batch budgets accumulate intra-batch (item a)", () => {
     get: (handle: string) => entries.find((e) => e.handle === handle),
   });
 
-  it("a batch cannot exceed the orchestra budget mid-batch", () => {
+  it("a batch cannot exceed the team budget mid-batch", () => {
     const get = registryOf([{ handle: "a" }, { handle: "b" }, { handle: "c" }]).get;
     const plan = planDispatchBatch(
       [
@@ -253,12 +253,12 @@ describe("dispatch batch budgets accumulate intra-batch (item a)", () => {
         { handle: "b", brief: "two", costUsd: 1 },
         { handle: "c", brief: "three", costUsd: 1 },
       ],
-      { resolveHandle: get, orchestraTotal: 0, budgets: { orchestraUsd: 2 } },
+      { resolveHandle: get, teamTotal: 0, budgets: { teamUsd: 2 } },
     );
     expect(plan.targets.map((t) => t.handle)).toEqual(["a", "b"]);
     expect(plan.skips.length).toBe(1);
     expect(plan.skips[0]!.handle).toBe("c");
-    expect(plan.skips[0]!.reason).toBe("orchestra-budget-exceeded");
+    expect(plan.skips[0]!.reason).toBe("team-budget-exceeded");
   });
 
   it("a batch cannot exceed a per-agent budget mid-batch", () => {
@@ -293,13 +293,13 @@ describe("dispatch batch budgets accumulate intra-batch (item a)", () => {
 
 describe("depth gate ordering (item b)", () => {
   it("checkDepthGate reports depth-limit at maxDepth even when nested", async () => {
-    const { checkDepthGate } = await import("../src/orchestra/dispatch-core.ts");
+    const { checkDepthGate } = await import("../src/team/dispatch-core.ts");
     expect(checkDepthGate("dispatch", 3, 3)?.reason).toBe("depth-limit");
     expect(checkDepthGate("task", 2, 2)?.reason).toBe("depth-limit");
   });
 
   it("checkDepthGate reports nested-blocked for depth>0 within bounds", async () => {
-    const { checkDepthGate } = await import("../src/orchestra/dispatch-core.ts");
+    const { checkDepthGate } = await import("../src/team/dispatch-core.ts");
     expect(checkDepthGate("dispatch", 1, 3)?.reason).toBe("nested-blocked");
     expect(checkDepthGate("dispatch", 0, 3)).toBeNull();
   });
@@ -374,7 +374,7 @@ describe("dispatch load status (item c)", () => {
 
 describe("dispatch fromJSON validation (item h)", () => {
   it("drops entries with bad status, reason, at, brief, model, or effort", async () => {
-    const { DispatchStateStore: Store } = await import("../src/orchestra/dispatch-core.ts");
+    const { DispatchStateStore: Store } = await import("../src/team/dispatch-core.ts");
     const good = { index: 0, handle: "a", brief: "one", status: "dispatched", at: new Date().toISOString() };
     const store = Store.fromJSON({
       version: 1,

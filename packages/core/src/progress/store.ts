@@ -5,16 +5,16 @@ import { dispatchProgress, type PlanChecklist } from "./checklist.ts";
 export const BOULDER_SCHEMA_VERSION = 2;
 export const BOULDER_FILE = "boulder.json";
 
-export type BoulderTaskStatus = "running" | "completed" | "failed";
+export type ProgressTaskStatus = "running" | "completed" | "failed";
 
-export interface BoulderTask {
+export interface ProgressTask {
   task_key: string;
   task_label: string;
   task_title: string;
   session_id?: string;
   agent?: string;
   category?: string;
-  status: BoulderTaskStatus;
+  status: ProgressTaskStatus;
   started_at: string;
   updated_at: string;
   ended_at?: string;
@@ -24,18 +24,18 @@ export interface BoulderTask {
 /** On-disk shape. Unknown top-level/work fields are preserved verbatim so
  *  existing `.omo/boulder.json` state (works, session_ids, agent, ...) is
  *  never clobbered by a load/save round-trip. */
-export interface BoulderFile {
+export interface ProgressFile {
   schema_version: number;
   active_plan?: string;
   plan_name?: string;
   status?: string;
   started_at?: string;
   updated_at?: string;
-  task_sessions: Record<string, BoulderTask>;
+  task_sessions: Record<string, ProgressTask>;
   [key: string]: unknown;
 }
 
-function emptyFile(): BoulderFile {
+function emptyFile(): ProgressFile {
   const now = new Date().toISOString();
   return { schema_version: BOULDER_SCHEMA_VERSION, started_at: now, updated_at: now, task_sessions: {} };
 }
@@ -44,12 +44,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeTask(key: string, raw: unknown): BoulderTask | undefined {
+function normalizeTask(key: string, raw: unknown): ProgressTask | undefined {
   if (!isRecord(raw)) return undefined;
   const started = typeof raw.started_at === "string" ? (raw.started_at as string) : undefined;
   if (!started) return undefined;
   const status = raw.status;
-  const normalized: BoulderTask = {
+  const normalized: ProgressTask = {
     task_key: typeof raw.task_key === "string" ? (raw.task_key as string) : key,
     task_label: typeof raw.task_label === "string" ? (raw.task_label as string) : key,
     task_title: typeof raw.task_title === "string" ? (raw.task_title as string) : "",
@@ -66,7 +66,7 @@ function normalizeTask(key: string, raw: unknown): BoulderTask | undefined {
 }
 
 /**
- * Persistent Boulder orchestration state rooted at `<workspace>/.omo`.
+ * Persistent Progress orchestration state rooted at `<workspace>/.omo`.
  *
  * - State file: `.omo/boulder.json` (atomic temp+rename writes, tolerant
  *   reads: missing/corrupt parses fall back to empty without throwing).
@@ -75,10 +75,10 @@ function normalizeTask(key: string, raw: unknown): BoulderTask | undefined {
  *   stamp `ended_at` + `elapsed_ms`; `elapsedMs` reports live time for
  *   running tasks so restarts resume from the persisted start, not zero.
  */
-export class BoulderStore {
+export class ProgressStore {
   readonly workspaceRoot: string;
   private readonly now: () => number;
-  private state: BoulderFile;
+  private state: ProgressFile;
 
   constructor(workspaceRoot: string, opts?: { now?: () => number }) {
     this.workspaceRoot = workspaceRoot;
@@ -99,34 +99,34 @@ export class BoulderStore {
   }
 
   /** Current in-memory snapshot (live reference; mutate via task methods). */
-  snapshot(): BoulderFile {
+  snapshot(): ProgressFile {
     return this.state;
   }
 
   /** Re-reads from disk, replacing in-memory state. Survives restarts: a
    *  fresh instance over the same root sees every previously saved timer. */
-  reload(): BoulderFile {
+  reload(): ProgressFile {
     this.state = this.read();
     return this.state;
   }
 
-  private read(): BoulderFile {
+  private read(): ProgressFile {
     const file = this.boulderPath();
     if (!existsSync(file)) return emptyFile();
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
       if (!isRecord(parsed)) return emptyFile();
-      const next: BoulderFile = {
+      const next: ProgressFile = {
         ...(parsed as object),
         schema_version: BOULDER_SCHEMA_VERSION,
-      } as BoulderFile;
+      } as ProgressFile;
       const rawSessions = isRecord(parsed.task_sessions)
         ? (parsed.task_sessions as Record<string, unknown>)
         : {};
-      const sessions: Record<string, BoulderTask> = {};
+      const sessions: Record<string, ProgressTask> = {};
       for (const [key, raw] of Object.entries(rawSessions)) {
         const task = normalizeTask(key, raw);
-        if (task) sessions[key] = { ...(raw as object), ...task } as BoulderTask;
+        if (task) sessions[key] = { ...(raw as object), ...task } as ProgressTask;
       }
       // Legacy top-level `task_sessions` absent but nested `works.<id>.task_sessions`
       // present (orchestrator shape): mirror the active work's sessions up so
@@ -143,7 +143,7 @@ export class BoulderStore {
           if (!nested) continue;
           for (const [key, raw] of Object.entries(nested)) {
             const task = normalizeTask(key, raw);
-            if (task) sessions[key] = { ...(raw as object), ...task } as BoulderTask;
+            if (task) sessions[key] = { ...(raw as object), ...task } as ProgressTask;
           }
           if (Object.keys(sessions).length > 0) break;
         }
@@ -166,7 +166,7 @@ export class BoulderStore {
     renameSync(tmp, file);
   }
 
-  getTask(key: string): BoulderTask | undefined {
+  getTask(key: string): ProgressTask | undefined {
     return this.state.task_sessions[key];
   }
 
@@ -175,7 +175,7 @@ export class BoulderStore {
   startTask(
     key: string,
     details: { label?: string; title?: string; sessionId?: string; agent?: string; category?: string } = {},
-  ): BoulderTask {
+  ): ProgressTask {
     const existing = this.state.task_sessions[key];
     const at = new Date(this.now()).toISOString();
     if (existing && existing.status === "running") {
@@ -183,7 +183,7 @@ export class BoulderStore {
       if (details.title !== undefined) existing.task_title = details.title;
       return existing;
     }
-    const task: BoulderTask = {
+    const task: ProgressTask = {
       task_key: key,
       task_label: details.label ?? existing?.task_label ?? key,
       task_title: details.title ?? existing?.task_title ?? "",
@@ -200,7 +200,7 @@ export class BoulderStore {
     return task;
   }
 
-  private finish(key: string, status: "completed" | "failed"): BoulderTask {
+  private finish(key: string, status: "completed" | "failed"): ProgressTask {
     const existing = this.state.task_sessions[key] ?? this.startTask(key);
     const atMs = this.now();
     const startedMs = Date.parse(existing.started_at);
@@ -211,11 +211,11 @@ export class BoulderStore {
     return existing;
   }
 
-  completeTask(key: string): BoulderTask {
+  completeTask(key: string): ProgressTask {
     return this.finish(key, "completed");
   }
 
-  failTask(key: string): BoulderTask {
+  failTask(key: string): ProgressTask {
     return this.finish(key, "failed");
   }
 
@@ -286,7 +286,7 @@ export class BoulderStore {
     const dir = this.ensureNotepad(plan);
     const file = join(dir, "learnings.md");
     const stamp = new Date(this.now()).toISOString().slice(0, 10);
-    const block = `\n## ${stamp} — Boulder\n\n${entry.trim()}\n`;
+    const block = `\n## ${stamp} — Progress\n\n${entry.trim()}\n`;
     const existing = existsSync(file) ? readFileSync(file, "utf8") : "# Learnings\n";
     const base = existing.endsWith("\n") ? existing : `${existing}\n`;
     writeFileSync(file, `${base}${block}`, "utf8");

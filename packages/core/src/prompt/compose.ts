@@ -1,3 +1,5 @@
+import type { CacheSegment } from "@agency/providers";
+
 export interface PromptSections {
   base: string;
   /** Family-specific overlay (tool-call quirks, cache-strategy notes). */
@@ -17,6 +19,8 @@ export interface PromptSections {
 export interface ComposedPrompt {
   sections: PromptSections;
   text: string;
+  /** Ordered stable-first segments the cache policy consumes. */
+  segments: CacheSegment[];
   /** Set by `withSystemReminders`; absent when no reminders applied this turn. */
   reminders?: SystemReminder[];
 }
@@ -35,18 +39,18 @@ export const COMPLETION_SIGNAL = "Response without tool calls = done.";
 export const SUBAGENT_SUMMARY_RULE = "End with a lean summary (≤500 words).";
 
 /**
- * Room awareness for roles that share the session room with sibling agents:
+ * Team awareness for roles that share the team session with sibling agents:
  * check the mailbox at start, stay in lane, summarize lean. Appended to
  * leader/coder/executor prompts (the roles that coordinate or mutate state).
  */
-export const ROOM_PROTOCOL =
-  "Room protocol: you share a session room with sibling agents. Check your mailbox at start, stay in your role lane, end with a lean ≤500-word summary (what changed, files touched, verification).";
+export const TEAM_PROTOCOL =
+  "Team protocol: you share a team session with sibling agents. Check your mailbox at start, stay in your role lane, end with a lean ≤500-word summary (what changed, files touched, verification).";
 
-const ROOM_ROLES: ReadonlySet<string> = new Set(["leader", "coder", "executor"]);
+const TEAM_ROLES: ReadonlySet<string> = new Set(["leader", "coder", "executor"]);
 
-/** Returns ROOM_PROTOCOL (suffix-ready) for room-bound roles, else "". */
-export function appendRoomProtocol(role: string): string {
-  return ROOM_ROLES.has(role) ? `\n\n${ROOM_PROTOCOL}` : "";
+/** Returns TEAM_PROTOCOL (suffix-ready) for room-bound roles, else "". */
+export function appendTeamProtocol(role: string): string {
+  return TEAM_ROLES.has(role) ? `\n\n${TEAM_PROTOCOL}` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +72,7 @@ const MECHANICS_PROMPTS: Record<string, string> = {
     "2. Delegate 6-section briefs (goal, context/files, constraints, output, budget, summary).\n" +
     "3. Infer params from context or ask; never hallucinate paths or args.\n" +
     "4. A turn with zero tool calls means done." +
-    appendRoomProtocol("leader"),
+    appendTeamProtocol("leader"),
   planner:
     "You are an architect (Plan mode). Your job is to: design step-by-step plans with file paths, change shapes, and verification per step, never implementing anything yourself.\n\n" +
     "Tools: read, grep, glob (dispatch explorer only for wide surveys)\n" +
@@ -99,7 +103,7 @@ const MECHANICS_PROMPTS: Record<string, string> = {
     "3. Verify per change (typecheck and focused tests); fix failures first.\n" +
     "4. Infer params from context or ask; never hallucinate paths or args.\n" +
     "5. A turn with zero tool calls means done." +
-    appendRoomProtocol("coder"),
+    appendTeamProtocol("coder"),
   executor:
     "You are an operator (commands only). Your job is to: build, test, lint, and deploy via bash commands.\n\n" +
     "Tools: bash, read (configs and output context only)\n" +
@@ -109,7 +113,7 @@ const MECHANICS_PROMPTS: Record<string, string> = {
     "2. Report key output verbatim with exit codes.\n" +
     "3. Infer params from context or ask; never hallucinate flags or paths.\n" +
     "4. A turn with zero tool calls means done." +
-    appendRoomProtocol("executor"),
+    appendTeamProtocol("executor"),
   explorer:
     "You are a scout (read-only survey). Your job is to: map codebase structure and locate symbols and patterns with file:line evidence.\n\n" +
     "Tools: read, grep, glob\n" +
@@ -153,7 +157,7 @@ const PRINCIPLE_PROMPTS: Record<string, string> = {
     "MUST NOT write code, run bash, or redo subagent work. Delegate 6-section briefs. " +
     "Output contract: end with [Summary: <n> agents dispatched, next: <decision>]. " +
     "Infer params from context or ask; never hallucinate. A turn with zero tool calls means done." +
-    appendRoomProtocol("leader"),
+    appendTeamProtocol("leader"),
   planner:
     "Architect (planner): design step-by-step plans with file paths, change shapes, and verification; " +
     "write to .opencode/plans/. Tools: read, grep, glob. " +
@@ -171,13 +175,13 @@ const PRINCIPLE_PROMPTS: Record<string, string> = {
     "MUST NOT touch plan files or expand scope. " +
     "Output contract: end with [Files: <paths>] [Verification: PASS|FAIL]. " +
     "Infer params from context or ask; never hallucinate. A turn with zero tool calls means done." +
-    appendRoomProtocol("coder"),
+    appendTeamProtocol("coder"),
   executor:
     "Operator (executor): build, test, lint, deploy via bash (build before test); report output and exit codes. " +
     "Tools: bash, read. MUST NOT edit files or run destructive commands blindly. " +
     "Output contract: end with [Exit: <code>] and key output verbatim. " +
     "Infer params from context or ask; never hallucinate. A turn with zero tool calls means done." +
-    appendRoomProtocol("executor"),
+    appendTeamProtocol("executor"),
   explorer:
     "Scout (explorer): survey code read-only; report file:line evidence. " +
     "Tools: read, grep, glob. MUST NOT modify files, run bash, or assert without citations. " +
@@ -240,18 +244,31 @@ export function resolveFamilyPrompt(family: string, role: string): string {
  *   turns with no active reminders keep the exact same prompt string.
  */
 export function composeSystemPrompt(sections: PromptSections): ComposedPrompt {
-  // Stable prefix: identity + role + instructions + tool descriptions
+  const segments: CacheSegment[] = [{ stability: "shared", text: sections.base }];
   const stable: string[] = [sections.base];
-  if (sections.familyPresetOverlay) stable.push(sections.familyPresetOverlay);
-  if (sections.instructions.length > 0) stable.push(sections.instructions.join("\n\n"));
-  if (sections.toolDescriptions.length > 0) stable.push(sections.toolDescriptions.join("\n"));
+  if (sections.instructions.length > 0) {
+    const workspace = sections.instructions.join("\n\n");
+    segments.push({ stability: "shared", text: workspace });
+    stable.push(workspace);
+  }
+  if (sections.familyPresetOverlay) {
+    segments.push({ stability: "agent", text: sections.familyPresetOverlay });
+    stable.push(sections.familyPresetOverlay);
+  }
+  if (sections.toolDescriptions.length > 0) {
+    const tools = sections.toolDescriptions.join("\n");
+    segments.push({ stability: "agent", text: tools });
+    stable.push(tools);
+  }
 
-  // Dynamic sections: context (environment block with date) appended last
   const dynamic: string[] = [];
-  if (sections.context) dynamic.push(sections.context);
+  if (sections.context) {
+    segments.push({ stability: "dynamic", text: sections.context });
+    dynamic.push(sections.context);
+  }
 
   const text = [...stable, ...dynamic].join("\n\n");
-  return { sections, text };
+  return { sections, text, segments };
 }
 
 /** `/prompt`: the resolved sections for inspection, not just the flattened string. */
@@ -308,6 +325,7 @@ export function withSystemReminders(
   if (block === "") return composed;
   return {
     sections: composed.sections,
+    segments: [...composed.segments, { stability: "dynamic", text: block }],
     reminders: [...reminders],
     text: `${composed.text}\n\n${block}`,
   };

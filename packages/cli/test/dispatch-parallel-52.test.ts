@@ -34,7 +34,7 @@ const PRICED_MODEL = "claude-sonnet-5";
 const USAGE = { inputTokens: 1000, outputTokens: 500 };
 const HANDLES = ["w1", "w2", "w3", "w4", "w5"];
 
-function orchestraCfg(): Record<string, unknown> {
+function teamCfg(): Record<string, unknown> {
   const agents: Record<string, unknown> = {
     leader: {
       role: "GeneralDispatcher",
@@ -130,7 +130,7 @@ async function startDaemon(state: { active: number; maxActive: number; childBrie
     instanceFile: join(tempDir("agency-dp52-inst-"), "instance.json"),
     adapterFor: () => parallelAdapter(state),
     http: noopHttp,
-    configDir: writeConfigDir(orchestraCfg()),
+    configDir: writeConfigDir(teamCfg()),
     sessionsDir,
   });
   daemons.push(daemon);

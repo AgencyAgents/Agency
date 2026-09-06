@@ -64,11 +64,14 @@ export interface ToolSpec<Input = Record<string, unknown>> {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  riskTier: RiskTier;
-  handler: (input: Input, ctx: ToolContext) => Promise<ToolResult>;
-  renderCall?: (input: Input) => string;
-  renderResult?: (result: ToolResult & { input?: Record<string, unknown> }) => string;
+  riskTier?: RiskTier;
+  handler(input: Input & Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+  renderCall?(input: Input & Record<string, unknown>): string;
+  renderResult?(result: ToolResult & { input?: Record<string, unknown> }): string;
 }
+
+/** Erased tool type for registries holding mixed-input tools. */
+export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
 
 /** Dependencies every built-in factory closes over, bound once per session/daemon. */
 export interface ToolDeps {

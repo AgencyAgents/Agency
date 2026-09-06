@@ -32,7 +32,7 @@ export {
 export { createProcessKillTool, createProcessListTool, createProcessOutputTool } from "./builtins/process.ts";
 export { createQuestionTool } from "./builtins/question.ts";
 export { createReadTool } from "./builtins/read.ts";
-export { createTaskTool, extractFinalText } from "./builtins/task.ts";
+export { createSpawnTool, extractFinalText } from "./builtins/spawn.ts";
 export {
   createSessionTodoPersistence,
   createTodoReadTool,

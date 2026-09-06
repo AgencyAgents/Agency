@@ -59,5 +59,5 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
       return { content: renderMcpContent(result.content), isError: Boolean(result.isError) };
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

@@ -60,7 +60,7 @@ describe("task ephemeral workers", () => {
           return;
         }
         if (!hasToolResult) {
-          yield { type: "tool_call_start", id: "c1", name: "task" };
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
           yield {
             type: "tool_call_delta",
             id: "c1",
@@ -146,7 +146,7 @@ describe("task ephemeral workers", () => {
         })();
         if (txt === "outer prompt") {
           if (!hasTR) {
-            yield { type: "tool_call_start", id: "c1", name: "task" };
+            yield { type: "tool_call_start", id: "c1", name: "spawn" };
             yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "inner" }) };
             yield { type: "tool_call_end", id: "c1" };
             yield {
@@ -166,7 +166,7 @@ describe("task ephemeral workers", () => {
           }
         }
         if (txt === "" && !hasTR) {
-          yield { type: "tool_call_start", id: "c0", name: "task" };
+          yield { type: "tool_call_start", id: "c0", name: "spawn" };
           yield {
             type: "tool_call_delta",
             id: "c0",
@@ -184,7 +184,7 @@ describe("task ephemeral workers", () => {
         // inner attempt child that tries nested task - this will be for txt === "inner"
         if (txt === "inner") {
           if (!hasTR) {
-            yield { type: "tool_call_start", id: "c2", name: "task" };
+            yield { type: "tool_call_start", id: "c2", name: "spawn" };
             yield {
               type: "tool_call_delta",
               id: "c2",
@@ -232,9 +232,9 @@ describe("task ephemeral workers", () => {
     })) as RunTurnRpcResult;
 
     const parentTR = findToolResultContent(result.messages);
-    // Depth-0 isolation: child never receives the task tool (Layer 1: "no such tool"),
-    // with handler-level "nested task blocked" as defense-in-depth (Layer 2).
-    expect(parentTR).toMatch(/nested task blocked|no such tool.*task/);
+    // Depth-0 isolation: child never receives the spawn tool (Layer 1: "no such tool"),
+    // with handler-level "nested spawn blocked" as defense-in-depth (Layer 2).
+    expect(parentTR).toMatch(/nested spawn blocked|no such tool.*spawn/);
   });
 
   test("tool restriction honored: allowlist limits child tools", async () => {
@@ -290,7 +290,7 @@ describe("task ephemeral workers", () => {
           }
         }
         if (!hasTR && txt === "") {
-          yield { type: "tool_call_start", id: "c0", name: "task" };
+          yield { type: "tool_call_start", id: "c0", name: "spawn" };
           yield {
             type: "tool_call_delta",
             id: "c0",
@@ -378,10 +378,10 @@ describe("task ephemeral workers", () => {
           return;
         }
         if (!hasTR && txt === "") {
-          yield { type: "tool_call_start", id: "c1", name: "task" };
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
           yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "task A" }) };
           yield { type: "tool_call_end", id: "c1" };
-          yield { type: "tool_call_start", id: "c2", name: "task" };
+          yield { type: "tool_call_start", id: "c2", name: "spawn" };
           yield { type: "tool_call_delta", id: "c2", inputJsonDelta: JSON.stringify({ prompt: "task B" }) };
           yield { type: "tool_call_end", id: "c2" };
           yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };

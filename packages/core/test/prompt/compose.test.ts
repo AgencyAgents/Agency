@@ -11,20 +11,15 @@ import {
 } from "../../src/prompt/compose.ts";
 
 describe("composeSystemPrompt", () => {
-  test("joins sections in the fixed order: base, family overlay, instructions, tools", () => {
+  test("joins sections team-shared first: base, instructions, family overlay, tools", () => {
     const composed = composeSystemPrompt({
       base: "BASE",
       familyPresetOverlay: "OVERLAY",
       instructions: ["INSTR1", "INSTR2"],
       toolDescriptions: ["TOOL1"],
     });
-    const order = [
-      composed.text.indexOf("BASE"),
-      composed.text.indexOf("OVERLAY"),
-      composed.text.indexOf("INSTR1"),
-      composed.text.indexOf("TOOL1"),
-    ];
-    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(composed.text).toBe("BASE\n\nINSTR1\n\nINSTR2\n\nOVERLAY\n\nTOOL1");
+    expect(composed.segments.map((s) => s.stability)).toEqual(["shared", "shared", "agent", "agent"]);
   });
 
   test("is deterministic across calls with the same input, for prompt-cache stability", () => {
@@ -47,7 +42,7 @@ describe("composeSystemPrompt", () => {
     expect(composed.text).toBe("BASE\n\nINSTR\n\nTOOL\n\n<environment>ENV</environment>");
   });
 
-  test("stable prefix (base+overlay+instructions+tools) is identical when only context changes — cache hit property", () => {
+  test("stable prefix (base+instructions+overlay+tools) is identical when only context changes — cache hit property", () => {
     const stable = {
       base: "BASE",
       familyPresetOverlay: "OVERLAY",
@@ -280,13 +275,13 @@ describe("persona-driven role prompts (MECHANICS — anthropic)", () => {
 
   test("room roles (leader, coder, executor) include room protocol", () => {
     for (const role of ["leader", "coder", "executor"]) {
-      expect(resolveFamilyPrompt("anthropic", role)).toContain("Room protocol:");
+      expect(resolveFamilyPrompt("anthropic", role)).toContain("Team protocol:");
     }
   });
 
   test("non-room roles exclude room protocol", () => {
     for (const role of ["planner", "plan-reviewer", "explorer", "researcher", "code-reviewer"]) {
-      expect(resolveFamilyPrompt("anthropic", role)).not.toContain("Room protocol:");
+      expect(resolveFamilyPrompt("anthropic", role)).not.toContain("Team protocol:");
     }
   });
 });
@@ -344,7 +339,7 @@ describe("persona-driven role prompts (PRINCIPLE — openai/fallback)", () => {
 });
 
 describe("cache-prefix order with role prompts", () => {
-  test("familyPresetOverlay (role prompt) appears before instructions in composed output", () => {
+  test("team-shared instructions appear before the per-agent role prompt", () => {
     const composed = composeSystemPrompt({
       base: "identity",
       familyPresetOverlay: resolveFamilyPrompt("anthropic", "coder"),
@@ -354,7 +349,8 @@ describe("cache-prefix order with role prompts", () => {
     const overlayIdx = composed.text.indexOf("craftsman");
     const instrIdx = composed.text.indexOf("custom instructions");
     expect(overlayIdx).toBeGreaterThan(0);
-    expect(instrIdx).toBeGreaterThan(overlayIdx);
+    expect(instrIdx).toBeGreaterThanOrEqual(0);
+    expect(instrIdx).toBeLessThan(overlayIdx);
   });
 
   test("context (environment block) is joined last, after role prompt and instructions", () => {

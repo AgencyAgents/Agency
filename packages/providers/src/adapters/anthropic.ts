@@ -1,5 +1,6 @@
 import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type StopReason } from "@agency/schema";
+import { estimateTokens, MIN_CACHEABLE_TOKENS, splitStableDynamic } from "../cache-policy.ts";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
@@ -67,31 +68,40 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
 }
 
 function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
+  const minTokens = request.cachePolicy?.minTokens ?? MIN_CACHEABLE_TOKENS;
   const messages: { role: string; content: Record<string, unknown>[]; cache_control?: unknown }[] =
     request.messages.map((m) => ({
       role: m.role === "system" ? "user" : m.role,
       content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
     }));
 
-  // The conversation tail re-caches from the last content block of the last
-  // user message each turn (cache_control on content blocks per Anthropic API).
-  const lastUser = messages.findLast((m) => m.role === "user");
-  const tailBlock = lastUser?.content.at(-1);
-  if (tailBlock) tailBlock.cache_control = { type: "ephemeral" };
+  // Breakpoints 3 and 4 roll forward: the settled turn-back tail and the
+  // current tail. Each is skipped when the conversation is too short to pay.
+  const userIdx = messages
+    .map((m, i) => (m.role === "user" && m.content.length > 0 ? i : -1))
+    .filter((i) => i >= 0);
+  const prefixTokens = (through: number): number =>
+    estimateTokens(JSON.stringify(messages.slice(0, through + 1)));
+  const lastIdx = userIdx.at(-1);
+  const lastTail = lastIdx !== undefined ? messages[lastIdx]?.content.at(-1) : undefined;
+  if (lastIdx !== undefined && lastTail && prefixTokens(lastIdx) >= minTokens) {
+    lastTail.cache_control = { type: "ephemeral" };
+  }
+  if (userIdx.length >= 2) {
+    const settledIdx = userIdx.at(-2);
+    if (settledIdx !== undefined && prefixTokens(settledIdx) >= minTokens) {
+      const settledBlock = messages[settledIdx]?.content.at(-1);
+      if (settledBlock && settledBlock !== lastTail) {
+        settledBlock.cache_control = { type: "ephemeral" };
+      }
+    }
+  }
 
   const body: Record<string, unknown> = {
     model: request.model,
     max_tokens: request.maxTokens,
-    messages,
     stream: true,
   };
-
-  if (request.system) {
-    // Marked cacheable: the system prompt is Agency's stable prefix (R9/cache policy).
-    // It changes far less often than the growing message tail, so it's the first
-    // thing worth a cache breakpoint.
-    body.system = [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }];
-  }
 
   if (request.tools?.length) {
     const tools: { name: string; description?: string; input_schema: unknown; cache_control?: unknown }[] =
@@ -100,11 +110,30 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
         description: t.description,
         input_schema: t.inputSchema,
       }));
-    // Tool schemas are stable across turns — worth a cache breakpoint.
-    const lastTool = tools.at(-1);
-    if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+    if (estimateTokens(JSON.stringify(tools)) >= minTokens) {
+      const lastTool = tools.at(-1);
+      if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+    }
     body.tools = tools;
   }
+
+  if (request.systemSegments) {
+    const { stable, dynamic } = splitStableDynamic(request.systemSegments);
+    const system: Record<string, unknown>[] = [];
+    if (stable) {
+      system.push(
+        estimateTokens(stable) >= minTokens
+          ? { type: "text", text: stable, cache_control: { type: "ephemeral", ttl: "1h" } }
+          : { type: "text", text: stable },
+      );
+    }
+    if (dynamic) system.push({ type: "text", text: dynamic });
+    if (system.length > 0) body.system = system;
+  } else if (request.system) {
+    body.system = [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }];
+  }
+
+  body.messages = messages;
 
   if (request.temperature !== undefined) body.temperature = request.temperature;
 

@@ -45,7 +45,7 @@ function textAdapter(text: string): ProviderAdapter {
   };
 }
 
-describe("B4 orchestra RPC", () => {
+describe("B4 team RPC", () => {
   it("agents_list shape with fake roster", async () => {
     const cfg = {
       agents: {
@@ -86,7 +86,7 @@ describe("B4 orchestra RPC", () => {
     expect(reviewer.costUsd).toBe(0);
   });
 
-  it("solo room agents_list returns just leader and emits no orchestra events", async () => {
+  it("solo room agents_list returns just leader and emits no team events", async () => {
     const cfg = {
       agents: {
         leader: {
@@ -113,11 +113,11 @@ describe("B4 orchestra RPC", () => {
     expect(agents.length).toBe(1);
     expect(agents[0]!.handle).toBe("leader");
 
-    let orchestraEvent = false;
-    client.on("orchestra.shared" as never, () => (orchestraEvent = true));
-    client.subscribe("orchestra.shared");
+    let teamEvent = false;
+    client.on("team.shared" as never, () => (teamEvent = true));
+    client.subscribe("team.shared");
     // dispatch should not broadcast when roster is 1 — we test dispatch_compare with solo handle still not broadcasting?
-    // Instead verify that a normal run_turn does not emit orchestra events.
+    // Instead verify that a normal run_turn does not emit team events.
     await client.call("run_turn", {
       turnId: "solo-t1",
       provider: "anthropic",
@@ -127,7 +127,7 @@ describe("B4 orchestra RPC", () => {
       session: [],
     });
     await new Promise((r) => setTimeout(r, 50));
-    expect(orchestraEvent).toBe(false);
+    expect(teamEvent).toBe(false);
   });
 
   it("agent_history returns entries for that handle", async () => {
@@ -166,7 +166,7 @@ describe("B4 orchestra RPC", () => {
     expect(Array.isArray(history.messages)).toBe(true);
   });
 
-  it("orchestra_status rollup includes agents and todo and costTotal", async () => {
+  it("team_status rollup includes agents and todo and costTotal", async () => {
     const cfg = {
       agents: {
         leader: {
@@ -190,7 +190,7 @@ describe("B4 orchestra RPC", () => {
     const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
     clients.push(client);
 
-    const status = (await client.call("orchestra_status", {})) as {
+    const status = (await client.call("team_status", {})) as {
       agents: Array<{ costUsd: number }>;
       todo: unknown[];
       costTotal: number;
@@ -243,7 +243,7 @@ describe("B4 orchestra RPC", () => {
     }
   });
 
-  it("agent_lifecycle events broadcast on orchestra.<sessionId> stream", async () => {
+  it("agent_lifecycle events broadcast on team.<sessionId> stream", async () => {
     const cfg = {
       agents: {
         leader: {
@@ -270,8 +270,8 @@ describe("B4 orchestra RPC", () => {
     const agents = (await client.call("agents_list", {})) as Array<{ handle: string; sessionId: string }>;
     const porter = agents.find((a) => a.handle === "porter")!;
     const events: unknown[] = [];
-    client.on(`orchestra.${porter.sessionId}` as never, (p) => events.push(p));
-    client.subscribe(`orchestra.${porter.sessionId}`);
+    client.on(`team.${porter.sessionId}` as never, (p) => events.push(p));
+    client.subscribe(`team.${porter.sessionId}`);
 
     await client.call("dispatch_compare", { handles: ["porter"], prompt: "do work" });
     await new Promise((r) => setTimeout(r, 80));
@@ -353,7 +353,7 @@ describe("B4 orchestra RPC", () => {
     const porter2 = agents2.find((a) => a.handle === "porter")!;
     expect(porter2.costUsd).toBeCloseTo(1.23);
 
-    const status = (await client.call("orchestra_status", {})) as {
+    const status = (await client.call("team_status", {})) as {
       costTotal: number;
       agents: Array<{ costUsd: number }>;
     };

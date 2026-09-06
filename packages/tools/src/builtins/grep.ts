@@ -226,5 +226,5 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
       }
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

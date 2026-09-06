@@ -273,5 +273,5 @@ export function createBashTool(
       }
     },
   };
-  return spec as unknown as ToolSpec;
+  return spec;
 }

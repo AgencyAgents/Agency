@@ -188,7 +188,7 @@ export const ConfigSchema = z
     budgets: z
       .object({
         perAgentUsd: z.number().nonnegative().optional(),
-        orchestraUsd: z.number().nonnegative().optional(),
+        teamUsd: z.number().nonnegative().optional(),
       })
       .optional(),
   })
@@ -235,7 +235,7 @@ export interface AgentConfig {
   model?: string;
   /** Optional: when absent, resolved at runtime from the model's supported efforts. */
   effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto";
-  /** When false, the agent is not registered in the orchestra and cannot be dispatched or @-addressed. Defaults to false. */
+  /** When false, the agent is not registered in the team and cannot be dispatched or @-addressed. Defaults to false. */
   enabled?: boolean;
   permissions?: Record<string, ToolPermission>;
 }
