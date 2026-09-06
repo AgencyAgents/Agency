@@ -125,8 +125,10 @@ export interface RunTurnOptions {
     emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
   };
   /** Overflow hook (U8): runs once per turn on context overflow, then the
-   *  provider call is retried exactly once. Absent means overflow throws. */
-  onContextOverflow?: () => Promise<void>;
+   *  provider call is retried exactly once. A returned message list replaces
+   *  the history for the retry (reactive compact-and-retry). Absent means
+   *  overflow throws. */
+  onContextOverflow?: () => Promise<Message[] | undefined>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -296,7 +298,11 @@ export async function runTurn(
       } catch (error) {
         if (overflowRetried || !isContextOverflowError(error) || !options.onContextOverflow) throw error;
         overflowRetried = true;
-        await options.onContextOverflow();
+        const replacement = await options.onContextOverflow();
+        if (replacement !== undefined) {
+          messages.length = 0;
+          messages.push(...replacement);
+        }
         options.onEvent?.({
           type: "retry",
           attempt: 1,

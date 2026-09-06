@@ -28,6 +28,7 @@ import {
   type CallerIdentity,
   type Capabilities,
   globToRegExpSource,
+  type PermissionMode,
   type PermissionsGate,
   type Redactor,
   type SandboxBoundary,
@@ -131,6 +132,14 @@ export interface RunTurnParams {
   capabilities?: Capabilities;
   images?: import("@agency/schema").ImageBlock[];
   promptVersion?: string;
+  /**
+   * Non-interactive permission mode for this turn (`ask` default).
+   * `allow-edits`/`deny` arrive only via the explicit client flag.
+   */
+  permissionMode?: PermissionMode;
+  /** Headless turns have no approval surface: asks refuse at once with a
+   *  typed reason instead of waiting on a responder that never comes. */
+  nonInteractive?: boolean;
 }
 
 export interface ResolveSystemPromptOptions {
@@ -156,6 +165,40 @@ export interface RunTurnRpcResult {
    *  assistant messages, so the caller (which owns the SessionStore) can
    *  compact the session and retry the turn. */
   needsCompaction?: boolean;
+}
+
+/** Daemon-owned turn: the caller sends text, the daemon owns store,
+ *  history, tokenizer, compaction, appends, and usage. */
+export interface SessionSendParams {
+  sessionId: string;
+  /** Caller-supplied for pre-subscribe streaming; generated when absent. */
+  turnId?: string;
+  provider: string;
+  model: string;
+  systemPrompt: string;
+  systemPromptParts?: SystemPromptParts;
+  userText: string;
+  images?: import("@agency/schema").ImageBlock[];
+  thinkingLevel?: ThinkingLevel;
+  budget?: Budget;
+  permissionMode?: PermissionMode;
+  /** Headless turns refuse asks at once instead of waiting on a responder. */
+  nonInteractive?: boolean;
+  contextWindow?: number;
+}
+
+export interface SessionSendResult extends RunTurnRpcResult {
+  sessionId: string;
+  turnId: string;
+  tipId: string;
+  compacted: boolean;
+}
+
+/** Mid-turn steering for the root turn: queued, then drained per tool
+ *  iteration like the peer mailbox. */
+export interface SessionMessageParams {
+  sessionId: string;
+  text: string;
 }
 
 /**
@@ -457,6 +500,7 @@ export interface DaemonContext {
   getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
   teamRegistry: AgentRegistry;
   agentInboxes: Map<string, Message[]>;
+  sessionInboxes: Map<string, Message[]>;
   agentStates: Map<string, "idle" | "working" | "blocked" | "failed">;
   teamCost: Map<string, number>;
   teamTotal: { value: number };

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
-import { createApproximateTokenizer } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
@@ -49,10 +48,11 @@ function compactingAdapter(): ProviderAdapter {
   };
 }
 
-async function daemon(ws: string, adapter: ProviderAdapter) {
+async function daemon(ws: string, adapter: ProviderAdapter, sessionsDir: string) {
   const d = await createAgentDaemon({
     workspaceRoot: ws,
     instanceFile: join(ws, ".agency", "instance.json"),
+    sessionsDir,
     adapterFor: () => adapter,
     http: noopHttp,
     tools: [],
@@ -64,15 +64,17 @@ async function daemon(ws: string, adapter: ProviderAdapter) {
 }
 
 describe("compact-and-retry branch", () => {
-  test("session exceeding window triggers compaction and turn continues (needsCompaction path)", async () => {
+  test("reactive onContextOverflow compacts daemon-side and the turn continues", async () => {
     const ws = tmp("agency-compact-ws-");
-    const sessions = tmp("agency-compact-sess-");
-    const store = new SessionStore(sessions);
-    store.create("s1");
+    const sessionsDir = tmp("agency-compact-sess-");
+    const seed = new SessionStore(sessionsDir);
+    seed.create("s1");
 
+    // Below the proactive trigger: the overflow comes from the provider, so
+    // the reactive compact-and-retry path handles it inside session_send.
     let parent: string | null = null;
     for (let i = 0; i < 6; i++) {
-      const e = await store.append("s1", {
+      const e = await seed.append("s1", {
         type: "message",
         parentId: parent,
         message: { role: "user", content: [{ type: "text", text: `history ${i} ${"x".repeat(800)}` }] },
@@ -80,20 +82,14 @@ describe("compact-and-retry branch", () => {
       parent = e.id;
     }
 
-    const client = await daemon(ws, compactingAdapter());
+    const client = await daemon(ws, compactingAdapter(), sessionsDir);
 
     const { result, tipId } = await runSessionTurn(client, {
-      store,
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
       systemPrompt: "sys",
       userText: "continue after overflow",
-      compaction: {
-        tokenizer: createApproximateTokenizer(1),
-        threshold: { contextWindow: 200, proactiveRatio: 0.5 },
-        summarize: async (text) => `summary:${text.slice(0, 80)}`,
-      },
     });
 
     expect(result.stopReason).toBe("end_turn");
@@ -101,8 +97,8 @@ describe("compact-and-retry branch", () => {
       result.messages.some((m) => JSON.stringify(m.content).includes("recovered after compaction")),
     ).toBe(true);
 
-    const entries = store.load("s1");
-    const chain = store.chainFor(entries, tipId);
+    const entries = new SessionStore(sessionsDir).load("s1");
+    const chain = new SessionStore(sessionsDir).chainFor(entries, tipId);
     expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
     expect(
       chain.some((e) => e.type === "message" && JSON.stringify(e).includes("continue after overflow")),
@@ -111,9 +107,7 @@ describe("compact-and-retry branch", () => {
 
   test("retry events: scheduler onRetry flows to LoopEvent retry event via runSessionTurn", async () => {
     const ws = tmp("agency-retry-ws-");
-    const sessions = tmp("agency-retry-sess-");
-    const store = new SessionStore(sessions);
-    store.create("s2");
+    const sessionsDir = tmp("agency-retry-sess-");
     let attempts = 0;
     const adapter: ProviderAdapter = {
       family: "fake",
@@ -124,10 +118,9 @@ describe("compact-and-retry branch", () => {
         yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
       },
     };
-    const client = await daemon(ws, adapter);
+    const client = await daemon(ws, adapter, sessionsDir);
     const events: unknown[] = [];
     const { result } = await runSessionTurn(client, {
-      store,
       sessionId: "s2",
       provider: "anthropic",
       model: "m",

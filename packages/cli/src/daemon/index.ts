@@ -420,6 +420,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     warnPersistence("dispatch-state restore", error);
   }
   const agentInboxes = new Map<string, import("@agency/schema").Message[]>();
+  const sessionInboxes = new Map<string, import("@agency/schema").Message[]>();
   const agentStates = new Map<string, "idle" | "working" | "blocked" | "failed">();
 
   // Session-scoped "always allow" grants: one manager per session id, persisted
@@ -474,6 +475,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     getOrCreateScope,
     teamRegistry,
     agentInboxes,
+    sessionInboxes,
     agentStates,
     teamCost,
     teamTotal,

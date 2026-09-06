@@ -208,10 +208,7 @@ describe("phase 7: first-turn title generation end to end", () => {
       const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
       clients.push(client);
 
-      const store = new SessionStore(sessionsDir);
-      store.create("runner-session");
       const { result } = await runSessionTurn(client, {
-        store,
         sessionId: "runner-session",
         provider: "main",
         model: "m",

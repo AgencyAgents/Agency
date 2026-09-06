@@ -1,24 +1,41 @@
+import { randomUUID } from "node:crypto";
 import {
+  compact,
   composeSystemPrompt,
   generateTitle,
   getSessionTitle,
   newEntryId,
   resolveSmallModel,
   runChildTurn,
+  SessionProjector,
+  summarizeTranscript,
   type ToolSpec,
 } from "@agency/core";
 import type { Capabilities, PermissionsGate } from "@agency/guard";
-import { type KeychainBackend, resolveApiKey } from "@agency/providers";
+import { type KeychainBackend, resolveApiKey, tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { appendUsageEntry } from "@agency/telemetry";
 import {
   createSpawnTool,
   extractFinalText,
   type SessionScope,
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
-import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+import {
+  type DaemonContext,
+  oauthOverridesFor,
+  type RunTurnParams,
+  type SessionMessageParams,
+  type SessionSendParams,
+  type SessionSendResult,
+} from "../types.ts";
+import { executeTurn } from "./turn.ts";
+
+/** Fallback window for daemon-side proactive compaction, matching the
+ *  former client default until the catalog supplies a real one. */
+const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
 
 export async function generateSessionTitle(
   ctx: DaemonContext,
@@ -71,7 +88,7 @@ export async function generateSessionTitle(
 }
 
 export function registerSessionHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
-  const { approvalManagers, sessionScopes, todoStore } = ctx;
+  const { approvalManagers, broadcast, providers, sessionInboxes, sessionScopes, todoStore } = ctx;
   handlers.session_delete = async (rawParams) => {
     const { sessionId } = rawParams as { sessionId: string };
     if (!sessionId)
@@ -143,7 +160,107 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       });
     const last = entries[entries.length - 1];
     const tip = tipId ?? todoStore.latestTip(entries) ?? last?.id ?? "";
-    return { sessionId, entries, tipId: tip, messages: todoStore.messagesFor(entries, tip) };
+    const projection = new SessionProjector(todoStore).projectChain(sessionId, tip);
+    return { sessionId, entries, tipId: tip, messages: todoStore.messagesFor(entries, tip), projection };
+  };
+  handlers.session_send = async (rawParams, context) => {
+    const p = rawParams as SessionSendParams;
+    if (!p.sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires sessionId", {
+        source: "session",
+      });
+    if (!p.userText)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires userText", {
+        source: "session",
+      });
+    const store = todoStore;
+    if (!store.list().includes(p.sessionId)) store.create(p.sessionId);
+    const family = providers[p.provider]?.family ?? p.provider;
+    const tokenizer = tokenizerFor(family);
+    const threshold = { contextWindow: p.contextWindow ?? DEFAULT_SESSION_CONTEXT_WINDOW };
+    const summarize = (text: string): Promise<string> => Promise.resolve(summarizeTranscript(text));
+    let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
+    let compacted = false;
+    if (tipId) {
+      const outcome = await compact(store, p.sessionId, tipId, tokenizer, threshold, summarize);
+      tipId = outcome.tipId;
+      compacted = outcome.compacted;
+    }
+    const userEntry = await store.append(p.sessionId, {
+      type: "message",
+      parentId: tipId,
+      message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
+    });
+    let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
+    let sliceBase = history.length;
+    // Reactive compaction forks the branch, so new appends rebase onto
+    // the compacted tip instead of the orphaned pre-compaction entry.
+    let appendBase: string | null = userEntry.id;
+    const onContextOverflow = async (): Promise<Message[]> => {
+      const outcome = await compact(store, p.sessionId, userEntry.id, tokenizer, threshold, summarize, 4, {
+        force: true,
+      });
+      history = store.messagesFor(store.load(p.sessionId), outcome.tipId);
+      sliceBase = history.length;
+      appendBase = outcome.tipId;
+      compacted = true;
+      return history;
+    };
+    const turnId = p.turnId ?? randomUUID();
+    const runParams: RunTurnParams = {
+      turnId,
+      sessionId: p.sessionId,
+      provider: p.provider,
+      model: p.model,
+      systemPrompt: p.systemPrompt,
+      systemPromptParts: p.systemPromptParts,
+      thinkingLevel: p.thinkingLevel,
+      session: history,
+      budget: p.budget,
+      permissionMode: p.permissionMode,
+      nonInteractive: p.nonInteractive,
+      ...(p.images?.length ? { images: p.images } : {}),
+    };
+    let result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+    if (result.needsCompaction) {
+      history = await onContextOverflow();
+      runParams.session = history;
+      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+    }
+    let parentId: string | null = appendBase;
+    for (const message of result.messages.slice(sliceBase)) {
+      const appended = await store.append(p.sessionId, { type: "message", parentId, message });
+      parentId = appended.id;
+    }
+    parentId = await appendUsageEntry(store, p.sessionId, parentId, {
+      usage: result.usage,
+      model: p.model,
+      pricing: ctx.catalogModel(p.provider, p.model)?.pricing,
+    });
+    const response: SessionSendResult = {
+      ...result,
+      sessionId: p.sessionId,
+      turnId,
+      tipId: parentId,
+      compacted,
+    };
+    return response;
+  };
+  handlers.session_message = async (rawParams) => {
+    const { sessionId, text } = rawParams as SessionMessageParams;
+    if (!sessionId)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires sessionId", {
+        source: "session",
+      });
+    if (!text)
+      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires text", {
+        source: "session",
+      });
+    const box = sessionInboxes.get(sessionId) ?? [];
+    sessionInboxes.set(sessionId, box);
+    box.push({ role: "user", content: [{ type: "text", text }] });
+    broadcast(`session.${sessionId}`, { type: "session_message", sessionId });
+    return { queued: true, depth: box.length };
   };
 }
 

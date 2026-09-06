@@ -80,6 +80,7 @@ Options:
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
+  --permission-mode <mode> With -p: ask (default), allow-edits, or deny
   --format <text|json>     Output format (default: text; json is for scripting)
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
@@ -103,6 +104,7 @@ export interface ParsedArgv {
   images: string[];
   continueLast: boolean;
   session: string | undefined;
+  permissionMode: "ask" | "allow-edits" | "deny";
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -166,6 +168,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     overwrite: false,
     continueLast: false,
     session: undefined,
+    permissionMode: "ask",
     format: "text",
     retention: undefined,
     help: false,
@@ -230,6 +233,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
         const format = value();
         if (format !== "text" && format !== "json") throw new Error(t("cli.error.invalid_format"));
         parsed.format = format;
+        break;
+      }
+      case "--permission-mode": {
+        const mode = value();
+        if (mode !== "ask" && mode !== "allow-edits" && mode !== "deny") {
+          throw new Error(t("cli.error.invalid_permission_mode"));
+        }
+        parsed.permissionMode = mode;
         break;
       }
       case "--max-age-days":
@@ -428,10 +439,6 @@ async function runPrintMode(
     if (sessionId === undefined) {
       sessionId = latestSessionId(store);
       if (sessionId === undefined) throw new Error(t("cli.error.no_sessions"));
-    } else if (!store.list().includes(sessionId)) {
-      // An explicitly named session that doesn't exist yet is created, so the
-      // turn persists under the requested id.
-      store.create(sessionId);
     }
 
     const client = deps.ensureClient
@@ -440,7 +447,6 @@ async function runPrintMode(
     try {
       const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
       const { result, tipId } = await runSessionTurn(client, {
-        store,
         sessionId,
         provider,
         model,
@@ -448,6 +454,8 @@ async function runPrintMode(
         userText: prompt,
         images,
         onEvent,
+        permissionMode: parsed.permissionMode,
+        nonInteractive: true,
       });
       printJsonOrText(out, parsed.format, { sessionId, tipId, ...result }, assistantText(result.messages));
       return result.stopReason === "error" ? 1 : 0;
@@ -466,6 +474,7 @@ async function runPrintMode(
     prompt,
     images,
     onEvent,
+    permissionMode: parsed.permissionMode,
   });
   printJsonOrText(out, parsed.format, result, assistantText(result.messages));
   return result.stopReason === "error" ? 1 : 0;

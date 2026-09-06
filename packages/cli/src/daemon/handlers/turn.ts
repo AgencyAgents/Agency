@@ -21,12 +21,36 @@ import { costUsdForHandle } from "./team.ts";
 import { writeTurnCassette } from "./trace.ts";
 
 export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
+  handlers.run_turn = async (rawParams, context) => {
+    return executeTurn(ctx, rawParams as RunTurnParams, { clientId: context.clientId });
+  };
+  handlers.cancel_turn = async (rawParams) => {
+    const { turnId } = rawParams as { turnId: string };
+    const controller = ctx.activeControllers.get(turnId);
+    if (!controller) return { cancelled: false };
+    controller.abort();
+    // A turn parked at the ask gate awaits an approval promise the abort
+    // signal alone never settles, so without this run_turn would hang past
+    // cancellation. Refusing the pending asks lets the loop observe the
+    // abort and finish instead of deadlocking.
+    for (const manager of ctx.approvalManagers.values()) manager.rejectTurn(turnId);
+    return { cancelled: true };
+  };
+}
+
+/** Shared turn assembly behind run_turn and session_send: one definition,
+ *  so daemon-owned and caller-owned turns never drift apart. */
+export async function executeTurn(
+  ctx: DaemonContext,
+  params: RunTurnParams,
+  rpc: { clientId: string },
+  hooks?: { onContextOverflow?: () => Promise<import("@agency/schema").Message[] | undefined> },
+): Promise<RunTurnRpcResult> {
   const {
     activeControllers,
     activeTurnMeta,
     adapterFor,
     agentInboxes,
-    approvalManagers,
     approvalsFor,
     broadcast,
     builtinsMode,
@@ -47,6 +71,7 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
     providers,
     redactor,
     schedulerFor,
+    sessionInboxes,
     shellLabel,
     teamCost,
     teamRegistry,
@@ -58,11 +83,10 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
     turnOwners,
     warnPersistence,
   } = ctx;
-  handlers.run_turn = async (rawParams, context) => {
-    const params = rawParams as RunTurnParams;
+  {
     const controller = new AbortController();
     activeControllers.set(params.turnId, controller);
-    turnOwners.set(params.turnId, context.clientId);
+    turnOwners.set(params.turnId, rpc.clientId);
     const eventStream = `turn.${params.turnId}`;
 
     // R10 wiring: the whole turn (provider requests and tool calls) correlates under one trace ID.
@@ -249,7 +273,7 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
             params.capabilities ??
             (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
           const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-          const sessionGate = gateForSession(sessionId);
+          const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
           const effectiveTools =
             builtinsMode && turnScope
               ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
@@ -265,25 +289,30 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
           });
           try {
-            const mailboxDrain = (() => {
+            // Root turns drain the session inbox (fed by session_message);
+            // agent turns additionally drain their own mailbox, same call.
+            const mailboxDrain = (): import("@agency/schema").Message[] => {
+              const msgs: import("@agency/schema").Message[] = [];
+              const queued = sessionInboxes.get(sessionId);
+              if (queued && queued.length > 0) {
+                msgs.push(...queued);
+                queued.length = 0;
+              }
               const agentForSession = teamRegistry.list().find((a) => a.sessionId === sessionId);
               const handle = agentForSession?.handle ?? (mentioned.length === 1 ? mentioned[0] : undefined);
-              if (!handle) return undefined;
-              return () => {
-                const msgs: import("@agency/schema").Message[] = [];
-                const box = agentInboxes.get(handle);
-                if (box && box.length > 0) {
-                  msgs.push(...box);
-                  box.length = 0;
-                }
-                const reg = teamRegistry.get(handle)?.mailbox;
-                if (reg && reg.length > 0) {
-                  msgs.push(...reg);
-                  reg.length = 0;
-                }
-                return msgs;
-              };
-            })();
+              if (handle === undefined) return msgs;
+              const box = agentInboxes.get(handle);
+              if (box && box.length > 0) {
+                msgs.push(...box);
+                box.length = 0;
+              }
+              const reg = teamRegistry.get(handle)?.mailbox;
+              if (reg && reg.length > 0) {
+                msgs.push(...reg);
+                reg.length = 0;
+              }
+              return msgs;
+            };
             try {
               const promptText = (() => {
                 const m = params.session[params.session.length - 1];
@@ -337,6 +366,7 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
               signal: controller.signal,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
+              ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
             });
           } finally {
             activeTurnMeta.delete(params.turnId);
@@ -373,7 +403,7 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
               return k ?? apiKey;
             })();
             if (fbApiKey) redactor.registerSecret(fbApiKey);
-            const sessionGate = gateForSession(sessionId);
+            const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
             const fallbackCapabilities =
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
@@ -433,6 +463,7 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
                   promptVersion: tracePromptVersion,
                   traceRecorder,
                   onEvent: wrappedOnEvent,
+                  ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
                 },
               );
             } finally {
@@ -529,17 +560,5 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
         turnOwners.delete(params.turnId);
       }
     });
-  };
-  handlers.cancel_turn = async (rawParams) => {
-    const { turnId } = rawParams as { turnId: string };
-    const controller = activeControllers.get(turnId);
-    if (!controller) return { cancelled: false };
-    controller.abort();
-    // A turn parked at the ask gate awaits an approval promise the abort
-    // signal alone never settles, so without this run_turn would hang past
-    // cancellation. Refusing the pending asks lets the loop observe the
-    // abort and finish instead of deadlocking.
-    for (const manager of approvalManagers.values()) manager.rejectTurn(turnId);
-    return { cancelled: true };
-  };
+  }
 }

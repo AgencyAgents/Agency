@@ -42,7 +42,14 @@ interface PendingEntry {
   request: ApprovalRequest;
   turnId?: string;
   resolve: (response: ApprovalResponse) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
+
+/** How a pending ask settled. Timeouts and aborts fail closed as reject. */
+export type ApprovalCloseReason = "answered" | "timeout" | "turn-rejected" | "shutdown" | "non-interactive";
+
+/** Bound on createPending: an ask with no responder fails closed instead of hanging. */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 
 export interface RespondOutcome {
   /** Whether an ask with that id was still pending. */
@@ -60,6 +67,7 @@ export interface RespondOutcome {
 export class ApprovalManager {
   private readonly grants = new Set<string>();
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly closeReasons = new Map<string, ApprovalCloseReason>();
 
   /**
    * @param approvalsDir  Directory for per-session grant files (e.g. dataDir/approvals).
@@ -120,18 +128,36 @@ export class ApprovalManager {
 
   /**
    * Registers a pending ask. The returned promise settles when `respond`
-   * answers it, a retroactive "always" covers it, or `rejectTurn`/`rejectAll`
-   * cleans it up on turn abort.
+   * answers it, a retroactive "always" covers it, `rejectTurn`/`rejectAll`
+   * cleans it up, or `timeoutMs` elapses. The timeout path resolves
+   * "reject" (fail closed) and records a "timeout" close reason.
    */
   createPending(
     request: ApprovalRequest,
     turnId?: string,
+    opts?: { timeoutMs?: number },
   ): { id: string; promise: Promise<ApprovalResponse> } {
     const id = randomUUID();
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
     const promise = new Promise<ApprovalResponse>((resolve) => {
-      this.pending.set(id, { id, request, turnId, resolve });
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              if (!this.pending.has(id)) return;
+              this.pending.delete(id);
+              this.closeReasons.set(id, "timeout");
+              resolve("reject");
+            }, timeoutMs)
+          : undefined;
+      if (timer?.unref) timer.unref();
+      this.pending.set(id, { id, request, turnId, resolve, timer });
     });
     return { id, promise };
+  }
+
+  /** How the ask with that id settled, if it already settled. */
+  closeReason(id: string): ApprovalCloseReason | undefined {
+    return this.closeReasons.get(id);
   }
 
   /**
@@ -143,6 +169,8 @@ export class ApprovalManager {
     const entry = this.pending.get(id);
     if (!entry) return { resolved: false, retroactive: 0 };
     this.pending.delete(id);
+    if (entry.timer) clearTimeout(entry.timer);
+    this.closeReasons.set(id, "answered");
     entry.resolve(decision);
 
     if (decision !== "always") return { resolved: true, retroactive: 0 };
@@ -153,6 +181,8 @@ export class ApprovalManager {
     for (const [otherId, other] of [...this.pending]) {
       if (otherId !== id && grantKey(other.request) === key) {
         this.pending.delete(otherId);
+        if (other.timer) clearTimeout(other.timer);
+        this.closeReasons.set(otherId, "answered");
         other.resolve("once");
         retroactive += 1;
       }
@@ -166,6 +196,8 @@ export class ApprovalManager {
     for (const [id, entry] of [...this.pending]) {
       if (entry.turnId === turnId) {
         this.pending.delete(id);
+        if (entry.timer) clearTimeout(entry.timer);
+        this.closeReasons.set(id, "turn-rejected");
         entry.resolve("reject");
         rejected += 1;
       }
@@ -176,7 +208,11 @@ export class ApprovalManager {
   /** Rejects every pending ask regardless of turn (daemon shutdown). */
   rejectAll(): number {
     const count = this.pending.size;
-    for (const [, entry] of [...this.pending]) entry.resolve("reject");
+    for (const [id, entry] of [...this.pending]) {
+      if (entry.timer) clearTimeout(entry.timer);
+      this.closeReasons.set(id, "shutdown");
+      entry.resolve("reject");
+    }
     this.pending.clear();
     return count;
   }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { configDir, dataDir, loadConfig } from "@agency/core";
+import type { PermissionMode } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
 import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
@@ -19,6 +20,7 @@ export interface RunHeadlessOptions {
   prompt: string;
   images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
+  permissionMode?: PermissionMode;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
@@ -135,6 +137,8 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       systemPromptParts: options.systemPromptParts,
       thinkingLevel: options.thinkingLevel,
       session,
+      permissionMode: options.permissionMode,
+      nonInteractive: true,
       ...(options.images?.length ? { images: options.images } : {}),
     };
     return (await client.call("run_turn", params)) as RunTurnRpcResult;

@@ -13,6 +13,21 @@ export function createTurnApproval(
   const { approvalsFor, broadcast, eventBus } = ctx;
   const approvals = approvalsFor(sessionId);
   return async (request) => {
+    const reply = (decision: string, closeReason: string): void => {
+      try {
+        eventBus.emit("permission.replied", {
+          tool: request.tool,
+          command: request.command,
+          path: request.path,
+          decision,
+          closeReason,
+        });
+        eventBus.emit("event", {
+          event: "permission.replied",
+          payload: { tool: request.tool, decision, closeReason },
+        });
+      } catch {}
+    };
     try {
       eventBus.emit("permission.asked", {
         tool: request.tool,
@@ -23,37 +38,20 @@ export function createTurnApproval(
       eventBus.emit("event", { event: "permission.asked", payload: { tool: request.tool } });
     } catch {}
     if (approvals.hasAlways(request)) {
-      try {
-        eventBus.emit("permission.replied", {
-          tool: request.tool,
-          command: request.command,
-          path: request.path,
-          decision: "once",
-        });
-        eventBus.emit("event", {
-          event: "permission.replied",
-          payload: { tool: request.tool, decision: "once" },
-        });
-      } catch {}
+      reply("once", "answered");
       return "once";
     }
     const { id, promise } = approvals.createPending(request, params.turnId);
     const payload = { type: "approval_requested" as const, requestId: id, request };
     broadcast(eventStream, payload);
     if (params.sessionId !== undefined) broadcast(`session.${sessionId}`, payload);
+    if (params.nonInteractive === true) {
+      approvals.respond(id, "reject");
+      reply("reject", "non-interactive");
+      return "reject";
+    }
     const decision = await promise;
-    try {
-      eventBus.emit("permission.replied", {
-        tool: request.tool,
-        command: request.command,
-        path: request.path,
-        decision,
-      });
-      eventBus.emit("event", {
-        event: "permission.replied",
-        payload: { tool: request.tool, decision },
-      });
-    } catch {}
+    reply(decision, approvals.closeReason(id) ?? "answered");
     return decision;
   };
 }

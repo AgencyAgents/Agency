@@ -93,6 +93,14 @@ export async function runOnboarding(options: OnboardingOptions): Promise<Onboard
     out(t("onboarding.model_stored", { model }));
   }
 
+  if (Object.keys(config.permissions ?? {}).length === 0) {
+    updateGlobalConfig(
+      { permissions: { read: "allow", write: "ask", edit: "ask", bash: "ask" } },
+      { globalDir: options.configDir, env },
+    );
+    out(t("onboarding.permissions_stored"));
+  }
+
   let trusted = trustStore.isTrusted(options.workspaceRoot);
   if (!trusted) {
     trusted = await options.prompter.confirm(t("onboarding.trust_prompt", { path: options.workspaceRoot }));

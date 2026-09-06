@@ -12,6 +12,13 @@ export type Decision = "allow" | "ask" | "deny";
 /** How risky a tool is by nature; drives default decisions and the trust gate. */
 export type RiskTier = "safe" | "moderate" | "dangerous";
 
+/** Non-interactive permission mode. `ask` is the default; the other two are
+ *  chosen only via the explicit `--permission-mode` flag, never silently. */
+export type PermissionMode = "ask" | "allow-edits" | "deny";
+
+/** Tools `allow-edits` auto-allows: file mutations, not command execution. */
+const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
+
 export interface PolicyRequest {
   tool: string;
   /** Requested path (workspace-relative for rules built from permissions config). */
@@ -73,13 +80,13 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
 
 /**
  * First-party orchestration tools. They spawn bounded subagent turns (budgets,
- * depth bounds, and per-agent gates are the controls), so the gate allows them
- * by default in workspaces where mutating tools may run. Explicit config
- * entries still win (including `deny`), per-agent maps still filter unlisted
- * tools, and the trust gate in `check` still denies them in untrusted
- * workspaces — this allow is unreachable there.
+ *  depth bounds, and per-agent gates are the controls), so the gate allows them
+ *  by default in workspaces where mutating tools may run. Explicit config
+ *  entries still win (including `deny`), per-agent maps still filter unlisted
+ *  tools, and the trust gate in `check` still denies them in untrusted
+ *  workspaces — this allow is unreachable there.
  */
-const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "task"]);
+const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
 
 export function isPathPatternTool(tool: string): boolean {
   return PATH_PATTERN_TOOLS.has(tool);
@@ -337,10 +344,17 @@ export class PermissionsGate implements ToolPolicy {
       absentToolsDenied?: boolean;
       /** Trust gate: tools above `safe` refuse to run in an untrusted workspace. */
       trust?: { store: TrustStore; root: string; required: boolean };
+      /** Non-interactive mode override; `ask` (default) keeps config behavior. */
+      permissionMode?: PermissionMode;
     },
   ) {
     this.permissions = options.permissions ?? {};
     this.engine = new PolicyEngine(rulesFromPermissions(this.permissions), "ask");
+  }
+
+  /** Derives a gate with `mode` applied over the same policy and trust inputs. */
+  withMode(mode: PermissionMode): PermissionsGate {
+    return new PermissionsGate({ ...this.options, permissionMode: mode });
   }
 
   /**
@@ -350,6 +364,7 @@ export class PermissionsGate implements ToolPolicy {
    * tier (`safe` offered, everything else offered but asking per call).
    */
   toolOffered(tool: string, riskTier?: RiskTier): boolean {
+    if (this.options.permissionMode === "deny" && (riskTier ?? "dangerous") !== "safe") return false;
     const entry = this.permissions[tool];
     if (entry === "deny") return false;
     if (entry === undefined) {
@@ -420,10 +435,14 @@ export class PermissionsGate implements ToolPolicy {
     if (trust?.required && (request.riskTier ?? "dangerous") !== "safe") {
       if (!trust.store.isTrusted(trust.root)) return "deny";
     }
+    if (this.options.permissionMode === "deny" && (request.riskTier ?? "dangerous") !== "safe") {
+      return "deny";
+    }
 
     const decision = this.decisionFor(request);
     if (decision === "allow") return "allow";
     if (decision === "deny") return "deny";
+    if (this.options.permissionMode === "allow-edits" && EDIT_TOOLS.has(request.tool)) return "allow";
     if (!ask) return "deny"; // no approval surface: fail closed
 
     const response = await ask({

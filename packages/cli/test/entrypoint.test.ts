@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, EventBus, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, SessionStore } from "@agency/core";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { RunTurnRpcResult } from "../src/daemon.ts";
@@ -72,10 +72,11 @@ function fakeRunHeadless(result: RunTurnRpcResult = TURN_RESULT) {
 
 function fakeClient(result: RunTurnRpcResult = TURN_RESULT) {
   const calls: Array<{ method: string; params: unknown }> = [];
+  const sessionResult = { ...result, sessionId: "s", turnId: "t", tipId: "tip-1", compacted: false };
   const client: DaemonClient = {
     call: async (method, params) => {
       calls.push({ method, params });
-      return result;
+      return method === "session_send" ? sessionResult : result;
     },
     on: () => () => {},
     subscribe: () => {},
@@ -595,7 +596,7 @@ describe("-p headless mode", () => {
     expect(fake.calls).toHaveLength(0);
   });
 
-  test("--session persists the turn to the SessionStore", async () => {
+  test("--session sends text via session_send; the daemon owns persistence", async () => {
     const fake = fakeClient();
     const sessionsDir = tempDir("agency-ep-sessions-");
     const { out, deps } = capture();
@@ -613,40 +614,43 @@ describe("-p headless mode", () => {
     const payload = JSON.parse(out.join(""));
     expect(payload.sessionId).toBe("target-session");
     expect(payload.stopReason).toBe("end_turn");
-    expect(typeof payload.tipId).toBe("string");
-
-    const entries = new SessionStore(sessionsDir).load("target-session");
-    expect(entries).toHaveLength(2); // user + appended assistant
-    const runTurn = fake.calls.find((c) => c.method === "run_turn");
-    expect(runTurn).toBeDefined();
-    expect((runTurn!.params as { session: unknown[] }).session).toHaveLength(1);
+    expect(payload.tipId).toBe("tip-1");
+    const send = fake.calls.find((c) => c.method === "session_send");
+    expect(send).toBeDefined();
+    expect((send!.params as { sessionId: string }).sessionId).toBe("target-session");
+    expect((send!.params as { userText: string }).userText).toBe("new question");
+    expect((send!.params as { nonInteractive: boolean }).nonInteractive).toBe(true);
   });
 
-  test("a session-backed turn that triggers compaction emits session.compacted on the wired bus", async () => {
+  test("--permission-mode parses, defaults to ask, and reaches the headless call", async () => {
+    expect(parseArgv(["-p", "hi"]).permissionMode).toBe("ask");
+    expect(parseArgv(["-p", "hi", "--permission-mode", "allow-edits"]).permissionMode).toBe("allow-edits");
+    expect(() => parseArgv(["-p", "hi", "--permission-mode", "yes"])).toThrow("permission-mode");
+    const fake = fakeRunHeadless();
+    const { deps } = capture();
+    const code = await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--permission-mode", "deny"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(0);
+    expect(fake.calls[0]?.permissionMode).toBe("deny");
+  });
+
+  test("a session-backed turn compacts daemon-side; the client sends text only", async () => {
     const fake = fakeClient();
     const sessionsDir = tempDir("agency-ep-sessions-");
-    // Six long messages: over the 200k default window (google family counts
-    // char/4, so 6 x 120k chars ~= 180k tokens >= 160k proactive threshold)
-    // with more than keepLastN (4) messages, so there is something to summarize.
     const seed = new SessionStore(sessionsDir);
     seed.create("big-session");
     let parentId: string | null = null;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 2; i++) {
       const appended = await seed.append("big-session", {
         type: "message",
         parentId,
-        message: {
-          role: i % 2 ? "assistant" : "user",
-          content: [{ type: "text", text: `message-${i} ${"x".repeat(120_000)}` }],
-        },
+        message: { role: "user", content: [{ type: "text", text: `message-${i}` }] },
       });
       parentId = appended.id;
     }
-    const seen: Array<{ event: string; payload: unknown }> = [];
-    const bus = new EventBus();
-    bus.on("session.compacted", (payload) => {
-      seen.push({ event: "session.compacted", payload });
-    });
     const { deps } = capture();
     const code = await runEntrypoint(
       ["-p", "follow-up", "--model", "google/fake-1", "--session", "big-session", "--format", "json"],
@@ -655,13 +659,14 @@ describe("-p headless mode", () => {
         ...deps,
         sessionsDir,
         ensureClient: async () => fake.client,
-        bus,
       },
     );
 
     expect(code).toBe(0);
-    expect(seen).toHaveLength(1);
-    expect((seen[0]!.payload as { sessionId: string }).sessionId).toBe("big-session");
+    const send = fake.calls.find((c) => c.method === "session_send");
+    expect(send).toBeDefined();
+    expect((send!.params as { sessionId: string }).sessionId).toBe("big-session");
+    expect((send!.params as { userText: string }).userText).toBe("follow-up");
   });
 
   test("--continue resumes the most recent session", async () => {
@@ -679,11 +684,10 @@ describe("-p headless mode", () => {
     });
 
     expect(code).toBe(0);
-    const runTurn = fake.calls.find((c) => c.method === "run_turn");
-    const session = JSON.stringify((runTurn!.params as { session: unknown }).session);
-    expect(session).toContain("newer marker");
-    expect(session).not.toContain("older marker");
-    expect(session).toContain("follow-up");
+    const send = fake.calls.find((c) => c.method === "session_send");
+    expect(send).toBeDefined();
+    expect((send!.params as { sessionId: string }).sessionId).toBe("newer");
+    expect((send!.params as { userText: string }).userText).toBe("follow-up");
   });
 
   test("--continue with no sessions, conflicting session flags, and missing -p all fail clearly", async () => {

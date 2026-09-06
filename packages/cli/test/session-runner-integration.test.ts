@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
-import { createApproximateTokenizer } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 import { runSessionTurn } from "../src/session-runner.ts";
@@ -37,7 +36,7 @@ function tempDir(prefix: string): string {
 }
 
 /** Replies with fixed text, ignoring the request, so tests can assert on
- *  what session-runner did around the call rather than a scripted model. */
+ *  what session_send did around the call rather than a scripted model. */
 function echoAdapter(reply = "ok"): ProviderAdapter {
   return {
     family: "fake",
@@ -48,10 +47,11 @@ function echoAdapter(reply = "ok"): ProviderAdapter {
   };
 }
 
-async function connectedDaemon(workspaceRoot: string, adapter: ProviderAdapter) {
+async function connectedDaemon(workspaceRoot: string, adapter: ProviderAdapter, sessionsDir: string) {
   const daemon = await createAgentDaemon({
     workspaceRoot,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
+    sessionsDir,
     adapterFor: () => adapter,
     http: noopHttp,
     tools: [],
@@ -63,15 +63,12 @@ async function connectedDaemon(workspaceRoot: string, adapter: ProviderAdapter) 
 }
 
 describe("runSessionTurn", () => {
-  test("persists each turn's messages, and a second turn sees the first as real history", async () => {
+  test("persists each turn's messages daemon-side, and a second turn sees the first as history", async () => {
     const workspaceRoot = tempDir("agency-session-ws-");
     const sessionsDir = tempDir("agency-session-store-");
-    const store = new SessionStore(sessionsDir);
-    store.create("s1");
-    const client = await connectedDaemon(workspaceRoot, echoAdapter("first reply"));
+    const client = await connectedDaemon(workspaceRoot, echoAdapter("first reply"), sessionsDir);
 
     await runSessionTurn(client, {
-      store,
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
@@ -79,14 +76,11 @@ describe("runSessionTurn", () => {
       userText: "hello",
     });
 
-    const entries = store.load("s1");
-    // user message + assistant reply, both persisted as their own entries
-    expect(entries).toHaveLength(2);
-    expect(entries[0]?.type).toBe("message");
-    expect(entries[1]?.type).toBe("message");
+    const entries = new SessionStore(sessionsDir).load("s1");
+    // user message + assistant reply + usage, all appended by the daemon
+    expect(entries.map((e) => e.type)).toEqual(["message", "message", "usage"]);
 
     await runSessionTurn(client, {
-      store,
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
@@ -94,107 +88,71 @@ describe("runSessionTurn", () => {
       userText: "again",
     });
 
-    expect(store.load("s1")).toHaveLength(4);
+    expect(new SessionStore(sessionsDir).load("s1")).toHaveLength(6);
   });
 
-  test("a fresh SessionStore over the same directory resumes exactly where a prior process left off", async () => {
+  test("a session_send for an unknown id creates the session daemon-side", async () => {
     const workspaceRoot = tempDir("agency-session-ws-");
     const sessionsDir = tempDir("agency-session-store-");
-    const firstProcessStore = new SessionStore(sessionsDir);
-    firstProcessStore.create("s1");
-    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"));
+    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"), sessionsDir);
 
-    await runSessionTurn(client, {
-      store: firstProcessStore,
-      sessionId: "s1",
+    const { tipId } = await runSessionTurn(client, {
+      sessionId: "fresh",
       provider: "anthropic",
       model: "test-model",
       systemPrompt: "sys",
       userText: "before restart",
     });
+    expect(typeof tipId).toBe("string");
 
-    // Simulate the process restarting: a brand-new SessionStore instance,
-    // same directory, no in-memory state carried over.
-    const secondProcessStore = new SessionStore(sessionsDir);
-    const entries = secondProcessStore.load("s1");
-    const tip = secondProcessStore.latestTip(entries);
+    const store = new SessionStore(sessionsDir);
+    const entries = store.load("fresh");
+    const tip = store.latestTip(entries);
     expect(tip).toBeDefined();
-    expect(secondProcessStore.messagesFor(entries, tip as string)).toHaveLength(2);
+    expect(store.messagesFor(entries, tip as string)).toHaveLength(2);
   });
 
-  test("compaction runs before the turn and never drops a todo_state entry", async () => {
+  test("session_show projects the turn through the wired SessionProjector", async () => {
     const workspaceRoot = tempDir("agency-session-ws-");
     const sessionsDir = tempDir("agency-session-store-");
-    const store = new SessionStore(sessionsDir);
-    store.create("s1");
-    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"));
+    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"), sessionsDir);
 
-    // Build up a session that's already over threshold before the next turn.
-    let parentId: string | null = null;
-    const append = async (entry: { type: string } & Record<string, unknown>) => {
-      const e = await store.append("s1", { ...entry, parentId });
-      parentId = e.id;
-      return e;
-    };
-    await append({
-      type: "message",
-      message: { role: "user", content: [{ type: "text", text: "x".repeat(200) }] },
-    });
-    await append({ type: "todo_state", todos: [{ id: "t1", content: "ship P5", status: "in_progress" }] });
-    await append({
-      type: "message",
-      message: { role: "assistant", content: [{ type: "text", text: "y".repeat(200) }] },
-    });
-
-    const summarizeCalls: string[] = [];
     await runSessionTurn(client, {
-      store,
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
       systemPrompt: "sys",
-      userText: "continue",
-      compaction: {
-        tokenizer: createApproximateTokenizer(1),
-        threshold: { contextWindow: 100, proactiveRatio: 0.5 },
-        summarize: async (text) => {
-          summarizeCalls.push(text);
-          return "condensed history";
-        },
-      },
+      userText: "hello",
     });
 
-    expect(summarizeCalls).toHaveLength(1);
-
-    const entries = store.load("s1");
-    const tip = store.latestTip(entries) as string;
-    const chain = store.chainFor(entries, tip);
-    expect(chain.some((e) => e.type === "todo_state")).toBe(true);
-    expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
+    const shown = (await client.call("session_show", { sessionId: "s1" })) as {
+      projection: Array<{ type: string }>;
+    };
+    const kinds = shown.projection.map((e) => e.type);
+    expect(kinds).toContain("Created");
+    expect(kinds).toContain("Updated");
   });
 
-  test("proactive compaction fires by default when the session approaches the context window", async () => {
+  test("proactive compaction fires daemon-side when the session approaches the window", async () => {
     const workspaceRoot = tempDir("agency-session-ws-");
     const sessionsDir = tempDir("agency-session-store-");
-    const store = new SessionStore(sessionsDir);
-    store.create("s1");
-    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"));
+    const seed = new SessionStore(sessionsDir);
+    seed.create("s1");
 
-    // 8 × ~1k chars ≈ 2.3k tokens with the approximate tokenizer; a 2k window
-    // at the default 0.9 ratio triggers compaction without any explicit
-    // compaction option being passed.
+    // 8 x ~1k chars: over the 0.9 trigger of a 2k window, with more than
+    // keepLastN (4) messages, so there is something to summarize.
     let parentId: string | null = null;
     for (let i = 0; i < 8; i++) {
-      const e = await store.append("s1", {
+      const e = await seed.append("s1", {
         type: "message",
         parentId,
         message: { role: "user", content: [{ type: "text", text: `turn ${i}: ${"x".repeat(1000)}` }] },
       });
       parentId = e.id;
     }
+    const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"), sessionsDir);
 
-    await runSessionTurn(client, {
-      store,
+    const { result } = await runSessionTurn(client, {
       sessionId: "s1",
       provider: "anthropic",
       model: "test-model",
@@ -202,14 +160,9 @@ describe("runSessionTurn", () => {
       userText: "continue",
       contextWindow: 2000,
     });
+    expect(result.stopReason).toBe("end_turn");
 
-    const entries = store.load("s1");
-    const tip = store.latestTip(entries) as string;
-    const chain = store.chainFor(entries, tip);
-    expect(chain.some((e) => e.type === "compaction_summary")).toBe(true);
-    // The fresh user message still made it onto the new branch, after the summary.
-    expect(chain.some((e) => e.type === "message" && JSON.stringify(e.message).includes("continue"))).toBe(
-      true,
-    );
+    const entries = new SessionStore(sessionsDir).load("s1");
+    expect(entries.some((e) => e.type === "compaction_summary")).toBe(true);
   });
 });
