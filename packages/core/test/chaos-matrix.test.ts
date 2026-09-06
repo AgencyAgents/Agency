@@ -290,7 +290,7 @@ describe("Chaos: dispatch skip storm", () => {
       "orchestra-budget-exceeded",
       "per-agent-budget-exceeded",
     ];
-    expect(reasons).toEqual(DISPATCH_SKIP_REASONS);
+    expect(reasons).toEqual([...DISPATCH_SKIP_REASONS]);
   });
 
   test("empty-input skip when no agents provided", () => {

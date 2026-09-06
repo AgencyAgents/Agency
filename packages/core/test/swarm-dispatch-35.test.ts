@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createDispatchTool } from "../src/orchestra/dispatch.ts";
 import {
   DISPATCH_SKIP_REASONS,
+  type DispatchSkipReason,
   DispatchStateStore,
   formatSkipLine,
   planDispatchBatch,
@@ -154,17 +155,16 @@ describe("unified dispatch path U9", () => {
   });
 
   it("skip reason codes are stable strings and every code is producible", () => {
-    expect([...DISPATCH_SKIP_REASONS].sort()).toEqual(
-      [
-        "depth-limit",
-        "empty-input",
-        "invalid-entry",
-        "nested-blocked",
-        "orchestra-budget-exceeded",
-        "per-agent-budget-exceeded",
-        "unknown-handle",
-      ].sort(),
-    );
+    const expected: DispatchSkipReason[] = [
+      "depth-limit",
+      "empty-input",
+      "invalid-entry",
+      "nested-blocked",
+      "orchestra-budget-exceeded",
+      "per-agent-budget-exceeded",
+      "unknown-handle",
+    ];
+    expect([...DISPATCH_SKIP_REASONS].sort()).toEqual(expected.sort());
     const get = registryOf([{ handle: "a" }]).get;
     const empty = planDispatchBatch([], { resolveHandle: get });
     expect(empty.skips[0]!.reason).toBe("empty-input");
@@ -200,7 +200,7 @@ describe("unified dispatch path U9", () => {
       const res = await handlerOf(tool)(bad, { taskDepth: 0 });
       expect(res.isError).toBe(true);
       expect((res as { reason?: string }).reason).toMatch(/^[a-z-]+$/);
-      expect(DISPATCH_SKIP_REASONS).toContain((res as { reason?: string }).reason);
+      expect(DISPATCH_SKIP_REASONS).toContain((res as { reason?: DispatchSkipReason }).reason!);
     }
     const nested = await handlerOf(tool)({ agents: [{ handle: "a", brief: "b" }] }, { taskDepth: 1 });
     expect((nested as { reason?: string }).reason).toBe("nested-blocked");

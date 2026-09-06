@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Redactor } from "@agency/guard";
 import { createFileTelemetrySink, Telemetry } from "../src/telemetry.ts";
 import { FEEDBACK_ROUTES, type FeedbackRoute, feedbackEventName, recordFeedbackUsage } from "../src/usage.ts";
 
@@ -9,7 +10,7 @@ function memorySink() {
   const events: Array<{ name: string; fields: Record<string, string | number | boolean | null> }> = [];
   const telemetry = new Telemetry({
     enabled: true,
-    redactor: { redact: (s: string) => s },
+    redactor: new Redactor(),
     sink: { write: (e) => void events.push({ name: e.name, fields: e.fields }) },
   });
   return { events, telemetry };
@@ -39,7 +40,7 @@ describe("feedback usage instrumentation", () => {
     const path = join(dir, "events.jsonl");
     const telemetry = new Telemetry({
       enabled: true,
-      redactor: { redact: (s: string) => s },
+      redactor: new Redactor(),
       sink: createFileTelemetrySink(path),
     });
     recordFeedbackUsage(telemetry, "dispatch", { reason: "unknown-handle" });
@@ -55,7 +56,7 @@ describe("feedback usage instrumentation", () => {
     void events;
     const off = new Telemetry({
       enabled: false,
-      redactor: { redact: (s: string) => s },
+      redactor: new Redactor(),
       sink: {
         write: () => {
           throw new Error("must not write");

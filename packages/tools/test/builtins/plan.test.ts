@@ -218,7 +218,7 @@ describe("plan revise roundtrip", () => {
     const history = readPlanRevisions(planPath);
     expect(history.length).toBe(1);
     expect(history[0]?.hash).not.toBe(before);
-    expect(planContentHash(readFileSync(planPath, "utf8"))).toBe(history[0]?.hash);
+    expect(planContentHash(readFileSync(planPath, "utf8"))).toBe(history[0]!.hash);
   });
 });
 

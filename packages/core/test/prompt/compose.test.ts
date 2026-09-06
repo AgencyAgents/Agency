@@ -271,7 +271,7 @@ describe("persona-driven role prompts (MECHANICS — anthropic)", () => {
     test(`${role} has persona "${persona}" and output contract`, () => {
       const prompt = resolveFamilyPrompt("anthropic", role);
       expect(prompt).toContain(persona);
-      expect(prompt).toContain(OUTPUT_CONTRACTS[role]);
+      expect(prompt).toContain(OUTPUT_CONTRACTS[role]!);
       expect(prompt).toContain("Tools:");
       expect(prompt).toContain("MUST NOT:");
       expect(prompt).toContain("Output contract:");
@@ -318,7 +318,7 @@ describe("persona-driven role prompts (PRINCIPLE — openai/fallback)", () => {
     test(`${role} has persona "${persona}" and output contract`, () => {
       const prompt = resolveFamilyPrompt("openai", role);
       expect(prompt).toContain(persona);
-      expect(prompt).toContain(OUTPUT_CONTRACTS[role]);
+      expect(prompt).toContain(OUTPUT_CONTRACTS[role]!);
       expect(prompt).toContain("Tools:");
       expect(prompt).toContain("MUST NOT");
       expect(prompt).toContain("Output contract:");
