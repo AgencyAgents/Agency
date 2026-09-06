@@ -4,12 +4,16 @@ import {
   AgentRegistry,
   BoardStore,
   type Budget,
+  ChannelStore,
+  ChoiceLog,
   collectPluginAgents,
   configDir,
   createRotatingFileSink,
   DispatchStateStore,
   dataDir,
   EventBus,
+  InboxStore,
+  isTeamLive,
   Logger,
   loadCommands,
   loadConfig,
@@ -44,6 +48,11 @@ import {
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
 import { createSessionScope, resolveShell, type SessionScope } from "@agency/tools";
 import { registerCommandHandlers } from "./handlers/commands.ts";
+import {
+  demoteScopeForLead,
+  registerBoardToolsForScope,
+  registerCoordToolsForScope,
+} from "./handlers/coords.ts";
 import { buildDispatchTool } from "./handlers/dispatch.ts";
 import { registerPlanHandlers } from "./handlers/plan.ts";
 import {
@@ -346,36 +355,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       }
       ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
       try {
-        const { createBoardTools } = await import("@agency/tools");
-        const filerHandle = ownerHandle ?? handle ?? "lead";
-        const filerGate = filerHandle === "lead" ? gate : gateForAgent(filerHandle);
-        const filerCfg = (
-          config as unknown as {
-            agents?: Record<string, { pathScope?: string[]; tools?: string[] }>;
-            budgets?: { perAgentUsd?: number };
-          }
-        ).agents?.[filerHandle];
-        const filerBudgets = (config as unknown as { budgets?: { perAgentUsd?: number } }).budgets;
-        const boardTools = createBoardTools({
-          backend: boardStore,
-          resolveFiler: () => ({
-            handle: filerHandle,
-            grants: {
-              pathScope: filerCfg?.pathScope ?? "*",
-              tools: filerCfg?.tools ?? "*",
-              ...(filerBudgets?.perAgentUsd === undefined ? {} : { budgetUsd: filerBudgets.perAgentUsd }),
-            },
-          }),
-          allowed: (tool) =>
-            filerGate.toolOffered(
-              tool,
-              tool === "board_read" || tool === "owners_read" ? "safe" : "moderate",
-            ),
-          workspaceRoot: options.workspaceRoot,
-        });
-        for (const t of boardTools) {
-          if (!scope.registry.has(t.name)) scope.registry.register(t);
-        }
+        await registerBoardToolsForScope(scope, ctx, ownerHandle, handle);
+      } catch {}
+      try {
+        await registerCoordToolsForScope(scope, ctx, ownerHandle ?? handle ?? "lead");
         (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
       } catch {}
       if (ownerHandle) {
@@ -386,6 +369,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
           );
         }
       }
+      const scopeFiler = ownerHandle ?? handle ?? "lead";
+      (scope as { tools: ToolSpec[] }).tools = demoteScopeForLead(
+        (scope as unknown as { tools: ToolSpec[] }).tools,
+        scopeFiler,
+        isTeamLive(boardStore.list()),
+      );
       return scope;
     })();
     scopePromises.set(sessionId, promise);
@@ -434,6 +423,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     return team;
   };
+  const inboxStore = new InboxStore();
+  const channelStore = new ChannelStore();
+  const choiceLog = new ChoiceLog();
   const dispatchLog = new DispatchStateStore();
   try {
     const restored = await DispatchStateStore.load(join(todoSessionsDir, "dispatch-state.json"));
@@ -489,6 +481,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     todoStore,
     boardStore,
     dispatchLog,
+    inboxStore,
+    channelStore,
+    choiceLog,
     warnPersistence,
     createTraceRecorder,
     sessionScopes,

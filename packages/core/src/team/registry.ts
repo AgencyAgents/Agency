@@ -10,8 +10,8 @@ export interface AgentHandle {
   sessionId: string;
   mailbox: Message[];
   capabilities?: string[];
-  /** Role prompt from the agent file body; falls back to the built-in line. */
   systemPrompt?: string;
+  replace?: boolean;
   tools?: string[];
   pathScope?: string[];
 }

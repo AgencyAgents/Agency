@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadTraceSpansSync } from "@agency/core";
+import { type BoardEvent, buildDigest, type ChannelStore, loadTraceSpansSync } from "@agency/core";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import type { DaemonContext } from "./types.ts";
 
@@ -24,6 +24,7 @@ export interface TeamContext {
   teamTotal: { value: number };
   sessions: Map<string, ChildSessionMeta>;
   nextBatchId: number;
+  digestCursors: Map<string, { event: number; post: number }>;
 }
 
 export function createTeamContext(parentSessionId: string): TeamContext {
@@ -35,12 +36,35 @@ export function createTeamContext(parentSessionId: string): TeamContext {
     teamTotal: { value: 0 },
     sessions: new Map(),
     nextBatchId: 0,
+    digestCursors: new Map(),
   };
 }
 
 /** Canonical child key: parent session, handle, and dispatch batch. */
 export function childKey(parentSessionId: string, handle: string, batchId: number): string {
   return `${parentSessionId}:${handle}:${batchId}`;
+}
+
+// Cursor-tracked digest for one child drain: board events plus
+// channel posts since its last turn, capped, delivered at the tail.
+export function drainDigest(
+  team: TeamContext,
+  key: string,
+  events: readonly BoardEvent[],
+  channel: ChannelStore,
+): Message[] {
+  const since = team.digestCursors.get(key) ?? { event: 0, post: 0 };
+  const tail = channel.read(since.post);
+  const digested = buildDigest({
+    events,
+    posts: tail.posts,
+    decisions: [],
+    lastSeenEvent: since.event,
+    lastSeenPost: 0,
+  });
+  team.digestCursors.set(key, { event: digested.cursor.event, post: tail.cursor });
+  if (digested.lines.length === 0) return [];
+  return [{ role: "user", content: [{ type: "text", text: `digest:\n${digested.lines.join("\n")}` }] }];
 }
 
 /** File-safe segment: anything outside [A-Za-z0-9-_] becomes a dash. */

@@ -25,6 +25,10 @@ export interface TraceSpan {
     isError?: boolean;
     effort?: string;
     agent?: string;
+    target?: string;
+    input?: string;
+    output?: string;
+    thinking?: string;
   };
 }
 

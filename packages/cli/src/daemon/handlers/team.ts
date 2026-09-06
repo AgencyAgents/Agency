@@ -1,9 +1,6 @@
 import {
   type AgentConfig,
-  buildEnvironmentBlock,
-  composeSystemPrompt,
   type FileAgentDef,
-  gatherEnvironmentInfo,
   isValidAgentHandle,
   leanBrief,
   leanPrompt,
@@ -23,14 +20,17 @@ import {
   childKey,
   childSessionIdFor,
   costUsdForHandle,
+  drainDigest,
   drainParentInbox,
   latestChildAnywhere,
   latestChildSession,
 } from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor } from "../types.ts";
+import { childPromptFor } from "./coords.ts";
 
 type FileBackedAgent = AgentConfig & {
   systemPrompt?: string;
+  replace?: boolean;
   tools?: string[];
   pathScope?: string[];
 };
@@ -63,6 +63,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
           ? { permissions: def.permissions as FileBackedAgent["permissions"] }
           : {}),
         ...(def.systemPrompt.length > 0 ? { systemPrompt: def.systemPrompt } : {}),
+        ...(def.replace !== undefined ? { replace: def.replace } : {}),
         ...(def.tools !== undefined ? { tools: def.tools } : {}),
         ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
       };
@@ -131,6 +132,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         ...(a.systemPrompt !== undefined && a.systemPrompt.length > 0
           ? { systemPrompt: a.systemPrompt }
           : {}),
+        ...(a.replace !== undefined ? { replace: a.replace } : {}),
         ...(a.tools !== undefined ? { tools: a.tools } : {}),
         ...(a.pathScope !== undefined ? { pathScope: a.pathScope } : {}),
       });
@@ -155,6 +157,8 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     broadcast,
     capabilitiesForAgent,
     catalogModel,
+    channelStore,
+    choiceLog,
     config,
     createTraceRecorder,
     eventBus,
@@ -383,15 +387,23 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
           .filter((t) => t.name !== "dispatch" && t.name !== "spawn");
         const agentCaps = capabilitiesForAgent(agentGate, childTools);
 
-        const agentSystemPrompt = composeSystemPrompt({
-          base:
-            agent.systemPrompt && agent.systemPrompt.length > 0
-              ? agent.systemPrompt
-              : `You are ${handle}, a ${agent.role} agent. Compare and respond to the given prompt concisely.`,
-          familyPresetOverlay: undefined,
-          instructions: [],
-          toolDescriptions: [],
-          context: buildEnvironmentBlock(gatherEnvironmentInfo({ cwd: options.workspaceRoot })),
+        const agentSystemPrompt = childPromptFor({
+          goal: prompt,
+          roster: teamRegistry
+            .list()
+            .map((m) => m.handle)
+            .join(" "),
+          family: agent.provider,
+          role: agent.role,
+          handle,
+          briefLine: "Compare and respond to the given prompt concisely.",
+          ...(agent.systemPrompt ? { body: agent.systemPrompt } : {}),
+          replace: agent.replace ?? false,
+          tools: offeredTools,
+          item: prompt,
+          decisions: choiceLog.digest(),
+          claimed: [],
+          workspaceRoot: options.workspaceRoot,
         });
 
         const childTurn = await runChildTurn(
@@ -426,6 +438,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
                 drained.push(...reg);
                 reg.length = 0;
               }
+              drained.push(...drainDigest(team, key, boardStore.listEvents(), channelStore));
               return drained;
             },
             trace: {

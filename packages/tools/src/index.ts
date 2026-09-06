@@ -48,6 +48,15 @@ export { createQuestionTool } from "./builtins/question.ts";
 export { createReadTool } from "./builtins/read.ts";
 export { createSpawnTool, extractFinalText } from "./builtins/spawn.ts";
 export {
+  createAgentInspectTool,
+  createChannelReadTool,
+  createCoordTools,
+  createDecisionsTool,
+  createDelegateTool,
+  createInboxSendTool,
+  createReportGetTool,
+} from "./builtins/team-coord.ts";
+export {
   createSessionTodoPersistence,
   createTodoReadTool,
   createTodoWriteTool,

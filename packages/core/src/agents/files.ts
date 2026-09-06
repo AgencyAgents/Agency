@@ -12,6 +12,7 @@ export const AGENT_FILE_FIELDS = [
   "tools",
   "permissions",
   "pathScope",
+  "replace",
 ] as const;
 
 export type AgentFileField = (typeof AGENT_FILE_FIELDS)[number];
@@ -30,6 +31,8 @@ export interface FileAgentDef {
   tools?: string[];
   permissions?: AgentConfig["permissions"];
   pathScope?: string[];
+  // Bodies extend the built-in role prompt unless replace is true.
+  replace?: boolean;
   systemPrompt: string;
   source: AgentSource;
   file?: string;
@@ -126,6 +129,11 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
   }
   if (split.fields.pathScope !== undefined) {
     def.pathScope = parseStringList(split.fields.pathScope, file, "pathScope");
+  }
+  const replace = split.fields.replace;
+  if (replace !== undefined) {
+    if (replace !== "true" && replace !== "false") fail(file, "replace", 'must be "true" or "false"');
+    def.replace = replace === "true";
   }
   return def;
 }

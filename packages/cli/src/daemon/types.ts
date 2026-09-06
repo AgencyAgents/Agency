@@ -5,6 +5,8 @@ import {
   type BoardStore,
   type Budget,
   buildEnvironmentBlock,
+  type ChannelStore,
+  type ChoiceLog,
   type CommandTemplate,
   type Config,
   type ToolSpec as CoreToolSpec,
@@ -13,6 +15,7 @@ import {
   type EventBus,
   type GitRunner,
   gatherEnvironmentInfo,
+  type InboxStore,
   type Logger,
   mcpServerDownReminder,
   type PluginAgentContribution,
@@ -496,6 +499,9 @@ export interface DaemonContext {
   todoStore: SessionStore;
   boardStore: BoardStore;
   dispatchLog: DispatchStateStore;
+  inboxStore: InboxStore;
+  channelStore: ChannelStore;
+  choiceLog: ChoiceLog;
   warnPersistence: (action: string, error: unknown) => void;
   createTraceRecorder: (trace: ChildTraceSpec) => TraceRecorder | undefined;
   sessionScopes: Map<string, SessionScope>;

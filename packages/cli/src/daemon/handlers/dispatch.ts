@@ -1,16 +1,12 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
-  buildEnvironmentBlock,
-  composeSystemPrompt,
   createDispatchTool,
   createWorktree,
   formatSkipLine,
-  gatherEnvironmentInfo,
   leanBrief,
   leanPrompt,
   leanSummary,
-  listWorktrees,
   makeWorktreeReadOnly,
   newEntryId,
   PromiseBarrier,
@@ -27,12 +23,14 @@ import {
   childKey,
   childSessionIdFor,
   costUsdForHandle,
+  drainDigest,
   drainParentInbox,
   worktreeBranchFor,
-  worktreeError,
   worktreePathFor,
 } from "../team-context.ts";
 import { checkTeamBudgets, type DaemonContext, oauthOverridesFor, type TeamBudgets } from "../types.ts";
+import { childPromptFor } from "./coords.ts";
+import { abortWorktreePeer, isOwnWorktree } from "./dispatch-worktrees.ts";
 
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
@@ -41,6 +39,8 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
     broadcast,
     capabilitiesForAgent,
     catalogModel,
+    channelStore,
+    choiceLog,
     config,
     createTraceRecorder,
     dispatchLog,
@@ -132,60 +132,6 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
       };
       const dispatchBarrier = new PromiseBarrier<string>(input.agents.length, barrierNotify);
       const batchScheduler = new Scheduler({ maxConcurrent: Math.max(8, input.agents.length) });
-      const isOwnWorktree = async (wtPath: string): Promise<boolean> => {
-        try {
-          const listed = await listWorktrees(options.workspaceRoot);
-          const norm = (p: string): string =>
-            process.platform === "win32" ? p.replace(/\//g, "\\").toLowerCase() : p;
-          return listed.some((w) => norm(w.path) === norm(wtPath));
-        } catch {
-          return false;
-        }
-      };
-      const abortWorktreePeer = async (params: {
-        slot: number;
-        key: string;
-        childSessionId: string;
-        handle: string;
-        wtPath: string;
-        cause: unknown;
-      }): Promise<void> => {
-        const failure = worktreeError(params.handle, params.wtPath, params.cause);
-        team.agentStates.set(params.key, "failed");
-        try {
-          const tip = todoStore.latestTip(todoStore.load(params.childSessionId)) ?? null;
-          await todoStore
-            .append(params.childSessionId, {
-              type: "agent_lifecycle",
-              parentId: tip,
-              handle: params.handle,
-              state: "failed",
-              detail: failure.message,
-            })
-            .catch((appendError: unknown) => {
-              warnPersistence("agent_lifecycle append", appendError);
-            });
-        } catch (loadError: unknown) {
-          warnPersistence("agent_lifecycle load", loadError);
-        }
-        try {
-          broadcast(`team.${params.childSessionId}`, {
-            type: "agent_lifecycle",
-            handle: params.handle,
-            state: "failed",
-            detail: failure.message,
-          });
-        } catch {}
-        try {
-          broadcast(`team.shared`, {
-            type: "agent_lifecycle",
-            handle: params.handle,
-            state: "failed",
-            detail: failure.message,
-          });
-        } catch {}
-        dispatchBarrier.complete(params.slot, `${params.handle}: ${failure.message}`);
-      };
       try {
         broadcast(`team.shared`, {
           type: "dispatch_start",
@@ -324,16 +270,19 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 await createWorktree(options.workspaceRoot, wtPath, wtBranch);
                 worktreeReady = true;
               } catch (createError: unknown) {
-                worktreeReady = await isOwnWorktree(wtPath);
+                worktreeReady = await isOwnWorktree(options.workspaceRoot, wtPath);
                 if (!worktreeReady) {
-                  await abortWorktreePeer({
-                    slot,
-                    key,
-                    childSessionId,
-                    handle: a.handle,
-                    wtPath,
-                    cause: createError,
-                  });
+                  await abortWorktreePeer(
+                    { team, todoStore, warnPersistence, broadcast, barrier: dispatchBarrier },
+                    {
+                      slot,
+                      key,
+                      childSessionId,
+                      handle: a.handle,
+                      wtPath,
+                      cause: createError,
+                    },
+                  );
                   return;
                 }
               }
@@ -425,15 +374,27 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
             .filter((t) => t.name !== "dispatch" && t.name !== "spawn");
           const agentCaps = capabilitiesForAgent(agentGate, childTools);
 
-          const agentSystemPrompt = composeSystemPrompt({
-            base:
-              agent.systemPrompt && agent.systemPrompt.length > 0
-                ? agent.systemPrompt
-                : `You are ${a.handle}, a ${agent.role} agent. Complete the given brief concisely.`,
-            familyPresetOverlay: undefined,
-            instructions: [],
-            toolDescriptions: [],
-            context: buildEnvironmentBlock(gatherEnvironmentInfo({ cwd: options.workspaceRoot })),
+          const claimedLine = claimedItem ? `${claimedItem.id} ${claimedItem.content}` : a.brief;
+          const agentSystemPrompt = childPromptFor({
+            goal: claimedItem?.content ?? a.brief,
+            roster: teamRegistry
+              .list()
+              .map((m) => m.handle)
+              .join(" "),
+            family: agent.provider,
+            role: agent.role,
+            handle: a.handle,
+            briefLine: "Complete the given brief concisely.",
+            ...(agent.systemPrompt ? { body: agent.systemPrompt } : {}),
+            replace: agent.replace ?? false,
+            tools: offeredTools,
+            item: claimedLine,
+            decisions: choiceLog.digest(),
+            claimed: boardStore
+              .list()
+              .filter((i) => i.claimedBy === a.handle)
+              .map((i) => `${i.id} ${i.content}`),
+            workspaceRoot: options.workspaceRoot,
           });
 
           const childTurn = await runChildTurn(
@@ -472,6 +433,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                   msgs.push(...reg);
                   reg.length = 0;
                 }
+                msgs.push(...drainDigest(team, key, boardStore.listEvents(), channelStore));
                 return msgs;
               },
               trace: {

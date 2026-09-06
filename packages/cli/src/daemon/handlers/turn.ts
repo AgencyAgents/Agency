@@ -1,4 +1,12 @@
-import { type LoopEvent, parseHandles, runTurn, TraceRecorder, withTrace } from "@agency/core";
+import {
+  isTeamLive,
+  LEAD_WITHHELD_TOOLS,
+  type LoopEvent,
+  parseHandles,
+  runTurn,
+  TraceRecorder,
+  withTrace,
+} from "@agency/core";
 import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -51,6 +59,7 @@ export async function executeTurn(
     activeTurnMeta,
     adapterFor,
     approvalsFor,
+    boardStore,
     broadcast,
     builtinsMode,
     catalogModel,
@@ -273,10 +282,16 @@ export async function executeTurn(
             (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
           const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
           const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
-          const effectiveTools =
+          const gatedTools =
             builtinsMode && turnScope
               ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
               : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
+          const leadTurn = !findChildSession(ctx, sessionId) && !handleForSession(ctx, sessionId);
+          const withheld = new Set<string>(LEAD_WITHHELD_TOOLS);
+          const effectiveTools =
+            leadTurn && isTeamLive(boardStore.list())
+              ? gatedTools.filter((t) => !withheld.has(t.name))
+              : gatedTools;
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
             tools: effectiveTools,
