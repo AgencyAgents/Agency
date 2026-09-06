@@ -31,6 +31,8 @@ export interface DispatchAgentRequest {
   effort?: string;
   model?: string;
   tools?: string[];
+  /** Estimated cost applied to running budget totals when accepted. */
+  costUsd?: number;
 }
 
 /** Registry-side record consulted when a request omits an override. */
@@ -99,13 +101,7 @@ export function checkDepthGate(
   depth: number,
   maxDepth: number,
 ): DispatchSkip | null {
-  if (depth > 0) {
-    return {
-      index: -1,
-      reason: "nested-blocked",
-      detail: kind === "dispatch" ? "nested dispatch blocked" : "nested task blocked",
-    };
-  }
+  // Limit check first so the depth-limit branch stays reachable when nested.
   if (depth >= maxDepth) {
     return {
       index: -1,
@@ -114,6 +110,13 @@ export function checkDepthGate(
         kind === "dispatch"
           ? `depth limit reached (${depth} >= ${maxDepth})`
           : `depth limit reached (${depth} >= ${maxDepth})`,
+    };
+  }
+  if (depth > 0) {
+    return {
+      index: -1,
+      reason: "nested-blocked",
+      detail: kind === "dispatch" ? "nested dispatch blocked" : "nested task blocked",
     };
   }
   return null;
@@ -146,17 +149,6 @@ export function planDispatchBatch(
       skips: [{ index: -1, reason: "empty-input", detail: "no agents to dispatch" }],
     };
   }
-  if (taskDepth > 0) {
-    return {
-      targets: [],
-      skips: requests.map((r, index) => ({
-        index,
-        handle: typeof r?.handle === "string" ? r.handle : undefined,
-        reason: "nested-blocked" as const,
-        detail: "nested dispatch blocked: subagents cannot dispatch",
-      })),
-    };
-  }
   const maxDepth = opts.maxDepth ?? 3;
   if (taskDepth >= maxDepth) {
     return {
@@ -169,8 +161,22 @@ export function planDispatchBatch(
       })),
     };
   }
+  if (taskDepth > 0) {
+    return {
+      targets: [],
+      skips: requests.map((r, index) => ({
+        index,
+        handle: typeof r?.handle === "string" ? r.handle : undefined,
+        reason: "nested-blocked" as const,
+        detail: "nested dispatch blocked: subagents cannot dispatch",
+      })),
+    };
+  }
   const targets: ResolvedDispatchTarget[] = [];
   const skips: DispatchSkip[] = [];
+  // Running totals so accepted targets consume budget mid-batch.
+  let runningOrchestra = opts.orchestraTotal ?? 0;
+  const runningPerAgent = new Map(opts.perAgentSpend);
   requests.forEach((r, index) => {
     if (
       typeof r?.handle !== "string" ||
@@ -195,16 +201,16 @@ export function planDispatchBatch(
       });
       return;
     }
-    if (opts.budgets?.orchestraUsd !== undefined && (opts.orchestraTotal ?? 0) >= opts.budgets.orchestraUsd) {
+    if (opts.budgets?.orchestraUsd !== undefined && runningOrchestra >= opts.budgets.orchestraUsd) {
       skips.push({
         index,
         handle: r.handle,
         reason: "orchestra-budget-exceeded",
-        detail: `orchestra budget exceeded: ${opts.orchestraTotal} >= ${opts.budgets.orchestraUsd}`,
+        detail: `orchestra budget exceeded: ${runningOrchestra} >= ${opts.budgets.orchestraUsd}`,
       });
       return;
     }
-    const spent = opts.perAgentSpend?.get(r.handle) ?? 0;
+    const spent = runningPerAgent.get(r.handle) ?? 0;
     if (opts.budgets?.perAgentUsd !== undefined && spent >= opts.budgets.perAgentUsd) {
       skips.push({
         index,
@@ -216,6 +222,9 @@ export function planDispatchBatch(
     }
     const resolved = resolveDispatchTarget(r, agent, opts.defaults);
     targets.push({ ...resolved, index });
+    const cost = r.costUsd ?? 0;
+    runningOrchestra += cost;
+    runningPerAgent.set(r.handle, spent + cost);
   });
   return { targets, skips };
 }
@@ -275,22 +284,62 @@ export class DispatchStateStore {
   }
 
   static fromJSON(raw: unknown): DispatchStateStore {
-    if (typeof raw !== "object" || raw === null) return new DispatchStateStore();
+    return DispatchStateStore.fromJSONWithStatus(raw).store;
+  }
+
+  /** Validating parse: malformed entries are dropped, status kept additive. */
+  static fromJSONWithStatus(raw: unknown): { store: DispatchStateStore; versionMismatch: boolean } {
+    if (typeof raw !== "object" || raw === null)
+      return { store: new DispatchStateStore(), versionMismatch: false };
     const state = raw as { version?: unknown; entries?: unknown };
-    if (state.version !== DISPATCH_STATE_VERSION) return new DispatchStateStore();
-    if (!Array.isArray(state.entries)) return new DispatchStateStore();
-    const entries = (state.entries as PersistedDispatchEntry[]).filter(
-      (e) => typeof e?.index === "number" && typeof e?.handle === "string",
-    );
-    return new DispatchStateStore(entries);
+    if (state.version !== DISPATCH_STATE_VERSION)
+      return { store: new DispatchStateStore(), versionMismatch: true };
+    if (!Array.isArray(state.entries)) return { store: new DispatchStateStore(), versionMismatch: false };
+    const entries = (state.entries as unknown[]).filter(isPersistedDispatchEntry);
+    return { store: new DispatchStateStore(entries), versionMismatch: false };
   }
 
   static async load(file: string): Promise<DispatchStateStore> {
-    try {
-      const text = await readFile(file, "utf8");
-      return DispatchStateStore.fromJSON(JSON.parse(text) as unknown);
-    } catch {
-      return new DispatchStateStore();
-    }
+    return (await DispatchStateStore.loadWithStatus(file)).store;
   }
+
+  /** Status-returning load for daemon readiness: ok, missing, corrupt, or version-mismatch. */
+  static async loadWithStatus(
+    file: string,
+  ): Promise<{ store: DispatchStateStore; status: DispatchLoadStatus }> {
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      return { store: new DispatchStateStore(), status: "missing" };
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text) as unknown;
+    } catch {
+      return { store: new DispatchStateStore(), status: "corrupt" };
+    }
+    const { store, versionMismatch } = DispatchStateStore.fromJSONWithStatus(raw);
+    if (versionMismatch) return { store, status: "version-mismatch" };
+    if (typeof raw !== "object" || raw === null || !Array.isArray((raw as { entries?: unknown }).entries))
+      return { store, status: "corrupt" };
+    return { store, status: "ok" };
+  }
+}
+
+/** Load outcome for daemon readiness wiring. */
+export type DispatchLoadStatus = "ok" | "missing" | "corrupt" | "version-mismatch";
+
+/** Every field validated; malformed entries are dropped. */
+function isPersistedDispatchEntry(e: unknown): e is PersistedDispatchEntry {
+  if (typeof e !== "object" || e === null) return false;
+  const v = e as Record<string, unknown>;
+  if (typeof v.index !== "number" || typeof v.handle !== "string") return false;
+  if (typeof v.brief !== "string") return false;
+  if (v.status !== "dispatched" && v.status !== "skipped") return false;
+  if (v.reason !== undefined && !DISPATCH_SKIP_REASONS.includes(v.reason as DispatchSkipReason)) return false;
+  if (typeof v.at !== "string" || Number.isNaN(Date.parse(v.at))) return false;
+  if (v.model !== undefined && typeof v.model !== "string") return false;
+  if (v.effort !== undefined && typeof v.effort !== "string") return false;
+  return true;
 }

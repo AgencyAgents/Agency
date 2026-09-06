@@ -211,6 +211,23 @@ describe("Scheduler rotation respects backoff caps", () => {
       .catch(() => undefined);
     expect(calls).toBe(3);
   });
+
+  test("a 5-key pool with maxAttempts 4 still tries every key", async () => {
+    const scheduler = new Scheduler({
+      baseDelayMs: 2,
+      maxDelayMs: 5,
+      maxAttempts: 4,
+      requestsPerMinute: 6000,
+    });
+    const seen: string[] = [];
+    await scheduler
+      .scheduleWithKeys("openai", ["k1", "k2", "k3", "k4", "k5"], async (key) => {
+        seen.push(key);
+        throw retryable();
+      })
+      .catch(() => undefined);
+    expect(seen).toEqual(["k1", "k2", "k3", "k4", "k5"]);
+  });
 });
 
 describe("Scheduler rotation rejects unknown providers", () => {

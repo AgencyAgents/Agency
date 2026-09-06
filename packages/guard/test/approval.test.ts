@@ -116,5 +116,24 @@ describe("ApprovalManager", () => {
       await expect(promise).resolves.toBe("always");
       expect(manager.hasAlways(bashRequest("bun test"))).toBe(true);
     });
+
+    test("doom-loop always scopes to the looping tool, not all loops", () => {
+      const manager = new ApprovalManager();
+      const readLoop: ApprovalRequest = {
+        tool: "doom-loop",
+        title: "doom loop detected: read repeated 3x consecutively. Continue anyway?",
+        metadata: { toolName: "read", repeats: 3 },
+      };
+      const { id } = manager.createPending(readLoop);
+      manager.respond(id, "always");
+      expect(manager.hasAlways(readLoop)).toBe(true);
+      expect(
+        manager.hasAlways({
+          tool: "doom-loop",
+          title: "doom loop detected: write repeated 3x consecutively. Continue anyway?",
+          metadata: { toolName: "write", repeats: 3 },
+        }),
+      ).toBe(false);
+    });
   });
 });

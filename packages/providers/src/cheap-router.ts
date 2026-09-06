@@ -59,13 +59,26 @@ export async function withCheapFallback<T>(
   try {
     const value = await run(selection.model);
     return { value, model: selection.model, fellBack: false, tag: selection.tag };
-  } catch {
+  } catch (error) {
     const value = await run(primaryModel);
-    return { value, model: primaryModel, fellBack: true, tag: `${selection.tag} fallback=primary` };
+    const cause = error instanceof Error ? error.message : String(error);
+    return {
+      value,
+      model: primaryModel,
+      fellBack: true,
+      tag: `${selection.tag} fallback=primary cheapError=${truncateForTag(cause)}`,
+    };
   }
 }
 
+/** Keep the root cause in the tag without letting a huge message bloat logs. */
+function truncateForTag(message: string, limit = 120): string {
+  const singleLine = message.replace(/\s+/g, " ").trim();
+  return singleLine.length > limit ? singleLine.slice(0, limit) : singleLine;
+}
+
 /** Cost then age picker: cheapest input price wins, newest breaks ties. */
+// Input price leads because utility traffic is input-heavy.
 export function pickCheapModel(models: readonly ModelInfo[]): ModelInfo | undefined {
   let best: ModelInfo | undefined;
   for (const m of models) {

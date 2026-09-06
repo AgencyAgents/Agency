@@ -29,6 +29,9 @@ function grantKey(request: ApprovalRequest): string {
   // bash "always" scopes to the arity-normalized command, so "always allow
   // git status" doesn't approve "git push". Path asks scope to the containing
   // directory, so "always allow this file" covers its siblings too.
+  // Doom-loop grants include the looping tool so one loop cannot approve all future loops.
+  if (request.tool === "doom-loop" && typeof request.metadata?.toolName === "string")
+    return `tool\u0000doom-loop\u0000${request.metadata.toolName}`;
   if (request.command !== undefined) return `cmd\u0000${normalizeCommand(request.command)}`;
   if (request.path !== undefined) return `dir\u0000${dirname(request.path.replace(/\\/g, "/"))}`;
   return `tool\u0000${request.tool}`;

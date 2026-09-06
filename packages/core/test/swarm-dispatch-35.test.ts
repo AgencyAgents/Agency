@@ -239,3 +239,156 @@ describe("unified dispatch path U9", () => {
     }
   });
 });
+
+describe("dispatch batch budgets accumulate intra-batch (item a)", () => {
+  const registryOf = (entries: Array<{ handle: string }>) => ({
+    get: (handle: string) => entries.find((e) => e.handle === handle),
+  });
+
+  it("a batch cannot exceed the orchestra budget mid-batch", () => {
+    const get = registryOf([{ handle: "a" }, { handle: "b" }, { handle: "c" }]).get;
+    const plan = planDispatchBatch(
+      [
+        { handle: "a", brief: "one", costUsd: 1 },
+        { handle: "b", brief: "two", costUsd: 1 },
+        { handle: "c", brief: "three", costUsd: 1 },
+      ],
+      { resolveHandle: get, orchestraTotal: 0, budgets: { orchestraUsd: 2 } },
+    );
+    expect(plan.targets.map((t) => t.handle)).toEqual(["a", "b"]);
+    expect(plan.skips.length).toBe(1);
+    expect(plan.skips[0]!.handle).toBe("c");
+    expect(plan.skips[0]!.reason).toBe("orchestra-budget-exceeded");
+  });
+
+  it("a batch cannot exceed a per-agent budget mid-batch", () => {
+    const get = registryOf([{ handle: "a" }]).get;
+    const plan = planDispatchBatch(
+      [
+        { handle: "a", brief: "one", costUsd: 1 },
+        { handle: "a", brief: "two", costUsd: 1 },
+      ],
+      {
+        resolveHandle: get,
+        perAgentSpend: new Map([["a", 0]]),
+        budgets: { perAgentUsd: 1 },
+      },
+    );
+    expect(plan.targets.length).toBe(1);
+    expect(plan.skips.length).toBe(1);
+    expect(plan.skips[0]!.reason).toBe("per-agent-budget-exceeded");
+  });
+
+  it("does not mutate the caller per-agent spend map", () => {
+    const get = registryOf([{ handle: "a" }]).get;
+    const spend = new Map([["a", 0]]);
+    planDispatchBatch([{ handle: "a", brief: "one", costUsd: 1 }], {
+      resolveHandle: get,
+      perAgentSpend: spend,
+      budgets: { perAgentUsd: 10 },
+    });
+    expect(spend.get("a")).toBe(0);
+  });
+});
+
+describe("depth gate ordering (item b)", () => {
+  it("checkDepthGate reports depth-limit at maxDepth even when nested", async () => {
+    const { checkDepthGate } = await import("../src/orchestra/dispatch-core.ts");
+    expect(checkDepthGate("dispatch", 3, 3)?.reason).toBe("depth-limit");
+    expect(checkDepthGate("task", 2, 2)?.reason).toBe("depth-limit");
+  });
+
+  it("checkDepthGate reports nested-blocked for depth>0 within bounds", async () => {
+    const { checkDepthGate } = await import("../src/orchestra/dispatch-core.ts");
+    expect(checkDepthGate("dispatch", 1, 3)?.reason).toBe("nested-blocked");
+    expect(checkDepthGate("dispatch", 0, 3)).toBeNull();
+  });
+
+  it("planDispatchBatch uses the same order: limit wins at maxDepth", () => {
+    const plan = planDispatchBatch([{ handle: "a", brief: "b" }], {
+      resolveHandle: () => ({ handle: "a" }),
+      taskDepth: 2,
+      maxDepth: 2,
+    });
+    expect(plan.targets).toEqual([]);
+    expect(plan.skips[0]!.reason).toBe("depth-limit");
+  });
+});
+
+describe("dispatch load status (item c)", () => {
+  it("missing file reports missing with an empty store", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-u9-"));
+    try {
+      const loaded = await DispatchStateStore.loadWithStatus(join(dir, "absent.json"));
+      expect(loaded.status).toBe("missing");
+      expect(loaded.store.list()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("corrupt file reports corrupt with an empty store", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-u9-"));
+    try {
+      const file = join(dir, "dispatch-state.json");
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(file, "not json{{{");
+      const loaded = await DispatchStateStore.loadWithStatus(file);
+      expect(loaded.status).toBe("corrupt");
+      expect(loaded.store.list()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("version mismatch reports version-mismatch with an empty store", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-u9-"));
+    try {
+      const file = join(dir, "dispatch-state.json");
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(file, JSON.stringify({ version: 9999, entries: [] }));
+      const loaded = await DispatchStateStore.loadWithStatus(file);
+      expect(loaded.status).toBe("version-mismatch");
+      expect(loaded.store.list()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("valid file reports ok and silent load() still works", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-u9-"));
+    try {
+      const file = join(dir, "dispatch-state.json");
+      const store = new DispatchStateStore();
+      store.append({ index: 0, handle: "a", brief: "one", status: "dispatched" });
+      await store.save(file);
+      const loaded = await DispatchStateStore.loadWithStatus(file);
+      expect(loaded.status).toBe("ok");
+      expect(loaded.store.list()).toEqual(store.list());
+      expect((await DispatchStateStore.load(file)).list()).toEqual(store.list());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("dispatch fromJSON validation (item h)", () => {
+  it("drops entries with bad status, reason, at, brief, model, or effort", async () => {
+    const { DispatchStateStore: Store } = await import("../src/orchestra/dispatch-core.ts");
+    const good = { index: 0, handle: "a", brief: "one", status: "dispatched", at: new Date().toISOString() };
+    const store = Store.fromJSON({
+      version: 1,
+      entries: [
+        good,
+        { ...good, index: 1, status: "bogus" },
+        { ...good, index: 2, status: "skipped", reason: "bogus-reason" },
+        { ...good, index: 3, at: "not-a-date" },
+        { ...good, index: 4, brief: 42 },
+        { ...good, index: 5, model: 42 },
+        { ...good, index: 6, effort: 42 },
+        { ...good, index: 7, status: "skipped", reason: "unknown-handle" },
+      ],
+    });
+    expect(store.list().map((e) => e.index)).toEqual([0, 7]);
+  });
+});

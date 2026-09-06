@@ -210,7 +210,9 @@ export class Scheduler {
         if (!retryable) throw error;
         attempts += 1;
         this.quarantineUntil.set(keyId, Date.now() + quarantineMs);
-        if (attempts >= this.maxAttempts) throw error;
+        // Every key deserves a try: a pool larger than maxAttempts still rotates fully.
+        const attemptLimit = Math.max(this.maxAttempts, order.length);
+        if (attempts >= attemptLimit) throw error;
         const retryAfterMs = extractRetryAfterMs(error);
         const delayMs =
           retryAfterMs !== undefined

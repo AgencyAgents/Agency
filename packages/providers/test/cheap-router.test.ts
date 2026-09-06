@@ -112,4 +112,31 @@ describe("cheap router predicate", () => {
     ]);
     expect(picked?.id).toBe("new-cheap");
   });
+
+  test("fallback tag retains the truncated cheap error for root cause", async () => {
+    const result = await withCheapFallback(
+      { model: "cheap-m", routed: "cheap", tag: "route=cheap kind=summary" },
+      "primary-m",
+      async (m: string) => {
+        if (m === "cheap-m") throw new Error("cheap down: 429 rate limited badly");
+        return "ok";
+      },
+    );
+    expect(result.fellBack).toBe(true);
+    expect(result.tag).toContain("fallback=primary");
+    expect(result.tag).toContain("cheap down");
+  });
+
+  test("fallback tag truncates very long cheap errors", async () => {
+    const longMsg = "x".repeat(500);
+    const result = await withCheapFallback(
+      { model: "cheap-m", routed: "cheap", tag: "route=cheap kind=summary" },
+      "primary-m",
+      async (m: string) => {
+        if (m === "cheap-m") throw new Error(longMsg);
+        return "ok";
+      },
+    );
+    expect(result.tag.length).toBeLessThan("route=cheap kind=summary fallback=primary".length + 200);
+  });
 });
