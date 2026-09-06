@@ -187,6 +187,44 @@ describe("plan dir copy-migration", () => {
     expect(readFileSync(join(destDir, "ship-the-thing.md"), "utf8")).toBe(PLAN_BODY);
     expect(existsSync(planPath)).toBe(true);
   });
+
+  test("copy carries review and revisions sidecars", () => {
+    const { planPath } = setup();
+    writePlanIssues(planPath, [{ severity: "low", message: "nit" }]);
+    revisePlan(planPath, `${PLAN_BODY}\n- [ ] r1\n`, "first");
+    const dest = copyPlanToCanonical(planPath);
+    expect(readPlanIssues(dest).length).toBe(1);
+    expect(readPlanRevisions(dest).length).toBe(1);
+  });
+
+  test("migrate carries review and revisions sidecars", () => {
+    const { root } = setup();
+    const srcDir = join(root, ".agency", "plans");
+    writePlanIssues(join(srcDir, "ship-the-thing.md"), [{ severity: "low", message: "nit" }]);
+    revisePlan(join(srcDir, "ship-the-thing.md"), `${PLAN_BODY}\n- [ ] r1\n`);
+    const destDir = join(root, ".opencode", "plans");
+    const copied = migratePlanDirectory(srcDir, destDir);
+    expect(copied).toContain(join(destDir, "ship-the-thing.md.review.json"));
+    expect(copied).toContain(join(destDir, "ship-the-thing.md.revisions.json"));
+  });
+
+  test("migrate returns [] when the source dir is missing", () => {
+    const { root } = setup();
+    expect(migratePlanDirectory(join(root, ".agency", "nope"), join(root, ".opencode", "plans"))).toEqual([]);
+  });
+
+  test("corrupt gate sidecars fail closed instead of reading empty", () => {
+    const { planPath } = setup();
+    writeFileSync(`${planPath}.comments.json`, "not json");
+    expect(() => countUnresolvedComments(planPath)).toThrow(/corrupt/);
+    writeFileSync(`${planPath}.comments.json`, JSON.stringify({ comments: [] }));
+    writeFileSync(`${planPath}.review.json`, "not json");
+    expect(() => readPlanIssues(planPath)).toThrow(/corrupt/);
+    expect(() => evaluatePlanGate(planPath)).toThrow(/corrupt/);
+    writeFileSync(`${planPath}.review.json`, JSON.stringify({ issues: [] }));
+    writeFileSync(`${planPath}.revisions.json`, "not json");
+    expect(() => readPlanRevisions(planPath)).toThrow(/corrupt/);
+  });
 });
 
 describe("plan revise roundtrip", () => {

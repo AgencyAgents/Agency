@@ -181,7 +181,7 @@ describe("runSessionTurn", () => {
     const client = await connectedDaemon(workspaceRoot, echoAdapter("reply"));
 
     // 8 × ~1k chars ≈ 2.3k tokens with the approximate tokenizer; a 2k window
-    // at the default 0.8 ratio triggers compaction without any explicit
+    // at the default 0.9 ratio triggers compaction without any explicit
     // compaction option being passed.
     let parentId: string | null = null;
     for (let i = 0; i < 8; i++) {

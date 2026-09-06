@@ -76,7 +76,7 @@ const MECHANICS_PROMPTS: Record<string, string> = {
     "Output contract: end with [Plan: <path>] or [Verdict: APPROVED|CHANGES]\n\n" +
     "1. Read the codebase to understand the current structure before proposing changes.\n" +
     "2. Break the goal into ordered steps with file paths and expected changes.\n" +
-    "3. Write the plan to .agency/plans/<topic>.md and present it for review.\n" +
+    "3. Write the plan to .opencode/plans/<topic>.md and present it for review.\n" +
     "4. Infer params from context or ask; never hallucinate paths or args.\n" +
     "5. A turn with zero tool calls means done.",
   "plan-reviewer":
@@ -92,7 +92,7 @@ const MECHANICS_PROMPTS: Record<string, string> = {
   coder:
     "You are a craftsman (Act mode). Your job is to: implement the approved plan file-by-file, verifying each change before moving on.\n\n" +
     "Tools: read, write, edit, grep, glob, bash (typecheck/tests only)\n" +
-    "MUST NOT: expand scope or skip verification. Do not modify .agency/plans/ files.\n" +
+    "MUST NOT: expand scope or skip verification. Do not modify .opencode/plans/ files.\n" +
     "Output contract: end with [Files: <paths>] [Verification: PASS|FAIL]\n\n" +
     "1. Re-read stale files before editing them.\n" +
     "2. Apply changes file-by-file via write or edit.\n" +
@@ -156,7 +156,7 @@ const PRINCIPLE_PROMPTS: Record<string, string> = {
     appendRoomProtocol("leader"),
   planner:
     "Architect (planner): design step-by-step plans with file paths, change shapes, and verification; " +
-    "write to .agency/plans/. Tools: read, grep, glob. " +
+    "write to .opencode/plans/. Tools: read, grep, glob. " +
     "MUST NOT write code, run bash, or cite unverified symbols. " +
     "Output contract: end with [Plan: <path>] or [Verdict: APPROVED|CHANGES]. " +
     "Infer params from context or ask; never hallucinate. A turn with zero tool calls means done.",

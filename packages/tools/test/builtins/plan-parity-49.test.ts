@@ -56,6 +56,13 @@ describe("plan file path", () => {
     expect(isPlanPath(".agency/plans/1-x.md")).toBe(true);
     expect(isPlanPath("src/app.ts")).toBe(false);
   });
+
+  test("isPlanPath confines lexically resolved paths to the plan dir", () => {
+    expect(isPlanPath("a/.opencode/plans/../../src/evil.ts")).toBe(false);
+    expect(isPlanPath(".opencode/plans/../../src/evil.ts")).toBe(false);
+    expect(isPlanPath("/tmp/.opencode/plans/x.md")).toBe(false);
+    expect(isPlanPath(".opencode//plans/x.md")).toBe(true);
+  });
 });
 
 describe("plan agent permission gate", () => {
@@ -200,6 +207,16 @@ describe("plan mode read-only guard", () => {
     expect(planModeAllowsTool("write", ".opencode/plans/1-x.md")).toBe(true);
     expect(planModeAllowsTool("edit", ".agency/plans/1-x.md")).toBe(true);
     expect(planModeAllowsTool("write", ".omo/plans/1-x.md")).toBe(true);
+  });
+
+  test("plan-mode writes allow only *.md plan files, never sidecars", () => {
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md")).toBe(true);
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md.approval.json")).toBe(false);
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md.comments.json")).toBe(false);
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md.review.json")).toBe(false);
+    expect(planModeAllowsTool("write", ".opencode/plans/1-x.md.revisions.json")).toBe(false);
+    expect(planModeAllowsTool("edit", ".opencode/plans/1-x.md.review.json")).toBe(false);
+    expect(planModeAllowsTool("write", ".opencode/plans/notes.txt")).toBe(false);
   });
 
   test("state-changing tools without a plan target are rejected", () => {

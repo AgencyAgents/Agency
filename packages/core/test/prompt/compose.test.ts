@@ -173,7 +173,7 @@ describe("resolveFamilyPrompt", () => {
     expect(prompt).toContain("Your job is to:");
     expect(prompt).toContain("1.");
     expect(prompt).toContain("2.");
-    expect(prompt).toContain("Do not modify .agency/plans/");
+    expect(prompt).toContain("Do not modify .opencode/plans/");
   });
 
   test("openai family returns principle-driven prompt for coder role", () => {

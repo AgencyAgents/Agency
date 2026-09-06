@@ -361,6 +361,21 @@ describe("DEFAULT_ROSTER", () => {
     expect(gate.decisionFor({ tool: "edit", path: "src/a.ts" })).toBe("deny");
   });
 
+  test("planner allow and coder deny maps cover all plan dir spellings", () => {
+    expect(DEFAULT_ROSTER.planner!.permissions!.write).toMatchObject({
+      "*": "deny",
+      ".agency/plans/**": "allow",
+      ".opencode/plans/**": "allow",
+      ".omo/plans/**": "allow",
+    });
+    expect(DEFAULT_ROSTER.coder!.permissions!.write).toMatchObject({
+      "*": "allow",
+      ".agency/plans/**": "deny",
+      ".opencode/plans/**": "deny",
+      ".omo/plans/**": "deny",
+    });
+  });
+
   test("plan-reviewer gets read/glob/grep only", () => {
     const dir = tempDir();
     cleanup.push(dir);

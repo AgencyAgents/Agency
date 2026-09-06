@@ -24,11 +24,14 @@ function redirectPlanSlashes(n: string): string {
   return n;
 }
 
-/** True when a tool call is allowed in plan mode. */
+/** True when a tool call is allowed in plan mode (writes: *.md plan files only). */
 export function planModeAllowsTool(toolName: string, targetPath?: string): boolean {
   if (PLAN_MODE_READ_TOOLS.includes(toolName)) return true;
   if (toolName === "write" || toolName === "edit") {
-    return targetPath !== undefined && isPlanPath(resolvePlanPath(targetPath));
+    if (targetPath === undefined) return false;
+    const resolved = resolvePlanPath(targetPath);
+    if (!resolved.replace(/\\/g, "/").endsWith(".md")) return false;
+    return isPlanPath(resolved);
   }
   return false;
 }
@@ -40,7 +43,12 @@ export function planModeRejectReason(toolName: string, targetPath?: string): str
   return `plan mode denies ${toolName} ${target}: only read-only inspection and plan-file writes are allowed`;
 }
 
-const SIDECAR_SUFFIXES: readonly string[] = [".approval.json", ".comments.json"];
+const SIDECAR_SUFFIXES: readonly string[] = [
+  ".approval.json",
+  ".comments.json",
+  ".review.json",
+  ".revisions.json",
+];
 
 /** Copy one plan file into the canonical dir with its sidecars. */
 export function copyPlanToCanonical(sourceAbsPath: string): string {
@@ -56,11 +64,18 @@ export function copyPlanToCanonical(sourceAbsPath: string): string {
 
 /** Plan files and their sidecars, nothing else migrates. */
 function isMigratablePlanFile(name: string): boolean {
-  return name.endsWith(".md") || name.endsWith(".md.approval.json") || name.endsWith(".md.comments.json");
+  return (
+    name.endsWith(".md") ||
+    name.endsWith(".md.approval.json") ||
+    name.endsWith(".md.comments.json") ||
+    name.endsWith(".md.review.json") ||
+    name.endsWith(".md.revisions.json")
+  );
 }
 
 /** Copy a legacy or working plan dir wholesale to canonical. */
 export function migratePlanDirectory(sourceDirAbs: string, destDirAbs: string): string[] {
+  if (!existsSync(sourceDirAbs)) return [];
   mkdirSync(destDirAbs, { recursive: true });
   const copied: string[] = [];
   for (const entry of readdirSync(sourceDirAbs, { withFileTypes: true })) {

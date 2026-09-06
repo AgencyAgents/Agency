@@ -481,9 +481,9 @@ describe("Chaos: plan gate reject", () => {
     expect(countUnresolvedComments(path)).toBe(0);
   });
 
-  test("countUnresolvedComments returns 0 for malformed comments file", () => {
+  test("countUnresolvedComments fails closed for malformed comments file", () => {
     const path = planDir();
     writeFileSync(`${path}.comments.json`, "not json");
-    expect(countUnresolvedComments(path)).toBe(0);
+    expect(() => countUnresolvedComments(path)).toThrow(/corrupt/);
   });
 });

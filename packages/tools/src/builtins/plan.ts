@@ -63,16 +63,31 @@ interface CommentsFile {
   comments?: Array<{ resolved?: boolean }>;
 }
 
-/** How many comments on this plan are still unresolved, 0 when none/absent. */
+/** Typed fail-closed error for corrupt gate sidecars; never read as empty. */
+export class PlanSidecarCorruptError extends Error {
+  readonly sidecar: string;
+  constructor(sidecar: string) {
+    super(`corrupt plan sidecar: ${sidecar}`);
+    this.name = "PlanSidecarCorruptError";
+    this.sidecar = sidecar;
+  }
+}
+
+/** How many comments are unresolved; throws PlanSidecarCorruptError when corrupt. */
 export function countUnresolvedComments(planPath: string): number {
   const file = commentsPath(planPath);
   if (!existsSync(file)) return 0;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as CommentsFile;
-    return (parsed.comments ?? []).filter((c) => !c.resolved).length;
+    parsed = JSON.parse(readFileSync(file, "utf8")) as CommentsFile;
   } catch {
-    return 0;
+    throw new PlanSidecarCorruptError(file);
   }
+  if (typeof parsed !== "object" || parsed === null) throw new PlanSidecarCorruptError(file);
+  const comments = (parsed as CommentsFile).comments;
+  if (comments === undefined) return 0;
+  if (!Array.isArray(comments)) throw new PlanSidecarCorruptError(file);
+  return comments.filter((c) => (typeof c === "object" && c !== null ? !c.resolved : true)).length;
 }
 
 export function readApprovalRecord(planPath: string): PlanApprovalRecord | undefined {
@@ -161,18 +176,19 @@ function isPlanIssue(value: unknown): value is PlanIssue {
   return v.line === undefined || typeof v.line === "number";
 }
 
-/** Read review issues, empty when no review file exists. */
+/** Read review issues, empty only when no review file exists. */
 export function readPlanIssues(planPath: string): PlanIssue[] {
   const file = reviewPath(planPath);
   if (!existsSync(file)) return [];
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-    const list = Array.isArray(parsed) ? parsed : (parsed as { issues?: unknown }).issues;
-    if (!Array.isArray(list)) return [];
-    return list.filter(isPlanIssue);
+    parsed = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    return [];
+    throw new PlanSidecarCorruptError(file);
   }
+  const list = Array.isArray(parsed) ? parsed : (parsed as { issues?: unknown }).issues;
+  if (!Array.isArray(list)) throw new PlanSidecarCorruptError(file);
+  return list.filter(isPlanIssue);
 }
 
 /** Replace the review issues held for a plan file. */
@@ -213,24 +229,25 @@ export function revisionsPath(planPath: string): string {
   return `${planPath}.revisions.json`;
 }
 
-/** Read revision history, empty when never revised. */
+/** Read revision history, empty only when never revised. */
 export function readPlanRevisions(planPath: string): PlanRevision[] {
   const file = revisionsPath(planPath);
   if (!existsSync(file)) return [];
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-    const list = Array.isArray(parsed) ? parsed : (parsed as { revisions?: unknown }).revisions;
-    if (!Array.isArray(list)) return [];
-    return list.filter(
-      (entry): entry is PlanRevision =>
-        typeof entry === "object" &&
-        entry !== null &&
-        typeof (entry as PlanRevision).revision === "number" &&
-        typeof (entry as PlanRevision).hash === "string",
-    );
+    parsed = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    return [];
+    throw new PlanSidecarCorruptError(file);
   }
+  const list = Array.isArray(parsed) ? parsed : (parsed as { revisions?: unknown }).revisions;
+  if (!Array.isArray(list)) throw new PlanSidecarCorruptError(file);
+  return list.filter(
+    (entry): entry is PlanRevision =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as PlanRevision).revision === "number" &&
+      typeof (entry as PlanRevision).hash === "string",
+  );
 }
 
 /** Rewrite plan content in place, preserving id, appending history. */
@@ -279,23 +296,38 @@ export const WORKING_PLAN_DIR = ".omo/plans";
 export const PLAN_BLOCK_ICON = "📋";
 
 function normalizePlanSlashes(p: string): string {
-  return p.replace(/\\/g, "/");
+  return p.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
 
-/** True when `p` points inside a plan directory (any spelling). */
+/** Lexically resolve `.` and `..` without touching the filesystem. */
+function lexicalResolve(n: string): string {
+  const parts = n.split("/");
+  const out: string[] = [];
+  for (const part of parts) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      const last = out[out.length - 1];
+      if (last !== undefined && last !== "..") out.pop();
+      else out.push("..");
+    } else out.push(part);
+  }
+  return out.join("/");
+}
+
+const PLAN_DIRS: readonly string[][] = [
+  [".opencode", "plans"],
+  [".agency", "plans"],
+  [".omo", "plans"],
+];
+
+/** True when lexically confined inside a plan directory (any spelling). */
 export function isPlanPath(p: string): boolean {
   const n = normalizePlanSlashes(p);
-  return (
-    n === PLAN_DIR ||
-    n === LEGACY_PLAN_DIR ||
-    n === WORKING_PLAN_DIR ||
-    n.startsWith(`${PLAN_DIR}/`) ||
-    n.startsWith(`${LEGACY_PLAN_DIR}/`) ||
-    n.startsWith(`${WORKING_PLAN_DIR}/`) ||
-    n.includes(`/${PLAN_DIR}/`) ||
-    n.includes(`/${LEGACY_PLAN_DIR}/`) ||
-    n.includes(`/${WORKING_PLAN_DIR}/`)
-  );
+  if (n.startsWith("/") || /^[A-Za-z]:\//.test(n)) return false;
+  const resolved = lexicalResolve(n);
+  if (resolved === ".." || resolved.startsWith("../")) return false;
+  const segs = resolved.split("/").filter((s) => s.length > 0);
+  return PLAN_DIRS.some((dir) => segs.some((s, i) => s === dir[0] && segs[i + 1] === dir[1]));
 }
 
 /** Lowercase, dash-separated slug for plan file names. */
@@ -454,7 +486,7 @@ export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpe
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path to the plan file, e.g. .agency/plans/my-plan.md" },
+        path: { type: "string", description: "Path to the plan file, e.g. .opencode/plans/my-plan.md" },
       },
       required: ["path"],
     },
@@ -469,7 +501,15 @@ export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpe
         ask: ctx.requestApproval,
       });
 
-      const gate = evaluatePlanGate(resolved);
+      let gate: PlanGateDecision;
+      try {
+        gate = evaluatePlanGate(resolved);
+      } catch (error) {
+        return {
+          content: error instanceof Error ? error.message : String(error),
+          isError: true,
+        };
+      }
       if (!gate.pass) {
         const detail =
           gate.reason === "fail-unresolved-comments"
