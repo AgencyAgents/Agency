@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { McpServerConfigSchema } from "@agency/tools";
+import { parseAgentFile } from "../agents/files.ts";
 import type { Logger } from "../logger.ts";
 import { parseSkillFrontmatter } from "./skill.ts";
 
@@ -44,8 +45,10 @@ export interface ImportClaudePluginReport {
   hooksSkipped: Array<{ event: string; reason: string }>;
   /** Validated MCP server entries (caller should merge into config). */
   mcpServers: Record<string, unknown>;
-  /** Agent definition filenames found (caller should add to config.agents). */
+  /** Agent definition filenames found (informational; see agentsInstalled). */
   agentsFound: string[];
+  /** Agent files written into .agency/agents/, runnable with no config edit. */
+  agentsInstalled: string[];
   /** Command filenames that were installed into .agency/commands/. */
   commandsInstalled: string[];
 }
@@ -218,9 +221,8 @@ function parseMcpServers(mcpRaw: Record<string, unknown>, logger?: Logger): Reco
 
 /**
  * Import a Claude Code / OpenAI Codex plugin from an unpacked directory into
- * Agency-native state. This is a read-mostly operation: it copies skills and
- * commands into .agency/, but only reports agents and MCP servers for the
- * caller to merge into config.
+ * Agency-native state. Skills, commands, and agents are copied into .agency/
+ * as runnable files; only MCP servers are reported for manual config merge.
  *
  * @param sourceDir - Absolute path to the unpacked plugin directory.
  * @param opts - Options including workspaceRoot, overwrite flag, and logger.
@@ -253,6 +255,7 @@ export function importClaudePlugin(
     hooksSkipped: [],
     mcpServers: {},
     agentsFound: [],
+    agentsInstalled: [],
     commandsInstalled: [],
   };
 
@@ -335,7 +338,7 @@ export function importClaudePlugin(
   }
 
   // -----------------------------------------------------------------------
-  // 5. Agents: agents/*.md (report only, never auto-write to config)
+  // 5. Agents: agents/*.md -> .agency/agents/*.md (validated, runnable)
   // -----------------------------------------------------------------------
   const agentsDir = join(sourceDir, "agents");
   if (existsSync(agentsDir)) {
@@ -351,6 +354,35 @@ export function importClaudePlugin(
       if (!entry.endsWith(".md")) continue;
       const agentName = basename(entry, ".md");
       report.agentsFound.push(agentName);
+      const sourceFile = join(agentsDir, entry);
+      let raw: string;
+      try {
+        raw = readFileSync(sourceFile, "utf8");
+      } catch {
+        logger?.warn(`[importer] cannot read agent file: ${sourceFile}`);
+        continue;
+      }
+      try {
+        parseAgentFile(raw, sourceFile);
+      } catch (err) {
+        logger?.warn(`[importer] skipping invalid agent "${agentName}": ${String(err)}`);
+        continue;
+      }
+      const targetDir = join(workspaceRoot, ".agency", "agents");
+      const targetFile = join(targetDir, entry);
+      if (existsSync(targetFile)) {
+        if (!overwrite) {
+          logger?.warn(
+            `[importer] agent "${agentName}" already exists at ${targetFile}, skipping ` +
+              `(use overwrite: true to replace)`,
+          );
+          continue;
+        }
+        logger?.info(`[importer] overwriting agent "${agentName}" at ${targetFile}`);
+      }
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(targetFile, raw, "utf8");
+      report.agentsInstalled.push(agentName);
     }
   }
 

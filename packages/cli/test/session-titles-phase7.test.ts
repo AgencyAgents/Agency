@@ -116,7 +116,7 @@ describe("phase 7: first-turn title generation end to end", () => {
     const requestedProviders: string[] = [];
     const noopHttp: HttpClient = { fetch: async () => new Response() };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/phase7",
+      workspaceRoot: tempDir("agency-phase7-root-"),
       instanceFile: join(tempDir("agency-phase7-instance-"), "instance.json"),
       sessionsDir,
       approvalsDir,
@@ -189,7 +189,7 @@ describe("phase 7: first-turn title generation end to end", () => {
       const requestedProviders: string[] = [];
       const noopHttp: HttpClient = { fetch: async () => new Response() };
       const daemon = await createAgentDaemon({
-        workspaceRoot: "/repo/phase7runner",
+        workspaceRoot: tempDir("agency-phase7-runner-root-"),
         instanceFile: join(tempDir("agency-phase7-runner-instance-"), "instance.json"),
         sessionsDir,
         approvalsDir: tempDir("agency-phase7-runner-approvals-"),

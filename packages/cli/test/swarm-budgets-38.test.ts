@@ -30,6 +30,12 @@ function tempInstanceFile(): string {
   return join(dir, "instance.json");
 }
 
+function tempRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-b38-root-"));
+  dirs.push(dir);
+  return dir;
+}
+
 function writeConfigDir(config: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), "agency-b38-cfg-"));
   dirs.push(dir);
@@ -162,7 +168,7 @@ describe("team budgets in daemon", () => {
     dirs.push(sessionsDir);
     let runs = 0;
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       sessionsDir,
       adapterFor: () => {
@@ -203,7 +209,7 @@ describe("team budgets in daemon", () => {
 
   test("team cap already spent makes run_turn throw before any dispatch", async () => {
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => dispatchAdapter({ agents: [{ handle: "worker", brief: "do work" }] }),
       http: noopHttp,
@@ -233,7 +239,7 @@ describe("team budgets in daemon", () => {
     const sessionsDir = mkdtempSync(join(tmpdir(), "agency-b38-sum-"));
     dirs.push(sessionsDir);
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       sessionsDir,
       adapterFor: () => textAdapter("hi"),
@@ -278,7 +284,7 @@ describe("team budgets in daemon", () => {
     const sessionsDir = mkdtempSync(join(tmpdir(), "agency-b38-agent-"));
     dirs.push(sessionsDir);
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       sessionsDir,
       adapterFor: () => textAdapter("hi"),

@@ -45,10 +45,11 @@ function spawnDaemonEntry(workspaceRoot: string, instanceFile: string) {
 describe("daemon-entry.ts as a real spawned process", () => {
   test("a fresh workspace root spawns a real daemon process that responds over RPC", async () => {
     const instanceDir = tempDir();
+    const root = tempDir();
     const { client } = await ensureDaemon({
-      workspaceRoot: "/repo/spawn-e2e-a",
+      workspaceRoot: root,
       instanceDir,
-      spawnDaemon: (file) => spawnDaemonEntry("/repo/spawn-e2e-a", file),
+      spawnDaemon: (file) => spawnDaemonEntry(root, file),
       spawnTimeoutMs: 15_000,
     });
     clients.push(client);
@@ -60,17 +61,19 @@ describe("daemon-entry.ts as a real spawned process", () => {
 
   test("two different workspace roots run as two independent real daemon processes", async () => {
     const instanceDir = tempDir();
+    const rootA = tempDir();
+    const rootB = tempDir();
     const [a, b] = await Promise.all([
       ensureDaemon({
-        workspaceRoot: "/repo/spawn-e2e-b1",
+        workspaceRoot: rootA,
         instanceDir,
-        spawnDaemon: (file) => spawnDaemonEntry("/repo/spawn-e2e-b1", file),
+        spawnDaemon: (file) => spawnDaemonEntry(rootA, file),
         spawnTimeoutMs: 15_000,
       }),
       ensureDaemon({
-        workspaceRoot: "/repo/spawn-e2e-b2",
+        workspaceRoot: rootB,
         instanceDir,
-        spawnDaemon: (file) => spawnDaemonEntry("/repo/spawn-e2e-b2", file),
+        spawnDaemon: (file) => spawnDaemonEntry(rootB, file),
         spawnTimeoutMs: 15_000,
       }),
     ]);
@@ -83,17 +86,18 @@ describe("daemon-entry.ts as a real spawned process", () => {
 
   test("reconnecting to the same workspace root reuses the running process, no second spawn", async () => {
     const instanceDir = tempDir();
+    const root = tempDir();
     const first = await ensureDaemon({
-      workspaceRoot: "/repo/spawn-e2e-c",
+      workspaceRoot: root,
       instanceDir,
-      spawnDaemon: (file) => spawnDaemonEntry("/repo/spawn-e2e-c", file),
+      spawnDaemon: (file) => spawnDaemonEntry(root, file),
       spawnTimeoutMs: 15_000,
     });
     clients.push(first.client);
 
     let spawnCalledAgain = false;
     const second = await ensureDaemon({
-      workspaceRoot: "/repo/spawn-e2e-c",
+      workspaceRoot: root,
       instanceDir,
       spawnDaemon: () => {
         spawnCalledAgain = true;
@@ -107,7 +111,8 @@ describe("daemon-entry.ts as a real spawned process", () => {
 
   test("a stale instance file (dead process) is detected and a fresh daemon replaces it", async () => {
     const instanceDir = tempDir();
-    const instanceFile = join(instanceDir, `${hashWorkspaceRoot("/repo/spawn-e2e-d")}.json`);
+    const root = tempDir();
+    const instanceFile = join(instanceDir, `${hashWorkspaceRoot(root)}.json`);
     // Points at a port nothing is listening on: simulates a daemon that
     // crashed without cleaning up its instance file.
     writeFileSync(
@@ -122,11 +127,11 @@ describe("daemon-entry.ts as a real spawned process", () => {
 
     let spawnCalled = false;
     const { client } = await ensureDaemon({
-      workspaceRoot: "/repo/spawn-e2e-d",
+      workspaceRoot: root,
       instanceDir,
       spawnDaemon: (file) => {
         spawnCalled = true;
-        spawnDaemonEntry("/repo/spawn-e2e-d", file);
+        spawnDaemonEntry(root, file);
       },
       spawnTimeoutMs: 15_000,
     });

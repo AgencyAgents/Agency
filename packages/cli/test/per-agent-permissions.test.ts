@@ -204,7 +204,7 @@ describe("per-agent permissions", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => toolCallAdapter("read", { path: "test.txt" }, "done"),
       http: noopHttp,
@@ -358,7 +358,7 @@ describe("per-agent permissions", () => {
       permissions: { read: "allow", bash: "allow" },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => toolCallAdapter("read", { path: "test.txt" }, "done"),
       http: noopHttp,

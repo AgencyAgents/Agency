@@ -11,6 +11,7 @@ export interface InstallReceipt {
   pluginVersion?: string;
   skillsInstalled: string[];
   commandsInstalled: string[];
+  agentsInstalled: string[];
   installedAt: string;
 }
 
@@ -33,6 +34,7 @@ export function pluginInstallCmd(
     pluginVersion: report.pluginVersion,
     skillsInstalled: report.skillsInstalled,
     commandsInstalled: report.commandsInstalled,
+    agentsInstalled: report.agentsInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -70,10 +72,10 @@ export function pluginInstallCmd(
     for (const key of mcpKeys) lines.push(`  - ${key}`);
   }
 
-  if (report.agentsFound.length > 0) {
+  if (report.agentsInstalled.length > 0) {
     lines.push("");
-    lines.push("Agents found -- manually add to config.agents:");
-    for (const a of report.agentsFound) lines.push(`  - ${a}`);
+    lines.push("Agents installed (.agency/agents/, runnable with no config edit):");
+    for (const a of report.agentsInstalled) lines.push(`  - ${a}`);
   }
 
   if (report.commandsInstalled.length > 0) {
@@ -139,6 +141,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   const receiptPath = join(skillDir, "receipt.json");
   let commandsToDelete: string[] = [];
   let skillsToDelete: string[] = [];
+  let agentsToDelete: string[] = [];
   let pluginName = name;
 
   if (existsSync(receiptPath)) {
@@ -146,6 +149,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
       const receipt: InstallReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
       commandsToDelete = receipt.commandsInstalled;
       skillsToDelete = receipt.skillsInstalled;
+      agentsToDelete = receipt.agentsInstalled ?? [];
       pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
@@ -177,6 +181,16 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   const lines: string[] = [`Removed plugin "${pluginName}".`];
   if (deletedSkills.length > 0) lines.push(`Deleted skill directories: ${deletedSkills.join(", ")}`);
   if (deletedCommands.length > 0) lines.push(`Deleted command files: ${deletedCommands.join(", ")}`);
+  const agentsDir = join(workspaceRoot, ".agency", "agents");
+  const deletedAgents: string[] = [];
+  for (const agent of agentsToDelete) {
+    const agentPath = join(agentsDir, `${agent}.md`);
+    if (existsSync(agentPath)) {
+      rmSync(agentPath);
+      deletedAgents.push(agent);
+    }
+  }
+  if (deletedAgents.length > 0) lines.push(`Deleted agent files: ${deletedAgents.join(", ")}`);
 
   return lines.join("\n");
 }

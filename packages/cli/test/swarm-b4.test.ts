@@ -25,6 +25,11 @@ function tempInstanceFile(): string {
   dirs.push(dir);
   return join(dir, "instance.json");
 }
+function tempRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-b4-root-"));
+  dirs.push(dir);
+  return dir;
+}
 function writeConfigDir(config: Record<string, unknown>): string {
   const dir = mkdtempSync(join(tmpdir(), "agency-b4-cfg-"));
   dirs.push(dir);
@@ -60,7 +65,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,
@@ -99,7 +104,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hi"),
       http: noopHttp,
@@ -144,7 +149,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,
@@ -180,7 +185,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,
@@ -218,7 +223,7 @@ describe("B4 team RPC", () => {
     // Each agent gets a different adapter output to prove separate model calls
     let callCount = 0;
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => {
         callCount++;
@@ -257,7 +262,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hi"),
       http: noopHttp,
@@ -322,7 +327,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       sessionsDir,
       adapterFor: () => textAdapter("hi"),
@@ -393,7 +398,7 @@ describe("B4 team RPC", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,

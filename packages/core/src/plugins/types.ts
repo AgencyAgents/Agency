@@ -30,10 +30,23 @@ export interface PluginHookContext {
 
 export type HookHandler = (payload: unknown, ctx: PluginHookContext) => void | Promise<void>;
 
+export interface PluginAgentContribution {
+  role: string;
+  handle?: string;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  tools?: string[];
+  permissions?: Record<string, unknown>;
+  pathScope?: string | string[];
+  prompt?: string;
+}
+
 export interface PluginDefinition {
   id: string;
   hooks?: Record<string, HookHandler>;
   tools?: ToolSpec[];
+  agents?: PluginAgentContribution[];
   /**
    * Skill-embedded MCP servers, declared per-skill. Raw (unvalidated) map of
    * server name to server config; validated with `parseMcpServers` at spawn

@@ -1,11 +1,16 @@
 import {
+  type AgentConfig,
   buildEnvironmentBlock,
   composeSystemPrompt,
+  type FileAgentDef,
   gatherEnvironmentInfo,
+  isValidAgentHandle,
   leanBrief,
   leanPrompt,
   leanSummary,
   newEntryId,
+  type PluginAgentContribution,
+  resolveFileRoster,
   runChildTurn,
   spawnParallel,
 } from "@agency/core";
@@ -24,15 +29,73 @@ import {
 } from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor } from "../types.ts";
 
+type FileBackedAgent = AgentConfig & {
+  systemPrompt?: string;
+  tools?: string[];
+  pathScope?: string[];
+};
+
 export function initTeamFromConfig(ctx: DaemonContext): void {
   const { catalogModel, config, logger, resolveAgentModel, teamRegistry } = ctx;
   const cfg = config as unknown as {
-    agents?: Record<
-      string,
-      { role: string; provider?: string; model?: string; effort?: string; enabled?: boolean }
-    >;
+    agents?: Record<string, FileBackedAgent>;
     leader?: string;
   };
+  // File roster wins over config: project files, then user files, then config.
+  let fileAgents = new Map<string, FileAgentDef>();
+  try {
+    const roster = resolveFileRoster({
+      workspaceRoot: ctx.options.workspaceRoot,
+      ...(ctx.options.configDir !== undefined ? { configDirOverride: ctx.options.configDir } : {}),
+      ...(cfg.agents !== undefined ? { configAgents: cfg.agents } : {}),
+    });
+    fileAgents = roster.agents;
+    const merged: Record<string, FileBackedAgent> = { ...(cfg.agents ?? {}) };
+    for (const [handle, def] of fileAgents) {
+      const prev = merged[handle] ?? { role: def.role };
+      merged[handle] = {
+        ...prev,
+        role: def.role,
+        ...(def.provider !== undefined ? { provider: def.provider } : {}),
+        ...(def.model !== undefined ? { model: def.model } : {}),
+        ...(def.effort !== undefined ? { effort: def.effort as FileBackedAgent["effort"] } : {}),
+        ...(def.permissions !== undefined
+          ? { permissions: def.permissions as FileBackedAgent["permissions"] }
+          : {}),
+        ...(def.systemPrompt.length > 0 ? { systemPrompt: def.systemPrompt } : {}),
+        ...(def.tools !== undefined ? { tools: def.tools } : {}),
+        ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
+      };
+    }
+    cfg.agents = merged;
+  } catch (err) {
+    logger.warn(`agent files unreadable, falling back to config roster: ${String(err)}`);
+  }
+  // Plugin-contributed agents fill handles the file roster did not define.
+  const pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }> = ctx.pluginAgents ?? [];
+  for (const { agent } of pluginAgents) {
+    const handle = agent.handle ?? agent.role;
+    if (!isValidAgentHandle(handle)) {
+      logger.warn(`plugin agent handle "${handle}" must match [a-z][a-z0-9-]*, skipping`);
+      continue;
+    }
+    if (cfg.agents?.[handle] !== undefined || teamRegistry.has(handle)) continue;
+    cfg.agents ??= {};
+    cfg.agents[handle] = {
+      role: agent.role,
+      ...(agent.provider !== undefined ? { provider: agent.provider } : {}),
+      ...(agent.model !== undefined ? { model: agent.model } : {}),
+      ...(agent.effort !== undefined ? { effort: agent.effort as FileBackedAgent["effort"] } : {}),
+      ...(agent.permissions !== undefined
+        ? { permissions: agent.permissions as FileBackedAgent["permissions"] }
+        : {}),
+      ...((agent.prompt ?? "").length > 0 ? { systemPrompt: agent.prompt as string } : {}),
+      ...(agent.tools !== undefined ? { tools: agent.tools } : {}),
+      ...(agent.pathScope !== undefined
+        ? { pathScope: Array.isArray(agent.pathScope) ? agent.pathScope : [agent.pathScope] }
+        : {}),
+    };
+  }
   if (!cfg.agents) return;
   for (const [handle, a] of Object.entries(cfg.agents)) {
     // Skip disabled agents: they are not registered in the team
@@ -65,6 +128,11 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         effort: clampedEffort,
         sessionId: `team-${handle}`,
         mailbox: [],
+        ...(a.systemPrompt !== undefined && a.systemPrompt.length > 0
+          ? { systemPrompt: a.systemPrompt }
+          : {}),
+        ...(a.tools !== undefined ? { tools: a.tools } : {}),
+        ...(a.pathScope !== undefined ? { pathScope: a.pathScope } : {}),
       });
     }
   }
@@ -316,7 +384,10 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         const agentCaps = capabilitiesForAgent(agentGate, childTools);
 
         const agentSystemPrompt = composeSystemPrompt({
-          base: `You are ${handle}, a ${agent.role} agent. Compare and respond to the given prompt concisely.`,
+          base:
+            agent.systemPrompt && agent.systemPrompt.length > 0
+              ? agent.systemPrompt
+              : `You are ${handle}, a ${agent.role} agent. Compare and respond to the given prompt concisely.`,
           familyPresetOverlay: undefined,
           instructions: [],
           toolDescriptions: [],

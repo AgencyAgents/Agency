@@ -35,6 +35,12 @@ function tempInstanceFile(): string {
   return join(dir, "instance.json");
 }
 
+function tempRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-daemon-root-"));
+  dirs.push(dir);
+  return dir;
+}
+
 function textAdapter(text: string, capture?: { systems: string[] }): ProviderAdapter {
   return {
     family: "fake",
@@ -49,8 +55,9 @@ function textAdapter(text: string, capture?: { systems: string[] }): ProviderAda
 async function startFakeDaemon(overrides: Partial<Parameters<typeof createAgentDaemon>[0]> = {}) {
   const approvalsDir = mkdtempSync(join(tmpdir(), "agency-daemon-approvals-"));
   dirs.push(approvalsDir);
+  const workspaceRoot = tempRoot();
   const daemon = await createAgentDaemon({
-    workspaceRoot: "/repo/fake",
+    workspaceRoot,
     instanceFile: tempInstanceFile(),
     adapterFor: () => textAdapter("hello from the daemon"),
     http: noopHttp,
@@ -60,7 +67,7 @@ async function startFakeDaemon(overrides: Partial<Parameters<typeof createAgentD
   daemons.push(daemon);
   const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
   clients.push(client);
-  return { daemon, client };
+  return { daemon, client, workspaceRoot };
 }
 
 describe("createAgentDaemon", () => {
@@ -460,7 +467,9 @@ describe("createAgentDaemon", () => {
 describe("system prompt composition", () => {
   test("a plain systemPrompt string is used as the base, with the environment block appended", async () => {
     const capture = { systems: [] as string[] };
-    const { client } = await startFakeDaemon({ adapterFor: () => textAdapter("ok", capture) });
+    const { client, workspaceRoot } = await startFakeDaemon({
+      adapterFor: () => textAdapter("ok", capture),
+    });
 
     await client.call("run_turn", {
       turnId: "sys-1",
@@ -475,7 +484,7 @@ describe("system prompt composition", () => {
     const system = capture.systems[0] ?? "";
     expect(system.startsWith("sys\n\n")).toBe(true);
     expect(system).toContain("<environment>");
-    expect(system).toContain("cwd: /repo/fake");
+    expect(system).toContain(`cwd: ${workspaceRoot}`);
     expect(system).toContain("date: ");
     expect(system).not.toContain("git: branch");
   });
@@ -566,7 +575,7 @@ describe("resolveSystemPrompt", () => {
 
   test("no reminders and no mcp failures means no reminder block", () => {
     const system = resolveSystemPrompt(params(), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: () => null,
     });
     expect(system).not.toContain("<system-reminder>");
@@ -574,7 +583,7 @@ describe("resolveSystemPrompt", () => {
 
   test("mcp start failures become mcp_server_down reminders", () => {
     const system = resolveSystemPrompt(params(), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: () => null,
       mcpFailures: new Map([["fs", "spawn failed"]]),
     });
@@ -583,7 +592,7 @@ describe("resolveSystemPrompt", () => {
 
   test("the git seam feeds branch and dirty state into the environment block", () => {
     const system = resolveSystemPrompt(params(), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: (_cwd, args) => (args.includes("status") ? "## main...origin/main\n M a.ts\n" : null),
     });
     expect(system).toContain("git: branch main (dirty, 1 changed file)");
@@ -591,7 +600,7 @@ describe("resolveSystemPrompt", () => {
 
   test("identity falls back to the shared default when parts omit it", () => {
     const system = resolveSystemPrompt(params({ systemPromptParts: { role: "ROLE" } }), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: () => null,
     });
     expect(system.startsWith(`${DEFAULT_SYSTEM_PROMPT}\n\nROLE\n\n<environment>`)).toBe(true);
@@ -605,7 +614,7 @@ describe("resolveSystemPrompt", () => {
 
   test("shellLabel renders into the environment block so the model uses the right dialect", () => {
     const system = resolveSystemPrompt(params(), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: () => null,
       shellLabel: "PowerShell",
     });
@@ -614,7 +623,7 @@ describe("resolveSystemPrompt", () => {
 
   test("no shellLabel means no shell line", () => {
     const system = resolveSystemPrompt(params(), {
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       git: () => null,
     });
     expect(system).not.toContain("shell:");
@@ -628,7 +637,7 @@ describe("resolveSystemPrompt", () => {
     };
     try {
       const system = resolveSystemPrompt(params({ systemPromptParts: { context: false } }), {
-        workspaceRoot: "/repo/fake",
+        workspaceRoot: tempRoot(),
         git: () => null,
       });
       expect(system).not.toContain("<environment>");
@@ -1211,7 +1220,7 @@ describe("A5 permissions and sandbox", () => {
 describe("HTTP+SSE gateway mounted alongside TCP", () => {
   test("POST /rpc succeeds with bearer token, GET /health without token, 401 without token", async () => {
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello from the daemon"),
       http: noopHttp,
@@ -1262,7 +1271,7 @@ describe("HTTP+SSE gateway mounted alongside TCP", () => {
 
   test("SSE events broadcast through the HTTP gateway reach subscribers", async () => {
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => textAdapter("hello from the daemon"),
       http: noopHttp,
@@ -1459,7 +1468,7 @@ describe("directly-addressed auto-effort agent classification", () => {
       },
     };
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: (provider: string) => (provider === "openai" ? classifierAdapter : mainAdapter),
       http: noopHttp,

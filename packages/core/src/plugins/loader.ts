@@ -71,13 +71,23 @@ function extractAgentsMd(raw: unknown): string | string[] | undefined {
   return undefined;
 }
 
+function extractPluginAgents(raw: unknown): PluginDefinition["agents"] {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<PluginDefinition["agents"]> = [];
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.role !== "string" || entry.role.length === 0) continue;
+    out.push(entry as unknown as NonNullable<PluginDefinition["agents"]>[number]);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function extractDefinition(rawModule: Record<string, unknown>, id: string): PluginDefinition | undefined {
   // Supports: default export { hooks, tools }, named exports hooks/tools, or direct hooks object
   let source: Record<string, unknown> | undefined;
   if (isRecord(rawModule.default)) {
     source = rawModule.default as Record<string, unknown>;
     // If default itself looks like hooks map (no hooks/tools/mcpServers key but has known hook names or * ), treat it as hooks
-    if (!("hooks" in source) && !("tools" in source) && !("mcpServers" in source)) {
+    if (!("hooks" in source) && !("tools" in source) && !("mcpServers" in source) && !("agents" in source)) {
       const keys = Object.keys(source);
       if (keys.some((k) => k.includes(".") || k === "event" || k === "*")) {
         const def: PluginDefinition = {
@@ -86,13 +96,19 @@ function extractDefinition(rawModule: Record<string, unknown>, id: string): Plug
         };
         const agentsMd = extractAgentsMd(rawModule.agentsMd ?? source.agentsMd);
         if (agentsMd) def.agentsMd = agentsMd;
+        const agents = extractPluginAgents(rawModule.agents ?? source.agents);
+        if (agents) def.agents = agents;
         return def;
       }
     }
   }
   if (
     !source &&
-    ("hooks" in rawModule || "tools" in rawModule || "mcpServers" in rawModule || "agentsMd" in rawModule)
+    ("hooks" in rawModule ||
+      "tools" in rawModule ||
+      "mcpServers" in rawModule ||
+      "agentsMd" in rawModule ||
+      "agents" in rawModule)
   ) {
     source = rawModule;
   }
@@ -121,7 +137,9 @@ function extractDefinition(rawModule: Record<string, unknown>, id: string): Plug
   if (mcpServers && Object.keys(mcpServers).length > 0) def.mcpServers = mcpServers;
   const agentsMd = extractAgentsMd(source.agentsMd);
   if (agentsMd) def.agentsMd = agentsMd;
-  if (!def.hooks && !def.tools && !def.mcpServers && !def.agentsMd) return undefined;
+  const agents = extractPluginAgents(source.agents);
+  if (agents) def.agents = agents;
+  if (!def.hooks && !def.tools && !def.mcpServers && !def.agentsMd && !def.agents) return undefined;
   return def;
 }
 
@@ -232,7 +250,7 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
     if (!def) {
       errors.push({
         id: src.id,
-        error: `invalid plugin shape at ${src.path}: must export hooks and/or tools and/or mcpServers and/or agentsMd`,
+        error: `invalid plugin shape at ${src.path}: must export hooks and/or tools and/or mcpServers and/or agentsMd and/or agents`,
       });
       continue;
     }
@@ -331,6 +349,23 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
 
 export function unloadPlugins(loaded: LoadedPlugin[]): void {
   for (const p of loaded) for (const off of p.unsubscribes) off();
+}
+
+/** Agent contributions across loaded plugins in load order. First handle wins. */
+export function collectPluginAgents(
+  plugins: LoadedPlugin[],
+): Array<{ pluginId: string; agent: NonNullable<PluginDefinition["agents"]>[number] }> {
+  const seen = new Set<string>();
+  const out: Array<{ pluginId: string; agent: NonNullable<PluginDefinition["agents"]>[number] }> = [];
+  for (const p of plugins) {
+    for (const agent of p.definition.agents ?? []) {
+      const handle = agent.handle ?? agent.role;
+      if (seen.has(handle)) continue;
+      seen.add(handle);
+      out.push({ pluginId: p.id, agent });
+    }
+  }
+  return out;
 }
 
 /** Raw per-skill MCP server declarations, or undefined when the skill declares none. */

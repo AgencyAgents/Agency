@@ -8,7 +8,8 @@ implemented. Unwired rows name what stands in for the mechanism today.
 |---|---|---|---|
 | TeamStore and appendMessage broadcast | Yes, with tests | No: zero non-test instantiations, no team RPC, no team tool | Team lifecycle with team IDs per turn |
 | OrchestraRoom, swarm-leader, swarm-peer | No: the names have zero source hits | No | Nothing: the vocabulary is retired in favor of team |
-| Per-role prompts and resolveFamilyPrompt | Yes, tables plus selector with tests | No: no runtime caller passes their output; peers get a literal one-line prompt | Layered prompt architecture with per-model length |
+| Per-role prompts and resolveFamilyPrompt | Yes, tables plus selector with tests | Partial: file bodies from `.agency/agents` feed dispatch through `initTeamFromConfig`; the built-in tables still have no runtime caller | Layered prompt architecture with per-model length |
+| File-based agents (`.agency/agents` plus `resolveFileRoster`) | Yes: `parseAgentFile` validates `role`, `provider`, `model`, `effort`, `tools`, `permissions`, `pathScope` with the body as the role prompt, with tests | Yes: `initTeamFromConfig` seeds `DEFAULT_ROSTER` on first run, `agents_list` serves file roles, `importClaudePlugin` writes imports as files, `collectPluginAgents` registers plugin agents | Prompt layering per model |
 | Team protocol text and appendTeamProtocol | Yes, baked into role tables | Partial: present in prompt strings, never shown to a peer at runtime | Playbook as the shared cached prefix |
 | planDispatchBatch and DispatchStateStore | Yes, with tests | No: the daemon reimplements the unknown-handle and budget skips inline | Board as the delegation ledger |
 | Category routing and runWithCategoryFallback | Yes, with tests | No: the daemon retries one configured fallback_model once | Capability routing behind the delegation check |

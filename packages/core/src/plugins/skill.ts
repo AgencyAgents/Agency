@@ -5,8 +5,39 @@ import { configDir } from "../paths.ts";
 import type { PluginDefinition } from "./types.ts";
 
 // ---------------------------------------------------------------------------
-// YAML frontmatter parser (zero-dep, hand-rolled for name: and description:)
+// YAML frontmatter splitter (zero-dep, shared by skills and agent files)
 // ---------------------------------------------------------------------------
+
+/** Split a ---delimited frontmatter block into raw key/value lines plus body. */
+export function splitFrontmatter(text: string): {
+  hasFrontmatter: boolean;
+  fields: Record<string, string>;
+  body: string;
+} {
+  const out: { hasFrontmatter: boolean; fields: Record<string, string>; body: string } = {
+    hasFrontmatter: false,
+    fields: {},
+    body: text,
+  };
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("---")) return out;
+  // Find the closing --- after the opening one.
+  const rest = trimmed.slice(3);
+  const endIdx = rest.indexOf("\n---");
+  if (endIdx === -1) return out;
+  out.hasFrontmatter = true;
+  out.body = rest.slice(endIdx + 5);
+  for (const line of rest.slice(0, endIdx).split("\n")) {
+    const trimmedLine = line.trim();
+    if (trimmedLine.length === 0) continue;
+    const colon = trimmedLine.indexOf(":");
+    if (colon <= 0) continue;
+    const key = trimmedLine.slice(0, colon).trim();
+    const val = trimmedLine.slice(colon + 1).trim();
+    if (key.length > 0 && val.length > 0) out.fields[key] = val;
+  }
+  return out;
+}
 
 /**
  * Minimal YAML frontmatter parser. Extracts only name: and description:
@@ -20,39 +51,11 @@ export function parseSkillFrontmatter(text: string): {
   description?: string;
   body: string;
 } {
-  const result: { name?: string; description?: string; body: string } = { body: text };
-
-  const trimmed = text.trimStart();
-  if (!trimmed.startsWith("---")) return result;
-
-  // Find the closing --- after the opening one
-  const rest = trimmed.slice(3);
-  const endIdx = rest.indexOf("\n---");
-  if (endIdx === -1) return result;
-
-  const frontmatterBlock = rest.slice(0, endIdx);
-  const bodyStart = endIdx + 5; // skip \n--- and the newline after it
-  result.body = rest.slice(bodyStart);
-
-  // Parse lines for name: and description:
-  for (const line of frontmatterBlock.split("\n")) {
-    const trimmedLine = line.trim();
-    if (trimmedLine.length === 0) continue;
-
-    const nameMatch = trimmedLine.match(/^name:\s*(.+)/);
-    if (nameMatch) {
-      const val = nameMatch[1]?.trim();
-      if (val && val.length > 0) result.name = val;
-      continue;
-    }
-
-    const descMatch = trimmedLine.match(/^description:\s*(.+)/);
-    if (descMatch) {
-      const val = descMatch[1]?.trim();
-      if (val && val.length > 0) result.description = val;
-    }
-  }
-
+  const split = splitFrontmatter(text);
+  const result: { name?: string; description?: string; body: string } = { body: split.body };
+  if (!split.hasFrontmatter) return result;
+  if (split.fields.name !== undefined) result.name = split.fields.name;
+  if (split.fields.description !== undefined) result.description = split.fields.description;
   return result;
 }
 

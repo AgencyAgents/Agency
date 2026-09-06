@@ -4,6 +4,7 @@ import {
   AgentRegistry,
   BoardStore,
   type Budget,
+  collectPluginAgents,
   configDir,
   createRotatingFileSink,
   DispatchStateStore,
@@ -240,6 +241,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const builtinsMode = options.tools === undefined;
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
+  let pluginAgents: Array<{ pluginId: string; agent: import("@agency/core").PluginAgentContribution }> = [];
   if (builtinsMode) {
     const { ToolRegistry: SharedRegistry } = await import("@agency/tools");
     const sharedPluginRegistry = new SharedRegistry();
@@ -257,6 +259,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResultEarly.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     sharedPluginTools = sharedPluginRegistry.list();
+    pluginAgents = collectPluginAgents(pluginResultEarly.plugins);
   } else {
     tools = options.tools ?? [];
     const { ToolRegistry } = await import("@agency/tools");
@@ -276,6 +279,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     tools = pluginToolRegistry.list();
+    pluginAgents = collectPluginAgents(pluginResult.plugins);
   }
 
   const activeTurnMeta = new Map<
@@ -457,6 +461,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     sessionScopes,
     getOrCreateScope,
     teamRegistry,
+    pluginAgents,
     teamContexts,
     teamFor,
     sessionInboxes,

@@ -15,6 +15,7 @@ import {
   gatherEnvironmentInfo,
   type Logger,
   mcpServerDownReminder,
+  type PluginAgentContribution,
   type ProviderConfig,
   resolveSmallModel,
   type SessionStore,
@@ -500,6 +501,7 @@ export interface DaemonContext {
   sessionScopes: Map<string, SessionScope>;
   getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
   teamRegistry: AgentRegistry;
+  pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }>;
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;

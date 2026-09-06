@@ -1,3 +1,4 @@
+export * from "./agents/files.ts";
 export * from "./cassette.ts";
 export * from "./commands/loader.ts";
 export * from "./config/loader.ts";

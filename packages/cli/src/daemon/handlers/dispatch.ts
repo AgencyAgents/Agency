@@ -393,7 +393,10 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           const agentCaps = capabilitiesForAgent(agentGate, childTools);
 
           const agentSystemPrompt = composeSystemPrompt({
-            base: `You are ${a.handle}, a ${agent.role} agent. Complete the given brief concisely.`,
+            base:
+              agent.systemPrompt && agent.systemPrompt.length > 0
+                ? agent.systemPrompt
+                : `You are ${a.handle}, a ${agent.role} agent. Complete the given brief concisely.`,
             familyPresetOverlay: undefined,
             instructions: [],
             toolDescriptions: [],

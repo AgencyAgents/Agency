@@ -45,7 +45,7 @@ describe("daemon observability", () => {
   test("a turn's log lines persist to the rotated sink under one trace ID, with the API key redacted", async () => {
     const logsDir = tempDir("agency-daemon-logs-");
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempDir("agency-daemon-obs-root-"),
       instanceFile: join(tempDir("agency-daemon-inst-"), "instance.json"),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,
@@ -93,7 +93,7 @@ describe("daemon observability", () => {
     const eventsPath = join(telemetryDir, "telemetry", "events.jsonl");
 
     const off = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempDir("agency-daemon-obs-root-"),
       instanceFile: join(tempDir("agency-daemon-inst-"), "instance.json"),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,
@@ -115,7 +115,7 @@ describe("daemon observability", () => {
 
     const configDir = writeConfigDir({ telemetryEnabled: true });
     const on = await createAgentDaemon({
-      workspaceRoot: "/repo/fake",
+      workspaceRoot: tempDir("agency-daemon-obs-root-"),
       instanceFile: join(tempDir("agency-daemon-inst-"), "instance.json"),
       adapterFor: () => textAdapter("hello"),
       http: noopHttp,

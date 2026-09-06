@@ -45,7 +45,7 @@ test("debug a5 ask path", async () => {
     handler: async () => ({ content: "ran rm -rf build" }),
   };
   const daemon = await createAgentDaemon({
-    workspaceRoot: "/repo/fake",
+    workspaceRoot: dir,
     instanceFile: join(dir, "i.json"),
     adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
     tools: [dangerousTool],

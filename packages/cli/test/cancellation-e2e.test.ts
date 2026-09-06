@@ -27,6 +27,12 @@ function tempInstanceFile(): string {
   return join(dir, "instance.json");
 }
 
+function tempRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-cancel-root-"));
+  dirs.push(dir);
+  return dir;
+}
+
 function waitForMarker(path: string, timeoutMs = 5000): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();
@@ -156,7 +162,7 @@ describe("cancellation e2e — Esc -> abort -> partial output -> resumable", () 
     let adapter: ProviderAdapter = toolCallingAdapter("bash", { command: "sleep 60" }, "second turn ok");
 
     const daemon = await createAgentDaemon({
-      workspaceRoot: "/repo/cancel-e2e",
+      workspaceRoot: tempRoot(),
       instanceFile: tempInstanceFile(),
       adapterFor: () => adapter,
       http: noopHttp,

@@ -60,7 +60,7 @@ describe("plugin install", () => {
     expect(result).toContain("UnknownEvent");
     expect(result).toContain("Commands installed:");
     expect(result).toContain("help.md");
-    expect(result).toContain("Agents found");
+    expect(result).toContain("Agents installed");
     expect(result).toContain("custom-agent");
     expect(result).toContain("receipt.json");
 
@@ -68,6 +68,7 @@ describe("plugin install", () => {
     expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "skills", "test-plugin", "receipt.json"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(true);
 
     // Verify receipt contents
     const receiptText = require("node:fs").readFileSync(
@@ -79,6 +80,7 @@ describe("plugin install", () => {
     expect(receipt.pluginVersion).toBe("1.2.3");
     expect(receipt.skillsInstalled).toEqual(["my-skill"]);
     expect(receipt.commandsInstalled).toEqual(["help.md"]);
+    expect(receipt.agentsInstalled).toEqual(["custom-agent"]);
     expect(typeof receipt.installedAt).toBe("string");
   });
 
@@ -170,6 +172,7 @@ describe("plugin remove", () => {
     // Verify installed
     expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(true);
 
     // Remove
     const result = pluginRemoveCmd("test-plugin", ws);
@@ -180,6 +183,7 @@ describe("plugin remove", () => {
     expect(existsSync(join(ws, ".agency", "skills", "test-plugin"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "skills", "my-skill"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(false);
+    expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(false);
   });
 
   test("errors on unknown plugin name", () => {
