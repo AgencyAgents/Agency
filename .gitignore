@@ -4,6 +4,8 @@ AGENTS.md
 AGENTS.local.md
 HANDOFF.local.md
 docs/why-agency.local.md
+docs/rooms.md
+docs/comparison.md
 *.local.md
 
 node_modules/
