@@ -243,7 +243,7 @@ describe("B4 team RPC", () => {
     }
   });
 
-  it("agent_lifecycle events broadcast on team.<sessionId> stream", async () => {
+  it("agent_lifecycle events broadcast on team.shared with the child session", async () => {
     const cfg = {
       agents: {
         leader: {
@@ -268,14 +268,22 @@ describe("B4 team RPC", () => {
     clients.push(client);
 
     const agents = (await client.call("agents_list", {})) as Array<{ handle: string; sessionId: string }>;
-    const porter = agents.find((a) => a.handle === "porter")!;
+    expect(agents.some((a) => a.handle === "porter")).toBe(true);
     const events: unknown[] = [];
-    client.on(`team.${porter.sessionId}` as never, (p) => events.push(p));
-    client.subscribe(`team.${porter.sessionId}`);
+    client.on("team.shared" as never, (p) => events.push(p));
+    client.subscribe("team.shared");
 
     await client.call("dispatch_compare", { handles: ["porter"], prompt: "do work" });
     await new Promise((r) => setTimeout(r, 80));
-    expect(events.some((e) => (e as { state?: string }).state === "working")).toBe(true);
+    const working = events.filter(
+      (e) =>
+        (e as { handle?: string; state?: string }).handle === "porter" &&
+        (e as { state?: string }).state === "working",
+    );
+    expect(working.length).toBeGreaterThan(0);
+    expect(
+      (working[0] as { sessionId?: string }).sessionId ?? (working[0] as { detail?: string }).detail,
+    ).toBeDefined();
   });
 
   it("dispatch tool renderResult produces one collapsed line per agent", async () => {

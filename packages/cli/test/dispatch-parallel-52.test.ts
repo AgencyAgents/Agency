@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,6 +125,12 @@ function toolResultText(result: RunTurnRpcResult): string {
 
 async function startDaemon(state: { active: number; maxActive: number; childBriefs: string[] }) {
   const root = tempDir("agency-dp52-root-");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "qa"], { cwd: root });
+  writeFileSync(join(root, "app.ts"), "export const v = 1;\n");
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "init"], { cwd: root });
   const sessionsDir = tempDir("agency-dp52-sess-");
   const daemon = await createAgentDaemon({
     workspaceRoot: root,

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,6 +158,17 @@ function tempRoot(): string {
   return dir;
 }
 
+function gitRoot(): string {
+  const dir = tempRoot();
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "qa"], { cwd: dir });
+  writeFileSync(join(dir, "app.ts"), "export const v = 1;\n");
+  execFileSync("git", ["add", "."], { cwd: dir });
+  execFileSync("git", ["commit", "-qm", "init"], { cwd: dir });
+  return dir;
+}
+
 describe("per-agent permissions", () => {
   it("agents_list includes agents from config with permissions", async () => {
     const cfg = {
@@ -211,7 +223,7 @@ describe("per-agent permissions", () => {
   });
 
   it("dispatched planner is offered no bash", async () => {
-    const root = tempRoot();
+    const root = gitRoot();
     const spy = { calls: [] as SpyCall[] };
     const adapter = spyAdapter(spy, (text, toolResult) => {
       if (toolResult.length > 0) return { kind: "text", text: "parent done" };

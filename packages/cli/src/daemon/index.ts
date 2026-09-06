@@ -64,6 +64,7 @@ import {
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
+import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
   type AgentDaemon,
   type AgentDaemonOptions,
@@ -362,7 +363,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         } catch {}
       } catch {}
       (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
-      const ownerHandle = teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+      let ownerHandle: string | undefined;
+      for (const team of teamContexts.values()) {
+        const meta = team.sessions.get(sessionId);
+        if (meta) {
+          ownerHandle = meta.handle;
+          break;
+        }
+      }
+      ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
       if (ownerHandle) {
         const ownerGate = gateForAgent(ownerHandle);
         if (ownerGate !== gate) {
@@ -410,8 +419,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       }
     },
   });
-  const teamCost = new Map<string, number>();
-  const teamTotal: { value: number } = { value: 0 };
+  const teamContexts = new Map<string, TeamContext>();
+  const teamFor = (parentSessionId: string): TeamContext => {
+    let team = teamContexts.get(parentSessionId);
+    if (!team) {
+      team = createTeamContext(parentSessionId);
+      teamContexts.set(parentSessionId, team);
+    }
+    return team;
+  };
   const dispatchLog = new DispatchStateStore();
   try {
     const restored = await DispatchStateStore.load(join(todoSessionsDir, "dispatch-state.json"));
@@ -419,9 +435,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   } catch (error: unknown) {
     warnPersistence("dispatch-state restore", error);
   }
-  const agentInboxes = new Map<string, import("@agency/schema").Message[]>();
   const sessionInboxes = new Map<string, import("@agency/schema").Message[]>();
-  const agentStates = new Map<string, "idle" | "working" | "blocked" | "failed">();
 
   // Session-scoped "always allow" grants: one manager per session id, persisted
   // to disk so grants survive daemon restart.
@@ -474,11 +488,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     sessionScopes,
     getOrCreateScope,
     teamRegistry,
-    agentInboxes,
+    teamContexts,
+    teamFor,
     sessionInboxes,
-    agentStates,
-    teamCost,
-    teamTotal,
     gate,
     gateForAgent,
     isReadOnlyAgent,

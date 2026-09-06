@@ -23,6 +23,7 @@ import {
   type SessionScope,
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
+import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
   oauthOverridesFor,
@@ -270,8 +271,8 @@ export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): r
 }
 
 export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {
-  const { gate, gateForAgent, teamRegistry } = ctx;
-  const ownerHandle = teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+  const { gate, gateForAgent } = ctx;
+  const ownerHandle = handleForSession(ctx, sessionId);
   return ownerHandle ? gateForAgent(ownerHandle) : gate;
 }
 

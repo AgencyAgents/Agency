@@ -52,6 +52,7 @@ import type { DaemonServer } from "@agency/rpc";
 import type { Message, StopReason } from "@agency/schema";
 import type { Telemetry } from "@agency/telemetry";
 import type { SessionScope, ToolSpec as ToolsToolSpec } from "@agency/tools";
+import type { TeamContext } from "./team-context.ts";
 
 export type { SystemReminder };
 
@@ -499,11 +500,9 @@ export interface DaemonContext {
   sessionScopes: Map<string, SessionScope>;
   getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
   teamRegistry: AgentRegistry;
-  agentInboxes: Map<string, Message[]>;
+  teamContexts: Map<string, TeamContext>;
+  teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;
-  agentStates: Map<string, "idle" | "working" | "blocked" | "failed">;
-  teamCost: Map<string, number>;
-  teamTotal: { value: number };
   gate: PermissionsGate;
   gateForAgent: (handle: string) => PermissionsGate;
   isReadOnlyAgent: (handle: string) => boolean;

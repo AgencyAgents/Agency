@@ -5,7 +5,6 @@ import {
   leanBrief,
   leanPrompt,
   leanSummary,
-  loadTraceSpansSync,
   newEntryId,
   runChildTurn,
   spawnParallel,
@@ -14,10 +13,19 @@ import { clampEffortForModel, classifyEffortFromText, resolveApiKey, Scheduler }
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
+import {
+  agentsListPayload,
+  childKey,
+  childSessionIdFor,
+  costUsdForHandle,
+  drainParentInbox,
+  latestChildAnywhere,
+  latestChildSession,
+} from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor } from "../types.ts";
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
-  const { agentInboxes, agentStates, catalogModel, config, logger, resolveAgentModel, teamRegistry } = ctx;
+  const { catalogModel, config, logger, resolveAgentModel, teamRegistry } = ctx;
   const cfg = config as unknown as {
     agents?: Record<
       string,
@@ -58,8 +66,6 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         sessionId: `team-${handle}`,
         mailbox: [],
       });
-      agentInboxes.set(handle, []);
-      agentStates.set(handle, "idle");
     }
   }
   // Enforce leader must be enabled
@@ -72,47 +78,10 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
   }
 }
 
-export function costUsdForHandle(ctx: DaemonContext, handle: string): number {
-  const { teamCost, teamRegistry, todoSessionsDir } = ctx;
-  const agent = teamRegistry.get(handle);
-  if (!agent) return 0;
-  let traced = 0;
-  try {
-    const spans = loadTraceSpansSync(todoSessionsDir, agent.sessionId);
-    traced = spans.filter((s) => s.kind === "model").reduce((sum, s) => sum + (s.attributes.cost ?? 0), 0);
-  } catch {}
-  return Math.max(traced, teamCost.get(agent.sessionId) ?? 0);
-}
-
-export function agentsListPayload(ctx: DaemonContext): Array<{
-  handle: string;
-  role: string;
-  provider: string;
-  model: string;
-  effort: string;
-  state: string;
-  sessionId: string;
-  costUsd: number;
-}> {
-  const { agentStates, teamRegistry } = ctx;
-  return teamRegistry.list().map((a) => ({
-    handle: a.handle,
-    role: a.role,
-    provider: a.provider,
-    model: a.model ?? "",
-    effort: a.effort,
-    state: agentStates.get(a.handle) ?? "idle",
-    sessionId: a.sessionId,
-    costUsd: costUsdForHandle(ctx, a.handle),
-  }));
-}
-
 export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
   const {
     activeControllers,
     adapterFor,
-    agentInboxes,
-    agentStates,
     approvalManagers,
     boardStore,
     broadcast,
@@ -130,9 +99,9 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     providers,
     redactor,
     sessionScopes,
-    teamCost,
+    teamContexts,
+    teamFor,
     teamRegistry,
-    teamTotal,
     todoSessionsDir,
     todoStore,
     warnPersistence,
@@ -170,22 +139,36 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     } catch (error: unknown) {
       warnPersistence("agent_message append", error);
     }
-    const box = agentInboxes.get(to);
-    if (box) box.push({ role: "user", content: [{ type: "text", text: `[from ${from}] ${body}` }] });
-    else {
+    const box: Message = { role: "user", content: [{ type: "text", text: `[from ${from}] ${body}` }] };
+    if (sessionId !== undefined) {
+      // Scoped delivery: only this parent's latest child for `to` sees
+      // it, so sibling parents dispatching the same handle stay deaf.
+      const team = teamContexts.get(sessionId);
+      const childSid = team ? latestChildSession(team, to) : undefined;
+      const meta = childSid ? team?.sessions.get(childSid) : undefined;
+      if (team && meta) {
+        const inbox = team.agentInboxes.get(meta.childKey) ?? [];
+        team.agentInboxes.set(meta.childKey, inbox);
+        inbox.push(box);
+      } else {
+        const mbox = teamRegistry.get(to)?.mailbox;
+        if (mbox) mbox.push(box);
+      }
+    } else {
       const mbox = teamRegistry.get(to)?.mailbox;
-      if (mbox) mbox.push({ role: "user", content: [{ type: "text", text: `[from ${from}] ${body}` }] });
+      if (mbox) mbox.push(box);
     }
     try {
       eventBus.emit("agent.message", { from, to, body });
     } catch {}
     return { delivered: true };
   };
-  handlers.agents_list = async () => {
-    return agentsListPayload(ctx);
+  handlers.agents_list = async (rawParams) => {
+    const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
+    return agentsListPayload(ctx, sessionId);
   };
   handlers.agent_history = async (rawParams) => {
-    const { handle } = rawParams as { handle: string };
+    const { handle, sessionId } = rawParams as { handle: string; sessionId?: string };
     if (typeof handle !== "string" || handle.length === 0) {
       throw new AgencyError(ErrorCode.INTERNAL, "agent_history requires handle", { source: "team" });
     }
@@ -193,20 +176,30 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     if (!agent) {
       throw new AgencyError(ErrorCode.INTERNAL, `unknown handle: ${handle}`, { source: "team" });
     }
-    const sid = agent.sessionId;
+    const team = sessionId !== undefined ? teamContexts.get(sessionId) : undefined;
+    const sid =
+      (team ? latestChildSession(team, handle) : undefined) ??
+      (sessionId === undefined ? latestChildAnywhere(ctx, handle) : undefined) ??
+      agent.sessionId;
     const entries = todoStore.load(sid);
     const tip = todoStore.latestTip(entries) ?? null;
     const messages = tip ? todoStore.messagesFor(entries, tip) : [];
     return { handle, sessionId: sid, entries, messages };
   };
-  handlers.team_status = async () => {
-    const agents = agentsListPayload(ctx);
+  handlers.team_status = async (rawParams) => {
+    const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
+    const agents = agentsListPayload(ctx, sessionId);
     const todo = boardStore.list();
     const costTotal = agents.reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
     return { agents, todo, costTotal };
   };
   handlers.dispatch_compare = async (rawParams) => {
-    const { handles, prompt, effort } = rawParams as { handles: string[]; prompt: string; effort?: string };
+    const { handles, prompt, effort, sessionId } = rawParams as {
+      handles: string[];
+      prompt: string;
+      effort?: string;
+      sessionId?: string;
+    };
     if (!Array.isArray(handles) || handles.length === 0) {
       throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires handles", {
         source: "team",
@@ -217,6 +210,9 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         source: "team",
       });
     }
+    const parentSessionId = sessionId ?? "default";
+    const team = teamFor(parentSessionId);
+    const batchId = team.nextBatchId++;
     const leanPromptText = leanPrompt(prompt);
     try {
       broadcast(`team.shared`, { type: "dispatch_compare_start", count: handles.length, handles });
@@ -231,26 +227,30 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         }
         const compareBudgets = (config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } })
           .budgets;
-        if (compareBudgets?.teamUsd !== undefined && teamTotal.value >= compareBudgets.teamUsd) {
+        if (compareBudgets?.teamUsd !== undefined && team.teamTotal.value >= compareBudgets.teamUsd) {
           return {
             handle,
-            result: `${handle}: team budget exceeded: ${teamTotal.value} >= ${compareBudgets.teamUsd}`,
+            result: `${handle}: team budget exceeded: ${team.teamTotal.value} >= ${compareBudgets.teamUsd}`,
           };
         }
-        const spentForHandle = teamCost.get(agent.sessionId) ?? 0;
+        const spentForHandle = costUsdForHandle(ctx, handle);
         if (compareBudgets?.perAgentUsd !== undefined && spentForHandle >= compareBudgets.perAgentUsd) {
           return {
             handle,
             result: `${handle}: budget exceeded: per-agent ${spentForHandle} >= ${compareBudgets.perAgentUsd}`,
           };
         }
-        const childSessionId = agent.sessionId;
+        const key = childKey(parentSessionId, handle, batchId);
+        const childSessionId = childSessionIdFor(parentSessionId, handle, batchId);
+        team.sessions.set(childSessionId, { handle, batchId, childKey: key });
         try {
           todoStore.create(childSessionId);
         } catch (error: unknown) {
           warnPersistence("todoStore.create", error);
         }
         await getOrCreateScope(childSessionId, handle);
+        const compareScope = sessionScopes.get(childSessionId);
+        if (compareScope) compareScope.teamId = parentSessionId;
         const resolvedEffort =
           effort ?? (agent.effort === "auto" ? classifyEffortFromText(prompt) : agent.effort);
         // --- Real turn execution (concurrent per handle) ---
@@ -261,7 +261,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
           resolvedEffort as import("@agency/providers").EffortLevel,
           childModelInfo,
         );
-        agentStates.set(handle, "working");
+        team.agentStates.set(key, "working");
         if (teamRegistry.list().length > 1) {
           try {
             broadcast(`team.${childSessionId}`, {
@@ -349,11 +349,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             doomLoopDetection: true,
             drainMailbox: () => {
               const drained: import("@agency/schema").Message[] = [];
-              const box = agentInboxes.get(handle);
-              if (box && box.length > 0) {
-                drained.push(...box);
-                box.length = 0;
-              }
+              drained.push(...drainParentInbox(team, handle));
               const reg = teamRegistry.get(handle)?.mailbox;
               if (reg && reg.length > 0) {
                 drained.push(...reg);
@@ -377,8 +373,8 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
           const costUsd =
             (childResult.usage.inputTokens / 1_000_000) * childModelInfo.pricing.inputPerMTok +
             (childResult.usage.outputTokens / 1_000_000) * childModelInfo.pricing.outputPerMTok;
-          teamCost.set(childSessionId, (teamCost.get(childSessionId) ?? 0) + costUsd);
-          teamTotal.value += costUsd;
+          team.teamCost.set(childSessionId, (team.teamCost.get(childSessionId) ?? 0) + costUsd);
+          team.teamTotal.value += costUsd;
         }
 
         const durationMs = Date.now() - startMs;
@@ -403,7 +399,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         }
 
         if (childError) {
-          agentStates.set(handle, "failed");
+          team.agentStates.set(key, "failed");
           try {
             const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
             await todoStore
@@ -437,7 +433,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             result: `${handle}: ${childError instanceof Error ? childError.message : String(childError)}`,
           };
         } else {
-          agentStates.set(handle, "idle");
+          team.agentStates.set(key, "idle");
           try {
             const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
             await todoStore
@@ -508,7 +504,10 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
               error: error instanceof Error ? error.message : String(error),
             });
           });
-        agentStates.set(h, "idle");
+        const team = teamContexts.get(sid);
+        if (team) {
+          for (const stateKey of team.agentStates.keys()) team.agentStates.set(stateKey, "idle");
+        }
         if (teamRegistry.list().length > 1) {
           const agent = teamRegistry.get(h);
           const stream = agent ? `team.${agent.sessionId}` : `team.${sid}`;

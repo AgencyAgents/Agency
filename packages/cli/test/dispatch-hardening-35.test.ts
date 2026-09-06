@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,8 +106,17 @@ async function startDaemon(opts: {
   budgets?: Record<string, number>;
   adapter?: ProviderAdapter;
   onCall?: () => void;
+  gitRepo?: boolean;
 }) {
   const root = tempDir("agency-dh35-root-");
+  if (opts.gitRepo) {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "qa"], { cwd: root });
+    writeFileSync(join(root, "app.ts"), "export const v = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: root });
+  }
   const sessionsDir = tempDir("agency-dh35-sess-");
   let calls = 0;
   const inner = opts.adapter ?? dispatchAdapter();
@@ -133,10 +143,10 @@ async function startDaemon(opts: {
 }
 
 describe("dispatch hardening (item 35)", () => {
-  it("dispatch tool path: real turns, per-child traces, priced cost, idle lifecycle, worktree fallback", async () => {
-    // workspaceRoot is a plain tmp dir (no git repo): createWorktree fails and
-    // the daemon must fall back to the workspace root without failing dispatch.
-    const { client, sessionsDir } = await startDaemon({});
+  it("dispatch tool path: real turns, per-child traces, priced cost, idle lifecycle, namespaced worktrees", async () => {
+    // Real git repo: peers get .agency/worktrees/<parent>/<handle> and a
+    // child session id carrying parent plus batch, never team-<handle>.
+    const { client, sessionsDir } = await startDaemon({ gitRepo: true });
     const result = (await client.call("run_turn", {
       turnId: "dh35-parent",
       provider: "anthropic",
@@ -164,8 +174,8 @@ describe("dispatch hardening (item 35)", () => {
       expect(a.costUsd).toBeGreaterThan(0);
     }
     // traceRecorder per child: one trace file per dispatched session.
-    expect(existsSync(join(sessionsDir, "team-w1.trace.jsonl"))).toBe(true);
-    expect(existsSync(join(sessionsDir, "team-w2.trace.jsonl"))).toBe(true);
+    expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w1-b0.trace.jsonl"))).toBe(true);
+    expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w2-b0.trace.jsonl"))).toBe(true);
   });
 
   it("dispatch_compare refuses once the team budget is hit (no spawn, no model call)", async () => {

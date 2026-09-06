@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildEnvironmentBlock,
@@ -9,6 +10,7 @@ import {
   leanBrief,
   leanPrompt,
   leanSummary,
+  listWorktrees,
   makeWorktreeReadOnly,
   newEntryId,
   PromiseBarrier,
@@ -20,14 +22,20 @@ import { checkCostForecast, type DispatchAgentForecast, estimateDispatchCost } f
 import { classifyEffortFromText, resolveApiKey, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
+import {
+  childKey,
+  childSessionIdFor,
+  costUsdForHandle,
+  drainParentInbox,
+  worktreeBranchFor,
+  worktreeError,
+  worktreePathFor,
+} from "../team-context.ts";
 import { checkTeamBudgets, type DaemonContext, oauthOverridesFor, type TeamBudgets } from "../types.ts";
-import { costUsdForHandle } from "./team.ts";
 
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
     adapterFor,
-    agentInboxes,
-    agentStates,
     broadcast,
     capabilitiesForAgent,
     catalogModel,
@@ -45,9 +53,8 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
     redactor,
     resolveAgentModel,
     sessionScopes,
-    teamCost,
+    teamFor,
     teamRegistry,
-    teamTotal,
     todoSessionsDir,
     todoStore,
     warnPersistence,
@@ -63,11 +70,15 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
 
       // Hard budget caps: throw before spawning any peer.
       const budgets = (config as unknown as { budgets?: TeamBudgets }).budgets;
+      // Per-parent team context: states, inboxes, and cost counters live
+      // here, keyed by child key, so sibling parents never intersect.
+      const team = teamFor(parentSessionId);
+      const batchId = team.nextBatchId++;
       try {
         checkTeamBudgets({
           budgets,
           perAgentSpend: new Map(input.agents.map((a) => [a.handle, costUsdForHandle(daemon, a.handle)])),
-          teamTotal: teamTotal.value,
+          teamTotal: team.teamTotal.value,
           handles: input.agents.map((a) => a.handle),
         });
       } catch (error) {
@@ -119,6 +130,60 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
       };
       const dispatchBarrier = new PromiseBarrier<string>(input.agents.length, barrierNotify);
       const batchScheduler = new Scheduler({ maxConcurrent: Math.max(8, input.agents.length) });
+      const isOwnWorktree = async (wtPath: string): Promise<boolean> => {
+        try {
+          const listed = await listWorktrees(options.workspaceRoot);
+          const norm = (p: string): string =>
+            process.platform === "win32" ? p.replace(/\//g, "\\").toLowerCase() : p;
+          return listed.some((w) => norm(w.path) === norm(wtPath));
+        } catch {
+          return false;
+        }
+      };
+      const abortWorktreePeer = async (params: {
+        slot: number;
+        key: string;
+        childSessionId: string;
+        handle: string;
+        wtPath: string;
+        cause: unknown;
+      }): Promise<void> => {
+        const failure = worktreeError(params.handle, params.wtPath, params.cause);
+        team.agentStates.set(params.key, "failed");
+        try {
+          const tip = todoStore.latestTip(todoStore.load(params.childSessionId)) ?? null;
+          await todoStore
+            .append(params.childSessionId, {
+              type: "agent_lifecycle",
+              parentId: tip,
+              handle: params.handle,
+              state: "failed",
+              detail: failure.message,
+            })
+            .catch((appendError: unknown) => {
+              warnPersistence("agent_lifecycle append", appendError);
+            });
+        } catch (loadError: unknown) {
+          warnPersistence("agent_lifecycle load", loadError);
+        }
+        try {
+          broadcast(`team.${params.childSessionId}`, {
+            type: "agent_lifecycle",
+            handle: params.handle,
+            state: "failed",
+            detail: failure.message,
+          });
+        } catch {}
+        try {
+          broadcast(`team.shared`, {
+            type: "agent_lifecycle",
+            handle: params.handle,
+            state: "failed",
+            detail: failure.message,
+          });
+        } catch {}
+        dispatchBarrier.complete(params.slot, `${params.handle}: ${failure.message}`);
+      };
       try {
         broadcast(`team.shared`, {
           type: "dispatch_start",
@@ -153,14 +218,14 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           const dispatchBudgets = (
             config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } }
           ).budgets;
-          if (dispatchBudgets?.teamUsd !== undefined && teamTotal.value >= dispatchBudgets.teamUsd) {
+          if (dispatchBudgets?.teamUsd !== undefined && team.teamTotal.value >= dispatchBudgets.teamUsd) {
             dispatchBarrier.complete(
               slot,
               formatSkipLine({
                 index: slot,
                 handle: a.handle,
                 reason: "team-budget-exceeded",
-                detail: `team budget exceeded: ${teamTotal.value} >= ${dispatchBudgets.teamUsd}`,
+                detail: `team budget exceeded: ${team.teamTotal.value} >= ${dispatchBudgets.teamUsd}`,
               }),
             );
             dispatchLog.append({
@@ -172,7 +237,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
             });
             return;
           }
-          const spentForAgent = teamCost.get(agent.sessionId) ?? 0;
+          const spentForAgent = costUsdForHandle(daemon, a.handle);
           if (dispatchBudgets?.perAgentUsd !== undefined && spentForAgent >= dispatchBudgets.perAgentUsd) {
             dispatchBarrier.complete(
               slot,
@@ -199,7 +264,9 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           ).effort;
           const effort =
             requestedEffort ?? (agent.effort === "auto" ? classifyEffortFromText(a.brief) : agent.effort);
-          const childSessionId = agent.sessionId;
+          const key = childKey(parentSessionId, a.handle, batchId);
+          const childSessionId = childSessionIdFor(parentSessionId, a.handle, batchId);
+          team.sessions.set(childSessionId, { handle: a.handle, batchId, childKey: key });
           try {
             todoStore.create(childSessionId);
           } catch {
@@ -216,24 +283,39 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               payload: { sessionId: childSessionId, handle: a.handle, parentSessionId },
             });
           } catch {}
-          await getOrCreateScope(childSessionId, a.handle);
+          const scope = await getOrCreateScope(childSessionId, a.handle);
+          scope.teamId = parentSessionId;
           const caps = agent.capabilities;
           const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
           if (writeCapable) {
-            const wtPath = join(options.workspaceRoot, ".agency", "worktrees", a.handle);
-            try {
-              await createWorktree(options.workspaceRoot, wtPath);
-              const sc = sessionScopes.get(childSessionId);
-              if (isReadOnlyAgent(a.handle)) {
-                const scratchDir = join(".agency", "scratch", a.handle);
-                const scratchAbs = makeWorktreeReadOnly(wtPath, scratchDir);
-                if (sc) sc.bashState.cwd = scratchAbs;
-              } else {
-                if (sc) sc.bashState.cwd = wtPath;
+            const wtPath = worktreePathFor(options.workspaceRoot, parentSessionId, a.handle);
+            const wtBranch = worktreeBranchFor(parentSessionId, a.handle, batchId);
+            let worktreeReady = existsSync(wtPath);
+            if (!worktreeReady) {
+              try {
+                await createWorktree(options.workspaceRoot, wtPath, wtBranch);
+                worktreeReady = true;
+              } catch (createError: unknown) {
+                worktreeReady = await isOwnWorktree(wtPath);
+                if (!worktreeReady) {
+                  await abortWorktreePeer({
+                    slot,
+                    key,
+                    childSessionId,
+                    handle: a.handle,
+                    wtPath,
+                    cause: createError,
+                  });
+                  return;
+                }
               }
-            } catch {
-              const sc = sessionScopes.get(childSessionId);
-              if (sc) sc.bashState.cwd = options.workspaceRoot;
+            }
+            const sc = sessionScopes.get(childSessionId);
+            if (isReadOnlyAgent(a.handle)) {
+              const scratchAbs = makeWorktreeReadOnly(wtPath, `scratch-${batchId}`);
+              if (sc) sc.bashState.cwd = scratchAbs;
+            } else {
+              if (sc) sc.bashState.cwd = wtPath;
             }
           }
           const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
@@ -248,7 +330,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
             .catch((error: unknown) => {
               warnPersistence("agent_lifecycle append", error);
             });
-          agentStates.set(a.handle, "working");
+          team.agentStates.set(key, "working");
           try {
             eventBus.emit("agent.lifecycle", { handle: a.handle, state: "working" });
           } catch {}
@@ -348,11 +430,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               signal: ctx.signal,
               drainMailbox: () => {
                 const msgs: import("@agency/schema").Message[] = [];
-                const box = agentInboxes.get(a.handle);
-                if (box && box.length > 0) {
-                  msgs.push(...box);
-                  box.length = 0;
-                }
+                msgs.push(...drainParentInbox(team, a.handle));
                 const reg = teamRegistry.get(a.handle)?.mailbox;
                 if (reg && reg.length > 0) {
                   msgs.push(...reg);
@@ -395,7 +473,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           }
 
           if (childError) {
-            agentStates.set(a.handle, "failed");
+            team.agentStates.set(key, "failed");
             try {
               const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
               await todoStore
@@ -439,7 +517,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               status: "dispatched",
             });
           } else {
-            agentStates.set(a.handle, "idle");
+            team.agentStates.set(key, "idle");
             try {
               const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
               await todoStore
@@ -460,8 +538,8 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               const costUsd =
                 (childResult.usage.inputTokens / 1_000_000) * childModelInfo.pricing.inputPerMTok +
                 (childResult.usage.outputTokens / 1_000_000) * childModelInfo.pricing.outputPerMTok;
-              teamCost.set(childSessionId, (teamCost.get(childSessionId) ?? 0) + costUsd);
-              teamTotal.value += costUsd;
+              team.teamCost.set(childSessionId, (team.teamCost.get(childSessionId) ?? 0) + costUsd);
+              team.teamTotal.value += costUsd;
             }
             if (teamRegistry.list().length > 1) {
               try {

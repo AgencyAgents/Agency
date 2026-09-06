@@ -3,6 +3,7 @@ import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agenc
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { SessionScope } from "@agency/tools";
+import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
   classifyEffortWithSmallModel,
   type DaemonContext,
@@ -17,7 +18,6 @@ import {
 import { applySlashCommand } from "./commands.ts";
 import { createTurnApproval } from "./plan.ts";
 import { generateSessionTitle } from "./session.ts";
-import { costUsdForHandle } from "./team.ts";
 import { writeTurnCassette } from "./trace.ts";
 
 export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
@@ -50,7 +50,6 @@ export async function executeTurn(
     activeControllers,
     activeTurnMeta,
     adapterFor,
-    agentInboxes,
     approvalsFor,
     broadcast,
     builtinsMode,
@@ -73,9 +72,9 @@ export async function executeTurn(
     schedulerFor,
     sessionInboxes,
     shellLabel,
-    teamCost,
+    teamContexts,
+    teamFor,
     teamRegistry,
-    teamTotal,
     telemetry,
     todoSessionsDir,
     todoStore,
@@ -207,18 +206,18 @@ export async function executeTurn(
         const budgets = (config as unknown as { budgets?: TeamBudgets }).budgets;
         const perAgentBudget = budgets?.perAgentUsd;
         const teamBudget = budgets?.teamUsd;
+        const childInfo = findChildSession(ctx, params.sessionId ?? "default");
+        const budgetParent = childInfo?.parentSessionId ?? params.sessionId ?? "default";
         if (perAgentBudget !== undefined) {
-          const agentForSession = teamRegistry
-            .list()
-            .find((a) => a.sessionId === (params.sessionId ?? "default"));
-          const spent = agentForSession
-            ? costUsdForHandle(ctx, agentForSession.handle)
-            : (teamCost.get(params.sessionId ?? "default") ?? 0);
+          const agentHandle = childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default");
+          const spent = agentHandle
+            ? costUsdForHandle(ctx, agentHandle, childInfo?.parentSessionId)
+            : (teamFor(budgetParent).teamCost.get(params.sessionId ?? "default") ?? 0);
           if (spent >= perAgentBudget)
             throw new Error(`budget exceeded: per-agent ${spent} >= ${perAgentBudget}`);
         }
-        if (teamBudget !== undefined && teamTotal.value >= teamBudget)
-          throw new Error(`team budget exceeded: ${teamTotal.value} >= ${teamBudget}`);
+        if (teamBudget !== undefined && teamFor(budgetParent).teamTotal.value >= teamBudget)
+          throw new Error(`team budget exceeded: ${teamFor(budgetParent).teamTotal.value} >= ${teamBudget}`);
 
         const modelInfo = catalogModel(resolvedProvider, resolvedModel);
         // Clamp the resolved thinking level to what the model actually supports
@@ -298,18 +297,25 @@ export async function executeTurn(
                 msgs.push(...queued);
                 queued.length = 0;
               }
-              const agentForSession = teamRegistry.list().find((a) => a.sessionId === sessionId);
-              const handle = agentForSession?.handle ?? (mentioned.length === 1 ? mentioned[0] : undefined);
-              if (handle === undefined) return msgs;
-              const box = agentInboxes.get(handle);
-              if (box && box.length > 0) {
-                msgs.push(...box);
-                box.length = 0;
-              }
-              const reg = teamRegistry.get(handle)?.mailbox;
-              if (reg && reg.length > 0) {
-                msgs.push(...reg);
-                reg.length = 0;
+              const child = findChildSession(ctx, sessionId);
+              if (child) {
+                const team = teamContexts.get(child.parentSessionId);
+                const box = team?.agentInboxes.get(child.childKey);
+                if (box && box.length > 0) {
+                  msgs.push(...box);
+                  box.length = 0;
+                }
+              } else {
+                const agentForSession = teamRegistry.list().find((a) => a.sessionId === sessionId);
+                const handle = agentForSession?.handle ?? (mentioned.length === 1 ? mentioned[0] : undefined);
+                if (handle === undefined) return msgs;
+                const team = teamContexts.get(sessionId);
+                if (team) msgs.push(...drainParentInbox(team, handle));
+                const reg = teamRegistry.get(handle)?.mailbox;
+                if (reg && reg.length > 0) {
+                  msgs.push(...reg);
+                  reg.length = 0;
+                }
               }
               return msgs;
             };
@@ -496,9 +502,10 @@ export async function executeTurn(
             (result.usage.outputTokens / 1_000_000) * modelInfo.pricing.outputPerMTok
           : 0;
         const sidKey = sessionId;
-        teamCost.set(sidKey, (teamCost.get(sidKey) ?? 0) + costUsd);
-        teamTotal.value += costUsd;
-        if (budgets?.teamUsd !== undefined && teamTotal.value >= budgets.teamUsd) {
+        const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
+        turnTeam.teamCost.set(sidKey, (turnTeam.teamCost.get(sidKey) ?? 0) + costUsd);
+        turnTeam.teamTotal.value += costUsd;
+        if (budgets?.teamUsd !== undefined && turnTeam.teamTotal.value >= budgets.teamUsd) {
           for (const c of activeControllers.values())
             try {
               c.abort();
