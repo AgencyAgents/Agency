@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rewriteRelativeImportExtensions": false,
+    "types": ["bun"]
+  },
+  "include": ["src", "test"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../guard" },
+    { "path": "../net" },
+    { "path": "../providers" },
+    { "path": "../telemetry" }
+  ]
+}

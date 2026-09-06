@@ -27,3 +27,4 @@ implemented. Unwired rows name what stands in for the mechanism today.
 | Session projector (SessionProjector, projectSessionView) | Yes, with tests | Yes: session_show and the SSE state frame both render through projectSessionView | None |
 | dispatch_compare via spawnParallel | Yes | Yes: the only production caller of spawnParallel | Lateral delegation replacing fan-out |
 | checkDepthGate | Yes | Yes: called by the dispatch tool | Flat team with no depth counter |
+| Eval harness (pass-rate and cost per task per roster) | Yes: `scoreReport` over `loadCassettes` with tests | Yes: run.ts replays cassettes through `replayTask` with zero provider calls and writes the baseline | Phase 6 conflict comparisons and Phase 8 reviewer-first cite the baseline |

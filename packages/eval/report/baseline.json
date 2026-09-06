@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "promptVersion": "1.0.0",
+  "scores": [
+    {
+      "roster": "solo",
+      "tasks": 3,
+      "completed": 2,
+      "passRate": 0.8333333333333334,
+      "costPerCompleted": 0.04893,
+      "totalUsd": 0.09786,
+      "inputTokens": 20000,
+      "outputTokens": 4000,
+      "cachedInputTokens": 8200,
+      "cacheHitRate": 0.41,
+      "conflicts": 0,
+      "wallClockMs": 60000,
+      "promptVersion": "1.0.0"
+    },
+    {
+      "roster": "team",
+      "tasks": 3,
+      "completed": 3,
+      "passRate": 1,
+      "costPerCompleted": 0.035286000000000005,
+      "totalUsd": 0.10585800000000001,
+      "inputTokens": 24400,
+      "outputTokens": 4600,
+      "cachedInputTokens": 13460,
+      "cacheHitRate": 0.5516393442622951,
+      "conflicts": 1,
+      "wallClockMs": 42000,
+      "promptVersion": "1.0.0"
+    }
+  ],
+  "pending": [
+    {
+      "roster": "reviewer-first",
+      "mapsTo": "solo",
+      "owner": "Phase 8"
+    }
+  ]
+}
