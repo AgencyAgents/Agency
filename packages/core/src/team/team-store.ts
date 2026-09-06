@@ -3,10 +3,10 @@ import type { AgentRegistry } from "./registry.ts";
 import { type BoardItem, type BoardStatus, BoardStore } from "./todo.ts";
 
 /**
- * A room is the persistent shared-work context for subagent delegation:
+ * A team is the persistent shared-work context for subagent delegation:
  * one shared goal, one lead, a member roster, and a shared todo list.
- * Inter-provider by construction — each member's provider/model/effort
- * lives on its AgentHandle; the room only tracks handles.
+ * Inter-provider by construction (each member's provider/model/effort
+ * lives on its AgentHandle; the team only tracks handles).
  */
 export interface Team {
   id: string;
@@ -18,7 +18,7 @@ export interface Team {
 }
 
 export interface CreateTeamOptions {
-  /** Explicit id (e.g. a session id). Defaults to `room-<n>`. */
+  /** Explicit id (e.g. a session id). Defaults to `team-<n>`. */
   id?: string;
   /** Extra members beyond the leader. */
   memberHandles?: string[];
@@ -43,7 +43,7 @@ function fail(reason: string): TeamOpResult {
 }
 
 /**
- * Persistent store for teams. Owns per-room shared-todo state (delegated
+ * Persistent store for teams. Owns per-team shared-todo state (delegated
  * to BoardStore, mirrored back onto Team.sharedTodos) and
  * mailbox broadcast via the bound AgentRegistry.
  */
@@ -58,18 +58,18 @@ export class TeamStore {
   create(goal: string, leaderHandle: string, opts: CreateTeamOptions = {}): Team {
     if (goal.trim().length === 0) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, "team goal must be non-empty", {
-        source: "team.room",
+        source: "team.store",
       });
     }
     if (leaderHandle.trim().length === 0) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, "team leader handle must be non-empty", {
-        source: "team.room",
+        source: "team.store",
       });
     }
     const id = opts.id ?? `team-${++this.counter}`;
     if (this.teams.has(id)) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, `team already exists: ${id}`, {
-        source: "team.room",
+        source: "team.store",
         context: { teamId: id },
       });
     }
@@ -77,7 +77,7 @@ export class TeamStore {
     for (const h of opts.memberHandles ?? []) {
       if (!members.includes(h)) members.push(h);
     }
-    const room: Team = {
+    const team: Team = {
       id,
       goal,
       leaderHandle,
@@ -85,11 +85,11 @@ export class TeamStore {
       sharedTodos: [...(opts.initialTodos ?? [])],
       createdAt: new Date().toISOString(),
     };
-    this.teams.set(id, room);
+    this.teams.set(id, team);
     this.todoStores.set(
       id,
       new BoardStore({
-        initial: room.sharedTodos,
+        initial: team.sharedTodos,
         persist: (todos) => {
           const current = this.teams.get(id);
           if (current) current.sharedTodos = [...todos];
@@ -97,8 +97,8 @@ export class TeamStore {
         },
       }),
     );
-    this.todoSeq.set(id, room.sharedTodos.length);
-    return room;
+    this.todoSeq.set(id, team.sharedTodos.length);
+    return team;
   }
 
   get(id: string): Team | undefined {
@@ -120,29 +120,29 @@ export class TeamStore {
   }
 
   addMember(teamId: string, handle: string): TeamOpResult {
-    const room = this.teams.get(teamId);
-    if (!room) return fail("team not found");
+    const team = this.teams.get(teamId);
+    if (!team) return fail("team not found");
     if (handle.trim().length === 0) return fail("handle must be non-empty");
-    if (room.memberHandles.includes(handle)) return fail(`already a member: ${handle}`);
-    room.memberHandles.push(handle);
+    if (team.memberHandles.includes(handle)) return fail(`already a member: ${handle}`);
+    team.memberHandles.push(handle);
     return { ok: true };
   }
 
   removeMember(teamId: string, handle: string): TeamOpResult {
-    const room = this.teams.get(teamId);
-    if (!room) return fail("team not found");
-    if (handle === room.leaderHandle) return fail("cannot remove leader");
-    const index = room.memberHandles.indexOf(handle);
+    const team = this.teams.get(teamId);
+    if (!team) return fail("team not found");
+    if (handle === team.leaderHandle) return fail("cannot remove leader");
+    const index = team.memberHandles.indexOf(handle);
     if (index < 0) return fail(`not a member: ${handle}`);
-    room.memberHandles.splice(index, 1);
+    team.memberHandles.splice(index, 1);
     return { ok: true };
   }
 
   appendTodo(teamId: string, content: string): BoardItem {
-    const room = this.requireTeam(teamId);
+    const team = this.requireTeam(teamId);
     if (content.trim().length === 0) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, "todo content must be non-empty", {
-        source: "team.room",
+        source: "team.store",
         context: { teamId },
       });
     }
@@ -152,7 +152,7 @@ export class TeamStore {
     const store = this.requireTodos(teamId);
     const next = [...store.list(), item];
     store.replace(next);
-    room.sharedTodos = [...next];
+    team.sharedTodos = [...next];
     return item;
   }
 
@@ -180,21 +180,21 @@ export class TeamStore {
   }
 
   /**
-   * Broadcast a message to every room member's mailbox. Returns the number
-   * of mailboxes written. Isolation: only this room's memberHandles are
-   * enqueued — members of other teams never see the message.
+   * Broadcast a message to every team member's mailbox. Returns the number
+   * of mailboxes written. Isolation: only this team's memberHandles are
+   * enqueued (members of other teams never see the message).
    */
   appendMessage(teamId: string, msg: Message, opts: BroadcastOptions = {}): number {
-    const room = this.requireTeam(teamId);
+    const team = this.requireTeam(teamId);
     if (!this.registry) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, "no agent registry bound to TeamStore", {
-        source: "team.room",
+        source: "team.store",
         context: { teamId },
       });
     }
     const excluded = new Set(opts.exclude ?? []);
     let delivered = 0;
-    for (const handle of room.memberHandles) {
+    for (const handle of team.memberHandles) {
       if (excluded.has(handle)) continue;
       if (this.registry.enqueue(handle, msg)) delivered++;
     }
@@ -202,24 +202,42 @@ export class TeamStore {
   }
 
   private requireTeam(teamId: string): Team {
-    const room = this.teams.get(teamId);
-    if (!room) {
+    const team = this.teams.get(teamId);
+    if (!team) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, `team not found: ${teamId}`, {
-        source: "team.room",
+        source: "team.store",
         context: { teamId },
       });
     }
-    return room;
+    return team;
   }
 
   private requireTodos(teamId: string): BoardStore {
     const store = this.todoStores.get(teamId);
     if (!store) {
       throw new AgencyError(ErrorCode.INTERNAL, `todo store missing for team: ${teamId}`, {
-        source: "team.room",
+        source: "team.store",
         context: { teamId },
       });
     }
     return store;
   }
+}
+
+/** One team per lead session: the team id derives from the lead session id. */
+export function teamIdForLeadSession(leadSessionId: string): string {
+  const clean = leadSessionId.replace(/[^A-Za-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
+  return `team-${clean.length > 0 ? clean : "session"}`;
+}
+
+export function ensureTeamForLeadSession(
+  store: TeamStore,
+  leadSessionId: string,
+  goal: string,
+  leaderHandle: string,
+): Team {
+  const id = teamIdForLeadSession(leadSessionId);
+  const existing = store.get(id);
+  if (existing) return existing;
+  return store.create(goal, leaderHandle, { id });
 }

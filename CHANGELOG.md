@@ -8,6 +8,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Perseverance legacy path**: the legacy import file is now `.omo/perseverance.json` (`LEGACY_PERSEVERANCE_FILE`), completing the rename with zero old-name references left. Clean break with no back-compat shim: legacy files already on disk under the previous name are no longer picked up, so move such a file to the new name to keep its state.
 - **Dispatch path**: `packages/cli/src/daemon.ts` runs delegation inline:
   `dispatch` tool with depth-1 nesting block, per-agent and team
   budget caps, cost forecast with approval gate, and concurrent peer turns
@@ -41,7 +42,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   so isolation is best-effort, not enforced.
 - **Bash isError + labels**: `packages/tools/src/builtins/bash.ts` now sets
   `isError` on non-zero exit and attaches a descriptive `label` to every
-  tool call, improving error attribution in swarm results.
+  tool call, improving error attribution in team dispatch results.
 - **Session titles**: `packages/core/src/sessions/titles.ts` auto-generates
   session titles from the first user message via `resolveSmallModel`,
   stored as `session_title` entries in the session file. There is no
@@ -69,7 +70,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Removed
 
-- `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, swarm, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments now exits 1 with an honest notice; use `agency -p "prompt"` for headless or `agency --help` for commands.
+- `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, team dispatch, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments now exits 1 with an honest notice; use `agency -p "prompt"` for headless or `agency --help` for commands.
 
 ### Added
 

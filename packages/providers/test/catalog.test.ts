@@ -11,6 +11,7 @@ import {
   loadModelsDevCatalog,
   MODELS_DEV_CACHE_FILE,
   ModelsDevCatalogSchema,
+  modelsDevUrl,
   saveModelsDevCatalog,
 } from "../src/catalog/models-dev.ts";
 import {
@@ -208,7 +209,25 @@ describe("loadModelsDevCatalog", () => {
     }
   });
 
-  test("OPENCODE_DISABLE_MODELS_FETCH skips the network entirely", async () => {
+  test("AGENCY_DISABLE_MODELS_FETCH skips the network entirely", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-catalog-test-"));
+    try {
+      const result = await loadModelsDevCatalog({
+        cacheDir: dir,
+        http: {
+          fetch: async () => {
+            throw new Error("must not be called");
+          },
+        },
+        env: { AGENCY_DISABLE_MODELS_FETCH: "1" },
+      });
+      expect(result.source).toBe("builtin");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("OPENCODE_DISABLE_MODELS_FETCH still works as a one-release fallback", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agency-catalog-test-"));
     try {
       const result = await loadModelsDevCatalog({
@@ -221,6 +240,13 @@ describe("loadModelsDevCatalog", () => {
         env: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
       });
       expect(result.source).toBe("builtin");
+      expect(
+        modelsDevUrl({
+          AGENCY_MODELS_URL: "https://a.example/x",
+          OPENCODE_MODELS_URL: "https://b.example/x",
+        }),
+      ).toBe("https://a.example/x");
+      expect(modelsDevUrl({ OPENCODE_MODELS_URL: "https://b.example/x" })).toBe("https://b.example/x");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -14,6 +14,7 @@ import {
   makeWorktreeReadOnly,
   newEntryId,
   PromiseBarrier,
+  planDispatchBatch,
   resolveDispatchTarget,
   runChildTurn,
   type ToolSpec,
@@ -36,6 +37,7 @@ import { checkTeamBudgets, type DaemonContext, oauthOverridesFor, type TeamBudge
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
     adapterFor,
+    boardStore,
     broadcast,
     capabilitiesForAgent,
     catalogModel,
@@ -191,8 +193,34 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           handles: input.agents.map((a) => a.handle),
         });
       } catch {}
+      const batchBudgets = (config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } })
+        .budgets;
+      const batchPlan = planDispatchBatch(
+        input.agents.map((a) => ({ handle: a.handle, brief: a.brief })),
+        {
+          resolveHandle: (handle) => {
+            const found = teamRegistry.get(handle);
+            return found ? { handle: found.handle } : undefined;
+          },
+          ...(batchBudgets === undefined ? {} : { budgets: batchBudgets }),
+          perAgentSpend: new Map(input.agents.map((a) => [a.handle, costUsdForHandle(daemon, a.handle)])),
+          teamTotal: team.teamTotal.value,
+        },
+      );
+      for (const skip of batchPlan.skips) {
+        dispatchBarrier.complete(skip.index, formatSkipLine(skip));
+        dispatchLog.append({
+          index: skip.index,
+          handle: skip.handle ?? input.agents[skip.index]?.handle ?? "unknown",
+          brief: input.agents[skip.index]?.brief ?? "",
+          status: "skipped",
+          reason: skip.reason,
+        });
+      }
+      const plannedTargets = new Set(batchPlan.targets.map((t) => t.index));
       const dispatchTasks = input.agents.map((a, slot) =>
         (async () => {
+          if (!plannedTargets.has(slot)) return;
           const agent = teamRegistry.get(a.handle);
           if (!agent) {
             dispatchBarrier.complete(
@@ -385,7 +413,12 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
 
           const childScope = sessionScopes.get(childSessionId);
           const childTools = childScope?.tools ?? [];
-          const agentGate = gateForAgent(a.handle);
+          const claimedItem = boardStore.list().find((item) => item.claimedBy === a.handle);
+          const claimedScope = claimedItem?.pathScope;
+          const agentGate =
+            claimedScope && claimedScope.length > 0
+              ? gateForAgent(a.handle).withItemScope(claimedScope)
+              : gateForAgent(a.handle);
           const offeredTools = childTools
             .filter((t) => agentGate.toolOffered(t.name, t.riskTier))
             // Depth-0 child isolation: subagents cannot dispatch or spawn.

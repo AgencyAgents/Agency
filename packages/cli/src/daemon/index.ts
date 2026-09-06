@@ -345,6 +345,39 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         }
       }
       ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
+      try {
+        const { createBoardTools } = await import("@agency/tools");
+        const filerHandle = ownerHandle ?? handle ?? "lead";
+        const filerGate = filerHandle === "lead" ? gate : gateForAgent(filerHandle);
+        const filerCfg = (
+          config as unknown as {
+            agents?: Record<string, { pathScope?: string[]; tools?: string[] }>;
+            budgets?: { perAgentUsd?: number };
+          }
+        ).agents?.[filerHandle];
+        const filerBudgets = (config as unknown as { budgets?: { perAgentUsd?: number } }).budgets;
+        const boardTools = createBoardTools({
+          backend: boardStore,
+          resolveFiler: () => ({
+            handle: filerHandle,
+            grants: {
+              pathScope: filerCfg?.pathScope ?? "*",
+              tools: filerCfg?.tools ?? "*",
+              ...(filerBudgets?.perAgentUsd === undefined ? {} : { budgetUsd: filerBudgets.perAgentUsd }),
+            },
+          }),
+          allowed: (tool) =>
+            filerGate.toolOffered(
+              tool,
+              tool === "board_read" || tool === "owners_read" ? "safe" : "moderate",
+            ),
+          workspaceRoot: options.workspaceRoot,
+        });
+        for (const t of boardTools) {
+          if (!scope.registry.has(t.name)) scope.registry.register(t);
+        }
+        (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
+      } catch {}
       if (ownerHandle) {
         const ownerGate = gateForAgent(ownerHandle);
         if (ownerGate !== gate) {

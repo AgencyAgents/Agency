@@ -61,7 +61,7 @@ describe("ProgressStore persistent state", () => {
       const a = new ProgressStore(root, { now: () => now });
       a.startTask("todos:2", { label: "2", title: "Second task", agent: "junior" });
       a.save();
-      expect(existsSync(join(root, ".omo", "boulder.json"))).toBe(true);
+      expect(existsSync(join(root, ".agency", "progress.json"))).toBe(true);
 
       now += 5_000;
       const b = new ProgressStore(root, { now: () => now });
@@ -129,22 +129,22 @@ describe("ProgressStore persistent state", () => {
     }
   });
 
-  test("existing orchestrator boulder.json is preserved, not clobbered", () => {
+  test("existing .omo/perseverance.json is imported, new state lands under .agency", () => {
     const root = workRoot();
     try {
       const legacy = {
         schema_version: 2,
         active_work_id: "w1",
         active_plan: "plan.md",
-        works: { w1: { work_id: "w1", agent: "atlas" } },
+        works: { w1: { work_id: "w1", agent: "worker" } },
         task_sessions: {},
       };
       mkdirSync(join(root, ".omo"), { recursive: true });
-      writeFileSync(join(root, ".omo", "boulder.json"), JSON.stringify(legacy), "utf8");
+      writeFileSync(join(root, ".omo", "perseverance.json"), JSON.stringify(legacy), "utf8");
       const store = new ProgressStore(root);
       store.startTask("todos:9", { label: "9", title: "Keep me" });
       store.save();
-      const roundTripped = JSON.parse(readFileSync(join(root, ".omo", "boulder.json"), "utf8")) as Record<
+      const roundTripped = JSON.parse(readFileSync(join(root, ".agency", "progress.json"), "utf8")) as Record<
         string,
         unknown
       >;
@@ -154,16 +154,17 @@ describe("ProgressStore persistent state", () => {
         ((roundTripped.task_sessions as Record<string, unknown>)["todos:9"] as Record<string, unknown>)
           .task_title,
       ).toBe("Keep me");
+      expect(readFileSync(join(root, ".omo", "perseverance.json"), "utf8")).toBe(JSON.stringify(legacy));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("corrupt boulder.json falls back to empty instead of throwing", () => {
+  test("corrupt .omo/perseverance.json falls back to empty instead of throwing", () => {
     const root = workRoot();
     try {
       mkdirSync(join(root, ".omo"), { recursive: true });
-      writeFileSync(join(root, ".omo", "boulder.json"), "{not json", "utf8");
+      writeFileSync(join(root, ".omo", "perseverance.json"), "{not json", "utf8");
       const store = new ProgressStore(root);
       expect(store.getTask("todos:1")).toBeUndefined();
       expect(store.elapsedMs("todos:1")).toBe(0);

@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { dispatchProgress, type PlanChecklist } from "./checklist.ts";
 
-export const BOULDER_SCHEMA_VERSION = 2;
-export const BOULDER_FILE = "boulder.json";
+export const PERSEVERANCE_SCHEMA_VERSION = 2;
+export const LEGACY_PERSEVERANCE_FILE = "perseverance.json";
+export const PROGRESS_FILE = "progress.json";
 
 export type ProgressTaskStatus = "running" | "completed" | "failed";
 
@@ -22,7 +23,7 @@ export interface ProgressTask {
 }
 
 /** On-disk shape. Unknown top-level/work fields are preserved verbatim so
- *  existing `.omo/boulder.json` state (works, session_ids, agent, ...) is
+ *  existing `.omo/perseverance.json` state (works, session_ids, agent, ...) is
  *  never clobbered by a load/save round-trip. */
 export interface ProgressFile {
   schema_version: number;
@@ -37,7 +38,7 @@ export interface ProgressFile {
 
 function emptyFile(): ProgressFile {
   const now = new Date().toISOString();
-  return { schema_version: BOULDER_SCHEMA_VERSION, started_at: now, updated_at: now, task_sessions: {} };
+  return { schema_version: PERSEVERANCE_SCHEMA_VERSION, started_at: now, updated_at: now, task_sessions: {} };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,10 +67,12 @@ function normalizeTask(key: string, raw: unknown): ProgressTask | undefined {
 }
 
 /**
- * Persistent Progress orchestration state rooted at `<workspace>/.omo`.
+ * Persistent Progress orchestration state rooted at `<workspace>/.agency`.
  *
- * - State file: `.omo/boulder.json` (atomic temp+rename writes, tolerant
+ * - State file: `.agency/progress.json` (atomic temp+rename writes, tolerant
  *   reads: missing/corrupt parses fall back to empty without throwing).
+ * - Import: an existing `.omo/perseverance.json` loads on first read and is
+ *   preserved verbatim for unknown fields, so prior checklist format state survives.
  * - Per-plan scratch: `.omo/notepads/<plan>/` (learnings.md append helper).
  * - Elapsed timers: `startTask` stamps `started_at`; `completeTask`/`failTask`
  *   stamp `ended_at` + `elapsed_ms`; `elapsedMs` reports live time for
@@ -86,8 +89,14 @@ export class ProgressStore {
     this.state = this.read();
   }
 
-  boulderPath(): string {
-    return join(this.workspaceRoot, ".omo", BOULDER_FILE);
+  progressPath(): string {
+    return join(this.workspaceRoot, ".agency", PROGRESS_FILE);
+  }
+
+  /** `.omo` is the harness runtime dir (import compatibility): the legacy
+   *  path reads prior-format state, the notepad dir reports plan scratch. */
+  legacyPerseverancePath(): string {
+    return join(this.workspaceRoot, ".omo", LEGACY_PERSEVERANCE_FILE);
   }
 
   notepadDir(plan: string): string {
@@ -111,14 +120,22 @@ export class ProgressStore {
   }
 
   private read(): ProgressFile {
-    const file = this.boulderPath();
-    if (!existsSync(file)) return emptyFile();
+    const file = this.progressPath();
+    if (!existsSync(file)) {
+      const legacy = this.legacyPerseverancePath();
+      if (existsSync(legacy)) return this.parseFile(legacy);
+      return emptyFile();
+    }
+    return this.parseFile(file);
+  }
+
+  private parseFile(file: string): ProgressFile {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
       if (!isRecord(parsed)) return emptyFile();
       const next: ProgressFile = {
         ...(parsed as object),
-        schema_version: BOULDER_SCHEMA_VERSION,
+        schema_version: PERSEVERANCE_SCHEMA_VERSION,
       } as ProgressFile;
       const rawSessions = isRecord(parsed.task_sessions)
         ? (parsed.task_sessions as Record<string, unknown>)
@@ -157,10 +174,10 @@ export class ProgressStore {
 
   /** Atomic persist: write temp file in the same dir, then rename. */
   save(): void {
-    const file = this.boulderPath();
+    const file = this.progressPath();
     mkdirSync(join(file, ".."), { recursive: true });
     this.state.updated_at = new Date(this.now()).toISOString();
-    this.state.schema_version = BOULDER_SCHEMA_VERSION;
+    this.state.schema_version = PERSEVERANCE_SCHEMA_VERSION;
     const tmp = `${file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.state, null, 2), "utf8");
     renameSync(tmp, file);
@@ -286,7 +303,7 @@ export class ProgressStore {
     const dir = this.ensureNotepad(plan);
     const file = join(dir, "learnings.md");
     const stamp = new Date(this.now()).toISOString().slice(0, 10);
-    const block = `\n## ${stamp} — Progress\n\n${entry.trim()}\n`;
+    const block = `\n## ${stamp} Progress\n\n${entry.trim()}\n`;
     const existing = existsSync(file) ? readFileSync(file, "utf8") : "# Learnings\n";
     const base = existing.endsWith("\n") ? existing : `${existing}\n`;
     writeFileSync(file, `${base}${block}`, "utf8");

@@ -91,7 +91,7 @@ describe("B4 team RPC", () => {
     expect(reviewer.costUsd).toBe(0);
   });
 
-  it("solo room agents_list returns just leader and emits no team events", async () => {
+  it("solo team agents_list returns just leader and emits no team events", async () => {
     const cfg = {
       agents: {
         leader: {

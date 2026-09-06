@@ -21,9 +21,10 @@ const FETCH_TIMEOUT_MS = 10_000;
 /** Initial attempt plus two transient retries, exponential with jitter. */
 const FETCH_ATTEMPTS = 3;
 
-/** Env override for the catalog source URL (opencode parity). */
+/** Env override for the catalog source URL; the opencode name stays as a
+ *  one-release fallback for existing setups. */
 export function modelsDevUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OPENCODE_MODELS_URL ?? MODELS_DEV_URL;
+  return env.AGENCY_MODELS_URL ?? env.OPENCODE_MODELS_URL ?? MODELS_DEV_URL;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ export interface ModelsDevCatalogResult {
 }
 
 /**
- * Loads the catalog with opencode's freshness discipline: a disk cache younger
+ * Loads the catalog with a stale-ok freshness discipline: a disk cache younger
  * than the TTL is served without touching the network; otherwise one fetch
  * attempt runs and, on any failure, the stale cache still serves (stale-ok).
  * With neither cache nor network, the build-time BUILTIN snapshot answers so
@@ -218,7 +219,8 @@ export async function loadModelsDevCatalog(options: {
   const cached = loadCachedModelsDevCatalog(options.cacheDir);
   const ttlMs = options.ttlMs ?? CATALOG_FRESH_TTL_MS;
 
-  const offline = env.OPENCODE_DISABLE_MODELS_FETCH !== undefined;
+  const offline =
+    env.AGENCY_DISABLE_MODELS_FETCH !== undefined || env.OPENCODE_DISABLE_MODELS_FETCH !== undefined;
   // Resolved lazily (not a top-level import): catalog-cache.ts reads this
   // module's CATALOG_FRESH_TTL_MS at its own top level, so a static back-edge
   // would deadlock evaluation order (TDZ) depending on entry point.

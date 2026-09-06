@@ -1,10 +1,11 @@
 import { relative, resolve } from "node:path";
+import { scopeMatchesPattern } from "./capabilities.ts";
 import type { TrustStore } from "./trust.ts";
 
 /**
- * One permission verdict. The `allow | ask | deny` triad is opencode's model:
+ * One permission verdict. The `allow | ask | deny` triad:
  * `allow` runs without asking, `ask` routes through the approval callback
- * (once / always / reject), `deny` refuses — and, at the tool-list level, a
+ * (once / always / reject), `deny` refuses, and, at the tool-list level, a
  * bare `deny` means the tool is never even offered to the model.
  */
 export type Decision = "allow" | "ask" | "deny";
@@ -84,7 +85,7 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
  *  by default in workspaces where mutating tools may run. Explicit config
  *  entries still win (including `deny`), per-agent maps still filter unlisted
  *  tools, and the trust gate in `check` still denies them in untrusted
- *  workspaces — this allow is unreachable there.
+ *  workspaces; this allow is unreachable there.
  */
 const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
 
@@ -97,10 +98,10 @@ export function isCommandPatternTool(tool: string): boolean {
 }
 
 /**
- * opencode's arity table: how many words of a command to keep when normalizing
+ * Command arity table: how many words of a command to keep when normalizing
  * (`git` → 2, so `git checkout main` normalizes to `git checkout`). This lets
  * exact patterns like `git checkout` match regardless of branch names, and is
- * deliberately textual — no tree-sitter, no shell parser. Regex against a raw
+ * deliberately textual (no tree-sitter, no shell parser). Regex against a raw
  * string is trivially bypassed by `eval`, `$(...)`, `;`; a full parser is
  * overkill. This is the right amount of machinery.
  */
@@ -294,8 +295,8 @@ export function rulesFromPermissions(permissions: Record<string, ToolPermissionV
  * when nothing matches, so an unconfigured tool doesn't silently run.
  *
  * The permissions-config path (`rulesFromPermissions` + `PermissionsGate`)
- * layers opencode's last-match-wins maps on top of the same engine by reversing
- * rule order — one evaluator, both semantics.
+ * layers last-match-wins permission maps on top of the same engine by reversing
+ * rule order: one evaluator, both semantics.
  */
 export class PolicyEngine {
   constructor(
@@ -329,12 +330,13 @@ export function relativeWorkspacePath(root: string, candidate: string): string {
  * per-agent map, or mapped to a bare `deny`, is not offered to the model at
  * all), gates on workspace trust for tools above the `safe` risk tier, and
  * resolves `ask` decisions through the approval callback. With no callback
- * available an `ask` fails closed (deny) — a headless run must never silently
+ * available an `ask` fails closed (deny); a headless run must never silently
  * approve itself.
  */
 export class PermissionsGate implements ToolPolicy {
   private readonly engine: PolicyEngine;
   private readonly permissions: Record<string, ToolPermissionValue>;
+  private itemScopes: readonly string[] | undefined;
 
   constructor(
     private readonly options: {
@@ -354,7 +356,17 @@ export class PermissionsGate implements ToolPolicy {
 
   /** Derives a gate with `mode` applied over the same policy and trust inputs. */
   withMode(mode: PermissionMode): PermissionsGate {
-    return new PermissionsGate({ ...this.options, permissionMode: mode });
+    const next = new PermissionsGate({ ...this.options, permissionMode: mode });
+    if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
+    return next;
+  }
+
+  /** Layers an item path scope over this gate: path writes outside every scope deny (7.17). */
+  withItemScope(scopes: readonly string[]): PermissionsGate {
+    const next = new PermissionsGate({ ...this.options });
+    if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes, ...scopes];
+    else next.itemScopes = [...scopes];
+    return next;
   }
 
   /**
@@ -376,6 +388,7 @@ export class PermissionsGate implements ToolPolicy {
 
   /** The verdict without consulting approvals (the engine + defaults only). */
   decisionFor(request: ToolCallPolicyRequest): Decision {
+    if (this.outsideItemScope(request)) return "deny";
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
       if (this.options.absentToolsDenied) return "deny";
@@ -402,6 +415,12 @@ export class PermissionsGate implements ToolPolicy {
     return decision;
   }
 
+  private outsideItemScope(request: ToolCallPolicyRequest): boolean {
+    if (this.itemScopes === undefined || request.path === undefined) return false;
+    const rel = relativeWorkspacePath(this.options.workspaceRoot, request.path);
+    return !this.itemScopes.some((scope) => scopeMatchesPattern(scope, rel));
+  }
+
   /**
    * The `external_directory` permission governs access outside the workspace
    * root. Accepts a bare decision or a directory-glob map (matched against the
@@ -425,10 +444,10 @@ export class PermissionsGate implements ToolPolicy {
     ask: ((request: ApprovalRequestLike) => Promise<"once" | "always" | "reject">) | undefined,
   ): Promise<"allow" | "deny"> {
     // Trust gate: mutating or executing tools require a trusted workspace.
-    // Read-only (`safe`) tools still work — refusing trust leaves a usable,
+    // Read-only (`safe`) tools still work; refusing trust leaves a usable,
     // read-only session instead of a dead one. Only an explicit "safe" tier
     // passes: a missing or unrecognized tier is untrusted input (a dynamically
-    // loaded plugin tool is the obvious source — `riskTier` is an
+    // loaded plugin tool is the obvious source: `riskTier` is an
     // interface-only guarantee, never runtime-validated), so it defaults to
     // unsafe and is denied here.
     const trust = this.options.trust;

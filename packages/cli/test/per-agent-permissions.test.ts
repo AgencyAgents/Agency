@@ -325,7 +325,7 @@ describe("per-agent permissions", () => {
     expect(existsSync(join(root, ".agency", "plans", "sneaky.md"))).toBe(false);
   });
 
-  it("solo-room with no override behaves identically to the global gate", async () => {
+  it("solo-team with no override behaves identically to the global gate", async () => {
     const root = tempRoot();
     const spy = { calls: [] as SpyCall[] };
     const adapter = spyAdapter(spy, (_text, toolResult) => {
@@ -350,7 +350,7 @@ describe("per-agent permissions", () => {
     expect(spy.calls[0]?.tools ?? []).toContain("bash");
   });
 
-  it("single-occupant room with no per-agent override works like global gate", async () => {
+  it("single-occupant team with no per-agent override works like global gate", async () => {
     const cfg = {
       agents: {
         leader: { role: "Leader", provider: "anthropic", model: "claude", effort: "low", enabled: true },

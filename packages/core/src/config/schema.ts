@@ -74,7 +74,7 @@ const ProviderConfigSchema = z.object({
 });
 
 /**
- * One tool's permission entry (opencode's model): either a bare
+ * One tool's permission entry: either a bare
  * `allow | ask | deny` — a bare `deny` removes the tool from the list offered
  * to the model entirely — or a per-subject pattern map evaluated with
  * LAST-matching-rule-wins, e.g. `{"bash": {"*": "ask", "git *": "allow",

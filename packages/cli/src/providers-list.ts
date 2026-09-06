@@ -35,7 +35,7 @@ export interface ProviderListEntry {
   models: ProviderListModel[];
 }
 
-/** opencode's ListResult port: everything the /models and /connect pickers need. */
+/** Picker list result: everything the /models and /connect pickers need. */
 export interface ProviderListResult {
   all: ProviderListEntry[];
   default: Record<string, string>;

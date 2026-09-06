@@ -79,6 +79,17 @@ export interface TodoStateEntry extends SessionEntryBase {
   }>;
 }
 
+export interface ItemStateEntry extends SessionEntryBase {
+  type: "item_state";
+  itemId: string;
+  contract: string;
+  acceptanceCriteria?: string;
+  decisions?: string[];
+  filesTouched?: string[];
+  verification?: string;
+  openQuestions?: string[];
+}
+
 export interface AgentMessageEntry extends SessionEntryBase {
   type: "agent_message";
   from: string;
@@ -112,6 +123,10 @@ export function isBranchSummaryEntry(e: SessionEntry): e is SessionEntry & Branc
 
 export function isTodoStateEntry(e: SessionEntry): e is SessionEntry & TodoStateEntry {
   return e.type === "todo_state";
+}
+
+export function isItemStateEntry(e: SessionEntry): e is SessionEntry & ItemStateEntry {
+  return e.type === "item_state";
 }
 
 export function isSessionTitleEntry(e: SessionEntry): e is SessionEntry & SessionTitleEntry {

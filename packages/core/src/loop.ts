@@ -223,7 +223,7 @@ export async function runTurn(
   };
 
   // Doom-loop detection is an team control (B3): opt-in per turn, enabled for
-  // dispatched peers. The solo room keeps its existing semantics — a runaway
+  // dispatched peers. The solo team keeps its existing semantics: a runaway
   // loop is capped by maxToolIterations, not by input-identity heuristics.
   const doomHistory: string[] = [];
   const doomDetection = options.doomLoopDetection === true;

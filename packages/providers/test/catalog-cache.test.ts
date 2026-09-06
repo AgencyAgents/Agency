@@ -83,7 +83,7 @@ describe("loadCanonicalCatalog", () => {
     const result = await loadCanonicalCatalog({
       cacheDir: dir,
       http,
-      env: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
+      env: { AGENCY_DISABLE_MODELS_FETCH: "1" },
       refresh: [
         { family: "openai", http, apiKey: "k" },
         { family: "google", http, apiKey: "k" },

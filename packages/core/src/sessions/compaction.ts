@@ -3,7 +3,7 @@ import { isAsyncTokenizer } from "@agency/providers";
 import { ErrorCode } from "@agency/schema";
 import { compactionPrompt } from "../prompt/compaction.ts";
 import type { MessageEntry, SessionEntry } from "./entry.ts";
-import { isMessageEntry, isTodoStateEntry } from "./entry.ts";
+import { isItemStateEntry, isMessageEntry, isTodoStateEntry } from "./entry.ts";
 
 type ConcreteMessageEntry = SessionEntry & MessageEntry;
 
@@ -98,8 +98,8 @@ export interface CompactionPlan {
 }
 
 /** Keeps the most recent `keepLastN` messages out of the summary, and every
- *  todo_state entry regardless of position: todos are the run's task list
- *  and must never be lost to compaction. */
+ *  todo_state plus item_state entry regardless of position: task lists and
+ *  item contracts must never be lost to compaction. */
 export function planCompaction(chain: SessionEntry[], keepLastN = 4): CompactionPlan {
   const messageIndices = chain.map((e, i) => (isMessageEntry(e) ? i : -1)).filter((i) => i >= 0);
   const cutoff =
@@ -109,7 +109,7 @@ export function planCompaction(chain: SessionEntry[], keepLastN = 4): Compaction
 
   return {
     summarize: before.filter(isMessageEntry),
-    carryForward: [...before.filter(isTodoStateEntry), ...after],
+    carryForward: [...before.filter((e) => isTodoStateEntry(e) || isItemStateEntry(e)), ...after],
   };
 }
 

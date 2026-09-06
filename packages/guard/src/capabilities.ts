@@ -68,7 +68,97 @@ export function requirePathScope(
   if (!inScope) deny(identity, `path "${absolutePath}" is outside this caller's allowed scopes`);
 }
 
-/** Throws PERMISSION_DENIED when `host` isn't reachable under this caller's network capability. */
+/** Workspace-relative forward-slash form: separators normalized for 7.33. */
+export function normalizeScopePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** True for the match-all scopes (bare stars, slash stars, star slash star). */
+export function isMatchAllScope(scope: string): boolean {
+  const normalized = normalizeScopePath(scope);
+  return normalized === "**" || normalized === "/**" || normalized === "**/*";
+}
+
+export function scopePatternToRegExp(glob: string): RegExp {
+  const normalized = normalizeScopePath(glob);
+  let out = "";
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === "*") {
+      if (normalized[i + 1] === "*") {
+        i++;
+        out += ".*";
+      } else {
+        out += "[^/]*";
+      }
+    } else if (ch === "?") {
+      out += "[^/]";
+    } else if ("+()^$.{}|[]\\".includes(ch ?? "")) {
+      out += `\\${ch}`;
+    } else {
+      out += ch;
+    }
+  }
+  return new RegExp(`^${out}$`);
+}
+
+export function scopeMatchesPattern(pattern: string, candidate: string): boolean {
+  const scope = normalizeScopePath(pattern);
+  const path = normalizeScopePath(candidate);
+  if (isMatchAllScope(scope)) return true;
+  if (scope.endsWith("/**")) {
+    const prefix = scope.slice(0, -3);
+    return path === prefix || path.startsWith(`${prefix}/`);
+  }
+  return scopePatternToRegExp(scope).test(path);
+}
+
+/** One requested scope against one grant: keep, narrow to the grant, or drop. */
+export function coverScope(requested: string, grant: string): "keep" | "narrow-to-grant" | "drop" {
+  const req = normalizeScopePath(requested);
+  const own = normalizeScopePath(grant);
+  if (own === "*" || isMatchAllScope(own)) return "keep";
+  if (req === "*" || isMatchAllScope(req)) return "narrow-to-grant";
+  if (req === own || scopeMatchesPattern(own, req)) return "keep";
+  if (own.endsWith("/**")) {
+    const prefix = own.slice(0, -3);
+    if (req === prefix) return "keep";
+  }
+  if (scopeMatchesPattern(req, own)) return "narrow-to-grant";
+  return "drop";
+}
+
+/** Intersects requested path scopes with the filer's own grants, never unions. */
+export function intersectPathScopes(
+  requested: readonly string[] | undefined,
+  grants: readonly string[] | "*" | undefined,
+): { scopes: string[]; narrowed: boolean } {
+  if (grants === undefined || grants === "*") {
+    return { scopes: requested === undefined ? [] : [...requested], narrowed: false };
+  }
+  if (requested === undefined || requested.length === 0) return { scopes: [...grants], narrowed: true };
+  const scopes: string[] = [];
+  let narrowed = false;
+  for (const req of requested) {
+    let kept = false;
+    for (const grant of grants) {
+      const verdict = coverScope(req, grant);
+      if (verdict === "keep") {
+        if (!scopes.includes(req)) scopes.push(req);
+        kept = true;
+        break;
+      }
+      if (verdict === "narrow-to-grant") {
+        if (!scopes.includes(grant)) scopes.push(grant);
+        kept = true;
+        narrowed = true;
+        break;
+      }
+    }
+    if (!kept) narrowed = true;
+  }
+  return { scopes, narrowed };
+}
 export function requireNetwork(identity: CallerIdentity, capabilities: Capabilities, host: string): void {
   if (capabilities.network === "none") deny(identity, "this caller has no network access");
   if (capabilities.network === "*") return;

@@ -273,13 +273,13 @@ describe("persona-driven role prompts (MECHANICS — anthropic)", () => {
     });
   }
 
-  test("room roles (leader, coder, executor) include room protocol", () => {
+  test("team roles (leader, coder, executor) include team protocol", () => {
     for (const role of ["leader", "coder", "executor"]) {
       expect(resolveFamilyPrompt("anthropic", role)).toContain("Team protocol:");
     }
   });
 
-  test("non-room roles exclude room protocol", () => {
+  test("non-team roles exclude team protocol", () => {
     for (const role of ["planner", "plan-reviewer", "explorer", "researcher", "code-reviewer"]) {
       expect(resolveFamilyPrompt("anthropic", role)).not.toContain("Team protocol:");
     }

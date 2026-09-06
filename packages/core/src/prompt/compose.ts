@@ -26,7 +26,7 @@ export interface ComposedPrompt {
 }
 
 // ---------------------------------------------------------------------------
-// Shared discipline snippets (Cline + OMO delegation discipline)
+// Shared delegation discipline snippets
 // ---------------------------------------------------------------------------
 
 /** Tool-call hygiene: infer params from context or ask; never invent them. */
@@ -48,7 +48,7 @@ export const TEAM_PROTOCOL =
 
 const TEAM_ROLES: ReadonlySet<string> = new Set(["leader", "coder", "executor"]);
 
-/** Returns TEAM_PROTOCOL (suffix-ready) for room-bound roles, else "". */
+/** Returns TEAM_PROTOCOL (suffix-ready) for team roles, else "". */
 export function appendTeamProtocol(role: string): string {
   return TEAM_ROLES.has(role) ? `\n\n${TEAM_PROTOCOL}` : "";
 }

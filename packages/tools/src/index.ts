@@ -1,5 +1,19 @@
 export * from "./builtin-set.ts";
 export { type BashState, createBashTool } from "./builtins/bash.ts";
+export {
+  type BoardBackend,
+  type BoardFiler,
+  type BoardToolDeps,
+  boardPermissionsFromMap,
+  createBoardClaimTool,
+  createBoardReadTool,
+  createBoardStatusTool,
+  createBoardTools,
+  createOwnersReadTool,
+  createTaskFileTool,
+  type FileItemLike,
+  type FilerGrantsLike,
+} from "./builtins/board.ts";
 export { type BrowserAction, createBrowserTool } from "./builtins/browser.ts";
 export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";

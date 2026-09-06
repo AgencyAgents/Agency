@@ -39,11 +39,11 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only; default `powershell` |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
-| `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Orchestra roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
+| `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
 | `leader` | string | — | Handle of leader agent; defaults to first roster entry |
-| `budgets` | `{perAgentUsd?, orchestraUsd?}` | — | Token/cost ceilings per agent and orchestra-wide |
+| `budgets` | `{perAgentUsd?, teamUsd?}` | — | Token/cost ceilings per agent and team-wide |
 
-### Agents presets (orchestra roster)
+### Agents presets (team roster)
 
 Starter roster presets are editable config examples, not hardcoded. Example:
 
@@ -60,7 +60,7 @@ Starter roster presets are editable config examples, not hardcoded. Example:
     "warden": { "role": "reviewer", "provider": "openai", "model": "gpt-5.2", "effort": "high", "permissions": { "write": "deny", "edit": "deny" } }
   },
   "leader": "marshal",
-  "budgets": { "perAgentUsd": 5, "orchestraUsd": 20 }
+  "budgets": { "perAgentUsd": 5, "teamUsd": 20 }
 }
 ```
 
@@ -97,6 +97,8 @@ Mapped via `envOverrides`:
 - `AGENCY_CRASH_REPORTS` (same truthy set) -> `crashReportsEnabled`
 - `AGENCY_DISABLED_PROVIDERS` (comma-separated) -> `disabled_providers`
 - `AGENCY_ENABLED_PROVIDERS` (comma-separated) -> `enabled_providers`
+- `AGENCY_MODELS_URL` -> model catalog source URL (default `https://models.opencode.ai/api.json`; `OPENCODE_MODELS_URL` still honored as a one-release fallback)
+- `AGENCY_DISABLE_MODELS_FETCH` (set to anything) -> serve the catalog from disk cache or the builtin snapshot without fetching (`OPENCODE_DISABLE_MODELS_FETCH` still honored as a one-release fallback)
 
 Provider keys are resolved per turn as: declared `provider.<id>.env` entries, then `AGENCY_<PROVIDER>_API_KEY`, then keychain, then `provider.<id>.apiKey`.
 
