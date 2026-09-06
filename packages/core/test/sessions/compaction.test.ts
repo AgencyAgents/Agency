@@ -635,6 +635,19 @@ describe("U8 overflow classification", () => {
     expect(isContextOverflowError(new Error("boom"))).toBe(false);
     expect(isContextOverflowError(undefined)).toBe(false);
   });
+
+  test("pins the adapter-normalization contract: overflow always arrives coded", () => {
+    // Every adapter maps provider overflow to CONTEXT_OVERFLOW before throwing
+    // (anthropic.ts:141, google.ts:128, openai-compatible.ts:142 covering openai.ts), so code check is enough.
+    for (const source of ["anthropic", "google", "openai"]) {
+      expect(
+        isContextOverflowError(new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "context full", { source })),
+      ).toBe(true);
+    }
+    expect(
+      isContextOverflowError(new AgencyError(ErrorCode.TRANSIENT, "context full", { source: "anthropic" })),
+    ).toBe(false);
+  });
 });
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };

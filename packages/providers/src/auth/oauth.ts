@@ -293,7 +293,7 @@ export function startCallbackServer(options: {
       return;
     }
     res.writeHead(200, { "content-type": "text/html" });
-    res.end("<html><body><h1>Authorized — you can close this tab.</h1></body></html>");
+    res.end("<html><body><h1>Authorized: you can close this tab.</h1></body></html>");
     resolveCb({ code, state });
   });
 
@@ -432,6 +432,8 @@ export function supportsDeviceFlow(provider: string, overrides?: ProviderOAuthOv
 
 const DEFAULT_DEVICE_INTERVAL_S = 5;
 const SLOW_DOWN_BACKOFF_S = 5;
+/** Upper bound so a garbage server interval cannot stall polling; the deadline still caps total time. */
+const MAX_DEVICE_INTERVAL_S = 60;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -498,7 +500,10 @@ export async function pollDeviceToken(
   assertClientIdConfigured(resolved, provider);
   const sleep = options.sleep ?? defaultSleep;
   const deadline = Date.now() + device.expiresIn * 1000;
-  let intervalS = device.interval > 0 ? device.interval : DEFAULT_DEVICE_INTERVAL_S;
+  let intervalS = Math.min(
+    device.interval > 0 ? device.interval : DEFAULT_DEVICE_INTERVAL_S,
+    MAX_DEVICE_INTERVAL_S,
+  );
   for (;;) {
     if (Date.now() >= deadline) {
       throw new AgencyError(ErrorCode.AUTH, `Device authorization expired for provider "${provider}"`, {
@@ -533,7 +538,7 @@ export async function pollDeviceToken(
       continue;
     }
     if (body.error === "slow_down") {
-      intervalS += SLOW_DOWN_BACKOFF_S;
+      intervalS = Math.min(intervalS + SLOW_DOWN_BACKOFF_S, MAX_DEVICE_INTERVAL_S);
       await sleep(intervalS * 1000);
       continue;
     }

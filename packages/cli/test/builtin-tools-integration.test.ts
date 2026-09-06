@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,6 +149,9 @@ describe("daemon with real built-in tools", () => {
   test("undo reverts a scripted write and redo re-applies it, over RPC", async () => {
     const root = tempRepo();
     writeFileSync(join(root, "undo-me.ts"), "original", "utf8");
+    // Unique session: the snapshot journal lives in the shared snapshots dir,
+    // so reusing the "default" session would read stale undo depth from prior runs.
+    const sessionId = `undo-e2e-${randomUUID()}`;
 
     const daemon = await createAgentDaemon({
       workspaceRoot: root,
@@ -162,6 +166,7 @@ describe("daemon with real built-in tools", () => {
 
     await client.call("run_turn", {
       turnId: "t4",
+      sessionId,
       provider: "anthropic",
       model: "test-model",
       apiKey: "key",
@@ -170,14 +175,23 @@ describe("daemon with real built-in tools", () => {
     });
     expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("overwritten");
 
-    expect(await client.call("undo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+    expect(await client.call("undo", { sessionId })).toEqual({
+      undone: true,
+      path: join(root, "undo-me.ts"),
+    });
     expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("original");
 
-    expect(await client.call("redo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+    expect(await client.call("redo", { sessionId })).toEqual({
+      undone: true,
+      path: join(root, "undo-me.ts"),
+    });
     expect(readFileSync(join(root, "undo-me.ts"), "utf8")).toBe("overwritten");
 
     // Nothing left to redo, but the re-applied write can be undone again.
-    expect(await client.call("redo", {})).toEqual({ undone: false });
-    expect(await client.call("undo", {})).toEqual({ undone: true, path: join(root, "undo-me.ts") });
+    expect(await client.call("redo", { sessionId })).toEqual({ undone: false });
+    expect(await client.call("undo", { sessionId })).toEqual({
+      undone: true,
+      path: join(root, "undo-me.ts"),
+    });
   });
 });

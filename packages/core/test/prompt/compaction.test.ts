@@ -34,4 +34,10 @@ describe("compactionPrompt", () => {
     expect(prompt).toContain("Output contract");
     expect(prompt).toContain("[Compacted:");
   });
+
+  test("step-4 cap is per-chunk guidance with harness 20K total", () => {
+    const prompt = compactionPrompt();
+    expect(prompt).toContain("Keep this chunk under 4000 tokens");
+    expect(prompt).toContain("20K");
+  });
 });

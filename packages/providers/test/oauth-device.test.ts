@@ -126,6 +126,41 @@ describe("pollDeviceToken", () => {
     expect(sleeps).toEqual([10000]);
   });
 
+  test("clamps a garbage server interval to 60s", async () => {
+    clearRefreshInflight();
+    const httpFetch = (async () =>
+      jsonResponse({ error: "authorization_pending" })) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const sleeping = async (ms: number) => {
+      sleeps.push(ms);
+      throw new Error("stop-after-first-sleep");
+    };
+    await expect(
+      pollDeviceToken("github-copilot", { ...device, interval: 3600 }, httpFetch, {
+        clientId: "my-app-client-id",
+        sleep: sleeping,
+      }),
+    ).rejects.toThrow("stop-after-first-sleep");
+    expect(sleeps).toEqual([60000]);
+  });
+
+  test("slow_down backoff cannot exceed 60s", async () => {
+    clearRefreshInflight();
+    const httpFetch = (async () => jsonResponse({ error: "slow_down" })) as unknown as typeof fetch;
+    const sleeps: number[] = [];
+    const sleeping = async (ms: number) => {
+      sleeps.push(ms);
+      throw new Error("stop-after-first-sleep");
+    };
+    await expect(
+      pollDeviceToken("github-copilot", { ...device, interval: 58 }, httpFetch, {
+        clientId: "my-app-client-id",
+        sleep: sleeping,
+      }),
+    ).rejects.toThrow("stop-after-first-sleep");
+    expect(sleeps).toEqual([60000]);
+  });
+
   test("expired_token throws AgencyError", async () => {
     clearRefreshInflight();
     const httpFetch = (async () => jsonResponse({ error: "expired_token" })) as unknown as typeof fetch;
