@@ -10,6 +10,7 @@ export const SDK_PROTOCOL_VERSION = 2;
 export type RpcMethod =
   | "agent_history"
   | "agent_message"
+  | "agent_stop"
   | "agents_list"
   | "approval_respond"
   | "cancel_turn"
@@ -38,6 +39,7 @@ export type RpcMethod =
   | "session_rename"
   | "session_send"
   | "session_show"
+  | "team_open"
   | "team_status"
   | "team_stop"
   | "todo_read"
@@ -220,6 +222,8 @@ export interface SurfaceClient {
   agent_history(params?: Record<string, unknown>): Promise<unknown>;
   /** Deliver a message to an agent mailbox. */
   agent_message(params?: Record<string, unknown>): Promise<unknown>;
+  /** Stop one team agent and idle its sessions. */
+  agent_stop(params?: Record<string, unknown>): Promise<unknown>;
   /** List team agents with state, session, and cost. */
   agents_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Answer a pending approval ask once, always, or reject. */
@@ -276,6 +280,8 @@ export interface SurfaceClient {
   session_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Read a session through the single SessionProjector view. */
   session_show(params?: Record<string, unknown>): Promise<unknown>;
+  /** Open a team behind approval when the goal needs parallel specialists. */
+  team_open(params?: Record<string, unknown>): Promise<unknown>;
   /** Team states, todo, and totals for a parent session. */
   team_status(params?: Record<string, unknown>): Promise<unknown>;
   /** Stop a team run and reject its pending asks. */
@@ -303,6 +309,7 @@ export function createSurfaceClient(
   return {
     agent_history: (params) => call("agent_history", params ?? {}),
     agent_message: (params) => call("agent_message", params ?? {}),
+    agent_stop: (params) => call("agent_stop", params ?? {}),
     agents_list: (params) => call("agents_list", params ?? {}),
     approval_respond: (params) => call("approval_respond", params ?? {}),
     cancel_turn: (params) => call("cancel_turn", params ?? {}),
@@ -331,6 +338,7 @@ export function createSurfaceClient(
     session_rename: (params) => call("session_rename", params ?? {}),
     session_send: (params) => call("session_send", params ?? {}),
     session_show: (params) => call("session_show", params ?? {}),
+    team_open: (params) => call("team_open", params ?? {}),
     team_status: (params) => call("team_status", params ?? {}),
     team_stop: (params) => call("team_stop", params ?? {}),
     todo_read: (params) => call("todo_read", params ?? {}),

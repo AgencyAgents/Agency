@@ -1,6 +1,5 @@
 import { PROMPT_VERSION } from "@agency/core";
 import { turnCostUsd } from "@agency/telemetry";
-import { resolveRoster } from "./rosters.ts";
 import type { ConfigScore, EvalCassette, EvalReport } from "./types.ts";
 
 /** Score one cassette. Pure over records, so replay and report agree. */
@@ -51,12 +50,6 @@ export function scoreReport(cassettes: EvalCassette[]): EvalReport {
     version: 1,
     promptVersion: PROMPT_VERSION,
     scores: cassettes.map(scoreCassette),
-    pending: [
-      {
-        roster: "reviewer-first",
-        mapsTo: resolveRoster("reviewer-first").mapsTo ?? "solo",
-        owner: "Phase 8",
-      },
-    ],
+    pending: [],
   };
 }

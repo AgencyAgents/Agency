@@ -21,7 +21,14 @@ export function checkCassette(raw: unknown, path: string): EvalCassette {
   const c = raw as Partial<EvalCassette>;
   if (c === null || typeof c !== "object") throw new Error(`eval cassette invalid: ${path}`);
   if (c.version !== 1) throw new Error(`eval cassette version mismatch: ${path}`);
-  if (c.roster !== "solo" && c.roster !== "team") throw new Error(`eval cassette roster invalid: ${path}`);
+  if (
+    c.roster !== "solo" &&
+    c.roster !== "team" &&
+    c.roster !== "reviewer-first" &&
+    c.roster !== "fixed" &&
+    c.roster !== "ladder"
+  )
+    throw new Error(`eval cassette roster invalid: ${path}`);
   if (typeof c.promptVersion !== "string" || c.promptVersion.length === 0)
     throw new Error(`eval cassette promptVersion missing: ${path}`);
   if (!Array.isArray(c.tasks)) throw new Error(`eval cassette tasks missing: ${path}`);

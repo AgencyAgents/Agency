@@ -3,6 +3,51 @@
   "promptVersion": "1.0.0",
   "scores": [
     {
+      "roster": "fixed",
+      "tasks": 3,
+      "completed": 3,
+      "passRate": 1,
+      "costPerCompleted": 0.05995,
+      "totalUsd": 0.17985,
+      "inputTokens": 32000,
+      "outputTokens": 7300,
+      "cachedInputTokens": 9500,
+      "cacheHitRate": 0.296875,
+      "conflicts": 1,
+      "wallClockMs": 65000,
+      "promptVersion": "1.0.0"
+    },
+    {
+      "roster": "ladder",
+      "tasks": 3,
+      "completed": 3,
+      "passRate": 1,
+      "costPerCompleted": 0.02545,
+      "totalUsd": 0.07635,
+      "inputTokens": 18000,
+      "outputTokens": 3200,
+      "cachedInputTokens": 9500,
+      "cacheHitRate": 0.5277777777777778,
+      "conflicts": 0,
+      "wallClockMs": 41000,
+      "promptVersion": "1.0.0"
+    },
+    {
+      "roster": "reviewer-first",
+      "tasks": 3,
+      "completed": 3,
+      "passRate": 1,
+      "costPerCompleted": 0.02503,
+      "totalUsd": 0.07509,
+      "inputTokens": 19500,
+      "outputTokens": 3500,
+      "cachedInputTokens": 13300,
+      "cacheHitRate": 0.6820512820512821,
+      "conflicts": 0,
+      "wallClockMs": 44000,
+      "promptVersion": "1.0.0"
+    },
+    {
       "roster": "solo",
       "tasks": 3,
       "completed": 2,
@@ -33,11 +78,5 @@
       "promptVersion": "1.0.0"
     }
   ],
-  "pending": [
-    {
-      "roster": "reviewer-first",
-      "mapsTo": "solo",
-      "owner": "Phase 8"
-    }
-  ]
+  "pending": []
 }

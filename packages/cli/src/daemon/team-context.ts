@@ -1,5 +1,12 @@
 import { join } from "node:path";
-import { type BoardEvent, buildDigest, type ChannelStore, loadTraceSpansSync } from "@agency/core";
+import {
+  type BoardEvent,
+  buildDigest,
+  type ChannelStore,
+  createTeamLimiter,
+  loadTraceSpansSync,
+  type TeamLimiter,
+} from "@agency/core";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import type { DaemonContext } from "./types.ts";
 
@@ -25,6 +32,9 @@ export interface TeamContext {
   sessions: Map<string, ChildSessionMeta>;
   nextBatchId: number;
   digestCursors: Map<string, { event: number; post: number }>;
+  /** Team-level concurrency slots shared by dispatch and compare. */
+  limiter: TeamLimiter;
+  startedAt: number;
 }
 
 export function createTeamContext(parentSessionId: string): TeamContext {
@@ -37,6 +47,8 @@ export function createTeamContext(parentSessionId: string): TeamContext {
     sessions: new Map(),
     nextBatchId: 0,
     digestCursors: new Map(),
+    limiter: createTeamLimiter(),
+    startedAt: Date.now(),
   };
 }
 

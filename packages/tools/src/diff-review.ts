@@ -179,6 +179,28 @@ export function resolveDiffComment(targetPath: string, commentId: string): boole
   return true;
 }
 
+export interface ReviewFinding {
+  text: string;
+  line?: number;
+}
+
+// Reviewer findings land as diff comments on the reviewed target,
+// so the lead integrates findings, not prose about the diff.
+export function appendReviewFindings(
+  targetPath: string,
+  findings: readonly ReviewFinding[],
+  author: string,
+): DiffComment[] {
+  return findings.map((finding) =>
+    addDiffComment(
+      targetPath,
+      finding.line === undefined
+        ? { text: finding.text, author }
+        : { text: finding.text, line: finding.line, author },
+    ),
+  );
+}
+
 /**
  * How many comments on this diff target are still unresolved, 0 when
  * none/absent/corrupt — same semantics and file as plan.ts

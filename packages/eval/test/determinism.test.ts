@@ -32,7 +32,7 @@ describe("eval determinism", () => {
   });
 
   test("cassettes carry no timestamps, absolute paths, or randomness", () => {
-    for (const name of ["solo.json", "team.json"]) {
+    for (const name of ["solo.json", "team.json", "reviewer-first.json", "fixed.json", "ladder.json"]) {
       const raw = readFileSync(join(dir, name), "utf8");
       expect(raw).not.toContain("createdAt");
       expect(raw).not.toContain("timestamp");

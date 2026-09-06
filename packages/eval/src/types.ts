@@ -1,7 +1,7 @@
 import type { ModelPricing } from "@agency/providers";
 
-/** Roster under test. reviewer-first is Phase 8 owned, never executed here. */
-export type RosterId = "solo" | "team" | "reviewer-first";
+/** Roster under test. fixed is per-role routing, ladder climbs cheap to strong. */
+export type RosterId = "solo" | "team" | "reviewer-first" | "fixed" | "ladder";
 
 /** Task shape: single-file or multi-file coordination. */
 export type EvalTaskKind = "single" | "multi";
@@ -23,7 +23,7 @@ export interface EvalTaskRecord {
 /** Committed cassette: one roster configuration, fixed records, no timestamps. */
 export interface EvalCassette {
   version: 1;
-  roster: Exclude<RosterId, "reviewer-first">;
+  roster: RosterId;
   promptVersion: string;
   pricing: ModelPricing;
   tasks: EvalTaskRecord[];

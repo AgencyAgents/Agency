@@ -73,11 +73,11 @@ export function planStepsToTasks(
 
 export function planBoardBatch(
   items: readonly BoardItem[],
-  opts: Omit<PlanDispatchOptions, "taskDepth">,
+  opts: PlanDispatchOptions,
 ): ReturnType<typeof planDispatchBatch> {
   return planDispatchBatch(
     items.map((item) => ({ handle: item.claimedBy ?? item.filedBy ?? "", brief: item.content })),
-    { ...opts, taskDepth: 0 },
+    { ...opts },
   );
 }
 

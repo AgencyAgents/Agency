@@ -12,7 +12,7 @@ import {
   type ToolSpec,
 } from "@agency/core";
 import type { Capabilities, PermissionsGate } from "@agency/guard";
-import { type KeychainBackend, resolveApiKey, tokenizerFor } from "@agency/providers";
+import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -43,7 +43,7 @@ export async function generateSessionTitle(
   params: RunTurnParams,
   sessionId: string,
 ): Promise<void> {
-  const { adapterFor, config, getKeychain, http, providers, todoStore } = ctx;
+  const { adapterFor, config, getKeychain, http, listModels, providers, todoStore } = ctx;
   if (!getSessionTitle(todoStore.load(sessionId))) {
     const firstUserMsg = params.session.find((m: Message) => m.role === "user");
     const firstUserText = firstUserMsg?.content?.find((b: { type: string }) => b.type === "text") as
@@ -67,12 +67,23 @@ export async function generateSessionTitle(
               ...oauthOverridesFor(smallModelRef.provider, providers),
             });
             if (smallApiKey) {
+              // Background-turn cheap routing: titles run on the cheapest
+              // same-family model, never silently, via the taskKind tag.
+              let cheapModel: string | undefined;
+              try {
+                const sameFamily = listModels().filter((m) => m.family === smallModelRef.provider);
+                const cheap = pickCheapModel(sameFamily);
+                if (cheap && cheap.id !== smallModelRef.model) cheapModel = cheap.id;
+              } catch {
+                // Catalog failure keeps the configured small model.
+              }
               const title = await generateTitle(titlePrompt, {
                 config,
                 http,
                 apiKey: smallApiKey,
                 providerConfig: providers,
                 adapterFor: (p: string) => adapterFor(p),
+                ...(cheapModel ? { cheapModel } : {}),
               });
               if (title) {
                 const tip = todoStore.latestTip(todoStore.load(sessionId)) ?? null;

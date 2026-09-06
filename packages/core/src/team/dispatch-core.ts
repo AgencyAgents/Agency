@@ -4,12 +4,12 @@ import { readFile, writeFile } from "node:fs/promises";
 export const DISPATCH_STATE_VERSION = 1;
 
 // Stable skip reason codes consumed by U11 feedback wiring.
+// The team path is flat by construction, so depth codes live only
+// on the spawn tool, which keeps its separate depth-1 rule.
 export type DispatchSkipReason =
   | "empty-input"
   | "invalid-entry"
   | "unknown-handle"
-  | "nested-blocked"
-  | "depth-limit"
   | "team-budget-exceeded"
   | "per-agent-budget-exceeded";
 
@@ -18,8 +18,6 @@ export const DISPATCH_SKIP_REASONS: readonly DispatchSkipReason[] = [
   "empty-input",
   "invalid-entry",
   "unknown-handle",
-  "nested-blocked",
-  "depth-limit",
   "team-budget-exceeded",
   "per-agent-budget-exceeded",
 ];
@@ -95,38 +93,9 @@ export function resolveDispatchTarget(
   };
 }
 
-/** Depth gate shared by dispatch and task tools. Null means proceed. */
-export function checkDepthGate(
-  kind: "dispatch" | "task",
-  depth: number,
-  maxDepth: number,
-): DispatchSkip | null {
-  // Limit check first so the depth-limit branch stays reachable when nested.
-  if (depth >= maxDepth) {
-    return {
-      index: -1,
-      reason: "depth-limit",
-      detail:
-        kind === "dispatch"
-          ? `depth limit reached (${depth} >= ${maxDepth})`
-          : `depth limit reached (${depth} >= ${maxDepth})`,
-    };
-  }
-  if (depth > 0) {
-    return {
-      index: -1,
-      reason: "nested-blocked",
-      detail: kind === "dispatch" ? "nested dispatch blocked" : "nested task blocked",
-    };
-  }
-  return null;
-}
-
 export interface PlanDispatchOptions {
   resolveHandle: (handle: string) => DispatchAgentRecord | undefined;
   defaults?: DispatchDefaults;
-  taskDepth?: number;
-  maxDepth?: number;
   budgets?: { perAgentUsd?: number; teamUsd?: number };
   perAgentSpend?: Map<string, number>;
   teamTotal?: number;
@@ -142,34 +111,10 @@ export function planDispatchBatch(
   requests: readonly DispatchAgentRequest[],
   opts: PlanDispatchOptions,
 ): DispatchPlan {
-  const taskDepth = opts.taskDepth ?? 0;
   if (requests.length === 0) {
     return {
       targets: [],
       skips: [{ index: -1, reason: "empty-input", detail: "no agents to dispatch" }],
-    };
-  }
-  const maxDepth = opts.maxDepth ?? 3;
-  if (taskDepth >= maxDepth) {
-    return {
-      targets: [],
-      skips: requests.map((r, index) => ({
-        index,
-        handle: typeof r?.handle === "string" ? r.handle : undefined,
-        reason: "depth-limit" as const,
-        detail: `dispatch depth limit reached (${taskDepth} >= ${maxDepth})`,
-      })),
-    };
-  }
-  if (taskDepth > 0) {
-    return {
-      targets: [],
-      skips: requests.map((r, index) => ({
-        index,
-        handle: typeof r?.handle === "string" ? r.handle : undefined,
-        reason: "nested-blocked" as const,
-        detail: "nested dispatch blocked: subagents cannot dispatch",
-      })),
     };
   }
   const targets: ResolvedDispatchTarget[] = [];

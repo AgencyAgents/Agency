@@ -41,6 +41,11 @@ export interface ChildTurnSpec {
   sessionId: string;
   cwd: string;
   taskDepth: number;
+  // Cheap-routing passthrough: background-eligible child turns run
+  // on the cheap model with an audit tag, never silently.
+  taskKind?: string;
+  cheapModel?: string;
+  forcePrimary?: boolean;
   doomLoopDetection?: boolean;
   drainMailbox?: () => Message[];
   signal?: AbortSignal;
@@ -85,6 +90,9 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       sessionId: spec.sessionId,
       cwd: spec.cwd,
       taskDepth: spec.taskDepth,
+      ...(spec.taskKind !== undefined ? { taskKind: spec.taskKind } : {}),
+      ...(spec.cheapModel !== undefined ? { cheapModel: spec.cheapModel } : {}),
+      ...(spec.forcePrimary !== undefined ? { forcePrimary: spec.forcePrimary } : {}),
       doomLoopDetection: spec.doomLoopDetection ?? true,
       ...(spec.signal !== undefined ? { signal: spec.signal } : {}),
       ...(spec.drainMailbox !== undefined ? { drainMailbox: spec.drainMailbox } : {}),

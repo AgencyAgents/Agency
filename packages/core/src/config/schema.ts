@@ -246,6 +246,8 @@ export interface AgentConfig {
  * `permissions` map the Phase 2 gate reads per agent (unlisted tools are
  * denied, so each map is the role's full tool allowlist). Handles double as
  * role names. Leader is enabled, satisfying the schema's leader requirement.
+ * Providers spread across vendors by role, so cross-provider adjudication
+ * and heterogeneous routing work out of the box.
  */
 export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   leader: {
@@ -274,8 +276,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   planner: {
     role: "planner",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "openai",
+    model: "gpt-5.2",
     effort: "high",
     enabled: true,
     permissions: {
@@ -298,8 +300,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   "plan-reviewer": {
     role: "plan-reviewer",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "google",
+    model: "gemini-3-pro",
     effort: "medium",
     enabled: true,
     permissions: {
@@ -335,8 +337,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   executor: {
     role: "executor",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "openai",
+    model: "gpt-5.2",
     effort: "medium",
     enabled: true,
     permissions: {
@@ -349,8 +351,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   explorer: {
     role: "explorer",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "google",
+    model: "gemini-3-pro",
     effort: "low",
     enabled: true,
     permissions: {
@@ -361,8 +363,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   researcher: {
     role: "researcher",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "openai",
+    model: "gpt-5.2",
     effort: "medium",
     enabled: true,
     permissions: {
@@ -372,8 +374,8 @@ export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
   },
   "code-reviewer": {
     role: "code-reviewer",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
+    provider: "google",
+    model: "gemini-3-pro",
     effort: "medium",
     enabled: true,
     permissions: {

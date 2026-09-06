@@ -18,8 +18,9 @@ describe("phase 6 disjoint scopes on the conflicting task", () => {
   });
 
   test("disjoint path scopes partition multi-1 writes with zero conflicts", () => {
-    const [solo, team] = loadCassettes(dir);
-    if (!solo || !team) throw new Error("solo and team cassettes required");
+    const cassettes = loadCassettes(dir);
+    const team = cassettes.find((c) => c.roster === "team");
+    if (!team) throw new Error("team cassette required");
     const multi = team.tasks.find((t) => t.kind === "multi");
     if (!multi) throw new Error("team cassette needs a multi-file task");
     const scopes = ["src/auth/**", "src/db/**"];

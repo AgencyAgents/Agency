@@ -295,13 +295,20 @@ describe("DEFAULT_ROSTER", () => {
       const entry = DEFAULT_ROSTER[handle];
       expect(entry).toBeDefined();
       expect(entry!.role).toBe(handle);
-      expect(entry!.provider).toBe("anthropic");
-      expect(entry!.model).toBe("claude-sonnet-5");
+      expect(typeof entry!.provider).toBe("string");
+      expect(typeof entry!.model).toBe("string");
       expect(typeof entry!.effort).toBe("string");
       expect(entry!.enabled).toBe(true);
       expect(entry!.permissions).toBeDefined();
       expect(Object.keys(entry!.permissions!)).not.toEqual([]);
     }
+  });
+
+  test("starter roster spreads providers across vendors", () => {
+    const providers = new Set(Object.values(DEFAULT_ROSTER).map((entry) => entry.provider));
+    expect(providers.size).toBeGreaterThan(1);
+    expect(DEFAULT_ROSTER.leader!.provider).toBe("anthropic");
+    expect(DEFAULT_ROSTER.coder!.provider).toBe("anthropic");
   });
 
   test("fresh config with no agents key gets the 8-agent default roster on load", () => {

@@ -522,6 +522,10 @@ export interface DaemonContext {
   approvalManagers: Map<string, ApprovalManager>;
   /** Pre-turn tips per session, pushed by session_send and popped by undo_run. */
   turnCheckpoints: Map<string, Array<string | null>>;
+  /** Pre-integration workspace captures per lead session, restored by undo_run team scope. */
+  teamCheckpoints: Map<string, import("@agency/core").IntegrationCheckpoint>;
+  /** Team-scoped MCP pools: one shared-process pool per parent session. */
+  teamMcpPools: Map<string, import("@agency/tools").TeamMcpPool>;
   /** Merged catalog models with config overrides (offline, never fetched). */
   listModels: () => ModelInfo[];
   activeControllers: Map<string, AbortController>;

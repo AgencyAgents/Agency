@@ -73,6 +73,7 @@ export { createWriteTool } from "./builtins/write.ts";
 export * from "./contract.ts";
 export {
   addDiffComment,
+  appendReviewFindings,
   countUnresolvedComments as countUnresolvedDiffComments,
   createDiffApproval,
   type DiffApprovalRecord,
@@ -80,6 +81,7 @@ export {
   listDiffComments,
   MAX_DIFF_BYTES,
   MAX_DIFF_LINES,
+  type ReviewFinding,
   renderSideBySide,
   resolveDiffComment,
   type SideBySideOptions,

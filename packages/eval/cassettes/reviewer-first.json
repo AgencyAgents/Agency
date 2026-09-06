@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "roster": "reviewer-first",
+  "promptVersion": "1.0.0",
+  "pricing": {
+    "inputPerMTok": 3,
+    "outputPerMTok": 15,
+    "cachedInputPerMTok": 0.3
+  },
+  "tasks": [
+    {
+      "taskId": "single-1",
+      "kind": "single",
+      "filesTouched": ["src/auth/login.ts"],
+      "passed": true,
+      "usage": { "inputTokens": 3500, "outputTokens": 600, "cachedInputTokens": 2800 },
+      "wallClockMs": 10000,
+      "conflicts": 0
+    },
+    {
+      "taskId": "single-2",
+      "kind": "single",
+      "filesTouched": ["src/db/query.ts"],
+      "passed": true,
+      "usage": { "inputTokens": 5000, "outputTokens": 900, "cachedInputTokens": 3500 },
+      "wallClockMs": 14000,
+      "conflicts": 0
+    },
+    {
+      "taskId": "multi-1",
+      "kind": "multi",
+      "filesTouched": ["src/auth/login.ts", "src/db/query.ts"],
+      "passed": true,
+      "usage": { "inputTokens": 11000, "outputTokens": 2000, "cachedInputTokens": 7000 },
+      "wallClockMs": 20000,
+      "conflicts": 0
+    }
+  ]
+}

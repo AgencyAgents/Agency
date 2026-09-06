@@ -21,19 +21,19 @@ function handlerOf(tool: unknown) {
 }
 
 describe("dispatch hardening (item 35)", () => {
-  it("depth gate denies at maxDepth with a clean error", async () => {
+  it("flat team path carries no depth gate: any inherited depth dispatches", async () => {
     let called = false;
     const tool = createDispatchTool({
-      maxDepth: 0,
       dispatch: async () => {
         called = true;
         return { content: "ok" };
       },
     });
-    const res = await handlerOf(tool)({ agents: [{ handle: "a", brief: "b" }] }, { taskDepth: 0 });
-    expect(res.isError).toBe(true);
-    expect(res.content).toContain("depth limit reached (0 >= 0)");
-    expect(called).toBe(false);
+    for (const depth of [0, 1, 3]) {
+      const res = await handlerOf(tool)({ agents: [{ handle: "a", brief: "b" }] }, { taskDepth: depth });
+      expect(res.isError).not.toBe(true);
+    }
+    expect(called).toBe(true);
   });
 
   it("passes taskDepth, signal and requestApproval through exactly once (daemon adds +1)", async () => {
@@ -96,18 +96,17 @@ describe("dispatch hardening (item 35)", () => {
     expect(t.renderResult({ content: "boom", isError: true })).toContain("dispatch failed");
   });
 
-  it("nested dispatch blocked: subagent (taskDepth>0) cannot dispatch", async () => {
-    let called = false;
+  it("subagent taskDepth forwards to dispatch for spawn-rule inheritance", async () => {
+    let seen: unknown = null;
     const tool = createDispatchTool({
-      dispatch: async () => {
-        called = true;
+      dispatch: async (_input, ctx) => {
+        seen = ctx;
         return { content: "ok" };
       },
     });
     const res = await handlerOf(tool)({ agents: [{ handle: "a", brief: "b" }] }, { taskDepth: 1 });
-    expect(res.isError).toBe(true);
-    expect(res.content).toBe("nested dispatch blocked: subagents cannot dispatch");
-    expect(called).toBe(false);
+    expect(res.isError).not.toBe(true);
+    expect((seen as { taskDepth: number }).taskDepth).toBe(1);
   });
 });
 
@@ -156,10 +155,8 @@ describe("unified dispatch path U9", () => {
 
   it("skip reason codes are stable strings and every code is producible", () => {
     const expected: DispatchSkipReason[] = [
-      "depth-limit",
       "empty-input",
       "invalid-entry",
-      "nested-blocked",
       "team-budget-exceeded",
       "per-agent-budget-exceeded",
       "unknown-handle",
@@ -172,14 +169,6 @@ describe("unified dispatch path U9", () => {
     expect(invalid.skips[0]!.reason).toBe("invalid-entry");
     const unknown = planDispatchBatch([{ handle: "ghost", brief: "b" }], { resolveHandle: get });
     expect(unknown.skips[0]!.reason).toBe("unknown-handle");
-    const nested = planDispatchBatch([{ handle: "a", brief: "b" }], { resolveHandle: get, taskDepth: 1 });
-    expect(nested.skips[0]!.reason).toBe("nested-blocked");
-    const deep = planDispatchBatch([{ handle: "a", brief: "b" }], {
-      resolveHandle: get,
-      taskDepth: 0,
-      maxDepth: 0,
-    });
-    expect(deep.skips[0]!.reason).toBe("depth-limit");
     const orch = planDispatchBatch([{ handle: "a", brief: "b" }], {
       resolveHandle: get,
       teamTotal: 5,
@@ -202,9 +191,6 @@ describe("unified dispatch path U9", () => {
       expect((res as { reason?: string }).reason).toMatch(/^[a-z-]+$/);
       expect(DISPATCH_SKIP_REASONS).toContain((res as { reason?: DispatchSkipReason }).reason!);
     }
-    const nested = await handlerOf(tool)({ agents: [{ handle: "a", brief: "b" }] }, { taskDepth: 1 });
-    expect((nested as { reason?: string }).reason).toBe("nested-blocked");
-    expect(nested.content).toBe("nested dispatch blocked: subagents cannot dispatch");
     const line = formatSkipLine({ index: 0, handle: "ghost", reason: "unknown-handle", detail: "nope" });
     expect(line).toContain("[skip:unknown-handle]");
     expect(line).toContain("ghost");
@@ -291,27 +277,15 @@ describe("dispatch batch budgets accumulate intra-batch (item a)", () => {
   });
 });
 
-describe("depth gate ordering (item b)", () => {
-  it("checkDepthGate reports depth-limit at maxDepth even when nested", async () => {
-    const { checkDepthGate } = await import("../src/team/dispatch-core.ts");
-    expect(checkDepthGate("dispatch", 3, 3)?.reason).toBe("depth-limit");
-    expect(checkDepthGate("task", 2, 2)?.reason).toBe("depth-limit");
-  });
-
-  it("checkDepthGate reports nested-blocked for depth>0 within bounds", async () => {
-    const { checkDepthGate } = await import("../src/team/dispatch-core.ts");
-    expect(checkDepthGate("dispatch", 1, 3)?.reason).toBe("nested-blocked");
-    expect(checkDepthGate("dispatch", 0, 3)).toBeNull();
-  });
-
-  it("planDispatchBatch uses the same order: limit wins at maxDepth", () => {
+describe("flat team path carries no depth codes (phase 8 decision a)", () => {
+  it("spawn keeps the only depth rule; planDispatchBatch plans any inherited depth", () => {
     const plan = planDispatchBatch([{ handle: "a", brief: "b" }], {
       resolveHandle: () => ({ handle: "a" }),
-      taskDepth: 2,
-      maxDepth: 2,
     });
-    expect(plan.targets).toEqual([]);
-    expect(plan.skips[0]!.reason).toBe("depth-limit");
+    expect(plan.targets).toHaveLength(1);
+    expect(plan.skips).toEqual([]);
+    expect(DISPATCH_SKIP_REASONS).not.toContain("depth-limit" as never);
+    expect(DISPATCH_SKIP_REASONS).not.toContain("nested-blocked" as never);
   });
 });
 

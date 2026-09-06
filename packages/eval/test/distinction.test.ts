@@ -7,7 +7,9 @@ const dir = join(import.meta.dir, "..", "cassettes");
 
 describe("eval solo versus team", () => {
   test("configurations differ on the multi-file task", () => {
-    const [solo, team] = loadCassettes(dir);
+    const cassettes = loadCassettes(dir);
+    const solo = cassettes.find((c) => c.roster === "solo");
+    const team = cassettes.find((c) => c.roster === "team");
     if (!solo || !team) throw new Error("solo and team cassettes required");
     const soloMulti = solo.tasks.find((t) => t.kind === "multi");
     const teamMulti = team.tasks.find((t) => t.kind === "multi");

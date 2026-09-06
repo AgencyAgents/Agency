@@ -46,7 +46,7 @@ import {
   writeInstanceFile,
 } from "@agency/rpc";
 import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
-import { createSessionScope, resolveShell, type SessionScope } from "@agency/tools";
+import { createSessionScope, resolveShell, type SessionScope, type TeamMcpPool } from "@agency/tools";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import {
   demoteScopeForLead,
@@ -64,6 +64,13 @@ import {
 } from "./handlers/session.ts";
 import { registerSurfaceHandlers } from "./handlers/surface.ts";
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
+import {
+  attachTeamMcpPool,
+  initTeamRunState,
+  registerTeamRunHandlers,
+  remapRosterToCredentials,
+  teamMcpDedicatedServers,
+} from "./handlers/team-run.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
@@ -313,6 +320,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     const pending = scopePromises.get(sessionId);
     if (pending) return pending;
     const promise = (async () => {
+      let teamParent: string | undefined;
+      for (const team of teamContexts.values()) {
+        if (team.sessions.has(sessionId)) {
+          teamParent = team.parentSessionId;
+          break;
+        }
+      }
       const scope = await createSessionScope({
         deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
         http,
@@ -323,9 +337,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         windowsShell: config.windowsShell,
         ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
         todoPersistence,
-        mcpServers: config.mcpServers,
+        mcpServers: teamMcpDedicatedServers(config.mcpServers, teamParent),
         lspServers: config.lspServers,
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
+      });
+      await attachTeamMcpPool(teamMcpPools, config.mcpServers, scope, {
+        teamParent,
+        ...(handle ? { handle } : {}),
       });
       for (const t of sharedPluginTools) {
         try {
@@ -415,6 +433,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   });
   const teamContexts = new Map<string, TeamContext>();
+  const teamMcpPools = new Map<string, TeamMcpPool>();
   const teamFor = (parentSessionId: string): TeamContext => {
     let team = teamContexts.get(parentSessionId);
     if (!team) {
@@ -450,12 +469,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   // One scheduler per provider: a single shared bucket would pace all
   // providers against one 60-rpm ceiling and one concurrency cap, so a slow
-  // provider's retries starve every other provider's requests.
+  // provider's retries starve every other provider's requests. The team
+  // limiter below is the binding constraint for fan-out; this headroom
+  // keeps same-provider teams of five fully parallel.
   const schedulers = new Map<string, Scheduler>();
   const schedulerFor = (provider: string): Scheduler => {
     let scheduler = schedulers.get(provider);
     if (!scheduler) {
-      scheduler = new Scheduler();
+      scheduler = new Scheduler({ maxConcurrent: 8 });
       schedulers.set(provider, scheduler);
     }
     return scheduler;
@@ -503,6 +524,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     approvalsFor,
     approvalManagers,
     turnCheckpoints: new Map<string, Array<string | null>>(),
+    teamCheckpoints: new Map(),
+    teamMcpPools,
     listModels: models.listModels,
     activeControllers,
     turnOwners,
@@ -524,6 +547,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   try {
     initTeamFromConfig(ctx);
   } catch {}
+  try {
+    remapRosterToCredentials(ctx);
+  } catch {}
+  initTeamRunState(ctx);
 
   const handlers: Record<string, import("@agency/rpc").MethodHandler> = {};
 
@@ -535,6 +562,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerCommandHandlers(handlers, ctx);
 
   registerTeamHandlers(handlers, ctx);
+  registerTeamRunHandlers(handlers, ctx);
 
   server = await startDaemonServer({
     token: authToken,

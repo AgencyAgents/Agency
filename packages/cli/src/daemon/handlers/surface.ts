@@ -1,8 +1,9 @@
-import { getSessionTitle, loadTraceSpansSync } from "@agency/core";
+import { getSessionTitle, loadTraceSpansSync, restoreIntegrationCheckpoint } from "@agency/core";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { isUsageEntry } from "@agency/telemetry";
+import { TEAM_MCP_PROCESS_CAP } from "@agency/tools";
 import { agentsListPayload } from "../team-context.ts";
 import {
   type DaemonContext,
@@ -31,8 +32,17 @@ function requireSessionId(rawParams: unknown, method: string): string {
 }
 
 export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
-  const { config, defaultCapabilitiesForSession, listModels, todoSessionsDir, todoStore, turnCheckpoints } =
-    ctx;
+  const {
+    config,
+    defaultCapabilitiesForSession,
+    listModels,
+    sessionScopes,
+    teamCheckpoints,
+    teamMcpPools,
+    todoSessionsDir,
+    todoStore,
+    turnCheckpoints,
+  } = ctx;
 
   handlers.session_list = async () => {
     const sessions = todoStore.list().map((id) => {
@@ -162,24 +172,38 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       }),
       { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
     );
-    return { sessions, agents: agentsListPayload(ctx, sessionId), total };
+    let sharedServers = 0;
+    for (const pool of teamMcpPools.values()) sharedServers += pool.usage().sharedServers;
+    const mcp = {
+      sharedServers,
+      perAgentScopes: sessionScopes.size,
+      cap: TEAM_MCP_PROCESS_CAP,
+    };
+    return { sessions, agents: agentsListPayload(ctx, sessionId), total, mcp };
   };
 
   handlers.undo_run = async (rawParams) => {
     const sessionId = requireSessionId(rawParams, "undo_run");
     const tip = turnCheckpoints.get(sessionId)?.pop();
-    if (tip === undefined)
-      return { undone: false, reason: "no checkpoint: session_send records one per turn" };
-    try {
-      await todoStore.rollback(sessionId, tip);
-    } catch (error) {
-      throw new AgencyError(
-        ErrorCode.INTERNAL,
-        `undo_run failed: ${error instanceof Error ? error.message : String(error)}`,
-        { source: "surface" },
-      );
+    if (tip !== undefined) {
+      try {
+        await todoStore.rollback(sessionId, tip);
+      } catch (error) {
+        throw new AgencyError(
+          ErrorCode.INTERNAL,
+          `undo_run failed: ${error instanceof Error ? error.message : String(error)}`,
+          { source: "surface" },
+        );
+      }
+      return { undone: true, sessionId, tipId: tip, scope: "session" };
     }
-    return { undone: true, sessionId, tipId: tip };
+    const checkpoint = teamCheckpoints.get(sessionId);
+    if (checkpoint === undefined) {
+      return { undone: false, reason: "no checkpoint: session_send records one per turn" };
+    }
+    const { restored } = restoreIntegrationCheckpoint(checkpoint);
+    teamCheckpoints.delete(sessionId);
+    return { undone: true, sessionId, scope: "team", restored: restored.length };
   };
 
   handlers.prompt_inspect = async (rawParams) => {

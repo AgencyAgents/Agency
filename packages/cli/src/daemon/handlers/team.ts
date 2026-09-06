@@ -2,31 +2,27 @@ import {
   type AgentConfig,
   type FileAgentDef,
   isValidAgentHandle,
-  leanBrief,
   leanPrompt,
   leanSummary,
-  newEntryId,
+  openCompareItem,
   type PluginAgentContribution,
+  recordCompareVerdict,
   resolveFileRoster,
-  runChildTurn,
   spawnParallel,
 } from "@agency/core";
-import { clampEffortForModel, classifyEffortFromText, resolveApiKey, Scheduler } from "@agency/providers";
+import { clampEffortForModel } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
-import { extractFinalText } from "@agency/tools";
 import {
   agentsListPayload,
   childKey,
   childSessionIdFor,
   costUsdForHandle,
-  drainDigest,
-  drainParentInbox,
   latestChildAnywhere,
   latestChildSession,
 } from "../team-context.ts";
-import { type DaemonContext, oauthOverridesFor } from "../types.ts";
-import { childPromptFor } from "./coords.ts";
+import type { DaemonContext } from "../types.ts";
+import { type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
 
 type FileBackedAgent = AgentConfig & {
   systemPrompt?: string;
@@ -151,30 +147,17 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
 export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
   const {
     activeControllers,
-    adapterFor,
     approvalManagers,
     boardStore,
     broadcast,
-    capabilitiesForAgent,
-    catalogModel,
-    channelStore,
-    choiceLog,
     config,
-    createTraceRecorder,
     eventBus,
-    gateForAgent,
-    getKeychain,
     getOrCreateScope,
-    http,
     logger,
-    options,
-    providers,
-    redactor,
     sessionScopes,
     teamContexts,
     teamFor,
     teamRegistry,
-    todoSessionsDir,
     todoStore,
     warnPersistence,
   } = ctx;
@@ -289,17 +272,28 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     try {
       broadcast(`team.shared`, { type: "dispatch_compare_start", count: handles.length, handles });
     } catch {}
-    const compareScheduler = new Scheduler({ maxConcurrent: Math.max(8, handles.length) });
+    // Compare team mode: one shared board item with N non-exclusive
+    // claims, so the comparison is durable and the verdict is recorded.
+    const opened = openCompareItem(boardStore, {
+      prompt: leanPromptText,
+      handles,
+      filedBy: "lead",
+      id: `compare-${parentSessionId}-${batchId}`,
+    });
+    const itemId = opened.ok ? opened.itemId : `compare-${parentSessionId}-${batchId}`;
+    const okBy = new Map<string, boolean>();
     const { results } = await spawnParallel(
       handles,
       async (handle): Promise<{ handle: string; result: string }> => {
         const agent = teamRegistry.get(handle);
         if (!agent) {
+          okBy.set(handle, false);
           return { handle, result: `unknown handle: ${handle}` };
         }
         const compareBudgets = (config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } })
           .budgets;
         if (compareBudgets?.teamUsd !== undefined && team.teamTotal.value >= compareBudgets.teamUsd) {
+          okBy.set(handle, false);
           return {
             handle,
             result: `${handle}: team budget exceeded: ${team.teamTotal.value} >= ${compareBudgets.teamUsd}`,
@@ -307,6 +301,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         }
         const spentForHandle = costUsdForHandle(ctx, handle);
         if (compareBudgets?.perAgentUsd !== undefined && spentForHandle >= compareBudgets.perAgentUsd) {
+          okBy.set(handle, false);
           return {
             handle,
             result: `${handle}: budget exceeded: per-agent ${spentForHandle} >= ${compareBudgets.perAgentUsd}`,
@@ -323,135 +318,28 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         await getOrCreateScope(childSessionId, handle);
         const compareScope = sessionScopes.get(childSessionId);
         if (compareScope) compareScope.teamId = parentSessionId;
-        const resolvedEffort =
-          effort ?? (agent.effort === "auto" ? classifyEffortFromText(prompt) : agent.effort);
-        // --- Real turn execution (concurrent per handle) ---
-        const childProvider = agent.provider;
-        const childModel = agent.model ?? "";
-        const childModelInfo = catalogModel(childProvider, childModel);
-        const clampedEffort = clampEffortForModel(
-          resolvedEffort as import("@agency/providers").EffortLevel,
-          childModelInfo,
-        );
-        team.agentStates.set(key, "working");
-        if (teamRegistry.list().length > 1) {
-          try {
-            broadcast(`team.${childSessionId}`, {
-              type: "agent_lifecycle",
-              handle,
-              state: "working",
-              detail: prompt.slice(0, 200),
-              effort: clampedEffort,
-            });
-          } catch {}
-          try {
-            broadcast(`team.shared`, {
-              type: "agent_lifecycle",
-              handle,
-              state: "working",
-              detail: prompt.slice(0, 200),
-              effort: clampedEffort,
-            });
-          } catch {}
-        }
-
-        let childApiKey = "";
+        let outcome: CompareChildResult;
         try {
-          const kc = await getKeychain();
-          const k = await resolveApiKey({
-            provider: childProvider,
-            env: process.env,
-            keychain: kc,
-            config: providers[childProvider]?.apiKey,
-            ...oauthOverridesFor(childProvider, providers),
+          outcome = await runCompareChildTurn(ctx, {
+            team,
+            parentSessionId,
+            batchId,
+            handle,
+            prompt,
+            leanPromptText,
+            ...(effort === undefined ? {} : { effort }),
+            itemId,
+            key,
+            childSessionId,
           });
-          if (k) {
-            childApiKey = k;
-            redactor.registerSecret(k);
-          }
-        } catch {}
-
-        const childTurnId = newEntryId();
-        const startMs = Date.now();
-
-        const freshSession: Message[] = [
-          { role: "user", content: [{ type: "text", text: leanBrief(prompt) }] },
-        ];
-
-        const childScope = sessionScopes.get(childSessionId);
-        const childTools = childScope?.tools ?? [];
-        const agentGate = gateForAgent(handle);
-        const offeredTools = childTools
-          .filter((t) => agentGate.toolOffered(t.name, t.riskTier))
-          // Depth-0 child isolation: subagents cannot dispatch or spawn.
-          .filter((t) => t.name !== "dispatch" && t.name !== "spawn");
-        const agentCaps = capabilitiesForAgent(agentGate, childTools);
-
-        const agentSystemPrompt = childPromptFor({
-          goal: prompt,
-          roster: teamRegistry
-            .list()
-            .map((m) => m.handle)
-            .join(" "),
-          family: agent.provider,
-          role: agent.role,
-          handle,
-          briefLine: "Compare and respond to the given prompt concisely.",
-          ...(agent.systemPrompt ? { body: agent.systemPrompt } : {}),
-          replace: agent.replace ?? false,
-          tools: offeredTools,
-          item: prompt,
-          decisions: choiceLog.digest(),
-          claimed: [],
-          workspaceRoot: options.workspaceRoot,
-        });
-
-        const childTurn = await runChildTurn(
-          { http, eventBus, createTraceRecorder },
-          {
-            adapter: adapterFor(childProvider),
-            scheduler: compareScheduler,
-            session: freshSession,
-            systemPrompt: agentSystemPrompt.text,
-            systemSegments: agentSystemPrompt.segments,
-            tools: offeredTools,
-            model: childModel,
-            apiKey: childApiKey,
-            provider: childProvider,
-            identity: { type: "agent", name: handle },
-            capabilities: agentCaps,
-            toolPolicy: agentGate,
-            pricePerMTok: childModelInfo
-              ? { input: childModelInfo.pricing.inputPerMTok, output: childModelInfo.pricing.outputPerMTok }
-              : undefined,
-            maxTokensPerRequest: childModelInfo?.maxOutputTokens,
-            turnId: childTurnId,
-            sessionId: childSessionId,
-            cwd: options.workspaceRoot,
-            taskDepth: 1,
-            doomLoopDetection: true,
-            drainMailbox: () => {
-              const drained: import("@agency/schema").Message[] = [];
-              drained.push(...drainParentInbox(team, handle));
-              const reg = teamRegistry.get(handle)?.mailbox;
-              if (reg && reg.length > 0) {
-                drained.push(...reg);
-                reg.length = 0;
-              }
-              drained.push(...drainDigest(team, key, boardStore.listEvents(), channelStore));
-              return drained;
-            },
-            trace: {
-              sessionsDir: todoSessionsDir,
-              sessionId: childSessionId,
-              traceId: childTurnId,
-              provider: childProvider,
-              model: childModel,
-            },
-          },
-        );
-        const childResult = childTurn.result;
-        const childError = childTurn.error;
+        } catch (error: unknown) {
+          okBy.set(handle, false);
+          return {
+            handle,
+            result: `${handle}: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+        const { childResult, childError, childModelInfo, finalText } = outcome;
 
         if (childResult && childModelInfo) {
           const costUsd =
@@ -459,27 +347,6 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             (childResult.usage.outputTokens / 1_000_000) * childModelInfo.pricing.outputPerMTok;
           team.teamCost.set(childSessionId, (team.teamCost.get(childSessionId) ?? 0) + costUsd);
           team.teamTotal.value += costUsd;
-        }
-
-        const durationMs = Date.now() - startMs;
-        const finalText = childResult ? extractFinalText(childResult.messages) : "";
-        const collapsed = leanSummary(
-          finalText || (childError instanceof Error ? childError.message : String(childError ?? "")),
-        );
-        try {
-          const parentLatestTip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
-          await todoStore.append(childSessionId, {
-            type: "task_result",
-            parentId: parentLatestTip,
-            tool: "dispatch_compare",
-            childSessionId,
-            childTurnId,
-            durationMs,
-            summary: collapsed || leanSummary(finalText),
-            prompt: leanPromptText,
-          });
-        } catch (error: unknown) {
-          warnPersistence("task_result append", error);
         }
 
         if (childError) {
@@ -512,41 +379,42 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
               broadcast(`team.shared`, { type: "agent_lifecycle", handle, state: "failed" });
             } catch {}
           }
+          okBy.set(handle, false);
           return {
             handle,
             result: `${handle}: ${childError instanceof Error ? childError.message : String(childError)}`,
           };
-        } else {
-          team.agentStates.set(key, "idle");
-          try {
-            const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
-            await todoStore
-              .append(childSessionId, {
-                type: "agent_lifecycle",
-                parentId: tip2,
-                handle,
-                state: "idle",
-                detail: "compare done",
-              })
-              .catch((error: unknown) => {
-                warnPersistence("agent_lifecycle append", error);
-              });
-          } catch (error: unknown) {
-            warnPersistence("agent_lifecycle load", error);
-          }
-          if (teamRegistry.list().length > 1) {
-            try {
-              broadcast(`team.${childSessionId}`, { type: "agent_lifecycle", handle, state: "idle" });
-            } catch {}
-            try {
-              broadcast(`team.shared`, { type: "agent_lifecycle", handle, state: "idle" });
-            } catch {}
-          }
-          return {
-            handle,
-            result: `${handle} (${agent.provider}/${agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
-          };
         }
+        team.agentStates.set(key, "idle");
+        try {
+          const tip2 = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
+          await todoStore
+            .append(childSessionId, {
+              type: "agent_lifecycle",
+              parentId: tip2,
+              handle,
+              state: "idle",
+              detail: "compare done",
+            })
+            .catch((error: unknown) => {
+              warnPersistence("agent_lifecycle append", error);
+            });
+        } catch (error: unknown) {
+          warnPersistence("agent_lifecycle load", error);
+        }
+        if (teamRegistry.list().length > 1) {
+          try {
+            broadcast(`team.${childSessionId}`, { type: "agent_lifecycle", handle, state: "idle" });
+          } catch {}
+          try {
+            broadcast(`team.shared`, { type: "agent_lifecycle", handle, state: "idle" });
+          } catch {}
+        }
+        okBy.set(handle, true);
+        return {
+          handle,
+          result: `${handle} (${agent.provider}/${agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
+        };
       },
       {
         onSettle: (settled) => {
@@ -562,6 +430,16 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     try {
       eventBus.emit("dispatch.compare", { handles, prompt: leanPromptText });
     } catch {}
+    const winner = handles.find((h) => okBy.get(h) === true) ?? "none";
+    recordCompareVerdict(boardStore, {
+      itemId,
+      by: "lead",
+      winner,
+      rationale:
+        winner === "none"
+          ? "all comparers failed"
+          : `${winner} completed first among ${String(handles.length)}`,
+    });
     return { results };
   };
   handlers.team_stop = async (rawParams: unknown) => {

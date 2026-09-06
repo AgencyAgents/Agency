@@ -45,7 +45,7 @@ describe("eval offline replay", () => {
       pending: { roster: string }[];
     };
     expect(parsed.promptVersion).toBe("1.0.0");
-    expect(parsed.scores).toHaveLength(2);
+    expect(parsed.scores).toHaveLength(5);
     for (const s of parsed.scores) {
       for (const key of [
         "roster",
@@ -61,6 +61,6 @@ describe("eval offline replay", () => {
         expect(s).toHaveProperty(key);
       }
     }
-    expect(parsed.pending.map((p) => p.roster)).toContain("reviewer-first");
+    expect(parsed.pending).toEqual([]);
   });
 });

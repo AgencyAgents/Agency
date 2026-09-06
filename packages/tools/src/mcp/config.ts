@@ -10,6 +10,10 @@ export const McpServerConfigSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
   requestTimeoutMs: z.number().int().positive().optional(),
   toolCallTimeoutMs: z.number().int().positive().optional(),
+  /** Read-only servers are safe to share across a team. */
+  readOnly: z.boolean().optional(),
+  /** Stateless servers hold no session state, so sharing never leaks. */
+  stateless: z.boolean().optional(),
 });
 
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;

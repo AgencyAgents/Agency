@@ -285,8 +285,6 @@ describe("Chaos: dispatch skip storm", () => {
       "empty-input",
       "invalid-entry",
       "unknown-handle",
-      "nested-blocked",
-      "depth-limit",
       "team-budget-exceeded",
       "per-agent-budget-exceeded",
     ];
@@ -326,27 +324,12 @@ describe("Chaos: dispatch skip storm", () => {
     expect(formatSkipLine(plan.skips[0]!)).toContain("ghost");
   });
 
-  test("nested-blocked skip when taskDepth > 0", () => {
+  test("flat team path plans inherited depth as ordinary targets", () => {
     const plan = planDispatchBatch([{ handle: "agent1", brief: "work" }], {
       resolveHandle: () => ({ handle: "agent1" }),
-      taskDepth: 1,
     });
-    expect(plan.targets).toEqual([]);
-    expect(plan.skips).toHaveLength(1);
-    expect(plan.skips[0]?.reason).toBe("nested-blocked");
-    expect(formatSkipLine(plan.skips[0]!)).toContain("[skip:nested-blocked]");
-  });
-
-  test("depth-limit skip when taskDepth >= maxDepth", () => {
-    const plan = planDispatchBatch([{ handle: "agent1", brief: "work" }], {
-      resolveHandle: () => ({ handle: "agent1" }),
-      taskDepth: 0,
-      maxDepth: 0,
-    });
-    expect(plan.targets).toEqual([]);
-    expect(plan.skips).toHaveLength(1);
-    expect(plan.skips[0]?.reason).toBe("depth-limit");
-    expect(formatSkipLine(plan.skips[0]!)).toContain("[skip:depth-limit]");
+    expect(plan.targets).toHaveLength(1);
+    expect(plan.skips).toHaveLength(0);
   });
 
   test("team-budget-exceeded skip when total spend over limit", () => {

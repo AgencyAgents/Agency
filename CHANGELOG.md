@@ -10,15 +10,16 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 - **Perseverance legacy path**: the legacy import file is now `.omo/perseverance.json` (`LEGACY_PERSEVERANCE_FILE`), completing the rename with zero old-name references left. Clean break with no back-compat shim: legacy files already on disk under the previous name are no longer picked up, so move such a file to the new name to keep its state.
 - **Dispatch path**: `packages/cli/src/daemon.ts` runs delegation inline:
-  `dispatch` tool with depth-1 nesting block, per-agent and team
-  budget caps, cost forecast with approval gate, and concurrent peer turns
-  with lean briefs (`packages/core/src/team/parallel.ts`).
-  `dispatch_compare` fans one prompt out to several handles via
-  `spawnParallel`. A lone `@handle` mention routes the turn to that
-  agent's provider, model, and effort (`parseHandles` at daemon.ts:1872).
-  `planDispatchBatch` in `packages/core/src/team/dispatch-core.ts`
-  exists with 7 skip codes but has no runtime caller; the daemon
-  reimplements the unknown-handle and budget skips inline.
+  `dispatch` tool on a flat team path (depth-1 nesting lives only on the
+  `spawn` tool), per-agent and team budget caps, cost forecast with
+  approval gate, and concurrent peer turns with lean briefs
+  (`packages/core/src/team/parallel.ts`).
+  `dispatch_compare` runs compare mode: one shared board item that N
+  agents `compareClaim`, with a recorded verdict. A lone `@handle`
+  mention routes the turn to that agent's provider, model, and effort
+  (`parseHandles` at daemon.ts:1872). `planDispatchBatch` in
+  `packages/core/src/team/dispatch-core.ts` plans every batch with 5
+  skip codes; the inline skips stay as race guards.
 - **Per-agent permissions**: every dispatched peer carries its own
   capability set so the guard enforces tool-level, path-level, and
   command-level rules per agent identity, not per-daemon-default
@@ -29,7 +30,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   lifecycle) over standard ports, with streaming responses via SSE.
 - **8-agent roster**: `DEFAULT_ROSTER` (`packages/core/src/config/schema.ts`)
   defines leader, planner, plan-reviewer, coder, executor, explorer,
-  researcher, and code-reviewer, all pinned to anthropic/claude-sonnet-5.
+  researcher, and code-reviewer, spread across anthropic, openai, and
+  google by role and remapped to credentialed providers at startup.
   Dispatched peers do not receive per-role prompts: `resolveFamilyPrompt`
   (`packages/core/src/prompt/compose.ts`) has no runtime caller, and each
   peer turn uses a literal one-line prompt with its handle and role

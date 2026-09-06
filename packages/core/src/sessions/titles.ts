@@ -1,5 +1,6 @@
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter } from "@agency/providers";
+import { type CheapRouteInput, selectModel } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { type Config, parseModelRef } from "../config/schema.ts";
 
@@ -17,10 +18,17 @@ export async function generateTitle(
     apiKey: string;
     providerConfig: Record<string, import("../config/schema.ts").ProviderConfig>;
     adapterFor?: (provider: string) => ProviderAdapter;
+    /** Cheap-routing for this background turn; title is always eligible. */
+    cheapModel?: string;
+    forcePrimary?: boolean;
   },
 ): Promise<string | undefined> {
   const resolved = resolveSmallModel(options.config);
   if (!resolved) return undefined;
+  const selection = selectModel(resolved.model, options.cheapModel, {
+    kind: "title",
+    ...(options.forcePrimary !== undefined ? { forcePrimary: options.forcePrimary } : {}),
+  } satisfies CheapRouteInput);
   const trimmed = userMessage.trim().slice(0, 500);
   if (!trimmed) return undefined;
 
@@ -67,7 +75,7 @@ export async function generateTitle(
   try {
     let title = "";
     for await (const event of adapter.stream(
-      { model: resolved.model, apiKey: options.apiKey, messages, maxTokens: 32 },
+      { model: selection.model, apiKey: options.apiKey, messages, maxTokens: 32 },
       options.http,
     )) {
       if (event.type === "text_delta") title += event.text;

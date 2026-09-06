@@ -16,7 +16,7 @@ import {
   type ToolSpec,
 } from "@agency/core";
 import { checkCostForecast, type DispatchAgentForecast, estimateDispatchCost } from "@agency/guard";
-import { classifyEffortFromText, resolveApiKey, Scheduler } from "@agency/providers";
+import { classifyEffortFromText, resolveApiKey } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
 import {
@@ -87,6 +87,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
         return { content: error instanceof Error ? error.message : String(error), isError: true };
       }
       const forecastThreshold = config.sandbox?.forecastCostUsd;
+      let dispatchEstimate: { lowUsd: number; highUsd: number; agentCount: number } | undefined;
       if (forecastThreshold !== undefined) {
         const forecastAgents: DispatchAgentForecast[] = input.agents.map((a) => {
           const agent = teamRegistry.get(a.handle);
@@ -103,6 +104,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           briefChars: input.agents.reduce((sum, a) => sum + a.brief.length, 0),
           agents: forecastAgents,
         });
+        dispatchEstimate = estimate;
         try {
           await checkCostForecast({
             estimate,
@@ -131,12 +133,12 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
         } catch {}
       };
       const dispatchBarrier = new PromiseBarrier<string>(input.agents.length, barrierNotify);
-      const batchScheduler = new Scheduler({ maxConcurrent: Math.max(8, input.agents.length) });
       try {
         broadcast(`team.shared`, {
           type: "dispatch_start",
           count: input.agents.length,
           handles: input.agents.map((a) => a.handle),
+          ...(dispatchEstimate ? { estimate: dispatchEstimate } : {}),
         });
       } catch {}
       const batchBudgets = (config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } })
@@ -397,53 +399,55 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
             workspaceRoot: options.workspaceRoot,
           });
 
-          const childTurn = await runChildTurn(
-            { http, eventBus, createTraceRecorder },
-            {
-              adapter: adapterFor(childProvider),
-              scheduler: batchScheduler,
-              session: freshSession,
-              systemPrompt: agentSystemPrompt.text,
-              systemSegments: agentSystemPrompt.segments,
-              tools: offeredTools,
-              model: childModel,
-              apiKey: childApiKey,
-              provider: childProvider,
-              identity: { type: "agent", name: a.handle },
-              capabilities: agentCaps,
-              toolPolicy: agentGate,
-              pricePerMTok: childModelInfo
-                ? {
-                    input: childModelInfo.pricing.inputPerMTok,
-                    output: childModelInfo.pricing.outputPerMTok,
-                  }
-                : undefined,
-              maxTokensPerRequest: childModelInfo?.maxOutputTokens,
-              turnId: childTurnId,
-              sessionId: childSessionId,
-              cwd: options.workspaceRoot,
-              taskDepth: ctx.taskDepth + 1,
-              doomLoopDetection: true,
-              signal: ctx.signal,
-              drainMailbox: () => {
-                const msgs: import("@agency/schema").Message[] = [];
-                msgs.push(...drainParentInbox(team, a.handle));
-                const reg = teamRegistry.get(a.handle)?.mailbox;
-                if (reg && reg.length > 0) {
-                  msgs.push(...reg);
-                  reg.length = 0;
-                }
-                msgs.push(...drainDigest(team, key, boardStore.listEvents(), channelStore));
-                return msgs;
-              },
-              trace: {
-                sessionsDir: todoSessionsDir,
-                sessionId: childSessionId,
-                traceId: childTurnId,
-                provider: childProvider,
+          const childTurn = await team.limiter.run(() =>
+            runChildTurn(
+              { http, eventBus, createTraceRecorder },
+              {
+                adapter: adapterFor(childProvider),
+                scheduler: daemon.schedulerFor(childProvider),
+                session: freshSession,
+                systemPrompt: agentSystemPrompt.text,
+                systemSegments: agentSystemPrompt.segments,
+                tools: offeredTools,
                 model: childModel,
+                apiKey: childApiKey,
+                provider: childProvider,
+                identity: { type: "agent", name: a.handle },
+                capabilities: agentCaps,
+                toolPolicy: agentGate,
+                pricePerMTok: childModelInfo
+                  ? {
+                      input: childModelInfo.pricing.inputPerMTok,
+                      output: childModelInfo.pricing.outputPerMTok,
+                    }
+                  : undefined,
+                maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+                turnId: childTurnId,
+                sessionId: childSessionId,
+                cwd: options.workspaceRoot,
+                taskDepth: ctx.taskDepth + 1,
+                doomLoopDetection: true,
+                signal: ctx.signal,
+                drainMailbox: () => {
+                  const msgs: import("@agency/schema").Message[] = [];
+                  msgs.push(...drainParentInbox(team, a.handle));
+                  const reg = teamRegistry.get(a.handle)?.mailbox;
+                  if (reg && reg.length > 0) {
+                    msgs.push(...reg);
+                    reg.length = 0;
+                  }
+                  msgs.push(...drainDigest(team, key, boardStore.listEvents(), channelStore));
+                  return msgs;
+                },
+                trace: {
+                  sessionsDir: todoSessionsDir,
+                  sessionId: childSessionId,
+                  traceId: childTurnId,
+                  provider: childProvider,
+                  model: childModel,
+                },
               },
-            },
+            ),
           );
           const childResult = childTurn.result;
           const childError = childTurn.error;

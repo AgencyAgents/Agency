@@ -4,17 +4,19 @@ import type { RosterId } from "./types.ts";
 export interface ResolvedRoster {
   id: RosterId;
   writers: number;
-  /** False for Phase 8 owned entries that only map, never run. */
+  /** False for entries that only map, never run. All five execute since Phase 8. */
   executes: boolean;
   mapsTo?: Exclude<RosterId, "reviewer-first">;
 }
 
-/** The three baseline configurations. reviewer-first maps to solo until Phase 8. */
+/** The baseline configurations. reviewer-first runs one writer plus reviewers. */
 export function resolveRoster(id: RosterId): ResolvedRoster {
   if (id === "solo") return { id, writers: 1, executes: true };
   if (id === "team") return { id, writers: 3, executes: true };
-  return { id, writers: 1, executes: false, mapsTo: "solo" };
+  if (id === "reviewer-first") return { id, writers: 1, executes: true };
+  if (id === "fixed") return { id, writers: 3, executes: true };
+  return { id, writers: 3, executes: true };
 }
 
 /** Cassettes backing the committed baseline, in report order. */
-export const BASELINE_ROSTERS: Exclude<RosterId, "reviewer-first">[] = ["solo", "team"];
+export const BASELINE_ROSTERS: RosterId[] = ["solo", "team", "reviewer-first", "fixed", "ladder"];

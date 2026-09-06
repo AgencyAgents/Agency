@@ -2,6 +2,18 @@ import { intersectPathScopes } from "@agency/guard";
 
 export type BoardStatus = "pending" | "in_progress" | "completed" | "ready_for_review" | "needs-user";
 
+export interface BoardObjection {
+  by: string;
+  evidence: string;
+  round: "objection" | "rebuttal";
+}
+
+export interface BoardVerdict {
+  winner: string;
+  tiebreaker: string;
+  rationale: string;
+}
+
 export interface BoardItem {
   id: string;
   content: string;
@@ -18,6 +30,16 @@ export interface BoardItem {
   declineReason?: string;
   escalateQuestion?: string;
   failureNote?: string;
+  /** Ladder rung index into the resolved chain, 0 when unassigned. */
+  ladderRung?: number;
+  /** Failure notes carried up the ladder, one per bounce or decline. */
+  failureNotes?: string[];
+  provider?: string;
+  model?: string;
+  objections?: BoardObjection[];
+  verdict?: BoardVerdict;
+  /** Non-exclusive compare attempts on one shared item. */
+  compareClaims?: string[];
 }
 
 export type ContractMove = "accept" | "decline" | "counter" | "escalate";
@@ -81,13 +103,39 @@ export class BoardStore {
   private readonly events: BoardEvent[] = [];
   private seq = 0;
   private persist?: (todos: BoardItem[]) => Promise<void>;
+  private reviewGate?: (item: BoardItem) => string | undefined;
+  private readonly listeners = new Set<() => void>();
 
   constructor(opts?: {
     persist?: (todos: BoardItem[]) => Promise<void>;
     initial?: BoardItem[];
+    reviewGate?: (item: BoardItem) => string | undefined;
   }) {
     if (opts?.initial) this.items = [...opts.initial];
     if (opts?.persist) this.persist = opts.persist;
+    if (opts?.reviewGate) this.reviewGate = opts.reviewGate;
+  }
+
+  // Completion and stall hooks subscribe here; mutations notify after persisting.
+  addListener(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
+  setReviewGate(fn: ((item: BoardItem) => string | undefined) | undefined): void {
+    this.reviewGate = fn;
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) {
+      try {
+        fn();
+      } catch {
+        // A hook must never break the board mutation it observes.
+      }
+    }
   }
 
   list(): BoardItem[] {
@@ -113,6 +161,7 @@ export class BoardStore {
   replace(items: BoardItem[]): void {
     this.items = [...items];
     void this.persist?.(this.items);
+    this.notify();
   }
 
   file(
@@ -149,6 +198,7 @@ export class BoardStore {
     this.items = [...this.items, item];
     this.record(id, filedBy, "file");
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true, item };
   }
 
@@ -182,6 +232,7 @@ export class BoardStore {
     if (item.status === "pending") item.status = "in_progress";
     this.record(id, handle, "accept");
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
@@ -194,6 +245,7 @@ export class BoardStore {
     item.declineReason = reason;
     this.record(id, handle, "decline", reason);
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
@@ -218,6 +270,7 @@ export class BoardStore {
     parent.failureNote = `countered by ${handle} as ${filed.item.id}`;
     this.record(id, handle, "counter", filed.item.id);
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true, item: filed.item };
   }
 
@@ -241,6 +294,7 @@ export class BoardStore {
     item.escalateQuestion = question;
     this.record(id, handle, "escalate", question);
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
@@ -251,6 +305,7 @@ export class BoardStore {
     delete item.claimedBy;
     this.record(id, handle, "release");
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
@@ -269,10 +324,15 @@ export class BoardStore {
       const problem = validateBoardResult(result);
       if (problem !== undefined) return { ok: false, reason: problem };
     }
+    if (status === "ready_for_review" && this.reviewGate) {
+      const refusal = this.reviewGate(item);
+      if (refusal !== undefined) return { ok: false, reason: refusal };
+    }
     item.status = status;
     if (status === "completed" || status === "ready_for_review") delete item.claimedBy;
     this.record(id, handle, `status:${status}`);
     void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
@@ -282,8 +342,53 @@ export class BoardStore {
     delete item.claimedBy;
     item.status = "pending";
     item.failureNote = note;
+    item.failureNotes = [...(item.failureNotes ?? []), note];
     this.record(id, handle, "fail", note);
     void this.persist?.(this.items);
+    this.notify();
+    return { ok: true };
+  }
+
+  // Disagreement protocol storage: objections accumulate for the
+  // tiebreaker to rule on, and the verdict is part of board state.
+  noteObjection(
+    handle: string,
+    id: string,
+    entry: BoardObjection,
+  ): { ok: true } | { ok: false; reason: string } {
+    const item = this.items.find((t) => t.id === id);
+    if (!item) return { ok: false, reason: "not found" };
+    item.objections = [...(item.objections ?? []), entry];
+    this.record(id, handle, `objection:${entry.round}`, entry.evidence.slice(0, 200));
+    void this.persist?.(this.items);
+    this.notify();
+    return { ok: true };
+  }
+
+  noteVerdict(
+    handle: string,
+    id: string,
+    verdict: BoardVerdict,
+  ): { ok: true } | { ok: false; reason: string } {
+    const item = this.items.find((t) => t.id === id);
+    if (!item) return { ok: false, reason: "not found" };
+    item.verdict = verdict;
+    if (item.status === "ready_for_review") item.status = "completed";
+    this.record(id, handle, `verdict:${verdict.winner}`, verdict.rationale.slice(0, 200));
+    void this.persist?.(this.items);
+    this.notify();
+    return { ok: true };
+  }
+
+  compareClaim(handle: string, id: string): { ok: true } | { ok: false; reason: string } {
+    const item = this.items.find((t) => t.id === id);
+    if (!item) return { ok: false, reason: "not found" };
+    if (!(item.compareClaims ?? []).includes(handle)) {
+      item.compareClaims = [...(item.compareClaims ?? []), handle];
+    }
+    this.record(id, handle, `compare:${handle}`);
+    void this.persist?.(this.items);
+    this.notify();
     return { ok: true };
   }
 
