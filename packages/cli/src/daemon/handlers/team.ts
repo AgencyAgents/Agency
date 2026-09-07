@@ -10,7 +10,7 @@ import {
   resolveFileRoster,
   spawnParallel,
 } from "@agency/core";
-import { clampEffortForModel } from "@agency/providers";
+import { clampEffortForModel, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { recordTurnCompletion } from "../costing.ts";
@@ -22,7 +22,7 @@ import {
   latestChildAnywhere,
   latestChildSession,
 } from "../team-context.ts";
-import type { DaemonContext } from "../types.ts";
+import { type DaemonContext, oauthOverridesFor } from "../types.ts";
 import { type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
 
 type FileBackedAgent = AgentConfig & {
@@ -153,8 +153,11 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     broadcast,
     config,
     eventBus,
+    getKeychain,
     getOrCreateScope,
     logger,
+    providers,
+    redactor,
     sessionScopes,
     teamContexts,
     teamFor,
@@ -282,6 +285,30 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       id: `compare-${parentSessionId}-${batchId}`,
     });
     const itemId = opened.ok ? opened.itemId : `compare-${parentSessionId}-${batchId}`;
+    // One keychain round-trip per provider before fan-out. Per-child
+    // resolution spawns security(1) per get on macOS and staggers serial.
+    const compareKeys = new Map<string, string>();
+    try {
+      const kc = await getKeychain().catch(() => undefined);
+      const needed = new Set<string>();
+      for (const handle of handles) {
+        const provider = teamRegistry.get(handle)?.provider;
+        if (provider) needed.add(provider);
+      }
+      for (const provider of needed) {
+        const found = await resolveApiKey({
+          provider,
+          env: process.env,
+          keychain: kc ?? undefined,
+          config: providers[provider]?.apiKey,
+          ...oauthOverridesFor(provider, providers),
+        });
+        if (found) {
+          compareKeys.set(provider, found);
+          redactor.registerSecret(found);
+        }
+      }
+    } catch {}
     const okBy = new Map<string, boolean>();
     const { results } = await spawnParallel(
       handles,
@@ -320,6 +347,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         const compareScope = sessionScopes.get(childSessionId);
         if (compareScope) compareScope.teamId = parentSessionId;
         let outcome: CompareChildResult;
+        const preResolved = compareKeys.get(agent.provider);
         try {
           outcome = await runCompareChildTurn(ctx, {
             team,
@@ -329,6 +357,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             prompt,
             leanPromptText,
             ...(effort === undefined ? {} : { effort }),
+            ...(preResolved === undefined ? {} : { apiKey: preResolved }),
             itemId,
             key,
             childSessionId,

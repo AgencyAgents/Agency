@@ -250,6 +250,7 @@ export interface CompareChildSpec {
   prompt: string;
   leanPromptText: string;
   effort?: string;
+  apiKey?: string;
   itemId: string;
   key: string;
   childSessionId: string;
@@ -324,19 +325,22 @@ export async function runCompareChildTurn(
       });
     } catch {}
   }
-  let childApiKey = "";
+  // Fan-out pre-resolves one key per provider; use it when present.
+  let childApiKey = spec.apiKey ?? "";
   try {
-    const kc = await getKeychain();
-    const k = await resolveApiKey({
-      provider: childProvider,
-      env: process.env,
-      keychain: kc,
-      config: providers[childProvider]?.apiKey,
-      ...oauthOverridesFor(childProvider, providers),
-    });
-    if (k) {
-      childApiKey = k;
-      redactor.registerSecret(k);
+    if (childApiKey.length === 0) {
+      const kc = await getKeychain();
+      const k = await resolveApiKey({
+        provider: childProvider,
+        env: process.env,
+        keychain: kc,
+        config: providers[childProvider]?.apiKey,
+        ...oauthOverridesFor(childProvider, providers),
+      });
+      if (k) {
+        childApiKey = k;
+        redactor.registerSecret(k);
+      }
     }
   } catch {}
   const childTurnId = newEntryId();
