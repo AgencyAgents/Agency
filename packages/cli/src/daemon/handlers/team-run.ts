@@ -250,7 +250,7 @@ export interface CompareChildSpec {
   prompt: string;
   leanPromptText: string;
   effort?: string;
-  apiKey?: string;
+  apiKey?: string | null;
   itemId: string;
   key: string;
   childSessionId: string;
@@ -326,23 +326,27 @@ export async function runCompareChildTurn(
     } catch {}
   }
   // Fan-out pre-resolves one key per provider; use it when present.
+  // When spec.apiKey !== undefined (even null for a miss), skip per-child
+  // keychain fallback — macOS securityd serializes concurrent CLI calls.
   let childApiKey = spec.apiKey ?? "";
-  try {
-    if (childApiKey.length === 0) {
-      const kc = await getKeychain();
-      const k = await resolveApiKey({
-        provider: childProvider,
-        env: process.env,
-        keychain: kc,
-        config: providers[childProvider]?.apiKey,
-        ...oauthOverridesFor(childProvider, providers),
-      });
-      if (k) {
-        childApiKey = k;
-        redactor.registerSecret(k);
+  if (spec.apiKey === undefined) {
+    try {
+      if (childApiKey.length === 0) {
+        const kc = await getKeychain();
+        const k = await resolveApiKey({
+          provider: childProvider,
+          env: process.env,
+          keychain: kc,
+          config: providers[childProvider]?.apiKey,
+          ...oauthOverridesFor(childProvider, providers),
+        });
+        if (k) {
+          childApiKey = k;
+          redactor.registerSecret(k);
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   const childTurnId = newEntryId();
   const startMs = Date.now();
   const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: leanBrief(prompt) }] }];

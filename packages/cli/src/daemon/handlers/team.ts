@@ -287,7 +287,9 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
     const itemId = opened.ok ? opened.itemId : `compare-${parentSessionId}-${batchId}`;
     // One keychain round-trip per provider before fan-out. Per-child
     // resolution spawns security(1) per get on macOS and staggers serial.
-    const compareKeys = new Map<string, string>();
+    // Record both found keys and misses so every child in the batch skips
+    // the per-child keychain fallback entirely.
+    const compareKeys = new Map<string, string | null>();
     try {
       const kc = await getKeychain().catch(() => undefined);
       const needed = new Set<string>();
@@ -306,6 +308,8 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         if (found) {
           compareKeys.set(provider, found);
           redactor.registerSecret(found);
+        } else {
+          compareKeys.set(provider, null);
         }
       }
     } catch {}
@@ -357,7 +361,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             prompt,
             leanPromptText,
             ...(effort === undefined ? {} : { effort }),
-            ...(preResolved === undefined ? {} : { apiKey: preResolved }),
+            ...(preResolved === undefined ? {} : { apiKey: preResolved ?? "" }),
             itemId,
             key,
             childSessionId,

@@ -100,7 +100,7 @@ function parallelAdapter(state: {
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
         }
-        if (txt === "compare prompt five") {
+        if (txt.includes("compare prompt")) {
           await sleep(300);
           yield { type: "text_delta", text: "compare output" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
