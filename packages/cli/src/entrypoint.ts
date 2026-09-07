@@ -25,7 +25,7 @@ import {
   runOAuthFlow,
   supportsDeviceFlow,
 } from "@agency/providers";
-import type { DaemonClient } from "@agency/rpc";
+import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
@@ -795,38 +795,42 @@ async function daemonStatusCmd(
 ): Promise<number> {
   const workspaceRoot = workspaceRootOf(parsed, deps);
   const env = envOf(deps);
-  const { defaultInstanceDir, connectHeadlessClient } = await import("./headless.ts");
+  const { defaultInstanceDir } = await import("./headless.ts");
   const instanceDir = deps.instanceDir ?? defaultInstanceDir(env);
+  const instanceFile = join(instanceDir, `${hashWorkspaceRoot(workspaceRoot)}.json`);
+  let info: InstanceInfo | undefined;
   try {
-    const { port, client } = await connectHeadlessClient({ workspaceRoot, instanceDir });
-    const info = await client.call("ping", {});
-    await client.close();
-    if (parsed.format === "json") {
-      out(
-        JSON.stringify(
-          { status: "running", port, pid: (info as Record<string, unknown>).pid ?? null },
-          null,
-          2,
-        ),
-      );
-    } else {
-      out(
-        t("cli.daemon.status", {
-          status: "running",
-          port: String(port),
-          pid: String((info as Record<string, unknown>).pid ?? "?"),
-        }),
-      );
-    }
-    return 0;
+    info = JSON.parse(readFileSync(instanceFile, "utf8")) as InstanceInfo;
   } catch {
-    if (parsed.format === "json") {
-      out(JSON.stringify({ status: "not_running" }, null, 2));
-    } else {
-      out(t("cli.daemon.not_running"));
-    }
-    return 0;
+    info = undefined;
   }
+  if (info !== undefined) {
+    let client: DaemonClient | undefined;
+    try {
+      client = await connectToDaemon(info.port, "127.0.0.1", { token: info.token });
+      if (parsed.format === "json") {
+        out(JSON.stringify({ status: "running", port: info.port, pid: info.pid ?? null }, null, 2));
+      } else {
+        out(
+          t("cli.daemon.status", {
+            status: "running",
+            port: String(info.port),
+            pid: String(info.pid ?? "?"),
+          }),
+        );
+      }
+      return 0;
+    } catch {
+    } finally {
+      await client?.close();
+    }
+  }
+  if (parsed.format === "json") {
+    out(JSON.stringify({ status: "not_running" }, null, 2));
+  } else {
+    out(t("cli.daemon.not_running"));
+  }
+  return 0;
 }
 
 async function pluginCmd(
