@@ -20,6 +20,7 @@ export type RpcMethod =
   | "board_read"
   | "cancel_turn"
   | "channel_read"
+  | "command_run"
   | "commands_expand"
   | "commands_list"
   | "config_get"
@@ -271,6 +272,8 @@ export interface SurfaceClient {
   cancel_turn(params?: Record<string, unknown>): Promise<unknown>;
   /** Pull shared channel posts after a cursor. */
   channel_read(params?: Record<string, unknown>): Promise<unknown>;
+  /** Resolve /name to a built-in handler or markdown template. */
+  command_run(params?: Record<string, unknown>): Promise<unknown>;
   /** Expand a slash command template with args. */
   commands_expand(params?: Record<string, unknown>): Promise<unknown>;
   /** List available slash command templates. */
@@ -370,6 +373,7 @@ export function createSurfaceClient(
     board_read: (params) => call("board_read", params ?? {}),
     cancel_turn: (params) => call("cancel_turn", params ?? {}),
     channel_read: (params) => call("channel_read", params ?? {}),
+    command_run: (params) => call("command_run", params ?? {}),
     commands_expand: (params) => call("commands_expand", params ?? {}),
     commands_list: (params) => call("commands_list", params ?? {}),
     config_get: (params) => call("config_get", params ?? {}),

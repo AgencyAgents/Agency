@@ -104,6 +104,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
         },
         ledger: daemon.spendLedger,
         caps: budgets,
+        announce: { bus: eventBus, sessionId: parentSessionId },
       });
       if ("refusal" in preflight) return { content: preflight.refusal, isError: true };
       const dispatchEstimate = preflight.estimate;

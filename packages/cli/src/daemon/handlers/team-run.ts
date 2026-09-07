@@ -1,4 +1,5 @@
 import {
+  announceHook,
   areScopesDisjoint,
   type BoardItem,
   checkCompletion,
@@ -118,9 +119,16 @@ export function installReviewGate(ctx: DaemonContext): void {
 export function installCompletionHook(ctx: DaemonContext): () => void {
   const tracker = new NoProgressTracker();
   const reported = new Set<string>();
+  const announcedComplete = new Set<string>();
   return ctx.boardStore.addListener(() => {
     try {
       const items = ctx.boardStore.list();
+      for (const item of items) {
+        if (item.status === "completed" && !announcedComplete.has(item.id)) {
+          announcedComplete.add(item.id);
+          announceHook(ctx.eventBus, "board.item.complete", { itemId: item.id, status: item.status });
+        }
+      }
       const note = tracker.note(items);
       if (note === "stalled") {
         const fingerprint = items

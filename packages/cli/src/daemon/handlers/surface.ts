@@ -1,4 +1,9 @@
-import { getSessionTitle, loadTraceSpansSync, restoreIntegrationCheckpoint } from "@agency/core";
+import {
+  announceHook,
+  getSessionTitle,
+  loadTraceSpansSync,
+  restoreIntegrationCheckpoint,
+} from "@agency/core";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -235,6 +240,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     if (checkpoint === undefined) {
       return { undone: false, reason: "no checkpoint: session_send records one per turn" };
     }
+    announceHook(ctx.eventBus, "pre.merge", { sessionId, restored: Object.keys(checkpoint.files) });
     const { restored } = restoreIntegrationCheckpoint(checkpoint);
     teamCheckpoints.delete(sessionId);
     return { undone: true, sessionId, scope: "team", restored: restored.length };

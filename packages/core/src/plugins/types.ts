@@ -17,6 +17,9 @@ export const HOOK_NAMES = [
   "session.start",
   "prompt.submit",
   "subagent.start",
+  "board.item.complete",
+  "pre.merge",
+  "cost.threshold",
 ] as const;
 
 export type HookName = (typeof HOOK_NAMES)[number];
@@ -42,11 +45,18 @@ export interface PluginAgentContribution {
   prompt?: string;
 }
 
+export interface PluginCommandContribution {
+  name: string;
+  description?: string;
+  template: string;
+}
+
 export interface PluginDefinition {
   id: string;
   hooks?: Record<string, HookHandler>;
   tools?: ToolSpec[];
   agents?: PluginAgentContribution[];
+  commands?: PluginCommandContribution[];
   /**
    * Skill-embedded MCP servers, declared per-skill. Raw (unvalidated) map of
    * server name to server config; validated with `parseMcpServers` at spawn

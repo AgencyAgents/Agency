@@ -7,13 +7,13 @@ import {
   ChannelStore,
   ChoiceLog,
   collectPluginAgents,
+  collectPluginCommands,
   configDir,
   createRotatingFileSink,
   DispatchStateStore,
   dataDir,
   EventBus,
   InboxStore,
-  isTeamLive,
   Logger,
   loadCommands,
   loadConfig,
@@ -46,17 +46,12 @@ import {
   writeInstanceFile,
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
-import { createSessionScope, resolveShell, type SessionScope, type TeamMcpPool } from "@agency/tools";
+import { resolveShell, type TeamMcpPool } from "@agency/tools";
+import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
-import {
-  demoteScopeForLead,
-  registerBoardToolsForScope,
-  registerCoordToolsForScope,
-} from "./handlers/coords.ts";
-import { buildDispatchTool } from "./handlers/dispatch.ts";
+import { registerCommandRunHandler } from "./handlers/commands-run.ts";
 import { registerPlanHandlers } from "./handlers/plan.ts";
 import {
-  buildSpawnTool,
   registerSessionHandlers,
   defaultCapabilitiesForSession as sessionCapabilities,
   gateForSession as sessionGateFor,
@@ -64,29 +59,24 @@ import {
 } from "./handlers/session.ts";
 import { registerSurfaceHandlers } from "./handlers/surface.ts";
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
-import {
-  attachTeamMcpPool,
-  initTeamRunState,
-  registerTeamRunHandlers,
-  remapRosterToCredentials,
-  teamMcpDedicatedServers,
-} from "./handlers/team-run.ts";
+import { initTeamRunState, registerTeamRunHandlers, remapRosterToCredentials } from "./handlers/team-run.ts";
 import { registerTeamSurfaceHandlers } from "./handlers/team-surface.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
+import { createSessionScopes } from "./session-scopes.ts";
 import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
   type AgentDaemon,
   type AgentDaemonOptions,
   commandPolicyFromPermissions,
-  createConfigFingerprint,
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
   resolveAdapter,
 } from "./types.ts";
 
+export * from "./config-fingerprint.ts";
 export * from "./types.ts";
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
@@ -253,12 +243,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   };
 
-  const snapshotDir = storagePaths(options.workspaceRoot).snapshotsDir;
-
   const builtinsMode = options.tools === undefined;
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
   let pluginAgents: Array<{ pluginId: string; agent: import("@agency/core").PluginAgentContribution }> = [];
+  let pluginCommands: Array<{ pluginId: string; command: import("@agency/core").PluginCommandContribution }> =
+    [];
   if (builtinsMode) {
     const { ToolRegistry: SharedRegistry } = await import("@agency/tools");
     const sharedPluginRegistry = new SharedRegistry();
@@ -277,6 +267,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     sharedPluginTools = sharedPluginRegistry.list();
     pluginAgents = collectPluginAgents(pluginResultEarly.plugins);
+    pluginCommands = collectPluginCommands(pluginResultEarly.plugins);
   } else {
     tools = options.tools ?? [];
     const { ToolRegistry } = await import("@agency/tools");
@@ -297,6 +288,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     tools = pluginToolRegistry.list();
     pluginAgents = collectPluginAgents(pluginResult.plugins);
+    pluginCommands = collectPluginCommands(pluginResult.plugins);
   }
 
   const activeTurnMeta = new Map<
@@ -312,99 +304,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       taskDepth?: number;
     }
   >();
-
-  const sessionScopes = new Map<string, SessionScope>();
-  const scopePromises = new Map<string, Promise<SessionScope>>();
-  async function getOrCreateScope(sessionId: string, handle?: string): Promise<SessionScope> {
-    const existing = sessionScopes.get(sessionId);
-    if (existing) return existing;
-    const pending = scopePromises.get(sessionId);
-    if (pending) return pending;
-    const promise = (async () => {
-      let teamParent: string | undefined;
-      for (const team of teamContexts.values()) {
-        if (team.sessions.has(sessionId)) {
-          teamParent = team.parentSessionId;
-          break;
-        }
-      }
-      const scope = await createSessionScope({
-        deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
-        http,
-        workspaceRoot: options.workspaceRoot,
-        snapshotDir,
-        snapshotJournalFile: join(snapshotDir, "journals", `${sessionId}.journal.jsonl`),
-        formatter: config.formatter,
-        windowsShell: config.windowsShell,
-        ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
-        todoPersistence,
-        mcpServers: teamMcpDedicatedServers(config.mcpServers, teamParent),
-        lspServers: config.lspServers,
-        identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
-      });
-      await attachTeamMcpPool(teamMcpPools, config.mcpServers, scope, {
-        teamParent,
-        ...(handle ? { handle } : {}),
-      });
-      for (const t of sharedPluginTools) {
-        try {
-          scope.registry.register(t);
-        } catch {}
-      }
-      try {
-        const spawnTool = buildSpawnTool(ctx, scope);
-        if (!scope.registry.has("spawn")) scope.registry.register(spawnTool);
-        try {
-          const cfgAgents = (config as unknown as { agents?: Record<string, unknown> }).agents;
-          const hasTeam = cfgAgents && Object.keys(cfgAgents).length > 1;
-          if (hasTeam && !scope.registry.has("dispatch")) {
-            const dispatchTool = buildDispatchTool(ctx, sessionId);
-            scope.registry.register(dispatchTool);
-          }
-        } catch {}
-      } catch {}
-      (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
-      let ownerHandle: string | undefined;
-      for (const team of teamContexts.values()) {
-        const meta = team.sessions.get(sessionId);
-        if (meta) {
-          ownerHandle = meta.handle;
-          break;
-        }
-      }
-      ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
-      try {
-        await registerBoardToolsForScope(scope, ctx, ownerHandle, handle);
-      } catch {}
-      try {
-        await registerCoordToolsForScope(scope, ctx, ownerHandle ?? handle ?? "lead");
-        (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
-      } catch {}
-      if (ownerHandle) {
-        const ownerGate = gateForAgent(ownerHandle);
-        if (ownerGate !== gate) {
-          (scope as { tools: ToolSpec[] }).tools = (scope as unknown as { tools: ToolSpec[] }).tools.filter(
-            (t) => ownerGate.toolOffered(t.name, t.riskTier),
-          );
-        }
-      }
-      const scopeFiler = ownerHandle ?? handle ?? "lead";
-      (scope as { tools: ToolSpec[] }).tools = demoteScopeForLead(
-        (scope as unknown as { tools: ToolSpec[] }).tools,
-        scopeFiler,
-        isTeamLive(boardStore.list()),
-      );
-      return scope;
-    })();
-    scopePromises.set(sessionId, promise);
-    try {
-      const scope = await promise;
-      sessionScopes.set(sessionId, scope);
-      return scope;
-    } finally {
-      scopePromises.delete(sessionId);
-    }
-  }
 
   const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
@@ -443,6 +342,22 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     return team;
   };
+  const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({
+    options,
+    config,
+    http,
+    identity,
+    sandbox,
+    todoPersistence,
+    teamMcpPools,
+    teamContexts,
+    teamRegistry,
+    boardStore,
+    gate,
+    gateForAgent,
+    sharedPluginTools,
+    getCtx: () => ctx,
+  });
   const inboxStore = new InboxStore();
   const channelStore = new ChannelStore();
   const choiceLog = new ChoiceLog();
@@ -512,6 +427,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     getOrCreateScope,
     teamRegistry,
     pluginAgents,
+    pluginCommands,
+    trustStore,
     teamContexts,
     teamFor,
     sessionInboxes,
@@ -567,6 +484,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerTeamHandlers(handlers, ctx);
   registerTeamSurfaceHandlers(handlers, ctx);
   registerTeamRunHandlers(handlers, ctx);
+  registerCommandRunHandler(handlers, ctx);
 
   server = await startDaemonServer({
     token: authToken,

@@ -31,6 +31,9 @@ export interface AgencyEvents {
   "session.start": { sessionId: string; workspaceRoot: string };
   "prompt.submit": { sessionId: string; prompt: string };
   "subagent.start": { sessionId: string; handle: string; parentSessionId: string };
+  "board.item.complete": { itemId: string; status: string };
+  "pre.merge": { sessionId: string; restored: string[] };
+  "cost.threshold": { reason: string; sessionId?: string };
   event: { event: string; payload: unknown };
 }
 

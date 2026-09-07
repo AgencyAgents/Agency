@@ -1,4 +1,4 @@
-import type { BoardStore } from "@agency/core";
+import { announceHook, type BoardStore } from "@agency/core";
 import {
   type CostEstimate,
   type DispatchAgentForecast,
@@ -209,10 +209,19 @@ export function preflightDispatchEstimate(args: {
   };
   ledger: SpendLedger;
   caps?: SpendCaps;
+  announce?: { bus: { emit(event: string, payload: unknown): void }; sessionId: string };
 }): { estimate: CostEstimate } | { refusal: string } {
   const estimate = estimateDispatchCostFor({ agents: args.agents, pricingOf: args.pricingOf });
   const gate = args.ledger.check(args.caps, estimate.lowUsd);
-  if (!gate.ok) return { refusal: gate.reason };
+  if (!gate.ok) {
+    if (args.announce !== undefined) {
+      announceHook(args.announce.bus, "cost.threshold", {
+        reason: gate.reason,
+        sessionId: args.announce.sessionId,
+      });
+    }
+    return { refusal: gate.reason };
+  }
   return { estimate };
 }
 
@@ -247,16 +256,17 @@ export function assertPreflightCaps(
   });
   const budgets = (ctx.config as unknown as { budgets?: SpendCaps }).budgets;
   const gate = ctx.spendLedger.check(budgets, estimate.lowUsd);
-  if (!gate.ok) throw new AgencyError(ErrorCode.PERMISSION_DENIED, gate.reason, { source: "spend" });
+  if (!gate.ok) {
+    announceHook(ctx.eventBus, "cost.threshold", { reason: gate.reason, sessionId: args.sessionId });
+    throw new AgencyError(ErrorCode.PERMISSION_DENIED, gate.reason, { source: "spend" });
+  }
   const sessionBudget = ctx.sessionBudgets.get(args.sessionId);
   if (sessionBudget?.maxCostUsd !== undefined) {
     const spent = sessionSpendUsd(ctx, args.sessionId);
     if (spent + estimate.lowUsd > sessionBudget.maxCostUsd) {
-      throw new AgencyError(
-        ErrorCode.PERMISSION_DENIED,
-        `session budget exceeded: spent $${spent.toFixed(4)} plus $${estimate.lowUsd.toFixed(4)} estimate over $${sessionBudget.maxCostUsd.toFixed(4)} cap`,
-        { source: "spend" },
-      );
+      const reason = `session budget exceeded: spent $${spent.toFixed(4)} plus $${estimate.lowUsd.toFixed(4)} estimate over $${sessionBudget.maxCostUsd.toFixed(4)} cap`;
+      announceHook(ctx.eventBus, "cost.threshold", { reason, sessionId: args.sessionId });
+      throw new AgencyError(ErrorCode.PERMISSION_DENIED, reason, { source: "spend" });
     }
   }
 }

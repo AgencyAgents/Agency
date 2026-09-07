@@ -81,6 +81,17 @@ function extractPluginAgents(raw: unknown): PluginDefinition["agents"] {
   return out.length > 0 ? out : undefined;
 }
 
+function extractPluginCommands(raw: unknown): PluginDefinition["commands"] {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<PluginDefinition["commands"]> = [];
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.name !== "string" || entry.name.length === 0) continue;
+    if (typeof entry.template !== "string" || entry.template.length === 0) continue;
+    out.push(entry as unknown as NonNullable<PluginDefinition["commands"]>[number]);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function extractDefinition(rawModule: Record<string, unknown>, id: string): PluginDefinition | undefined {
   // Supports: default export { hooks, tools }, named exports hooks/tools, or direct hooks object
   let source: Record<string, unknown> | undefined;
@@ -108,7 +119,8 @@ function extractDefinition(rawModule: Record<string, unknown>, id: string): Plug
       "tools" in rawModule ||
       "mcpServers" in rawModule ||
       "agentsMd" in rawModule ||
-      "agents" in rawModule)
+      "agents" in rawModule ||
+      "commands" in rawModule)
   ) {
     source = rawModule;
   }
@@ -139,7 +151,10 @@ function extractDefinition(rawModule: Record<string, unknown>, id: string): Plug
   if (agentsMd) def.agentsMd = agentsMd;
   const agents = extractPluginAgents(source.agents);
   if (agents) def.agents = agents;
-  if (!def.hooks && !def.tools && !def.mcpServers && !def.agentsMd && !def.agents) return undefined;
+  const commands = extractPluginCommands(source.commands);
+  if (commands) def.commands = commands;
+  if (!def.hooks && !def.tools && !def.mcpServers && !def.agentsMd && !def.agents && !def.commands)
+    return undefined;
   return def;
 }
 
@@ -250,7 +265,7 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
     if (!def) {
       errors.push({
         id: src.id,
-        error: `invalid plugin shape at ${src.path}: must export hooks and/or tools and/or mcpServers and/or agentsMd and/or agents`,
+        error: `invalid plugin shape at ${src.path}: must export hooks and/or tools and/or mcpServers and/or agentsMd and/or agents and/or commands`,
       });
       continue;
     }
@@ -363,6 +378,22 @@ export function collectPluginAgents(
       if (seen.has(handle)) continue;
       seen.add(handle);
       out.push({ pluginId: p.id, agent });
+    }
+  }
+  return out;
+}
+
+/** Command contributions across loaded plugins in load order. First name wins. */
+export function collectPluginCommands(
+  plugins: LoadedPlugin[],
+): Array<{ pluginId: string; command: NonNullable<PluginDefinition["commands"]>[number] }> {
+  const seen = new Set<string>();
+  const out: Array<{ pluginId: string; command: NonNullable<PluginDefinition["commands"]>[number] }> = [];
+  for (const p of plugins) {
+    for (const command of p.definition.commands ?? []) {
+      if (seen.has(command.name)) continue;
+      seen.add(command.name);
+      out.push({ pluginId: p.id, command });
     }
   }
   return out;

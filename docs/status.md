@@ -46,3 +46,4 @@ implemented. Unwired rows name what stands in for the mechanism today.
 | Integration checkpoint (`recordIntegrationCheckpoint` plus `restoreIntegrationCheckpoint`) | Yes, with tests | Yes: pre-merge capture recorded at `team_open`; `undo_run` restores the workspace at team scope | None |
 | Team MCP policy (`TeamMcpPool`) | Yes, with tests | Yes: read-only or stateless servers start once per team; the process cap surfaces in `cost_report` | None |
 | Run interruption (`team_stop` plus `agent_stop`) | Yes, with tests | Yes: `agent_stop` aborts one handle's turns and idles its sessions | None |
+| Slash commands (`command_run` plus `resolveCommand` plus `collectPluginCommands`) | Yes, with tests | Yes: `command_run` serves all three tiers over /rpc and the SDK; `announceHook` fires board completion, pre-merge, and cost-threshold hooks on the event bus | Detached runs (Phase 12) |

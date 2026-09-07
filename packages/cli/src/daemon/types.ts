@@ -1,5 +1,3 @@
-import { statSync } from "node:fs";
-
 import {
   type AgentRegistry,
   type BoardStore,
@@ -19,6 +17,7 @@ import {
   type Logger,
   mcpServerDownReminder,
   type PluginAgentContribution,
+  type PluginCommandContribution,
   type ProviderConfig,
   resolveSmallModel,
   type SessionStore,
@@ -437,31 +436,6 @@ export async function classifyEffortWithSmallModel(
   }
 }
 
-export function createConfigFingerprint(paths: readonly string[]): { check(): boolean } {
-  const snapshot = new Map<string, number>();
-  for (const p of paths) {
-    try {
-      snapshot.set(p, statSync(p).mtimeMs);
-    } catch {
-      snapshot.set(p, 0);
-    }
-  }
-  return {
-    check: () => {
-      for (const [p, prev] of snapshot) {
-        let cur = 0;
-        try {
-          cur = statSync(p).mtimeMs;
-        } catch {
-          cur = 0;
-        }
-        if (cur !== prev) return true;
-      }
-      return false;
-    },
-  };
-}
-
 /**
  * Wires the RPC transport to the agent loop: this is the actual `agencyd`
  * body, spawned as a separate process by `ensureDaemon`'s caller and shared
@@ -510,6 +484,8 @@ export interface DaemonContext {
   getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
   teamRegistry: AgentRegistry;
   pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }>;
+  pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;
+  trustStore: import("@agency/guard").TrustStore;
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;

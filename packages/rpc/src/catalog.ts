@@ -53,6 +53,7 @@ export const METHOD_DOCS: Record<string, string> = {
   lsp_status: "Language server statuses for a session scope.",
   commands_list: "List available slash command templates.",
   commands_expand: "Expand a slash command template with args.",
+  command_run: "Resolve /name to a built-in handler or markdown template.",
   trace_get: "Load trace spans, optionally for one turn, as list plus tree.",
   trace_replay: "Re-run a recorded turn and diff the messages.",
   trace_export: "Ship spans to the configured OTLP endpoint.",

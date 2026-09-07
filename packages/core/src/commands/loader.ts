@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
 import { configDir } from "../paths.ts";
+import { expandAtFiles, parseCommandFile, runShellBlocks, substituteArgs } from "./runtime.ts";
 
 export interface CommandTemplate {
   name: string;
@@ -24,8 +25,9 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
       if (!st.isFile()) continue;
       const text = readFileSync(full, "utf8");
       const name = basename(e, ".md");
-      // First line heading or frontmatter description
-      let description: string | undefined;
+      // Frontmatter description wins, else the first heading.
+      const parsed = parseCommandFile(text);
+      let description = parsed.description;
       const lines = text.split("\n");
       for (const line of lines.slice(0, 5)) {
         const m = line.match(/^#\s+(.+)/);
@@ -55,17 +57,19 @@ export function loadCommands(options: {
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function expandCommand(template: string, args: string, workspaceRoot?: string): string {
-  let out = template;
-  // $ARGUMENTS placeholder substitution (also ${ARGUMENTS} and $ARGUMENTS)
-  out = out.replaceAll("$ARGUMENTS", args);
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal ${ARGUMENTS} placeholder, not a template string
-  out = out.replaceAll("${ARGUMENTS}", args);
-  out = out.replaceAll("$ARGS", args);
+export function expandCommand(
+  template: string,
+  args: string,
+  workspaceRoot?: string,
+  opts?: { shell?: boolean },
+): string {
+  const { body } = parseCommandFile(template);
+  let out = substituteArgs(body, args);
 
   // File references: {{file:path}} or $FILE:path or @file:path — include file content
   // We support {{file:relative/path}} and $FILE:relative/path
   if (workspaceRoot) {
+    out = expandAtFiles(out, { workspaceRoot });
     const boundary = new SandboxBoundary(workspaceRoot);
     const filePattern = /\{\{file:([^}]+)\}\}/g;
     out = out.replace(filePattern, (_m, p1: string) => {
@@ -93,6 +97,7 @@ export function expandCommand(template: string, args: string, workspaceRoot?: st
       }
     });
   }
+  if (workspaceRoot && opts?.shell === true) out = runShellBlocks(out, { cwd: workspaceRoot });
 
   return out;
 }
