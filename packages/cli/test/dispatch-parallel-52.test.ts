@@ -11,7 +11,7 @@ import { type ModelInfo, Scheduler } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import { registerTeamHandlers } from "../src/daemon/handlers/team.ts";
-import { createTeamContext } from "../src/daemon/team-context.ts";
+import { createTeamContext, type TeamContext } from "../src/daemon/team-context.ts";
 import type { DaemonContext } from "../src/daemon.ts";
 import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
@@ -238,10 +238,16 @@ function compareHandlerHarness(opts: {
   const redactor = new Redactor();
   let chainCalls = 0;
   const keychain: KeychainBackend = {
+    name: "test",
+    async isAvailable() {
+      return true;
+    },
     async get(key) {
       if (opts.keychainThrows) throw new Error("keychain unavailable");
       return opts.keychainGet(key);
     },
+    async set() {},
+    async delete() {},
   };
   const teamContexts = new Map<string, TeamContext>();
   const teamFor = (id: string): TeamContext => {
@@ -322,7 +328,10 @@ describe("dispatch_compare pre-resolve key mapping (item 52)", () => {
     const { dispatchCompare, apiKeys, redactor, keychainCalls } = compareHandlerHarness({
       keychainGet: async (name) => (name === UNIT_PROVIDER ? key : undefined),
     });
-    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt found" })) as {
+    const res = (await dispatchCompare(
+      { handles: [...HANDLES], prompt: "compare prompt found" },
+      { clientId: "test" },
+    )) as {
       results: Array<{ handle: string; result: string }>;
     };
     expect(res.results.length).toBe(HANDLES.length);
@@ -339,7 +348,10 @@ describe("dispatch_compare pre-resolve key mapping (item 52)", () => {
     const { dispatchCompare, apiKeys, keychainCalls } = compareHandlerHarness({
       keychainGet: async () => undefined,
     });
-    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt miss" })) as {
+    const res = (await dispatchCompare(
+      { handles: [...HANDLES], prompt: "compare prompt miss" },
+      { clientId: "test" },
+    )) as {
       results: Array<{ handle: string; result: string }>;
     };
     expect(res.results.length).toBe(HANDLES.length);
@@ -358,7 +370,10 @@ describe("dispatch_compare pre-resolve key mapping (item 52)", () => {
       keychainGet: async () => undefined,
       keychainThrows: true,
     });
-    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt fallback" })) as {
+    const res = (await dispatchCompare(
+      { handles: [...HANDLES], prompt: "compare prompt fallback" },
+      { clientId: "test" },
+    )) as {
       results: Array<{ handle: string; result: string }>;
     };
     expect(res.results.length).toBe(HANDLES.length);
