@@ -118,7 +118,7 @@ jobs:
           # checksums-signed.txt files overwrite each other on download.
           cp dist/checksums-signed.txt "dist/checksums-signed-${{ matrix.sign_os }}.txt"
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agency-${{ matrix.sign_os }}
           path: |
@@ -142,7 +142,7 @@ jobs:
       - name: Generate SBOM
         run: bun scripts/sbom.ts --out dist/agency.cdx.json
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: dist/agency.cdx.json
