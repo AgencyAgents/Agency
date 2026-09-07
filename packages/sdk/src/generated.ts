@@ -8,26 +8,36 @@ export const SDK_PROTOCOL_VERSION = 2;
 
 /** Every RPC method the gateway serves. */
 export type RpcMethod =
+  | "activity_graph"
   | "agent_history"
+  | "agent_inspect"
   | "agent_message"
   | "agent_stop"
   | "agents_list"
+  | "agents_upsert"
   | "approval_respond"
+  | "board_claim"
+  | "board_read"
   | "cancel_turn"
+  | "channel_read"
   | "commands_expand"
   | "commands_list"
   | "config_get"
   | "config_set"
   | "cost_report"
+  | "decisions_read"
   | "dispatch_compare"
+  | "inbox_send"
   | "lsp_status"
   | "mcp_status"
   | "models_list"
+  | "owners_read"
   | "permissions_list"
   | "plan_approve"
   | "prompt_inspect"
   | "providers_list"
   | "redo"
+  | "report_get"
   | "run_turn"
   | "session_clone"
   | "session_create"
@@ -39,6 +49,7 @@ export type RpcMethod =
   | "session_rename"
   | "session_send"
   | "session_show"
+  | "task_file"
   | "team_open"
   | "team_status"
   | "team_stop"
@@ -236,18 +247,30 @@ export interface SyncCompleteEvent {
 
 /** One method per RPC, over any `call(method, params)` transport. */
 export interface SurfaceClient {
+  /** Delegation DAG of agents plus tasks with state and cost. */
+  activity_graph(params?: Record<string, unknown>): Promise<unknown>;
   /** Read an agent child session history. */
   agent_history(params?: Record<string, unknown>): Promise<unknown>;
+  /** Timeline, step, or reasoning view over an agent's recorded spans. */
+  agent_inspect(params?: Record<string, unknown>): Promise<unknown>;
   /** Deliver a message to an agent mailbox. */
   agent_message(params?: Record<string, unknown>): Promise<unknown>;
   /** Stop one team agent and idle its sessions. */
   agent_stop(params?: Record<string, unknown>): Promise<unknown>;
   /** List team agents with state, session, and cost. */
   agents_list(params?: Record<string, unknown>): Promise<unknown>;
+  /** Write an agent file and refresh the registry entry. */
+  agents_upsert(params?: Record<string, unknown>): Promise<unknown>;
   /** Answer a pending approval ask once, always, or reject. */
   approval_respond(params?: Record<string, unknown>): Promise<unknown>;
+  /** Accept, decline, counter, or escalate a board item. */
+  board_claim(params?: Record<string, unknown>): Promise<unknown>;
+  /** List board items with status, claim, and scope, plus the event log. */
+  board_read(params?: Record<string, unknown>): Promise<unknown>;
   /** Abort an in-flight turn and refuse its pending asks. */
   cancel_turn(params?: Record<string, unknown>): Promise<unknown>;
+  /** Pull shared channel posts after a cursor. */
+  channel_read(params?: Record<string, unknown>): Promise<unknown>;
   /** Expand a slash command template with args. */
   commands_expand(params?: Record<string, unknown>): Promise<unknown>;
   /** List available slash command templates. */
@@ -258,14 +281,20 @@ export interface SurfaceClient {
   config_set(params?: Record<string, unknown>): Promise<unknown>;
   /** Sum usage entries plus trace spans per session and agent (Phase 9 adds budgets and caps). */
   cost_report(params?: Record<string, unknown>): Promise<unknown>;
+  /** Read the shared choice log entries. */
+  decisions_read(params?: Record<string, unknown>): Promise<unknown>;
   /** Fan out one prompt to two agents and compare. */
   dispatch_compare(params?: Record<string, unknown>): Promise<unknown>;
+  /** Post a typed message to a teammate inbox. */
+  inbox_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Language server statuses for a session scope. */
   lsp_status(params?: Record<string, unknown>): Promise<unknown>;
   /** MCP server failures for a session scope. */
   mcp_status(params?: Record<string, unknown>): Promise<unknown>;
   /** List catalog models merged with config overrides. */
   models_list(params?: Record<string, unknown>): Promise<unknown>;
+  /** Resolve path owners from the .agency/owners map. */
+  owners_read(params?: Record<string, unknown>): Promise<unknown>;
   /** Show the permission maps plus effective offered tools. */
   permissions_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Record a human approval for a plan file. */
@@ -276,6 +305,8 @@ export interface SurfaceClient {
   providers_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Redo a snapshot-backed file change. */
   redo(params?: Record<string, unknown>): Promise<unknown>;
+  /** Render the structured team report with outcome and cost. */
+  report_get(params?: Record<string, unknown>): Promise<unknown>;
   /** Run one model turn over caller-owned messages. */
   run_turn(params?: Record<string, unknown>): Promise<unknown>;
   /** Copy a session file to an independent new id. */
@@ -298,6 +329,8 @@ export interface SurfaceClient {
   session_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Read a session through the single SessionProjector view. */
   session_show(params?: Record<string, unknown>): Promise<unknown>;
+  /** File a board item with goal, criteria, scope, and budget. */
+  task_file(params?: Record<string, unknown>): Promise<unknown>;
   /** Open a team behind approval when the goal needs parallel specialists. */
   team_open(params?: Record<string, unknown>): Promise<unknown>;
   /** Team states, todo, and totals for a parent session. */
@@ -325,26 +358,36 @@ export function createSurfaceClient(
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>,
 ): SurfaceClient {
   return {
+    activity_graph: (params) => call("activity_graph", params ?? {}),
     agent_history: (params) => call("agent_history", params ?? {}),
+    agent_inspect: (params) => call("agent_inspect", params ?? {}),
     agent_message: (params) => call("agent_message", params ?? {}),
     agent_stop: (params) => call("agent_stop", params ?? {}),
     agents_list: (params) => call("agents_list", params ?? {}),
+    agents_upsert: (params) => call("agents_upsert", params ?? {}),
     approval_respond: (params) => call("approval_respond", params ?? {}),
+    board_claim: (params) => call("board_claim", params ?? {}),
+    board_read: (params) => call("board_read", params ?? {}),
     cancel_turn: (params) => call("cancel_turn", params ?? {}),
+    channel_read: (params) => call("channel_read", params ?? {}),
     commands_expand: (params) => call("commands_expand", params ?? {}),
     commands_list: (params) => call("commands_list", params ?? {}),
     config_get: (params) => call("config_get", params ?? {}),
     config_set: (params) => call("config_set", params ?? {}),
     cost_report: (params) => call("cost_report", params ?? {}),
+    decisions_read: (params) => call("decisions_read", params ?? {}),
     dispatch_compare: (params) => call("dispatch_compare", params ?? {}),
+    inbox_send: (params) => call("inbox_send", params ?? {}),
     lsp_status: (params) => call("lsp_status", params ?? {}),
     mcp_status: (params) => call("mcp_status", params ?? {}),
     models_list: (params) => call("models_list", params ?? {}),
+    owners_read: (params) => call("owners_read", params ?? {}),
     permissions_list: (params) => call("permissions_list", params ?? {}),
     plan_approve: (params) => call("plan_approve", params ?? {}),
     prompt_inspect: (params) => call("prompt_inspect", params ?? {}),
     providers_list: (params) => call("providers_list", params ?? {}),
     redo: (params) => call("redo", params ?? {}),
+    report_get: (params) => call("report_get", params ?? {}),
     run_turn: (params) => call("run_turn", params ?? {}),
     session_clone: (params) => call("session_clone", params ?? {}),
     session_create: (params) => call("session_create", params ?? {}),
@@ -356,6 +399,7 @@ export function createSurfaceClient(
     session_rename: (params) => call("session_rename", params ?? {}),
     session_send: (params) => call("session_send", params ?? {}),
     session_show: (params) => call("session_show", params ?? {}),
+    task_file: (params) => call("task_file", params ?? {}),
     team_open: (params) => call("team_open", params ?? {}),
     team_status: (params) => call("team_status", params ?? {}),
     team_stop: (params) => call("team_stop", params ?? {}),

@@ -16,6 +16,7 @@ export * from "./progress/index.ts";
 export * from "./prompt/index.ts";
 export * from "./sessions/index.ts";
 export * from "./storage.ts";
+export * from "./team/activity-graph.ts";
 export * from "./team/category-routing.ts";
 export * from "./team/checkpoint.ts";
 export * from "./team/choices.ts";

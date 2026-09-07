@@ -196,39 +196,7 @@ export async function registerCoordToolsForScope(
       if (!filed.ok) return { ok: false, reason: filed.reason };
       return { ok: true, id: filed.filed.item.id };
     },
-    buildReport: (outcome) => {
-      const items = ctx.boardStore.list().map((item) => ({
-        id: item.id,
-        content: item.content,
-        status: item.status,
-        ...(item.claimedBy === undefined ? {} : { claimedBy: item.claimedBy }),
-        ...(item.filedBy === undefined ? {} : { filedBy: item.filedBy }),
-      }));
-      const run = teamRunUsage(ctx);
-      return buildTeamReport({
-        goal: ctx.boardStore.list()[0]?.content ?? "team goal",
-        outcome:
-          outcome === "halted" || outcome === "over-budget" || outcome === "needs-user"
-            ? outcome
-            : "complete",
-        items,
-        decisions: ctx.choiceLog
-          .list()
-          .map((e) => ({ decision: e.text, proposedBy: e.proposedBy, rationale: e.rationale })),
-        openQuestions: [],
-        cost: {
-          totalUsd: run.totalUsd,
-          perAgent: Object.fromEntries(Object.entries(run.perAgent).map(([h, r]) => [h, r.costUsd])),
-          tokens: run.tokens,
-          cacheHitRate: run.cacheHitRate,
-          inputTokens: run.inputTokens,
-          outputTokens: run.outputTokens,
-          cachedInputTokens: run.cachedInputTokens,
-          cacheWriteInputTokens: run.cacheWriteInputTokens,
-        },
-        attempts: {},
-      });
-    },
+    buildReport: (outcome) => buildReportPayload(ctx, outcome),
     spansOf: (h) => spansForHandle(ctx, h),
     itemsOf: (h) =>
       ctx.boardStore
@@ -274,4 +242,38 @@ export function demoteScopeForLead<T extends { name: string }>(
 
 export function boardIsLive(ctx: DaemonContext): boolean {
   return isTeamLive(ctx.boardStore.list());
+}
+
+// One report builder for the tool and the RPC: goal, outcome,
+// items, decisions, questions, cost. No transcripts cross.
+export function buildReportPayload(ctx: DaemonContext, outcome: string): unknown {
+  const items = ctx.boardStore.list().map((item) => ({
+    id: item.id,
+    content: item.content,
+    status: item.status,
+    ...(item.claimedBy === undefined ? {} : { claimedBy: item.claimedBy }),
+    ...(item.filedBy === undefined ? {} : { filedBy: item.filedBy }),
+  }));
+  const run = teamRunUsage(ctx);
+  return buildTeamReport({
+    goal: ctx.boardStore.list()[0]?.content ?? "team goal",
+    outcome:
+      outcome === "halted" || outcome === "over-budget" || outcome === "needs-user" ? outcome : "complete",
+    items,
+    decisions: ctx.choiceLog
+      .list()
+      .map((e) => ({ decision: e.text, proposedBy: e.proposedBy, rationale: e.rationale })),
+    openQuestions: [],
+    cost: {
+      totalUsd: run.totalUsd,
+      perAgent: Object.fromEntries(Object.entries(run.perAgent).map(([h, r]) => [h, r.costUsd])),
+      tokens: run.tokens,
+      cacheHitRate: run.cacheHitRate,
+      inputTokens: run.inputTokens,
+      outputTokens: run.outputTokens,
+      cachedInputTokens: run.cachedInputTokens,
+      cacheWriteInputTokens: run.cacheWriteInputTokens,
+    },
+    attempts: {},
+  });
 }

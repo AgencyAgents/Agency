@@ -71,6 +71,7 @@ import {
   remapRosterToCredentials,
   teamMcpDedicatedServers,
 } from "./handlers/team-run.ts";
+import { registerTeamSurfaceHandlers } from "./handlers/team-surface.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
@@ -564,6 +565,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerCommandHandlers(handlers, ctx);
 
   registerTeamHandlers(handlers, ctx);
+  registerTeamSurfaceHandlers(handlers, ctx);
   registerTeamRunHandlers(handlers, ctx);
 
   server = await startDaemonServer({
