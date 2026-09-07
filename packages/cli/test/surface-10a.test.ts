@@ -14,9 +14,13 @@ const dirs: string[] = [];
 
 const prevKey = process.env.AGENCY_ANTHROPIC_API_KEY;
 process.env.AGENCY_ANTHROPIC_API_KEY = "test-key-surface";
+const prevOffline = process.env.AGENCY_DISABLE_MODELS_FETCH;
+process.env.AGENCY_DISABLE_MODELS_FETCH = "1";
 afterAll(() => {
   if (prevKey === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
   else process.env.AGENCY_ANTHROPIC_API_KEY = prevKey;
+  if (prevOffline === undefined) delete process.env.AGENCY_DISABLE_MODELS_FETCH;
+  else process.env.AGENCY_DISABLE_MODELS_FETCH = prevOffline;
 });
 
 afterEach(async () => {
@@ -164,7 +168,7 @@ describe("Phase 10a surface contract", () => {
       const { status } = await rpcCall(base, token, method);
       expect(status).not.toBe(404);
     }
-  });
+  }, 30_000);
 
   test("every handler has an SDK method in generated.ts", async () => {
     const generated = readFileSync(join(import.meta.dir, "../../sdk/src/generated.ts"), "utf8");

@@ -45,6 +45,7 @@ export * from "./team/roster.ts";
 export * from "./team/run-child-turn.ts";
 export * from "./team/team-store.ts";
 export * from "./team/todo.ts";
+export * from "./team/wake.ts";
 export * from "./team/windows.ts";
 export * from "./trace/index.ts";
 export * from "./truncate.ts";

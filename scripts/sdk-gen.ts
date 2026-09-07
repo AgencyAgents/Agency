@@ -49,7 +49,7 @@ const EVENT_TYPES: Record<string, string> = {
   "prompt.submit": "export interface PromptSubmitEvent { sessionId: string; prompt: string; }",
   "model.fallback": "export interface ModelFallbackEvent { from: string; to: string; reason: string; }",
   state:
-    "export interface StateEvent { turns: LiveTurn[]; approvals: OutstandingApproval[]; agents: AgentRow[]; cost: CostSnapshot; session?: unknown; }",
+    "export interface StateEvent { turns: LiveTurn[]; approvals: OutstandingApproval[]; agents: AgentRow[]; cost: CostSnapshot; board: unknown; session?: unknown; }",
   "sync-entry": "export interface SyncEntryEvent { entry: Record<string, unknown>; }",
   "sync-complete": "export interface SyncCompleteEvent { count: number; }",
 };

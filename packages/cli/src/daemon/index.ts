@@ -22,6 +22,7 @@ import {
   storagePaths,
   type ToolSpec,
   TraceRecorder,
+  WakeRegistry,
 } from "@agency/core";
 import {
   ApprovalManager,
@@ -50,6 +51,13 @@ import { resolveShell, type TeamMcpPool } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
+import {
+  installDetachHook,
+  projectBoardFile,
+  registerDetachHandlers,
+  startBoardFileSync,
+  syncBoardFile,
+} from "./handlers/detach.ts";
 import { registerPlanHandlers } from "./handlers/plan.ts";
 import {
   registerSessionHandlers,
@@ -417,6 +425,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     schedulerFor,
     todoStore,
     boardStore,
+    wakeInterests: new WakeRegistry(),
     dispatchLog,
     inboxStore,
     channelStore,
@@ -471,6 +480,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     remapRosterToCredentials(ctx);
   } catch {}
   initTeamRunState(ctx);
+  installDetachHook(ctx);
+  try {
+    if (syncBoardFile(ctx).length > 0) projectBoardFile(ctx);
+  } catch {}
+  const stopBoardSync = startBoardFileSync(ctx);
 
   const handlers: Record<string, import("@agency/rpc").MethodHandler> = {};
 
@@ -485,6 +499,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerTeamSurfaceHandlers(handlers, ctx);
   registerTeamRunHandlers(handlers, ctx);
   registerCommandRunHandler(handlers, ctx);
+  registerDetachHandlers(handlers, ctx);
 
   server = await startDaemonServer({
     token: authToken,
@@ -547,6 +562,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       if (stopped) return;
       stopped = true;
       clearTimeout(idleTimer);
+      stopBoardSync();
       if (builtinsMode) {
         for (const scope of sessionScopes.values()) {
           try {

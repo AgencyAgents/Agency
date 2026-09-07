@@ -23,6 +23,7 @@ import {
   type SessionStore,
   type SystemReminder,
   type TraceRecorder,
+  type WakeRegistry,
   withPromptVersion,
   withSystemReminders,
 } from "@agency/core";
@@ -474,6 +475,8 @@ export interface DaemonContext {
   schedulerFor: (provider: string) => Scheduler;
   todoStore: SessionStore;
   boardStore: BoardStore;
+  /** Standing wake interests: handles woken on scoped ready_for_review. */
+  wakeInterests: WakeRegistry;
   dispatchLog: DispatchStateStore;
   inboxStore: InboxStore;
   channelStore: ChannelStore;

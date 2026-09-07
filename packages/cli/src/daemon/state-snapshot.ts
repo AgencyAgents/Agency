@@ -2,7 +2,7 @@ import { projectSessionView } from "@agency/core";
 import { agentsListPayload } from "./team-context.ts";
 import type { DaemonContext } from "./types.ts";
 
-/** Connect-time `state` frame: live turns, approvals, agents, and cost. */
+/** Connect-time `state` frame: live turns, approvals, agents, cost, board. */
 export function buildStateSnapshot(ctx: DaemonContext, sessionId?: string): Record<string, unknown> {
   const turns = [...ctx.activeTurnMeta.entries()].map(([turnId, meta]) => ({
     turnId,
@@ -24,6 +24,7 @@ export function buildStateSnapshot(ctx: DaemonContext, sessionId?: string): Reco
     approvals,
     agents: agentsListPayload(ctx, sessionId),
     cost: { totalUsd, bySession },
+    board: { items: ctx.boardStore.list(), events: ctx.boardStore.listEvents() },
   };
   if (sessionId !== undefined) snapshot.session = projectSessionView(ctx.todoStore, sessionId);
   return snapshot;

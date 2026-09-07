@@ -18,6 +18,7 @@ export type RpcMethod =
   | "approval_respond"
   | "board_claim"
   | "board_read"
+  | "board_status"
   | "cancel_turn"
   | "channel_read"
   | "command_run"
@@ -60,7 +61,9 @@ export type RpcMethod =
   | "trace_get"
   | "trace_replay"
   | "undo"
-  | "undo_run";
+  | "undo_run"
+  | "wake_subscribe"
+  | "wake_unsubscribe";
 
 /** Every event name the gateway may emit over SSE. */
 export type GatewayEvent =
@@ -237,6 +240,7 @@ export interface StateEvent {
   approvals: OutstandingApproval[];
   agents: AgentRow[];
   cost: CostSnapshot;
+  board: unknown;
   session?: unknown;
 }
 export interface SyncEntryEvent {
@@ -268,6 +272,8 @@ export interface SurfaceClient {
   board_claim(params?: Record<string, unknown>): Promise<unknown>;
   /** List board items with status, claim, and scope, plus the event log. */
   board_read(params?: Record<string, unknown>): Promise<unknown>;
+  /** Move a board item across statuses with the structured return contract on review. */
+  board_status(params?: Record<string, unknown>): Promise<unknown>;
   /** Abort an in-flight turn and refuse its pending asks. */
   cancel_turn(params?: Record<string, unknown>): Promise<unknown>;
   /** Pull shared channel posts after a cursor. */
@@ -354,6 +360,10 @@ export interface SurfaceClient {
   undo(params?: Record<string, unknown>): Promise<unknown>;
   /** Roll a session back to its pre-turn checkpoint (Phase 8 generalizes to team runs). */
   undo_run(params?: Record<string, unknown>): Promise<unknown>;
+  /** Register a standing wake interest: a handle woken on scoped ready_for_review. */
+  wake_subscribe(params?: Record<string, unknown>): Promise<unknown>;
+  /** Remove a standing wake interest by handle. */
+  wake_unsubscribe(params?: Record<string, unknown>): Promise<unknown>;
 }
 
 /** Wraps a raw `call` (DaemonClient.call or HTTP POST /rpc) with every method. */
@@ -371,6 +381,7 @@ export function createSurfaceClient(
     approval_respond: (params) => call("approval_respond", params ?? {}),
     board_claim: (params) => call("board_claim", params ?? {}),
     board_read: (params) => call("board_read", params ?? {}),
+    board_status: (params) => call("board_status", params ?? {}),
     cancel_turn: (params) => call("cancel_turn", params ?? {}),
     channel_read: (params) => call("channel_read", params ?? {}),
     command_run: (params) => call("command_run", params ?? {}),
@@ -414,5 +425,7 @@ export function createSurfaceClient(
     trace_replay: (params) => call("trace_replay", params ?? {}),
     undo: (params) => call("undo", params ?? {}),
     undo_run: (params) => call("undo_run", params ?? {}),
+    wake_subscribe: (params) => call("wake_subscribe", params ?? {}),
+    wake_unsubscribe: (params) => call("wake_unsubscribe", params ?? {}),
   };
 }
