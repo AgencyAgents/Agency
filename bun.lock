@@ -43,6 +43,17 @@
         "zod": "^4",
       },
     },
+    "packages/eval": {
+      "name": "@agency/eval",
+      "version": "0.1.0",
+      "dependencies": {
+        "@agency/core": "workspace:*",
+        "@agency/guard": "workspace:*",
+        "@agency/net": "workspace:*",
+        "@agency/providers": "workspace:*",
+        "@agency/telemetry": "workspace:*",
+      },
+    },
     "packages/guard": {
       "name": "@agency/guard",
       "version": "0.1.0",
@@ -127,6 +138,8 @@
     "@agency/cli": ["@agency/cli@workspace:packages/cli"],
 
     "@agency/core": ["@agency/core@workspace:packages/core"],
+
+    "@agency/eval": ["@agency/eval@workspace:packages/eval"],
 
     "@agency/guard": ["@agency/guard@workspace:packages/guard"],
 
