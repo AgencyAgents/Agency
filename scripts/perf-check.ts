@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Perf budgets for CI: cold start, idle RSS, zero-CPU-at-idle.
- * Non-blocking initially (CI `continue-on-error: true`), but present and real.
+ * Blocking: the CI perf job fails on a budget breach.
  *
  * - cold start < 150ms: `agency --version` (prefer built binary at dist/, fallback to entrypoint.ts)
  * - idle RSS < 120MB: spawn daemon, measure after settle

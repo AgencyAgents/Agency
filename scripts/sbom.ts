@@ -187,9 +187,13 @@ async function main(): Promise<number> {
   let out = "";
   let reproducible = false;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--lockfile") lockfile = argv[i + 1] ?? lockfile;
-    else if (argv[i] === "--out") out = argv[i + 1] ?? "";
-    else if (argv[i] === "--reproducible") reproducible = true;
+    if (argv[i] === "--lockfile") {
+      lockfile = argv[i + 1] ?? lockfile;
+      i++;
+    } else if (argv[i] === "--out") {
+      out = argv[i + 1] ?? "";
+      i++;
+    } else if (argv[i] === "--reproducible") reproducible = true;
     else {
       process.stderr.write(`error: unknown option ${argv[i]}\n`);
       return 1;

@@ -84,6 +84,13 @@ Worktree isolation: agents with write capabilities get `.agency/worktrees/<handl
 
 Without a configured `clientId` the login and any token refresh fail with an explicit auth error (a failed refresh never silently reuses the stale token — re-run `auth login <provider> --oauth`). `baseUrl` optionally points the authorize/token endpoints at a self-hosted gateway (`<baseUrl>/authorize`, `<baseUrl>/token`).
 
+Registration is a human step per provider; no shipped client id is functional and none is baked in:
+
+- Anthropic: create an OAuth client in the Anthropic console, allow the loopback redirect the login prints, then set `provider.anthropic.oauth.clientId`.
+- OpenAI: same shape in the OpenAI developer dashboard, then `provider.openai.oauth.clientId`.
+- Google: create an OAuth client ID of Desktop-app type in the Google Cloud console, then set `provider.google.oauth.clientId`. A human completes the consent screen once; agency stores the token and refreshes it.
+- GitHub Copilot: prefer the RFC 8628 device flow (`agency auth login github-copilot --device`), which needs no browser redirect: `requestDeviceAuthorization` returns the user code, `pollDeviceToken` polls until approval, and `runDeviceFlow` stores the token. `supportsDeviceFlow` reports `github-copilot` as the only opted-in provider today.
+
 ## Environment variable overrides
 
 Mapped via `envOverrides`:

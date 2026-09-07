@@ -543,6 +543,8 @@ function resolveToolSpec(tools: ToolSpec[], name: string): ToolSpec | undefined 
   return tools.find((t) => t.name.toLowerCase() === name.toLowerCase());
 }
 
+const MUTATING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
+
 async function executeOne(
   spec: ToolSpec | undefined,
   call: Extract<ContentBlock, { type: "tool_call" }>,
@@ -693,6 +695,26 @@ async function executeOne(
       else options.eventBus.emit("tool.execute.after", afterPayload);
     } catch {}
     options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
+    if (MUTATING_TOOLS.has(resolved.name)) {
+      const target =
+        typeof call.input.path === "string"
+          ? call.input.path
+          : typeof call.input.command === "string"
+            ? call.input.command
+            : undefined;
+      const auditPayload = {
+        tool: resolved.name,
+        ...(target !== undefined ? { target } : {}),
+        isError: result.isError ?? false,
+        sessionId: options.sessionId,
+        turnId: options.turnId,
+        agentHandle: options.identity.type === "agent" ? options.identity.name : undefined,
+      };
+      try {
+        options.eventBus.emit("tool.audit", auditPayload);
+        options.eventBus.emit("event", { event: "tool.audit", payload: auditPayload });
+      } catch {}
+    }
     if (
       !result.isError &&
       (resolved.name === "write" || resolved.name === "edit") &&

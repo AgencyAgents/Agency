@@ -2,7 +2,8 @@
 # mismatched checksum aborts the install, nothing is written.
 #
 # Usage: irm https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.ps1 | iex
-# Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: %LOCALAPPDATA%\Programs\agency).
+# Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: %LOCALAPPDATA%\Programs\agency),
+# AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
 $ErrorActionPreference = "Stop"
 
 $Repo = "Pixeless001/Agency"
@@ -23,7 +24,7 @@ if ($env:AGENCY_VERSION) {
 }
 
 $asset = "agency-windows-$arch.exe"
-$baseUrl = "https://github.com/$Repo/releases/download/v$version"
+$baseUrl = if ($env:AGENCY_RELEASE_BASE_URL) { $env:AGENCY_RELEASE_BASE_URL } else { "https://github.com/$Repo/releases/download/v$version" }
 $tmp = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("agency-install-" + [guid]::NewGuid().ToString("N")))
 try {
   Write-Host "install: downloading agency v$version (windows-$arch)"

@@ -61,7 +61,7 @@ Release artifacts carry detached ed25519 signatures so `agency update` can verif
 ## CI
 
 - `CI` (`.github/workflows/ci.yml`): matrix `ubuntu/macos/windows`, Bun 1.4.0, steps `lint` / `typecheck` / `typecheck:test` / `test` (20 min timeout). Branch+PR trigger, stale-run cancellation.
-- `Perf` budgets: non-blocking CI job runs `scripts/perf-check.ts` (cold start, idle RSS, zero-CPU-at-idle; single sample, generous thresholds; skips when the binary is absent).
+- `Perf` budgets: blocking CI job runs `scripts/perf-check.ts` (cold start, idle RSS, zero-CPU-at-idle; single sample, generous thresholds; skips when the binary is absent).
 - `Release` (`.github/workflows/release.yml`): triggered on `v*` tags and `workflow_dispatch` (`dry_run` flag). Matrix builds on three runners for the five targets, then lint/typecheck/test, derives `VERSION` from the tag or `package.json`, `bun scripts/build.ts`, per-platform signing (conditional on secrets), ed25519 signing via `scripts/sign-release.ts` (conditional on `AGENCY_UPDATE_PRIVATE_KEY`), and upload of `dist/agency-*` plus `dist/checksums-signed-*.txt` artifacts. A `sbom` job builds `dist/agency.cdx.json` in parallel. The `release` job (only on tag push) downloads and merges artifacts, merges the signed-checksum fragments into `checksums-signed.txt`, runs `sha256sum` over install payloads into `checksums.txt`, and publishes `gh release create` with binaries, `.sig` files, both checksum manifests, and `agency.cdx.json`.
 
 ## Install verification

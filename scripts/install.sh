@@ -3,7 +3,8 @@
 # mismatched checksum aborts the install, nothing is written.
 #
 # Usage: curl -fsSL https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.sh | bash
-# Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: ~/.local/bin).
+# Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: ~/.local/bin),
+# AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
 set -euo pipefail
 
 REPO="Pixeless001/Agency"
@@ -30,7 +31,7 @@ else
 fi
 
 asset="agency-$os_name-$arch_name"
-base_url="https://github.com/$REPO/releases/download/v$version"
+base_url="${AGENCY_RELEASE_BASE_URL:-https://github.com/$REPO/releases/download/v$version}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

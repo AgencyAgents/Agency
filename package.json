@@ -18,7 +18,7 @@
   "scripts": {
     "build": "bun run --filter='*' build",
     "build:bin": "bun scripts/build.ts",
-    "sbom": "bun scripts/sbom.ts --out dist/agency.cdx.json",
+    "sbom": "bun scripts/sbom.ts --out dist/agency.cdx.json --reproducible",
     "test": "bun test",
     "typecheck": "bun x tsc --build tsconfig.json",
     "typecheck:test": "bun x tsc --build tsconfig.test.json",

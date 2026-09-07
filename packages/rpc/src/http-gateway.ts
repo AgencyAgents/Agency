@@ -51,6 +51,11 @@ export interface HttpGatewayOptions {
   store?: SessionStoreLike;
   /** Per-key ring bound for resumable events. Default 256. */
   ringSize?: number;
+  /** Cap for one POST body on /rpc and /auth/mint. Default RPC_MAX_BODY_BYTES. */
+  maxBodyBytes?: number;
+  /** Fixed-window rate limit over POST /rpc and /auth/mint. Defaults below. */
+  rateLimitWindowMs?: number;
+  rateLimitMax?: number;
   /** SSE `retry:` hint in ms served on connect. Default 3000. */
   retryMs?: number;
   /** Maps an event name to its ring key (usually a session id). */
@@ -99,6 +104,12 @@ function errorPayload(error: unknown): { message: string; code?: string } {
 const QUERY_BEARER_GONE =
   "query-string bearer was removed in protocol v2: send Authorization: Bearer or mint a scoped token via POST /auth/mint";
 
+/** Default cap for one POST body on /rpc and /auth/mint (4 MiB). */
+export const RPC_MAX_BODY_BYTES = 4 * 1024 * 1024;
+/** Default fixed-window rate limit over POST /rpc and /auth/mint. */
+export const RPC_RATE_LIMIT_WINDOW_MS = 60_000;
+export const RPC_RATE_LIMIT_MAX = 300;
+
 export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
   const keepAliveMs = options.keepAliveMs ?? 15_000;
   const cors = options.cors ?? true;
@@ -107,6 +118,59 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
   const ring = new EventRing(options.ringSize ?? EVENT_RING_SIZE);
   const minted = new MintedTokenStore();
   const subscribers = new Set<SseClient>();
+  const maxBodyBytes = options.maxBodyBytes ?? RPC_MAX_BODY_BYTES;
+  const rateLimitWindowMs = options.rateLimitWindowMs ?? RPC_RATE_LIMIT_WINDOW_MS;
+  const rateLimitMax = options.rateLimitMax ?? RPC_RATE_LIMIT_MAX;
+  let windowStart = Date.now();
+  let windowCount = 0;
+
+  function rateLimited(request: Request): Response | null {
+    const now = Date.now();
+    if (now - windowStart >= rateLimitWindowMs) {
+      windowStart = now;
+      windowCount = 0;
+    }
+    windowCount += 1;
+    if (windowCount <= rateLimitMax) return null;
+    const retryAfter = Math.max(1, Math.ceil((windowStart + rateLimitWindowMs - now) / 1000));
+    return json(
+      429,
+      {
+        error: {
+          message: `rpc rate limit exceeded: at most ${rateLimitMax} requests per ${rateLimitWindowMs / 1000}s`,
+          code: "RATE_LIMITED",
+        },
+      },
+      request,
+      { "Retry-After": String(retryAfter) },
+    );
+  }
+
+  function bodyTooLarge(): { status: number; body: unknown } {
+    return {
+      status: 413,
+      body: {
+        id: null,
+        error: {
+          message: `request body exceeds the ${maxBodyBytes} byte cap`,
+          code: "BODY_TOO_LARGE",
+        },
+      },
+    };
+  }
+
+  async function readBoundedBody(
+    request: Request,
+  ): Promise<{ text: string } | { status: number; body: unknown }> {
+    const declared = request.headers.get("content-length");
+    if (declared !== null) {
+      const n = Number(declared);
+      if (!Number.isInteger(n) || n < 0 || n > maxBodyBytes) return bodyTooLarge();
+    }
+    const text = await request.text();
+    if (new TextEncoder().encode(text).length > maxBodyBytes) return bodyTooLarge();
+    return { text };
+  }
 
   function withCors(headers: Record<string, string>, request?: Request): Record<string, string> {
     if (!cors) return headers;
@@ -171,9 +235,13 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
    *  `{ id, method, params }` in, `{ id, result }` out, handler throws and
    *  unknown methods surfacing as `{ id, error: { message, code? } }`. */
   async function handleRpc(request: Request): Promise<Response> {
+    const limited = rateLimited(request);
+    if (limited) return limited;
+    const read = await readBoundedBody(request);
+    if ("status" in read) return json(read.status, read.body, request);
     let body: unknown;
     try {
-      body = JSON.parse(await request.text());
+      body = JSON.parse(read.text);
     } catch {
       return json(400, { id: null, error: { message: "request body must be valid JSON" } }, request);
     }
@@ -204,6 +272,8 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
 
   /** POST /auth/mint: bootstrap token in, short-lived scoped token out. */
   async function handleMint(request: Request): Promise<Response> {
+    const limited = rateLimited(request);
+    if (limited) return limited;
     if (!options.token) return json(400, { error: { message: "mint unavailable: no token configured" } });
     const header = request.headers.get("authorization") ?? "";
     if (header !== `Bearer ${options.token}`) {
@@ -211,10 +281,11 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
         "WWW-Authenticate": "Bearer",
       });
     }
+    const read = await readBoundedBody(request);
+    if ("status" in read) return json(read.status, read.body, request);
     let body: { scopes?: unknown; ttlMs?: unknown } = {};
     try {
-      const text = await request.text();
-      if (text.length > 0) body = JSON.parse(text) as typeof body;
+      if (read.text.length > 0) body = JSON.parse(read.text) as typeof body;
     } catch {
       return json(400, { error: { message: "request body must be valid JSON" } }, request);
     }

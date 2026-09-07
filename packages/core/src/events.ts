@@ -27,6 +27,14 @@ export interface AgencyEvents {
   "file.edited": { path: string };
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };
   "permission.replied": { tool: string; command?: string; path?: string; decision: string };
+  "tool.audit": {
+    tool: string;
+    target?: string;
+    isError: boolean;
+    sessionId?: string;
+    turnId?: string;
+    agentHandle?: string;
+  };
   "shell.env": { env: Record<string, string> };
   "session.start": { sessionId: string; workspaceRoot: string };
   "prompt.submit": { sessionId: string; prompt: string };

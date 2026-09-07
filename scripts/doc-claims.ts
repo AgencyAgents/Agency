@@ -14,6 +14,7 @@ export const CLAIM_DOCS = [
   "docs/comparison.local.md",
   "docs/status.md",
   "docs/orchestration.md",
+  "docs/governance.md",
 ];
 
 const BACKTICK_RE = /`([^`\n]+)`/g;
