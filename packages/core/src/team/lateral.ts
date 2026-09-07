@@ -134,7 +134,16 @@ export interface TeamReport {
   itemsUnresolved: ReportUnresolved[];
   decisions: Array<{ decision: string; proposedBy: string; rationale: string }>;
   openQuestions: string[];
-  cost: { totalUsd: number; perAgent: Record<string, number>; tokens: number; cacheHitRate: number };
+  cost: {
+    totalUsd: number;
+    perAgent: Record<string, number>;
+    tokens: number;
+    cacheHitRate: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteInputTokens: number;
+  };
 }
 
 // The report is the only object crossing back to the lead: goal,

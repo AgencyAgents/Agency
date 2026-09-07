@@ -67,6 +67,8 @@ export const EVENT_CATALOG: readonly EventDoc[] = [
   { name: "tool_start", description: "A tool call began." },
   { name: "tool_result", description: "A tool call settled." },
   { name: "turn_complete", description: "A turn finished with stop reason and usage." },
+  { name: "cost_meter", description: "Live turn cost plus run totals and per-agent spend." },
+  { name: "cost_report", description: "Per-run totals with tokens, hit rate, and per-agent breakdown." },
   { name: "budget_exceeded", description: "A turn stopped on a budget cap." },
   { name: "heartbeat", description: "Turn liveness marker on silent stretches." },
   { name: "fallback", description: "Turn retried on the fallback model." },

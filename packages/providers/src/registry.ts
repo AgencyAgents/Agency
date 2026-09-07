@@ -7,6 +7,8 @@ export interface ModelPricing {
   outputPerMTok: number;
   /** USD per million cache-hit input tokens, when the family supports caching. */
   cachedInputPerMTok?: number;
+  /** USD per million cache-write input tokens, at the provider write premium. */
+  cacheWritePerMTok?: number;
 }
 
 export interface ModelCapabilities {
@@ -57,7 +59,7 @@ export const BUILTIN_MODELS: ModelInfo[] = [
     providerName: "Anthropic",
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
-    pricing: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 },
+    pricing: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5, cacheWritePerMTok: 18.75 },
     capabilities: { tools: true, vision: true, thinking: true },
     releaseDate: "2026-05-01",
   },
@@ -68,7 +70,7 @@ export const BUILTIN_MODELS: ModelInfo[] = [
     providerName: "Anthropic",
     contextWindow: 200_000,
     maxOutputTokens: 64_000,
-    pricing: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3 },
+    pricing: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3, cacheWritePerMTok: 3.75 },
     capabilities: { tools: true, vision: true, thinking: true },
     releaseDate: "2026-02-01",
   },

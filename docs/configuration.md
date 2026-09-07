@@ -41,7 +41,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `plugins` | `string[]` | — | npm packages to load as plugins |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
 | `leader` | string | — | Handle of leader agent; defaults to first roster entry |
-| `budgets` | `{perAgentUsd?, teamUsd?}` | — | Token/cost ceilings per agent and team-wide |
+| `budgets` | `{perAgentUsd?, teamUsd?, dailyUsd?, monthlyUsd?}` | — | Per-agent and team ceilings plus daemon-wide daily and monthly hard caps that refuse before the first provider call |
 
 ### Agents presets (team roster)
 
@@ -60,7 +60,7 @@ Starter roster presets are editable config examples, not hardcoded. Example:
     "warden": { "role": "reviewer", "provider": "openai", "model": "gpt-5.2", "effort": "high", "permissions": { "write": "deny", "edit": "deny" } }
   },
   "leader": "marshal",
-  "budgets": { "perAgentUsd": 5, "teamUsd": 20 }
+  "budgets": { "perAgentUsd": 5, "teamUsd": 20, "dailyUsd": 50, "monthlyUsd": 500 }
 }
 ```
 

@@ -40,6 +40,10 @@ export interface BoardItem {
   verdict?: BoardVerdict;
   /** Non-exclusive compare attempts on one shared item. */
   compareClaims?: string[];
+  /** Accumulated spend attributed to this item across its attempts. */
+  costUsd?: number;
+  /** Tokens spent on this item (input plus output). */
+  tokens?: number;
 }
 
 export type ContractMove = "accept" | "decline" | "counter" | "escalate";
@@ -162,6 +166,15 @@ export class BoardStore {
     this.items = [...items];
     void this.persist?.(this.items);
     this.notify();
+  }
+
+  recordCost(itemId: string, costUsd: number, tokens: number): boolean {
+    const item = this.items.find((t) => t.id === itemId);
+    if (!item) return false;
+    item.costUsd = (item.costUsd ?? 0) + costUsd;
+    item.tokens = (item.tokens ?? 0) + tokens;
+    void this.persist?.(this.items);
+    return true;
   }
 
   file(

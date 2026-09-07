@@ -191,7 +191,12 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
 
   // index -> tool_call id, so content_block_delta/stop can address the right call
   const toolCallIndex = new Map<number, string>();
-  const usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } = {
+  const usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  } = {
     inputTokens: 0,
     outputTokens: 0,
   };
@@ -205,12 +210,19 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
       case "message_start": {
         const msgUsage = (
           payload.message as {
-            usage?: { input_tokens?: number; cache_read_input_tokens?: number };
+            usage?: {
+              input_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
           }
         )?.usage;
         usage.inputTokens = msgUsage?.input_tokens ?? 0;
         if (msgUsage?.cache_read_input_tokens !== undefined) {
           usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
+        }
+        if (msgUsage?.cache_creation_input_tokens !== undefined) {
+          usage.cacheWriteInputTokens = msgUsage.cache_creation_input_tokens;
         }
         break;
       }

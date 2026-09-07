@@ -335,6 +335,8 @@ export function commandPolicyFromPermissions(permissions: Record<string, unknown
 export interface TeamBudgets {
   perAgentUsd?: number;
   teamUsd?: number;
+  dailyUsd?: number;
+  monthlyUsd?: number;
 }
 
 /** Hard caps: throw before dispatch when a budget is already spent. */
@@ -522,6 +524,10 @@ export interface DaemonContext {
   approvalManagers: Map<string, ApprovalManager>;
   /** Pre-turn tips per session, pushed by session_send and popped by undo_run. */
   turnCheckpoints: Map<string, Array<string | null>>;
+  /** First-class session budgets: set by session_create, refreshed by session_send. */
+  sessionBudgets: Map<string, Budget>;
+  /** Daemon-wide daily and monthly hard-cap ledger, persisted under sessions. */
+  spendLedger: import("@agency/telemetry").SpendLedger;
   /** Pre-integration workspace captures per lead session, restored by undo_run team scope. */
   teamCheckpoints: Map<string, import("@agency/core").IntegrationCheckpoint>;
   /** Team-scoped MCP pools: one shared-process pool per parent session. */

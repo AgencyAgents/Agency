@@ -20,6 +20,7 @@ export interface TraceSpan {
     inputTokens?: number;
     outputTokens?: number;
     cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
     cost?: number;
     toolName?: string;
     isError?: boolean;

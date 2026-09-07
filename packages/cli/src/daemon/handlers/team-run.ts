@@ -31,9 +31,10 @@ import {
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { extractFinalText, type SessionScope, TeamMcpPool } from "@agency/tools";
+import { priceForModel, teamRunUsage } from "../costing.ts";
 import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
-import { childPromptFor, costForTeam } from "./coords.ts";
+import { childPromptFor } from "./coords.ts";
 import { createTurnApproval } from "./plan.ts";
 
 export function initTeamRunState(ctx: DaemonContext): void {
@@ -140,7 +141,6 @@ export function installCompletionHook(ctx: DaemonContext): () => void {
           if (state === "working") idle = false;
         }
       }
-      const cost = costForTeam(ctx);
       const { complete, outcome } = checkCompletion(items, idle);
       if (!complete) return;
       const fingerprint = `report:${outcome}:${items
@@ -149,6 +149,7 @@ export function installCompletionHook(ctx: DaemonContext): () => void {
         .join("|")}`;
       if (reported.has(fingerprint)) return;
       reported.add(fingerprint);
+      const run = teamRunUsage(ctx);
       const report = completionReport({
         goal: items[0]?.content ?? "team goal",
         outcome,
@@ -156,11 +157,30 @@ export function installCompletionHook(ctx: DaemonContext): () => void {
         decisions: ctx.choiceLog
           .list()
           .map((e) => ({ decision: e.text, proposedBy: e.proposedBy, rationale: e.rationale })),
-        cost: { ...cost, cacheHitRate: 0 },
+        cost: {
+          totalUsd: run.totalUsd,
+          perAgent: Object.fromEntries(Object.entries(run.perAgent).map(([h, r]) => [h, r.costUsd])),
+          tokens: run.tokens,
+          cacheHitRate: run.cacheHitRate,
+          inputTokens: run.inputTokens,
+          outputTokens: run.outputTokens,
+          cachedInputTokens: run.cachedInputTokens,
+          cacheWriteInputTokens: run.cacheWriteInputTokens,
+        },
         attempts: {},
       });
       try {
         ctx.broadcast("team.shared", { type: "team_report", report });
+      } catch {}
+      try {
+        ctx.broadcast("team.shared", {
+          type: "cost_report",
+          totalUsd: run.totalUsd,
+          tokens: run.tokens,
+          cacheHitRate: run.cacheHitRate,
+          perAgent: run.perAgent,
+          perTask: run.perTask,
+        });
       } catch {}
       try {
         ctx.eventBus.emit("team.report", { outcome });
@@ -355,9 +375,7 @@ export async function runCompareChildTurn(
         identity: { type: "agent", name: handle },
         capabilities: agentCaps,
         toolPolicy: agentGate,
-        pricePerMTok: childModelInfo
-          ? { input: childModelInfo.pricing.inputPerMTok, output: childModelInfo.pricing.outputPerMTok }
-          : undefined,
+        pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
         maxTokensPerRequest: childModelInfo?.maxOutputTokens,
         turnId: childTurnId,
         sessionId: childSessionId,

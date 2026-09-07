@@ -189,6 +189,8 @@ export const ConfigSchema = z
       .object({
         perAgentUsd: z.number().nonnegative().optional(),
         teamUsd: z.number().nonnegative().optional(),
+        dailyUsd: z.number().nonnegative().optional(),
+        monthlyUsd: z.number().nonnegative().optional(),
       })
       .optional(),
   })

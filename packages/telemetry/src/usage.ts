@@ -22,6 +22,7 @@ export interface SessionUsageTotals {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   /** USD, from per-MTok pricing; 0 when no pricing was supplied. */
   costUsd: number;
   /** 0..1, or undefined when no turn reported cached tokens. */
@@ -37,11 +38,14 @@ export function cacheHitRate(usage: Usage): number | undefined {
 export function turnCostUsd(usage: Usage, pricing?: ModelPricing): number {
   if (!pricing) return 0;
   const cached = usage.cachedInputTokens ?? 0;
-  const uncachedInput = Math.max(usage.inputTokens - cached, 0);
+  const written = usage.cacheWriteInputTokens ?? 0;
+  const uncachedInput = Math.max(usage.inputTokens - cached - written, 0);
   const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
+  const writeRate = pricing.cacheWritePerMTok ?? pricing.inputPerMTok;
   return (
     (uncachedInput / 1_000_000) * pricing.inputPerMTok +
     (cached / 1_000_000) * cachedRate +
+    (written / 1_000_000) * writeRate +
     (usage.outputTokens / 1_000_000) * pricing.outputPerMTok
   );
 }
@@ -93,6 +97,7 @@ export class SessionUsageTracker {
     let inputTokens = 0;
     let outputTokens = 0;
     let cachedInputTokens = 0;
+    let cacheWriteInputTokens = 0;
     let costUsd = 0;
     let sawCacheData = false;
 
@@ -103,6 +108,10 @@ export class SessionUsageTracker {
         cachedInputTokens += turn.usage.cachedInputTokens;
         sawCacheData = true;
       }
+      if (turn.usage.cacheWriteInputTokens !== undefined) {
+        cacheWriteInputTokens += turn.usage.cacheWriteInputTokens;
+        sawCacheData = true;
+      }
       costUsd += turnCostUsd(turn.usage, turn.pricing);
     }
 
@@ -111,6 +120,7 @@ export class SessionUsageTracker {
       inputTokens,
       outputTokens,
       cachedInputTokens,
+      cacheWriteInputTokens,
       costUsd,
       cacheHitRate: sawCacheData && inputTokens > 0 ? cachedInputTokens / inputTokens : undefined,
     };

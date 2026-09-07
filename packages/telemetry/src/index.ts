@@ -5,6 +5,11 @@ export {
   formatDebugBundle,
 } from "./debug-bundle.ts";
 export {
+  type SpendCaps,
+  SpendLedger,
+  type SpendSnapshot,
+} from "./spend.ts";
+export {
   createFileTelemetrySink,
   Telemetry,
   type TelemetryEvent,

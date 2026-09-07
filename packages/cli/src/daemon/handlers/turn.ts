@@ -11,6 +11,7 @@ import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agenc
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { SessionScope } from "@agency/tools";
+import { assertPreflightCaps, priceForModel, recordTurnCompletion } from "../costing.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
   classifyEffortWithSmallModel,
@@ -232,10 +233,18 @@ export async function executeTurn(
         // Clamp the resolved thinking level to what the model actually supports
         if (resolvedThinkingLevel && modelInfo) {
           resolvedThinkingLevel = clampEffortForModel(
-            resolvedThinkingLevel as import("@agency/providers").EffortLevel,
+            resolvedThinkingLevel as import("@agency/providers").ThinkingLevel,
             modelInfo,
           );
         }
+        // Hard daily and monthly caps stop before the first provider call:
+        // the pre-flight estimate plus spend to date must fit under each cap.
+        assertPreflightCaps(ctx, {
+          sessionId,
+          systemPrompt: params.systemPrompt,
+          session: params.session,
+          ...(modelInfo?.pricing === undefined ? {} : { pricing: modelInfo.pricing }),
+        });
         const wrappedOnEvent = (event: LoopEvent): void => {
           collectedTraceEvents.push(event);
           broadcast(eventStream, event);
@@ -373,12 +382,7 @@ export async function executeTurn(
                 params.thinkingLevel,
               session: params.session,
               budget: params.budget,
-              pricePerMTok: modelInfo
-                ? {
-                    input: modelInfo.pricing.inputPerMTok,
-                    output: modelInfo.pricing.outputPerMTok,
-                  }
-                : undefined,
+              pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
               maxTokensPerRequest: modelInfo?.maxOutputTokens,
               turnId: params.turnId,
               sessionId: params.sessionId,
@@ -467,12 +471,7 @@ export async function executeTurn(
                   thinkingLevel: params.thinkingLevel,
                   session: params.session,
                   budget: params.budget,
-                  pricePerMTok: modelInfo
-                    ? {
-                        input: modelInfo.pricing.inputPerMTok,
-                        output: modelInfo.pricing.outputPerMTok,
-                      }
-                    : undefined,
+                  pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
                   maxTokensPerRequest: modelInfo?.maxOutputTokens,
                   turnId: params.turnId,
                   sessionId: params.sessionId,
@@ -512,14 +511,23 @@ export async function executeTurn(
           eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
         } catch {}
 
-        const costUsd = modelInfo
-          ? (result.usage.inputTokens / 1_000_000) * modelInfo.pricing.inputPerMTok +
-            (result.usage.outputTokens / 1_000_000) * modelInfo.pricing.outputPerMTok
-          : 0;
+        const modelPricing = modelInfo?.pricing;
         const sidKey = sessionId;
         const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
-        turnTeam.teamCost.set(sidKey, (turnTeam.teamCost.get(sidKey) ?? 0) + costUsd);
-        turnTeam.teamTotal.value += costUsd;
+        const turnHandle =
+          childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default") ?? "lead";
+        const turnCost = recordTurnCompletion(ctx, {
+          team: turnTeam,
+          sessionId: sidKey,
+          handle: turnHandle,
+          model: resolvedModel,
+          usage: result.usage,
+          ...(modelPricing === undefined ? {} : { pricing: modelPricing }),
+          turnId: params.turnId,
+          eventStreams: [eventStream],
+          ...(childInfo?.parentSessionId === undefined ? {} : { parentSessionId: childInfo.parentSessionId }),
+          board: boardStore,
+        });
         if (budgets?.teamUsd !== undefined && turnTeam.teamTotal.value >= budgets.teamUsd) {
           for (const c of activeControllers.values())
             try {
@@ -532,6 +540,8 @@ export async function executeTurn(
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           cachedInputTokens: result.usage.cachedInputTokens ?? null,
+          cacheWriteInputTokens: result.usage.cacheWriteInputTokens ?? null,
+          costUsd: turnCost,
         });
         telemetry.record("turn_complete", {
           provider: resolvedProvider,
@@ -539,6 +549,8 @@ export async function executeTurn(
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           cachedInputTokens: result.usage.cachedInputTokens ?? null,
+          cacheWriteInputTokens: result.usage.cacheWriteInputTokens ?? null,
+          costUsd: turnCost,
         });
 
         // Generate session title after first turn if none exists yet

@@ -45,7 +45,7 @@ import {
   startHttpGateway,
   writeInstanceFile,
 } from "@agency/rpc";
-import { createFileTelemetrySink, Telemetry } from "@agency/telemetry";
+import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import { createSessionScope, resolveShell, type SessionScope, type TeamMcpPool } from "@agency/tools";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import {
@@ -524,6 +524,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     approvalsFor,
     approvalManagers,
     turnCheckpoints: new Map<string, Array<string | null>>(),
+    sessionBudgets: new Map(),
+    spendLedger: new SpendLedger({ sessionsDir: todoSessionsDir }),
     teamCheckpoints: new Map(),
     teamMcpPools,
     listModels: models.listModels,

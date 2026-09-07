@@ -63,6 +63,8 @@ export interface Budget {
 export interface PricePerMTok {
   input: number;
   output: number;
+  cachedInput?: number;
+  cacheWrite?: number;
 }
 
 export type LoopEvent =
@@ -324,6 +326,7 @@ export async function runTurn(
             inputTokens: turn.usage.inputTokens,
             outputTokens: turn.usage.outputTokens,
             cachedInputTokens: turn.usage.cachedInputTokens,
+            cacheWriteInputTokens: turn.usage.cacheWriteInputTokens,
             cost: turnCost,
           },
         });
@@ -930,10 +933,14 @@ function appendText(content: ContentBlock[], type: "text" | "thinking", delta: s
 }
 
 function addUsage(a: Usage, b: Usage): Usage {
+  const written = (a.cacheWriteInputTokens ?? 0) + (b.cacheWriteInputTokens ?? 0);
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     cachedInputTokens: (a.cachedInputTokens ?? 0) + (b.cachedInputTokens ?? 0),
+    ...(a.cacheWriteInputTokens === undefined && b.cacheWriteInputTokens === undefined
+      ? {}
+      : { cacheWriteInputTokens: written }),
   };
 }
 
@@ -943,7 +950,15 @@ function totalTokens(usage: Usage): number {
 
 function costOf(usage: Usage, price?: PricePerMTok): number {
   if (!price) return 0;
-  return (usage.inputTokens / 1_000_000) * price.input + (usage.outputTokens / 1_000_000) * price.output;
+  const cached = usage.cachedInputTokens ?? 0;
+  const written = usage.cacheWriteInputTokens ?? 0;
+  const uncached = Math.max(usage.inputTokens - cached - written, 0);
+  return (
+    (uncached / 1_000_000) * price.input +
+    (cached / 1_000_000) * (price.cachedInput ?? price.input) +
+    (written / 1_000_000) * (price.cacheWrite ?? price.input) +
+    (usage.outputTokens / 1_000_000) * price.output
+  );
 }
 
 function exceedsBudget(usage: Usage, spentCostUsd: number, budget?: Budget): boolean {

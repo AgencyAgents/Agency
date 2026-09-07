@@ -58,6 +58,8 @@ export type GatewayEvent =
   | "tool_start"
   | "tool_result"
   | "turn_complete"
+  | "cost_meter"
+  | "cost_report"
   | "budget_exceeded"
   | "heartbeat"
   | "fallback"
@@ -80,6 +82,7 @@ export interface EventUsage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 export interface ApprovalRequest {
@@ -145,6 +148,21 @@ export interface TurnCompleteEvent {
   type: string;
   stopReason: string;
   usage: EventUsage;
+}
+export interface CostMeterEvent {
+  type: string;
+  sessionId: string;
+  turnCostUsd: number;
+  runTotalUsd: number;
+  runCacheHitRate: number;
+  perAgent: Record<string, number>;
+}
+export interface CostReportEvent {
+  type: string;
+  totalUsd: number;
+  tokens: number;
+  cacheHitRate: number;
+  perAgent: Record<string, unknown>;
 }
 export interface BudgetExceededEvent {
   type: string;

@@ -15,10 +15,11 @@ import {
   runChildTurn,
   type ToolSpec,
 } from "@agency/core";
-import { checkCostForecast, type DispatchAgentForecast, estimateDispatchCost } from "@agency/guard";
+import { checkCostForecast } from "@agency/guard";
 import { classifyEffortFromText, resolveApiKey } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
+import { preflightDispatchEstimate, priceForModel, recordTurnCompletion } from "../costing.ts";
 import {
   childKey,
   childSessionIdFor,
@@ -86,28 +87,31 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
       } catch (error) {
         return { content: error instanceof Error ? error.message : String(error), isError: true };
       }
-      const forecastThreshold = config.sandbox?.forecastCostUsd;
-      let dispatchEstimate: { lowUsd: number; highUsd: number; agentCount: number } | undefined;
-      if (forecastThreshold !== undefined) {
-        const forecastAgents: DispatchAgentForecast[] = input.agents.map((a) => {
-          const agent = teamRegistry.get(a.handle);
+      // Pre-flight estimate on every escalation: announced before the
+      // first spawn whether or not the approval threshold is configured.
+      const preflight = preflightDispatchEstimate({
+        agents: input.agents,
+        pricingOf: (handle, effort) => {
+          const agent = teamRegistry.get(handle);
           const modelId = agent?.model ?? resolveAgentModel(agent?.provider ?? "", "");
           const modelInfo = agent ? catalogModel(agent.provider, modelId) : undefined;
           return {
             model: modelId || "unknown",
             inputPerMTok: modelInfo?.pricing.inputPerMTok ?? 0,
             outputPerMTok: modelInfo?.pricing.outputPerMTok ?? 0,
-            effort: a.effort ?? agent?.effort,
+            effort: effort ?? agent?.effort,
           };
-        });
-        const estimate = estimateDispatchCost({
-          briefChars: input.agents.reduce((sum, a) => sum + a.brief.length, 0),
-          agents: forecastAgents,
-        });
-        dispatchEstimate = estimate;
+        },
+        ledger: daemon.spendLedger,
+        caps: budgets,
+      });
+      if ("refusal" in preflight) return { content: preflight.refusal, isError: true };
+      const dispatchEstimate = preflight.estimate;
+      const forecastThreshold = config.sandbox?.forecastCostUsd;
+      if (forecastThreshold !== undefined) {
         try {
           await checkCostForecast({
-            estimate,
+            estimate: dispatchEstimate,
             thresholdUsd: forecastThreshold,
             ask: ctx.requestApproval,
           });
@@ -138,7 +142,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           type: "dispatch_start",
           count: input.agents.length,
           handles: input.agents.map((a) => a.handle),
-          ...(dispatchEstimate ? { estimate: dispatchEstimate } : {}),
+          estimate: dispatchEstimate,
         });
       } catch {}
       const batchBudgets = (config as unknown as { budgets?: { perAgentUsd?: number; teamUsd?: number } })
@@ -415,12 +419,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 identity: { type: "agent", name: a.handle },
                 capabilities: agentCaps,
                 toolPolicy: agentGate,
-                pricePerMTok: childModelInfo
-                  ? {
-                      input: childModelInfo.pricing.inputPerMTok,
-                      output: childModelInfo.pricing.outputPerMTok,
-                    }
-                  : undefined,
+                pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
                 maxTokensPerRequest: childModelInfo?.maxOutputTokens,
                 turnId: childTurnId,
                 sessionId: childSessionId,
@@ -537,11 +536,18 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               warnPersistence("agent_lifecycle load", error);
             }
             if (childResult && childModelInfo) {
-              const costUsd =
-                (childResult.usage.inputTokens / 1_000_000) * childModelInfo.pricing.inputPerMTok +
-                (childResult.usage.outputTokens / 1_000_000) * childModelInfo.pricing.outputPerMTok;
-              team.teamCost.set(childSessionId, (team.teamCost.get(childSessionId) ?? 0) + costUsd);
-              team.teamTotal.value += costUsd;
+              recordTurnCompletion(daemon, {
+                team,
+                sessionId: childSessionId,
+                handle: a.handle,
+                model: childModel,
+                usage: childResult.usage,
+                pricing: childModelInfo.pricing,
+                turnId: childTurnId,
+                eventStreams: [`team.${childSessionId}`],
+                parentSessionId,
+                board: boardStore,
+              });
             }
             if (teamRegistry.list().length > 1) {
               try {

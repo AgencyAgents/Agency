@@ -26,6 +26,10 @@ const EVENT_TYPES: Record<string, string> = {
     "export interface ToolResultEvent { type: string; id: string; content: string; isError: boolean; }",
   turn_complete:
     "export interface TurnCompleteEvent { type: string; stopReason: string; usage: EventUsage; }",
+  cost_meter:
+    "export interface CostMeterEvent { type: string; sessionId: string; turnCostUsd: number; runTotalUsd: number; runCacheHitRate: number; perAgent: Record<string, number>; }",
+  cost_report:
+    "export interface CostReportEvent { type: string; totalUsd: number; tokens: number; cacheHitRate: number; perAgent: Record<string, unknown>; }",
   budget_exceeded:
     "export interface BudgetExceededEvent { type: string; spentTokens: number; spentCostUsd: number; }",
   heartbeat: "export interface HeartbeatEvent { type: string; }",
@@ -117,6 +121,7 @@ export interface EventUsage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 export interface ApprovalRequest {

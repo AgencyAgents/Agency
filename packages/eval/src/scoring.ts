@@ -10,6 +10,7 @@ export function scoreCassette(cassette: EvalCassette): ConfigScore {
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteInputTokens = 0;
   let sawCacheData = false;
   let conflicts = 0;
   let wallClockMs = 0;
@@ -21,6 +22,10 @@ export function scoreCassette(cassette: EvalCassette): ConfigScore {
     outputTokens += task.usage.outputTokens;
     if (task.usage.cachedInputTokens !== undefined) {
       cachedInputTokens += task.usage.cachedInputTokens;
+      sawCacheData = true;
+    }
+    if (task.usage.cacheWriteInputTokens !== undefined) {
+      cacheWriteInputTokens += task.usage.cacheWriteInputTokens;
       sawCacheData = true;
     }
     conflicts += task.conflicts;
@@ -37,6 +42,7 @@ export function scoreCassette(cassette: EvalCassette): ConfigScore {
     inputTokens,
     outputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     cacheHitRate: sawCacheData && inputTokens > 0 ? cachedInputTokens / inputTokens : null,
     conflicts,
     wallClockMs,

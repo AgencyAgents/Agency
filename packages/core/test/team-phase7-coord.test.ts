@@ -136,7 +136,16 @@ describe("phase7 report crossing", () => {
       items: board.list(),
       decisions: [],
       openQuestions: [],
-      cost: { totalUsd: 0.5, perAgent: {}, tokens: 100, cacheHitRate: 0 },
+      cost: {
+        totalUsd: 0.5,
+        perAgent: {},
+        tokens: 100,
+        cacheHitRate: 0,
+        inputTokens: 80,
+        outputTokens: 20,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+      },
       attempts: {},
     });
     const json = JSON.stringify(report);

@@ -62,6 +62,26 @@ export function estimateDispatchCost(params: {
   return { lowUsd, highUsd, agentCount: params.agents.length };
 }
 
+/** Single-turn pre-flight estimate from prompt size and model pricing. */
+export function estimateTurnCostUsd(params: {
+  promptChars: number;
+  inputPerMTok: number;
+  outputPerMTok: number;
+  effort?: string;
+}): CostEstimate {
+  const inputTokens = Math.ceil(params.promptChars / 4) + INPUT_OVERHEAD_TOKENS;
+  const multiplier = EFFORT_OUTPUT_MULTIPLIER[params.effort ?? "medium"] ?? 2;
+  return {
+    lowUsd:
+      (inputTokens / 1_000_000) * params.inputPerMTok +
+      ((OUTPUT_LOW_TOKENS * multiplier) / 1_000_000) * params.outputPerMTok,
+    highUsd:
+      ((inputTokens * 2) / 1_000_000) * params.inputPerMTok +
+      ((OUTPUT_HIGH_TOKENS * multiplier) / 1_000_000) * params.outputPerMTok,
+    agentCount: 1,
+  };
+}
+
 /**
  * The forecast gate, shaped like every other approval: when the HIGH end of
  * the estimate exceeds the configured threshold, the dispatch must be approved

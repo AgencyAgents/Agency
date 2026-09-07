@@ -18,6 +18,18 @@ export interface ChildSessionMeta {
   childKey: string;
 }
 
+export interface TurnUsageRecord {
+  handle: string;
+  model: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  };
+  costUsd: number;
+}
+
 /**
  * Per-parent-session team state. Every dispatched child is keyed by
  * `${parentSessionId}:${handle}:${batchId}`, so two parents dispatching
@@ -28,6 +40,7 @@ export interface TeamContext {
   agentStates: Map<string, ChildState>;
   agentInboxes: Map<string, Message[]>;
   teamCost: Map<string, number>;
+  teamUsage: Map<string, TurnUsageRecord>;
   teamTotal: { value: number };
   sessions: Map<string, ChildSessionMeta>;
   nextBatchId: number;
@@ -43,6 +56,7 @@ export function createTeamContext(parentSessionId: string): TeamContext {
     agentStates: new Map(),
     agentInboxes: new Map(),
     teamCost: new Map(),
+    teamUsage: new Map(),
     teamTotal: { value: 0 },
     sessions: new Map(),
     nextBatchId: 0,

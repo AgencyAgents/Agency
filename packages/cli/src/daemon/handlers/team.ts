@@ -13,6 +13,7 @@ import {
 import { clampEffortForModel } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
+import { recordTurnCompletion } from "../costing.ts";
 import {
   agentsListPayload,
   childKey,
@@ -342,11 +343,21 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         const { childResult, childError, childModelInfo, finalText } = outcome;
 
         if (childResult && childModelInfo) {
-          const costUsd =
-            (childResult.usage.inputTokens / 1_000_000) * childModelInfo.pricing.inputPerMTok +
-            (childResult.usage.outputTokens / 1_000_000) * childModelInfo.pricing.outputPerMTok;
-          team.teamCost.set(childSessionId, (team.teamCost.get(childSessionId) ?? 0) + costUsd);
-          team.teamTotal.value += costUsd;
+          const childCost = recordTurnCompletion(ctx, {
+            team,
+            sessionId: childSessionId,
+            handle,
+            model: agent.model ?? "",
+            usage: childResult.usage,
+            pricing: childModelInfo.pricing,
+            eventStreams: [`team.${childSessionId}`],
+            parentSessionId,
+          });
+          boardStore.recordCost(
+            itemId,
+            childCost,
+            childResult.usage.inputTokens + childResult.usage.outputTokens,
+          );
         }
 
         if (childError) {

@@ -14,7 +14,12 @@ export interface EvalTaskRecord {
   passed: boolean;
   /** Fractional score for a non-passing task, 0 when absent. */
   partialCredit?: number;
-  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  };
   wallClockMs: number;
   /** Merge failures plus overlapping path-scope writes. */
   conflicts: number;
@@ -40,6 +45,7 @@ export interface ConfigScore {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
   cacheHitRate: number | null;
   conflicts: number;
   wallClockMs: number;

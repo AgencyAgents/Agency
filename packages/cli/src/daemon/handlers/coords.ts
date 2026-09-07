@@ -20,6 +20,7 @@ import {
   type TeamPrompt,
 } from "@agency/core";
 import type { SessionScope } from "@agency/tools";
+import { teamRunUsage } from "../costing.ts";
 import type { DaemonContext } from "../types.ts";
 
 export function factsForHandle(ctx: DaemonContext, handle: string): AgentFacts | undefined {
@@ -47,16 +48,10 @@ export function costForTeam(ctx: DaemonContext): {
   perAgent: Record<string, number>;
   tokens: number;
 } {
+  const run = teamRunUsage(ctx);
   const perAgent: Record<string, number> = {};
-  let totalUsd = 0;
-  for (const team of ctx.teamContexts.values()) {
-    for (const [sid, usd] of team.teamCost) {
-      const handle = team.sessions.get(sid)?.handle ?? sid;
-      perAgent[handle] = (perAgent[handle] ?? 0) + usd;
-      totalUsd += usd;
-    }
-  }
-  return { totalUsd, perAgent, tokens: 0 };
+  for (const [handle, row] of Object.entries(run.perAgent)) perAgent[handle] = row.costUsd;
+  return { totalUsd: run.totalUsd, perAgent, tokens: run.tokens };
 }
 
 export function spansForHandle(ctx: DaemonContext, handle: string): InspectableSpan[] {
@@ -209,7 +204,7 @@ export async function registerCoordToolsForScope(
         ...(item.claimedBy === undefined ? {} : { claimedBy: item.claimedBy }),
         ...(item.filedBy === undefined ? {} : { filedBy: item.filedBy }),
       }));
-      const cost = costForTeam(ctx);
+      const run = teamRunUsage(ctx);
       return buildTeamReport({
         goal: ctx.boardStore.list()[0]?.content ?? "team goal",
         outcome:
@@ -221,7 +216,16 @@ export async function registerCoordToolsForScope(
           .list()
           .map((e) => ({ decision: e.text, proposedBy: e.proposedBy, rationale: e.rationale })),
         openQuestions: [],
-        cost: { ...cost, cacheHitRate: 0 },
+        cost: {
+          totalUsd: run.totalUsd,
+          perAgent: Object.fromEntries(Object.entries(run.perAgent).map(([h, r]) => [h, r.costUsd])),
+          tokens: run.tokens,
+          cacheHitRate: run.cacheHitRate,
+          inputTokens: run.inputTokens,
+          outputTokens: run.outputTokens,
+          cachedInputTokens: run.cachedInputTokens,
+          cacheWriteInputTokens: run.cacheWriteInputTokens,
+        },
         attempts: {},
       });
     },

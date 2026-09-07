@@ -23,6 +23,7 @@ import {
   type SessionScope,
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
+import { priceForModel } from "../costing.ts";
 import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
@@ -104,6 +105,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     approvalManagers,
     broadcast,
     providers,
+    sessionBudgets,
     sessionInboxes,
     sessionScopes,
     todoStore,
@@ -178,7 +180,8 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
         source: "session",
       });
-    return view;
+    const budget = ctx.sessionBudgets.get(sessionId);
+    return { ...view, ...(budget === undefined ? {} : { budget }) };
   };
   handlers.session_send = async (rawParams, context) => {
     const p = rawParams as SessionSendParams;
@@ -237,7 +240,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       systemPromptParts: p.systemPromptParts,
       thinkingLevel: p.thinkingLevel,
       session: history,
-      budget: p.budget,
+      budget: p.budget ?? sessionBudgets.get(p.sessionId),
       permissionMode: p.permissionMode,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
@@ -439,12 +442,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           capabilities: childCaps,
           toolPolicy: gate,
           budget: meta?.budget,
-          pricePerMTok: childModelInfo
-            ? {
-                input: childModelInfo.pricing.inputPerMTok,
-                output: childModelInfo.pricing.outputPerMTok,
-              }
-            : undefined,
+          pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
           maxTokensPerRequest: childModelInfo?.maxOutputTokens,
           turnId: childTurnId,
           sessionId: childSessionId,

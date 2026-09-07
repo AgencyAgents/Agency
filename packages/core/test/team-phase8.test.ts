@@ -346,7 +346,16 @@ describe("phase 8 completion plus caps plus no-progress detector", () => {
       outcome: completion.outcome,
       items: board.list(),
       decisions: [],
-      cost: { totalUsd: 0, perAgent: {}, tokens: 0, cacheHitRate: 0 },
+      cost: {
+        totalUsd: 0,
+        perAgent: {},
+        tokens: 0,
+        cacheHitRate: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+      },
       attempts: {},
     });
     expect(report.openQuestions).toEqual(["which schema?"]);

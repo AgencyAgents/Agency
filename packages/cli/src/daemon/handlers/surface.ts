@@ -4,6 +4,7 @@ import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { isUsageEntry } from "@agency/telemetry";
 import { TEAM_MCP_PROCESS_CAP } from "@agency/tools";
+import { teamRunUsage } from "../costing.ts";
 import { agentsListPayload } from "../team-context.ts";
 import {
   type DaemonContext,
@@ -60,11 +61,21 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
   };
 
   handlers.session_create = async (rawParams) => {
-    const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
+    const { sessionId, budget } = (rawParams ?? {}) as {
+      sessionId?: string;
+      budget?: { maxTokens?: number; maxCostUsd?: number };
+    };
     const meta =
       typeof sessionId === "string" && sessionId.length > 0
         ? todoStore.create(sessionId)
         : todoStore.create();
+    if (budget !== undefined) {
+      const clean: { maxTokens?: number; maxCostUsd?: number } = {};
+      if (typeof budget.maxTokens === "number" && budget.maxTokens > 0) clean.maxTokens = budget.maxTokens;
+      if (typeof budget.maxCostUsd === "number" && budget.maxCostUsd >= 0)
+        clean.maxCostUsd = budget.maxCostUsd;
+      if (Object.keys(clean).length > 0) ctx.sessionBudgets.set(meta.id, clean);
+    }
     return { sessionId: meta.id };
   };
 
@@ -163,15 +174,27 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     const { sessionId } = (rawParams ?? {}) as { sessionId?: string };
     const ids = sessionId !== undefined ? [sessionId] : todoStore.list();
     const sessions = ids.map((id) => costForSession(todoStore.load(id), todoSessionsDir, id));
+    const run = teamRunUsage(ctx, sessionId);
     const total = sessions.reduce(
       (acc, s) => ({
         turns: acc.turns + s.turns,
         inputTokens: acc.inputTokens + s.inputTokens,
         outputTokens: acc.outputTokens + s.outputTokens,
+        cachedInputTokens: acc.cachedInputTokens + s.cachedInputTokens,
+        cacheWriteInputTokens: acc.cacheWriteInputTokens + s.cacheWriteInputTokens,
         costUsd: acc.costUsd + s.costUsd,
       }),
-      { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      {
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        costUsd: 0,
+      },
     );
+    const totalCacheHitRate =
+      total.inputTokens > 0 ? Math.min(total.cachedInputTokens / total.inputTokens, 1) : 0;
     let sharedServers = 0;
     for (const pool of teamMcpPools.values()) sharedServers += pool.usage().sharedServers;
     const mcp = {
@@ -179,7 +202,18 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       perAgentScopes: sessionScopes.size,
       cap: TEAM_MCP_PROCESS_CAP,
     };
-    return { sessions, agents: agentsListPayload(ctx, sessionId), total, mcp };
+    const budgets = (config as unknown as { budgets?: Record<string, number> }).budgets ?? {};
+    return {
+      sessions,
+      agents: agentsListPayload(ctx, sessionId),
+      total: { ...total, cacheHitRate: totalCacheHitRate },
+      perAgent: run.perAgent,
+      perTask: run.perTask,
+      runTotalUsd: run.totalUsd,
+      runCacheHitRate: run.cacheHitRate,
+      spend: { ...ctx.spendLedger.snapshot(), caps: budgets },
+      mcp,
+    };
   };
 
   handlers.undo_run = async (rawParams) => {
@@ -291,6 +325,8 @@ function costForSession(
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  cacheHitRate: number;
   costUsd: number;
   traceModelSpans: number;
   traceCostUsd: number;
@@ -299,16 +335,23 @@ function costForSession(
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteInputTokens = 0;
   let costUsd = 0;
   for (const entry of entries) {
     if (!isUsageEntry(entry)) continue;
     const record = entry as unknown as {
-      usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens?: number;
+        cacheWriteInputTokens?: number;
+      };
     };
     turns += 1;
     inputTokens += record.usage.inputTokens;
     outputTokens += record.usage.outputTokens;
     cachedInputTokens += record.usage.cachedInputTokens ?? 0;
+    cacheWriteInputTokens += record.usage.cacheWriteInputTokens ?? 0;
     costUsd += (entry as unknown as { costUsd: number }).costUsd;
   }
   let traceModelSpans = 0;
@@ -328,6 +371,8 @@ function costForSession(
     inputTokens,
     outputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
+    cacheHitRate: inputTokens > 0 ? Math.min(cachedInputTokens / inputTokens, 1) : 0,
     costUsd,
     traceModelSpans,
     traceCostUsd,

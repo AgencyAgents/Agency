@@ -34,6 +34,22 @@ describe("usage accounting", () => {
     expect(turnCostUsd(usage)).toBe(0);
   });
 
+  test("a cached read and an uncached write on the same tokens cost differently", () => {
+    const pricing = { ...PRICING, cacheWritePerMTok: 3.75 };
+    const read = { inputTokens: 100_000, outputTokens: 0, cachedInputTokens: 100_000 };
+    const write = { inputTokens: 100_000, outputTokens: 0, cacheWriteInputTokens: 100_000 };
+    const readCost = turnCostUsd(read, pricing);
+    const writeCost = turnCostUsd(write, pricing);
+    expect(readCost).toBeCloseTo(0.03, 9);
+    expect(writeCost).toBeCloseTo(0.375, 9);
+    expect(writeCost).toBeGreaterThan(readCost);
+  });
+
+  test("writes without a write premium fall back to the plain input rate", () => {
+    const write = { inputTokens: 1_000_000, outputTokens: 0, cacheWriteInputTokens: 1_000_000 };
+    expect(turnCostUsd(write, PRICING)).toBeCloseTo(3, 9);
+  });
+
   test("SessionUsageTracker totals turns and reports the aggregate hit rate", () => {
     const tracker = new SessionUsageTracker();
     tracker.addTurn({ model: "m", usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80 } });

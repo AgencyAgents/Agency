@@ -37,6 +37,8 @@ export interface Usage {
   outputTokens: number;
   /** Tokens served from a provider-side cache hit, when the provider reports it. */
   cachedInputTokens?: number;
+  /** Tokens written to the provider-side cache at the write premium. */
+  cacheWriteInputTokens?: number;
 }
 
 /**
