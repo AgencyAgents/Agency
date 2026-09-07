@@ -10,17 +10,17 @@
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.ps1 | iex
 ```
 
 Both scripts:
-1. Resolve the version from `AGENCY_VERSION` or the latest GitHub release (`api.github.com/repos/Pixeless001/Agency/releases/latest`).
+1. Resolve the version from `AGENCY_VERSION` or the latest GitHub release (`api.github.com/repos/AgencyAgents/Agency/releases/latest`).
 2. Download `agency-<os>-<arch>` (or `.exe` on Windows) and `checksums.txt` from `releases/download/v<version>`.
 3. Verify the SHA-256 checksum before writing anything. A missing or mismatched checksum aborts.
 

@@ -250,7 +250,7 @@ export interface CompareChildSpec {
   prompt: string;
   leanPromptText: string;
   effort?: string;
-  apiKey?: string | null;
+  apiKey?: string;
   itemId: string;
   key: string;
   childSessionId: string;
@@ -325,9 +325,8 @@ export async function runCompareChildTurn(
       });
     } catch {}
   }
-  // Fan-out pre-resolves one key per provider; use it when present.
-  // When spec.apiKey !== undefined (even null for a miss), skip per-child
-  // keychain fallback — macOS securityd serializes concurrent CLI calls.
+  // Pre-resolved key (empty string=miss) skips per-child keychain fallback.
+  // macOS securityd serializes concurrent CLI calls into a bottleneck.
   let childApiKey = spec.apiKey ?? "";
   if (spec.apiKey === undefined) {
     try {

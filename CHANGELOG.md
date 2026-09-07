@@ -125,5 +125,5 @@ Initial development release. Foundation through ecosystem, built in phases:
   (local-only in v1), per-session cost/token accounting with cache-hit-rate
   reporting, first-run onboarding, `agency debug` bundle.
 
-[Unreleased]: https://github.com/Pixeless001/Agency/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Pixeless001/Agency/releases/tag/v0.1.0
+[Unreleased]: https://github.com/AgencyAgents/Agency/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AgencyAgents/Agency/releases/tag/v0.1.0

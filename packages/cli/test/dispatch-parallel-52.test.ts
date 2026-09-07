@@ -3,9 +3,16 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BoardStore, EventBus } from "@agency/core";
+import { Redactor } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter, StreamEvent } from "@agency/providers";
+import type { KeychainBackend, ProviderAdapter, StreamEvent } from "@agency/providers";
+import { type ModelInfo, Scheduler } from "@agency/providers";
+import type { MethodHandler } from "@agency/rpc";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { registerTeamHandlers } from "../src/daemon/handlers/team.ts";
+import { createTeamContext } from "../src/daemon/team-context.ts";
+import type { DaemonContext } from "../src/daemon.ts";
 import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -202,5 +209,162 @@ describe("daemon parallel specialists (item 52)", () => {
     for (const r of res.results) {
       expect(r.result).toContain(r.handle);
     }
+  });
+});
+
+const UNIT_PROVIDER = "unitprov";
+
+// Sends the pre-resolved apiKey first, so tests can assert exactly what the
+// per-child turn received without touching a real provider credential.
+function keyCaptureAdapter(state: { apiKeys: string[] }): ProviderAdapter {
+  return {
+    family: "fake",
+    async *stream(request): AsyncIterable<StreamEvent> {
+      state.apiKeys.push(request.apiKey);
+      yield { type: "text_delta", text: "compare output" };
+      yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } };
+    },
+  };
+}
+
+// Runs the real dispatch_compare handler with a stubbed keychain, so the
+// pre-resolve-to-child mapping across team.ts and team-run.ts is exercised
+// end to end while keychain call counts stay observable.
+function compareHandlerHarness(opts: {
+  keychainGet: (key: string) => Promise<string | undefined>;
+  keychainThrows?: boolean;
+}) {
+  const apiKeys: string[] = [];
+  const redactor = new Redactor();
+  let chainCalls = 0;
+  const keychain: KeychainBackend = {
+    async get(key) {
+      if (opts.keychainThrows) throw new Error("keychain unavailable");
+      return opts.keychainGet(key);
+    },
+  };
+  const teamContexts = new Map<string, TeamContext>();
+  const teamFor = (id: string): TeamContext => {
+    let team = teamContexts.get(id);
+    if (!team) {
+      team = createTeamContext(id);
+      teamContexts.set(id, team);
+    }
+    return team;
+  };
+  const boardStore = new BoardStore();
+  const agent = {
+    handle: "w1",
+    role: "Worker",
+    provider: UNIT_PROVIDER,
+    model: PRICED_MODEL,
+    effort: "low",
+    sessionId: "team-w1",
+    mailbox: [],
+  };
+  const modelInfo: ModelInfo = {
+    id: PRICED_MODEL,
+    family: UNIT_PROVIDER,
+    contextWindow: 200000,
+    maxOutputTokens: 32000,
+    pricing: { inputPerMTok: 3, outputPerMTok: 15, cachedInputPerMTok: 0.3, cacheWritePerMTok: 3.75 },
+    capabilities: { tools: true, vision: false, thinking: true },
+    status: "active",
+  };
+  const ctx = {
+    activeControllers: new Map<string, AbortController>(),
+    approvalManagers: new Map(),
+    boardStore,
+    broadcast: () => {},
+    capabilitiesForAgent: () => ({ tools: "*", pathScopes: "*", network: "*" }),
+    catalogModel: (p: string, m: string) =>
+      p === UNIT_PROVIDER && m === PRICED_MODEL ? modelInfo : undefined,
+    channelStore: { read: () => ({ posts: [], cursor: 0 }) },
+    choiceLog: { digest: () => [] },
+    config: {},
+    createTraceRecorder: () => undefined,
+    eventBus: new EventBus(),
+    gateForAgent: () => ({ toolOffered: () => true }),
+    getKeychain: async () => {
+      chainCalls += 1;
+      return keychain;
+    },
+    getOrCreateScope: async () => ({}),
+    http: noopHttp,
+    logger: {},
+    options: { workspaceRoot: tempDir("agency-dp52-unit-root-") },
+    providers: {},
+    redactor,
+    schedulerFor: () => new Scheduler({ maxConcurrent: 2 }),
+    sessionScopes: new Map(),
+    spendLedger: { record: () => {} },
+    teamContexts,
+    teamFor,
+    teamRegistry: { get: () => agent, list: () => [agent] },
+    todoSessionsDir: tempDir("agency-dp52-unit-sess-"),
+    todoStore: { load: () => [], latestTip: () => undefined, append: async () => {}, create: () => {} },
+    warnPersistence: () => {},
+    adapterFor: () => keyCaptureAdapter({ apiKeys }),
+  } as unknown as DaemonContext;
+  const handlers: Record<string, MethodHandler> = {};
+  registerTeamHandlers(handlers, ctx);
+  return {
+    dispatchCompare: handlers.dispatch_compare!,
+    apiKeys,
+    redactor,
+    keychainCalls: () => chainCalls,
+  };
+}
+
+describe("dispatch_compare pre-resolve key mapping (item 52)", () => {
+  it("uses a pre-resolved found key verbatim and registers it as a secret", async () => {
+    const key = "unit-key-dp52-found-0123456789abcdef";
+    const { dispatchCompare, apiKeys, redactor, keychainCalls } = compareHandlerHarness({
+      keychainGet: async (name) => (name === UNIT_PROVIDER ? key : undefined),
+    });
+    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt found" })) as {
+      results: Array<{ handle: string; result: string }>;
+    };
+    expect(res.results.length).toBe(HANDLES.length);
+    // The single pre-resolve hit the keychain, then every child used it
+    // verbatim with no per-child keychain fallback.
+    expect(keychainCalls()).toBe(1);
+    expect(apiKeys).toHaveLength(HANDLES.length);
+    expect(apiKeys.every((k) => k === key)).toBe(true);
+    // The found key became a redactor secret in the pre-resolve step.
+    expect(redactor.redact(key)).toBe("[REDACTED]");
+  });
+
+  it("a pre-resolved miss (empty string) skips all keychain calls and runs keyless", async () => {
+    const { dispatchCompare, apiKeys, keychainCalls } = compareHandlerHarness({
+      keychainGet: async () => undefined,
+    });
+    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt miss" })) as {
+      results: Array<{ handle: string; result: string }>;
+    };
+    expect(res.results.length).toBe(HANDLES.length);
+    // One keychain hit for the pre-resolve, zero per-child fallback calls.
+    expect(keychainCalls()).toBe(1);
+    expect(apiKeys).toHaveLength(HANDLES.length);
+    // The empty-string miss flows through to the child as a visible keyless run.
+    expect(apiKeys.every((k) => k === "")).toBe(true);
+  });
+
+  it("an undefined pre-resolve preserves the per-child keychain fallback", async () => {
+    // A throwing keychain aborts the batched pre-resolve, leaving the provider
+    // absent from compareKeys; each child then re-enters the per-child fallback
+    // that the found and miss paths skip.
+    const { dispatchCompare, apiKeys, keychainCalls } = compareHandlerHarness({
+      keychainGet: async () => undefined,
+      keychainThrows: true,
+    });
+    const res = (await dispatchCompare({ handles: [...HANDLES], prompt: "compare prompt fallback" })) as {
+      results: Array<{ handle: string; result: string }>;
+    };
+    expect(res.results.length).toBe(HANDLES.length);
+    // Pre-resolve (1) plus one per-child fallback per handle.
+    expect(keychainCalls()).toBe(1 + HANDLES.length);
+    expect(apiKeys).toHaveLength(HANDLES.length);
+    expect(apiKeys.every((k) => k === "")).toBe(true);
   });
 });

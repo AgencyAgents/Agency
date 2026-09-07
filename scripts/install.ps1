@@ -1,12 +1,12 @@
 # Installs the Agency binary from a GitHub release. Fails closed: a missing or
 # mismatched checksum aborts the install, nothing is written.
 #
-# Usage: irm https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.ps1 | iex
 # Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: %LOCALAPPDATA%\Programs\agency),
 # AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
 $ErrorActionPreference = "Stop"
 
-$Repo = "Pixeless001/Agency"
+$Repo = "AgencyAgents/Agency"
 $InstallDir = if ($env:AGENCY_INSTALL_DIR) { $env:AGENCY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\agency" }
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {

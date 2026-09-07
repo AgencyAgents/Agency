@@ -2,12 +2,12 @@
 # Installs the Agency binary from a GitHub release. Fails closed: a missing or
 # mismatched checksum aborts the install, nothing is written.
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/Pixeless001/Agency/master/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.sh | bash
 # Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: ~/.local/bin),
 # AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
 set -euo pipefail
 
-REPO="Pixeless001/Agency"
+REPO="AgencyAgents/Agency"
 INSTALL_DIR="${AGENCY_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"

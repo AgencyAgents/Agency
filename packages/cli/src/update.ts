@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { getUpdatePublicKey } from "./update-public-key.ts";
 
-const REPO = "Pixeless001/Agency";
+const REPO = "AgencyAgents/Agency";
 
 export async function checkStale(
   currentVersion: string,
