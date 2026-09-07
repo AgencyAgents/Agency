@@ -1,0 +1,19 @@
+{
+  "name": "@agency/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/schema": "workspace:*",
+    "@agency/guard": "workspace:*",
+    "@agency/net": "workspace:*",
+    "@agency/i18n": "workspace:*",
+    "zod": "^4"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

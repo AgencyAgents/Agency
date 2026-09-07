@@ -1,0 +1,16 @@
+{
+  "name": "@agency/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/rpc": "workspace:*",
+    "@agency/schema": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/schema" },
+    { "path": "packages/i18n" },
+    { "path": "packages/core" },
+    { "path": "packages/net" },
+    { "path": "packages/guard" },
+    { "path": "packages/providers" },
+    { "path": "packages/rpc" },
+    { "path": "packages/tools" },
+    { "path": "packages/cli" },
+    { "path": "packages/eval" },
+    { "path": "scripts" }
+  ]
+}

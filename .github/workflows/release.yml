@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify without publishing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: bun-linux-x64,bun-linux-arm64
+            sign_os: linux
+          - os: macos-latest
+            targets: bun-darwin-x64,bun-darwin-arm64
+            sign_os: darwin
+          - os: windows-latest
+            targets: bun-windows-x64
+            sign_os: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Job-level so the sign steps' `if` conditions can test presence.
+    env:
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+      WINDOWS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_THUMBPRINT }}
+      LINUX_SIGN_KEY: ${{ secrets.LINUX_SIGN_KEY }}
+      AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+      - name: Derive version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(bun --print "require('./package.json').version")" >> "$GITHUB_ENV"
+          fi
+      - name: Derive update public key
+        # Production binaries must embed the production public key at compile
+        # time (scripts/build.ts inlines AGENCY_UPDATE_PUBLIC_KEY via --define).
+        # Deriving it from the private-key secret keeps a single secret as the
+        # source of truth; without the secret the dev key applies (dev only).
+        if: env.AGENCY_UPDATE_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
+        run: |
+          echo "AGENCY_UPDATE_PUBLIC_KEY=$(bun scripts/sign-release.ts --derive-public-key)" >> "$GITHUB_ENV"
+      - name: Build binaries
+        shell: bash
+        run: bun scripts/build.ts --targets "${{ matrix.targets }}" --version "$VERSION" --outdir dist
+      - name: Sign binaries (macOS)
+        if: matrix.sign_os == 'darwin' && env.MACOS_SIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          for f in dist/agency-*; do
+            bash scripts/sign.sh --os darwin --file "$f"
+          done
+      - name: Sign binaries (Windows)
+        if: matrix.sign_os == 'windows' && env.WINDOWS_SIGN_THUMBPRINT != ''
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/agency-* | ForEach-Object {
+            & scripts/sign.ps1 -Path $_.FullName
+          }
+      - name: Sign binaries (Linux)
+        if: matrix.sign_os == 'linux' && env.LINUX_SIGN_KEY != ''
+        shell: bash
+        run: |
+          echo "$LINUX_SIGN_KEY" > signing.key
+          for f in dist/agency-*; do
+            bash scripts/sign.sh --os linux --file "$f" --key signing.key
+          done
+          rm -f signing.key
+      - name: Sign release artifacts (ed25519)
+        if: env.AGENCY_UPDATE_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          AGENCY_UPDATE_PRIVATE_KEY: ${{ secrets.AGENCY_UPDATE_PRIVATE_KEY }}
+        run: |
+          for f in dist/agency-*; do
+            case "$f" in
+              *.sig|*checksums-signed*) continue ;;
+            esac
+            bun scripts/sign-release.ts --file "$f"
+          done
+          # Per-OS fragment: merge-multiple would let same-named
+          # checksums-signed.txt files overwrite each other on download.
+          cp dist/checksums-signed.txt "dist/checksums-signed-${{ matrix.sign_os }}.txt"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agency-${{ matrix.sign_os }}
+          path: |
+            dist/agency-*
+            dist/checksums-signed-*.txt
+          if-no-files-found: error
+
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Generate SBOM
+        run: bun scripts/sbom.ts --out dist/agency.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: dist/agency.cdx.json
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          # Merge per-OS signed checksum fragments into the single manifest
+          # the update client fetches as checksums-signed.txt.
+          cat checksums-signed-*.txt > checksums-signed.txt
+          rm -f checksums-signed-*.txt
+          # checksums.txt covers install payloads only (binaries + SBOM),
+          # never the detached .sig sidecars or the signed manifest itself.
+          sha256sum $(ls agency-* | grep -v '\.sig$') agency.cdx.json > checksums.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Release carries the binaries, their detached .sig files
+          # (raw 64-byte ed25519), the signed checksum manifest, the plain
+          # checksums.txt for install-script verification, and the SBOM.
+          # sort -u dedupes: platform globs already match their .sig sidecars.
+          FILES=$(ls artifacts/agency-* artifacts/agency-*.sig artifacts/checksums.txt artifacts/checksums-signed.txt artifacts/agency.cdx.json 2>/dev/null | sort -u)
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" \
+            $FILES \
+            --title "Agency $GITHUB_REF_NAME" \
+            --generate-notes

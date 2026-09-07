@@ -1,0 +1,22 @@
+{
+  "name": "@agency/providers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/net": "workspace:*",
+    "@agency/schema": "workspace:*",
+    "gpt-tokenizer": "^2",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@agency/core": "workspace:*",
+    "@agency/guard": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

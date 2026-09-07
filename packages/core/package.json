@@ -1,0 +1,22 @@
+{
+  "name": "@agency/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/tools": "workspace:*",
+    "@agency/guard": "workspace:*",
+    "@agency/schema": "workspace:*",
+    "zod": "^4",
+    "@agency/i18n": "workspace:*",
+    "@agency/providers": "workspace:*",
+    "jsonc-parser": "^3",
+    "@agency/net": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

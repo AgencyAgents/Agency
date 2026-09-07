@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../schema"
+    },
+    {
+      "path": "../i18n"
+    },
+    {
+      "path": "../net"
+    },
+    {
+      "path": "../guard"
+    },
+    {
+      "path": "../providers"
+    },
+    {
+      "path": "../tools"
+    }
+  ]
+}

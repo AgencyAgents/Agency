@@ -1,0 +1,3 @@
+# help
+
+A test command.

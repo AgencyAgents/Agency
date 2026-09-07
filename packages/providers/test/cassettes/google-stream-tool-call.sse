@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"parts":[{"text":"Let me check."}],"role":"model"},"index":0}]}
+
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"src/index.ts"}}}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":300,"candidatesTokenCount":20,"totalTokenCount":320}}
+

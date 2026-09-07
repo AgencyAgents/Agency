@@ -1,0 +1,132 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import { createFileTrustStore, requireTrust } from "../src/trust.ts";
+
+const cleanup: string[] = [];
+afterEach(() => {
+  for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function tempStorePath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agency-trust-test-"));
+  cleanup.push(dir);
+  return join(dir, "trusted.json");
+}
+
+describe("createFileTrustStore", () => {
+  test("a directory is untrusted before any decision is recorded", () => {
+    const store = createFileTrustStore(tempStorePath());
+    expect(store.isTrusted("/repo/project")).toBe(false);
+  });
+
+  test("trust persists across store instances backed by the same file", () => {
+    const path = tempStorePath();
+    createFileTrustStore(path).trust("/repo/project");
+    expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+
+  test("distrust removes a previously trusted path", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    store.distrust("/repo/project");
+    expect(store.isTrusted("/repo/project")).toBe(false);
+  });
+
+  test("trusting the same path twice doesn't duplicate the entry", () => {
+    const path = tempStorePath();
+    const store = createFileTrustStore(path);
+    store.trust("/repo/project");
+    store.trust("/repo/project");
+    expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+
+  test("external file edits are picked up (mtime cache invalidates)", () => {
+    const path = tempStorePath();
+    const store = createFileTrustStore(path);
+    expect(store.isTrusted("/repo/project")).toBe(false);
+    writeFileSync(path, JSON.stringify(["/repo/project"]));
+    const future = new Date(Date.now() + 2000);
+    utimesSync(path, future, future);
+    expect(store.isTrusted("/repo/project")).toBe(true);
+  });
+});
+
+describe("requireTrust", () => {
+  test("throws PERMISSION_DENIED for an untrusted directory", () => {
+    const store = createFileTrustStore(tempStorePath());
+    const err = (() => {
+      try {
+        requireTrust(store, "/repo/project");
+        return undefined;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(AgencyError);
+    expect((err as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
+  });
+
+  test("does not throw once the directory is trusted", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(() => requireTrust(store, "/repo/project")).not.toThrow();
+  });
+});
+
+describe("TrustStore subdirectory inheritance (A5)", () => {
+  test("trusting a parent covers its subdirectories", () => {
+    const path = tempStorePath();
+    const store = createFileTrustStore(path);
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/src")).toBe(true);
+    expect(store.isTrusted("/repo/project/src/deep/file.ts")).toBe(true);
+  });
+
+  test("an untrusted sibling sharing a prefix stays untrusted", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project-evil")).toBe(false);
+    expect(store.isTrusted("/repo/project/../project-evil")).toBe(false);
+  });
+
+  test("trailing separators cannot fool the prefix match", () => {
+    const path = tempStorePath();
+    createFileTrustStore(path).trust("/repo/project/");
+    expect(createFileTrustStore(path).isTrusted("/repo/project/src")).toBe(true);
+    expect(createFileTrustStore(path).isTrusted("/repo/project")).toBe(true);
+  });
+
+  test(".. segments are collapsed so ../project-evil cannot inherit trust", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../project-evil")).toBe(false);
+  });
+
+  test("double .. collapses correctly", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../project/src")).toBe(true);
+    expect(store.isTrusted("/repo/other")).toBe(false);
+  });
+
+  test("root .. escape normalizes to root", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/");
+    expect(store.isTrusted("/any/path")).toBe(true);
+  });
+
+  test("root is canonicalized to sep() not hardcoded slash", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/");
+    expect(store.isTrusted("/")).toBe(true);
+  });
+
+  test(".. with trailing slash collapses to parent and does not inherit trust", () => {
+    const store = createFileTrustStore(tempStorePath());
+    store.trust("/repo/project");
+    expect(store.isTrusted("/repo/project/../")).toBe(false);
+  });
+});

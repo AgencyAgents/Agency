@@ -1,0 +1,23 @@
+{
+  "name": "@agency/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency/schema": "workspace:*",
+    "@agency/core": "workspace:*",
+    "@agency/net": "workspace:*",
+    "@agency/guard": "workspace:*",
+    "@agency/i18n": "workspace:*",
+    "@agency/providers": "workspace:*",
+    "@agency/rpc": "workspace:*",
+    "@agency/telemetry": "workspace:*",
+    "@agency/tools": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  }
+}

@@ -1,0 +1,12 @@
+AGENTS.md
+*.local.*
+
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+.DS_Store
+.omo/
+.claude/
+.codegraph/
+.agency/

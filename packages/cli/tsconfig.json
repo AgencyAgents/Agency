@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../schema" },
+    { "path": "../core" },
+    { "path": "../net" },
+    { "path": "../guard" },
+    { "path": "../i18n" },
+    { "path": "../providers" },
+    { "path": "../rpc" },
+    { "path": "../telemetry" },
+    { "path": "../tools" }
+  ]
+}
