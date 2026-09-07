@@ -146,7 +146,7 @@ describe("phase 12 hardening — trim, bad input, scope trim, frozen copies, ove
     expect(registry.subscribe({ handle: 42, pathScopes: ["src/auth/**"] }).ok).toBe(false);
     // @ts-expect-error testing missing handle
     expect(registry.subscribe({ pathScopes: ["src/auth/**"] } as Record<string, unknown>).ok).toBe(false);
-    // @ts-expect-error testing null req
+    // null req returns ok:false, never throws
     expect(registry.subscribe(null as unknown as { handle: string; pathScopes: string[] }).ok).toBe(false);
   });
 

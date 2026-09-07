@@ -123,7 +123,11 @@ if (import.meta.main) {
     try {
       text = readFileSync(join(root, rel), "utf8");
     } catch {
-      if (rel === "docs/comparison.local.md") continue;
+      // *.local.md docs are gitignored local-only; absent means skip, not fail.
+      if (rel.endsWith(".local.md")) {
+        console.error(`warning: skipping missing local doc: ${rel}`);
+        continue;
+      }
       console.error(`error: required doc missing: ${rel}`);
       process.exit(2);
     }
