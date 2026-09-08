@@ -35,7 +35,7 @@ import {
   type PermissionMode,
   type PermissionsGate,
   type Redactor,
-  type SandboxBoundary,
+  type SandboxBackend,
 } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
@@ -522,7 +522,7 @@ export interface DaemonContext {
   getKeychain: () => Promise<KeychainBackend | undefined>;
   configFingerprint: { check(): boolean };
   broadcast: (event: string, payload: unknown) => void;
-  sandbox: SandboxBoundary;
+  sandbox: SandboxBackend;
   identity: CallerIdentity;
   shellLabel: string;
   todoSessionsDir: string;
