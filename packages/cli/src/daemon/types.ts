@@ -507,6 +507,8 @@ export interface DaemonContext {
   sessionBudgets: Map<string, Budget>;
   /** Daemon-wide daily and monthly hard-cap ledger, persisted under sessions. */
   spendLedger: import("@agency/telemetry").SpendLedger;
+  /** Per-task turn ledger, persisted as JSONL under sessions; absent in older stubs. */
+  taskLedger?: import("./task-ledger.ts").TaskUsageTracker;
   /** Pre-integration workspace captures per lead session, restored by undo_run team scope. */
   teamCheckpoints: Map<string, import("@agency/core").IntegrationCheckpoint>;
   /** Team-scoped MCP pools: one shared-process pool per parent session. */

@@ -9,6 +9,7 @@ import type { ModelPricing, Usage } from "@agency/providers";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { isUsageEntry, type SpendCaps, type SpendLedger, turnCostUsd } from "@agency/telemetry";
 import type { TeamContext, TurnUsageRecord } from "./team-context.ts";
+import { resolveTaskId } from "./task-ledger.ts";
 import type { DaemonContext } from "./types.ts";
 
 export interface AgentUsage {
@@ -109,7 +110,12 @@ export function teamRunUsage(ctx: DaemonContext, parentSessionId?: string): RunU
     row.cacheHitRate = row.inputTokens > 0 ? Math.min(row.cachedInputTokens / row.inputTokens, 1) : 0;
   }
   const perTask: Record<string, { costUsd: number; tokens: number }> = {};
+  // Ledger is primary; the board scan backfills tasks recorded before
+  // the ledger wiring (or via direct board.recordCost callers).
+  const ledger = ctx.taskLedger;
+  if (ledger) Object.assign(perTask, ledger.perTask());
   for (const item of ctx.boardStore.list()) {
+    if (perTask[item.id] !== undefined) continue;
     if (item.costUsd !== undefined || item.tokens !== undefined) {
       perTask[item.id] = { costUsd: item.costUsd ?? 0, tokens: item.tokens ?? 0 };
     }
@@ -239,23 +245,36 @@ export function priceForModel(pricing: ModelPricing): {
   };
 }
 
-export function assertPreflightCaps(
-  ctx: DaemonContext,
-  args: { sessionId: string; systemPrompt: string; session: Message[]; pricing?: ModelPricing },
-): void {
+// Shared pre-flight turn estimate (low USD) behind both gates below.
+export function estimatePreflightTurnCostUsd(args: {
+  systemPrompt: string;
+  session: Message[];
+  pricing?: ModelPricing;
+}): number {
   const promptChars =
     args.systemPrompt.length +
     args.session.reduce(
       (sum, m) => sum + m.content.reduce((inner, b) => inner + (b.type === "text" ? b.text.length : 0), 0),
       0,
     );
-  const estimate = estimateTurnCostUsd({
+  return estimateTurnCostUsd({
     promptChars,
     inputPerMTok: args.pricing?.inputPerMTok ?? 0,
     outputPerMTok: args.pricing?.outputPerMTok ?? 0,
+  }).lowUsd;
+}
+
+export function assertPreflightCaps(
+  ctx: DaemonContext,
+  args: { sessionId: string; systemPrompt: string; session: Message[]; pricing?: ModelPricing },
+): void {
+  const estimateLowUsd = estimatePreflightTurnCostUsd({
+    systemPrompt: args.systemPrompt,
+    session: args.session,
+    ...(args.pricing === undefined ? {} : { pricing: args.pricing }),
   });
   const budgets = (ctx.config as unknown as { budgets?: SpendCaps }).budgets;
-  const gate = ctx.spendLedger.check(budgets, estimate.lowUsd);
+  const gate = ctx.spendLedger.check(budgets, estimateLowUsd);
   if (!gate.ok) {
     announceHook(ctx.eventBus, "cost.threshold", { reason: gate.reason, sessionId: args.sessionId });
     throw new AgencyError(ErrorCode.PERMISSION_DENIED, gate.reason, { source: "spend" });
@@ -263,8 +282,8 @@ export function assertPreflightCaps(
   const sessionBudget = ctx.sessionBudgets.get(args.sessionId);
   if (sessionBudget?.maxCostUsd !== undefined) {
     const spent = sessionSpendUsd(ctx, args.sessionId);
-    if (spent + estimate.lowUsd > sessionBudget.maxCostUsd) {
-      const reason = `session budget exceeded: spent $${spent.toFixed(4)} plus $${estimate.lowUsd.toFixed(4)} estimate over $${sessionBudget.maxCostUsd.toFixed(4)} cap`;
+    if (spent + estimateLowUsd > sessionBudget.maxCostUsd) {
+      const reason = `session budget exceeded: spent $${spent.toFixed(4)} plus $${estimateLowUsd.toFixed(4)} estimate over $${sessionBudget.maxCostUsd.toFixed(4)} cap`;
       announceHook(ctx.eventBus, "cost.threshold", { reason, sessionId: args.sessionId });
       throw new AgencyError(ErrorCode.PERMISSION_DENIED, reason, { source: "spend" });
     }
@@ -284,6 +303,7 @@ export function recordTurnCompletion(
     eventStreams?: string[];
     parentSessionId?: string;
     board?: BoardStore;
+    taskId?: string;
   },
 ): number {
   const cost = recordTurnUsage({
@@ -296,8 +316,21 @@ export function recordTurnCompletion(
     onSpend: (usd) => ctx.spendLedger.record(usd),
   });
   if (args.board) {
-    const claimed = args.board.list().find((item) => item.claimedBy === args.handle);
-    if (claimed) args.board.recordCost(claimed.id, cost, args.usage.inputTokens + args.usage.outputTokens);
+    const claimed = args.taskId ?? args.board.list().find((item) => item.claimedBy === args.handle)?.id;
+    if (claimed) args.board.recordCost(claimed, cost, args.usage.inputTokens + args.usage.outputTokens);
+  }
+  const ledger = ctx.taskLedger;
+  if (ledger) {
+    const taskId = resolveTaskId({ board: args.board, handle: args.handle, taskId: args.taskId });
+    if (taskId !== undefined) {
+      ledger.recordTurn(taskId, {
+        usage: { inputTokens: args.usage.inputTokens, outputTokens: args.usage.outputTokens },
+        costUsd: cost,
+        model: args.model,
+        handle: args.handle,
+        ...(args.pricing === undefined ? { pricingMissing: true } : {}),
+      });
+    }
   }
   try {
     const meter = costMeterFor(ctx, {

@@ -390,6 +390,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             pricing: childModelInfo.pricing,
             eventStreams: [`team.${childSessionId}`],
             parentSessionId,
+            taskId: itemId,
           });
           boardStore.recordCost(
             itemId,

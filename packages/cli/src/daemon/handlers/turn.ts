@@ -11,7 +11,8 @@ import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agenc
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { SessionScope } from "@agency/tools";
-import { assertPreflightCaps, priceForModel, recordTurnCompletion } from "../costing.ts";
+import { assertPreflightCaps, estimatePreflightTurnCostUsd, priceForModel, recordTurnCompletion } from "../costing.ts";
+import { assertTaskPreflightCaps } from "../task-ledger.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
   classifyEffortWithSmallModel,
@@ -244,6 +245,19 @@ export async function executeTurn(
           systemPrompt: params.systemPrompt,
           session: params.session,
           ...(modelInfo?.pricing === undefined ? {} : { pricing: modelInfo.pricing }),
+        });
+        // Per-task ledger caps stop before the first provider call too,
+        // on the same estimate the sibling gate uses.
+        assertTaskPreflightCaps({
+          board: boardStore,
+          ...(ctx.taskLedger === undefined ? {} : { ledger: ctx.taskLedger }),
+          handle: childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default"),
+          estimateUsd: estimatePreflightTurnCostUsd({
+            systemPrompt: params.systemPrompt,
+            session: params.session,
+            ...(modelInfo?.pricing === undefined ? {} : { pricing: modelInfo.pricing }),
+          }),
+          announce: { bus: ctx.eventBus, sessionId },
         });
         const wrappedOnEvent = (event: LoopEvent): void => {
           collectedTraceEvents.push(event);

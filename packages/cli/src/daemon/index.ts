@@ -56,6 +56,7 @@ import {
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import { resolveShell, type TeamMcpPool } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
+import { TaskUsageTracker } from "./task-ledger.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
 import {
@@ -504,6 +505,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     turnCheckpoints: new Map<string, Array<string | null>>(),
     sessionBudgets: new Map(),
     spendLedger: new SpendLedger({ sessionsDir: todoSessionsDir }),
+    taskLedger: new TaskUsageTracker({ sessionsDir: todoSessionsDir }),
     teamCheckpoints: new Map(),
     teamMcpPools,
     listModels: models.listModels,
