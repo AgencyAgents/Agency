@@ -556,6 +556,8 @@ export class SnapshotStore {
     }
   }
 
+  /** Boundary pair of restoreIntegrationCheckpoint: same commitHash correlation,
+   *  repeats converge on the same bytes, restores never append to any journal. */
   restoreShadowCommit(commitHash: string, options: RestoreShadowCommitOptions): RestoreShadowCommitOutcome {
     if (commitHash.trim().length === 0) {
       throw new AgencyError(ErrorCode.TOOL_ERROR, "restore requires a non-empty commit hash", {

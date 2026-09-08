@@ -8,6 +8,8 @@ export const CHECKPOINT_FILE_CAP = 200;
 export interface IntegrationCheckpoint {
   files: Record<string, string | null>;
   at: string;
+  /** Shadow commitHash capturing this same pre-merge state, when one exists. */
+  commitHash?: string;
 }
 
 function walkFiles(root: string, out: string[]): void {
@@ -54,8 +56,8 @@ export function recordIntegrationCheckpoint(paths: readonly string[]): Integrati
   return { files, at: new Date().toISOString() };
 }
 
-// Whole-run undo: restores captured bytes and removes files that
-// did not exist before integration ran.
+// Whole-run undo: restores captured bytes, deletes files absent at capture.
+// Repeatable (same bytes on retry); restores never touch any journal.
 export function restoreIntegrationCheckpoint(checkpoint: IntegrationCheckpoint): { restored: string[] } {
   const restored: string[] = [];
   for (const [abs, content] of Object.entries(checkpoint.files)) {
@@ -75,4 +77,16 @@ export function restoreIntegrationCheckpoint(checkpoint: IntegrationCheckpoint):
     }
   }
   return { restored };
+}
+
+// Boundary contract: pre-merge capture here (team level, in-memory) pairs
+// with turn-level shadow commits (SnapshotStore, durable, same commitHash).
+export function withShadowCorrelation(
+  checkpoint: IntegrationCheckpoint,
+  commitHash: string,
+): IntegrationCheckpoint {
+  if (commitHash.trim().length === 0) {
+    throw new Error("checkpoint correlation requires a non-empty commit hash");
+  }
+  return { ...checkpoint, files: { ...checkpoint.files }, commitHash };
 }
