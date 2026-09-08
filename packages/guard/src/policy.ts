@@ -43,6 +43,18 @@ export interface PolicyRule {
 /** A single tool's permission entry: a bare decision or a pattern map. */
 export type ToolPermissionValue = Decision | Record<string, Decision>;
 
+/** Well-known key gating real git writes. Bare decisions only; maps fail closed. */
+export const GIT_WRITE_PERMISSION_KEY = "git_write" as const;
+/** Absent, mapped, or unknown entries deny, preserving no-git-write today. */
+export const GIT_WRITE_DEFAULT: Decision = "deny";
+
+/** Reads the git_write entry fail-closed: only a bare allow|ask|deny wins. */
+export function gitWriteDecision(permissions?: Record<string, ToolPermissionValue>): Decision {
+  const entry = permissions?.[GIT_WRITE_PERMISSION_KEY];
+  if (entry === "allow" || entry === "ask" || entry === "deny") return entry;
+  return GIT_WRITE_DEFAULT;
+}
+
 /** Everything one tool-call needs for a permission verdict. */
 export interface ToolCallPolicyRequest {
   tool: string;
@@ -71,6 +83,8 @@ export interface ApprovalRequestLike {
   title: string;
   command?: string;
   path?: string;
+  riskTier?: RiskTier;
+  source?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -305,16 +319,19 @@ export class PolicyEngine {
   ) {}
 
   evaluate(request: PolicyRequest): Decision {
-    // Commands are matched against both the raw and the arity-normalized
-    // form; normalize on the caller's behalf when only the raw form arrived.
+    return this.evaluateWithMatch(request).decision;
+  }
+
+  /** Same walk, also naming the first matching rule for ask-source labels. */
+  evaluateWithMatch(request: PolicyRequest): { decision: Decision; matched?: PolicyRule } {
     const subject =
       request.command !== undefined && request.normalizedCommand === undefined
         ? { ...request, normalizedCommand: normalizeCommand(request.command) }
         : request;
     for (const rule of this.rules) {
-      if (ruleMatches(rule, subject)) return rule.decision;
+      if (ruleMatches(rule, subject)) return { decision: rule.decision, matched: rule };
     }
-    return this.defaultDecision;
+    return { decision: this.defaultDecision };
   }
 }
 
@@ -439,6 +456,27 @@ export class PermissionsGate implements ToolPolicy {
     return matched ?? "ask";
   }
 
+  /** Names the rule that produced an ask: explicit entry, pattern, or default. */
+  askSource(request: ToolCallPolicyRequest): string {
+    const entry = this.permissions[request.tool];
+    if (entry === undefined) return `default:risk-tier=${request.riskTier ?? "missing"}`;
+    if (typeof entry === "string") return `explicit:${request.tool}=${entry}`;
+    for (const [pattern, decision] of Object.entries(entry).reverse()) {
+      if (decision !== "ask") continue;
+      if (request.command !== undefined && isCommandPatternTool(request.tool)) {
+        const re = globRegExp(pattern, "command");
+        if (re.test(request.command) || re.test(normalizeCommand(request.command)))
+          return `permissions:${request.tool}:${pattern}=ask`;
+      } else if (request.path !== undefined && isPathPatternTool(request.tool)) {
+        if (globMatches(pattern, relativeWorkspacePath(this.options.workspaceRoot, request.path), "path"))
+          return `permissions:${request.tool}:${pattern}=ask`;
+      } else if (pattern === "*") {
+        return `permissions:${request.tool}:*=ask`;
+      }
+    }
+    return `permissions:${request.tool}:unmatched-map-ask`;
+  }
+
   async check(
     request: ToolCallPolicyRequest,
     ask: ((request: ApprovalRequestLike) => Promise<"once" | "always" | "reject">) | undefined,
@@ -464,12 +502,15 @@ export class PermissionsGate implements ToolPolicy {
     if (this.options.permissionMode === "allow-edits" && EDIT_TOOLS.has(request.tool)) return "allow";
     if (!ask) return "deny"; // no approval surface: fail closed
 
+    const source = this.askSource(request);
     const response = await ask({
       tool: request.tool,
       title: request.command ?? request.path ?? request.tool,
       command: request.command,
       path: request.path,
-      metadata: { riskTier: request.riskTier },
+      riskTier: request.riskTier,
+      source,
+      metadata: { riskTier: request.riskTier, source },
     });
     return response === "reject" ? "deny" : "allow";
   }

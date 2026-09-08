@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -9,7 +10,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { assertGitWriteAllowed, type RequestApproval, type ToolPermissionValue } from "@agency/guard";
 import { AgencyError, ErrorCode } from "@agency/schema";
 
 export interface SnapshotEntry {
@@ -58,6 +60,98 @@ export interface ShadowCommitManifest {
 export interface ShadowCommitOutcome {
   commitHash: string;
   files: ShadowCommitFile[];
+}
+
+/** Kill ceiling for each git child spawned by `materializeShadowCommit`. */
+export const SHADOW_GIT_TIMEOUT_MS = 30_000;
+
+/** One git invocation result, surfaced so tests can count spawns. */
+export interface ShadowGitResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Injectable git runner: defaults to `spawnSync(git, …)`; tests pass a counter. */
+export type ShadowGitRunner = (args: string[], opts: { cwd: string }) => ShadowGitResult;
+
+export interface MaterializeShadowCommitOptions {
+  /** Git worktree that receives the commit (a tmpdir repo in tests, never the agency repo). */
+  targetDir: string;
+  /**
+   * Session scope root: manifest paths outside it are skipped and never
+   * touched on disk. Defaults to `targetDir`.
+   */
+  sessionRoot?: string;
+  /** Git-write gate inputs (Todo 7): checked FIRST, before any git spawn. */
+  permissions?: Record<string, ToolPermissionValue>;
+  nonInteractive?: boolean;
+  ask?: RequestApproval;
+  /** Injectable git runner (spawn counter in tests). */
+  runGit?: ShadowGitRunner;
+  gitBin?: string;
+  timeoutMs?: number;
+}
+
+export interface MaterializeShadowCommitOutcome {
+  /** The shadow manifest id (journal-to-commit correlation id). */
+  commitHash: string;
+  /** The real git commit sha created in `targetDir`. */
+  gitCommit: string;
+  /** Repo-relative paths written from manifest blobs. */
+  files: string[];
+}
+
+/** Options for `restoreShadowCommit` (Todo 9): blobs back into the worktree. */
+export interface RestoreShadowCommitOptions {
+  /** Worktree that receives the blob contents (a tmpdir in tests, never the agency repo). */
+  targetDir: string;
+  /**
+   * Session scope root: manifest paths outside it are skipped and never
+   * touched on disk. Defaults to `targetDir`.
+   */
+  sessionRoot?: string;
+}
+
+export interface RestoreShadowCommitOutcome {
+  /** The shadow manifest id that was restored. */
+  commitHash: string;
+  /** Repo-relative paths written from manifest blobs. */
+  files: string[];
+  /** Count of files written (equals `files.length`). */
+  restored: number;
+}
+
+/**
+ * Additive journal correlation line appended after a successful materialization.
+ * Manifest lines in `shadow-journal.jsonl` are untouched; the `kind` marker
+ * distinguishes correlation lines from `ShadowCommitManifest` lines.
+ */
+export interface ShadowMaterializationRecord {
+  kind: "materialized";
+  commitHash: string;
+  gitCommit: string;
+  targetDir: string;
+  materializedAt: string;
+}
+
+function defaultGitRunner(gitBin: string, timeoutMs: number): ShadowGitRunner {
+  return (args, opts) => {
+    const result = spawnSync(gitBin, args, { cwd: opts.cwd, encoding: "utf8", timeout: timeoutMs });
+    return {
+      exitCode: typeof result.status === "number" ? result.status : 1,
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: typeof result.stderr === "string" ? result.stderr : "",
+    };
+  };
+}
+
+function toRepoRel(sessionRoot: string, filePath: string): string | undefined {
+  const rel = isAbsolute(filePath)
+    ? relative(resolve(sessionRoot), resolve(filePath))
+    : relative(resolve(sessionRoot), resolve(sessionRoot, filePath));
+  if (rel.length === 0 || rel === ".." || rel.startsWith(`..${sep}`)) return undefined;
+  return rel;
 }
 
 function contentHash(content: string): string {
@@ -297,6 +391,148 @@ export class SnapshotStore {
     return { commitHash, files };
   }
 
+  /**
+   * Materializes a real git commit from a shadow-commit manifest. The
+   * git-write gate (`assertGitWriteAllowed`) runs FIRST: deny,
+   * non-interactive, and rejected asks throw typed PERMISSION_DENIED with
+   * zero git process spawns. On allow, each in-scope file's exact blob
+   * content is written under `targetDir` (repo-relative via `sessionRoot`),
+   * committed with the shadow `commitHash` in the message, and the
+   * journal gains an additive `{ kind: "materialized", commitHash,
+   * gitCommit }` correlation line. Manifest paths outside `sessionRoot`
+   * are skipped and never touched. No restore here (Todo 9).
+   */
+  async materializeShadowCommit(
+    commitHash: string,
+    options: MaterializeShadowCommitOptions,
+  ): Promise<MaterializeShadowCommitOutcome> {
+    await assertGitWriteAllowed({
+      permissions: options.permissions,
+      nonInteractive: options.nonInteractive,
+      ask: options.ask,
+    });
+    if (commitHash.trim().length === 0) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, "materialize requires a non-empty commit hash", {
+        source: "snapshot",
+        context: {},
+      });
+    }
+    const manifest = this.readShadowCommit(commitHash);
+    if (!manifest) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, `unknown shadow commit ${commitHash}`, {
+        source: "snapshot",
+        context: { commitHash },
+      });
+    }
+    const { targetDir } = options;
+    const sessionRoot = options.sessionRoot ?? targetDir;
+    const gitBin = options.gitBin ?? "git";
+    const timeoutMs = options.timeoutMs ?? SHADOW_GIT_TIMEOUT_MS;
+    const runGit = options.runGit ?? defaultGitRunner(gitBin, timeoutMs);
+    const gitFailure = (args: string[], result: ShadowGitResult): AgencyError =>
+      new AgencyError(ErrorCode.TOOL_ERROR, `git ${args[0] ?? ""} failed: ${result.stderr.trim()}`, {
+        source: "snapshot",
+        context: { commitHash, exitCode: result.exitCode, stderr: result.stderr.slice(0, 500) },
+      });
+    const inside = runGit(["rev-parse", "--is-inside-work-tree"], { cwd: targetDir });
+    if (inside.exitCode !== 0 || inside.stdout.trim() !== "true") {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, `materialize target is not a git repo: ${targetDir}`, {
+        source: "snapshot",
+        context: { commitHash, targetDir },
+      });
+    }
+    const written: string[] = [];
+    for (const file of manifest.files) {
+      const rel = toRepoRel(sessionRoot, file.path);
+      if (rel === undefined) continue;
+      const blob = blobPath(this.storeDir, file.hash);
+      if (!existsSync(blob)) {
+        throw new AgencyError(ErrorCode.TOOL_ERROR, `snapshot blob missing for ${file.path}`, {
+          source: "snapshot",
+          context: { commitHash, path: file.path, hash: file.hash },
+        });
+      }
+      const dest = join(resolve(targetDir), rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, readFileSync(blob, "utf8"), "utf8");
+      written.push(rel);
+    }
+    const gitRels = written.map((rel) => rel.split(sep).join("/")).sort();
+    if (gitRels.length > 0) {
+      const add = runGit(["add", "--", ...gitRels], { cwd: targetDir });
+      if (add.exitCode !== 0) throw gitFailure(["add"], add);
+    }
+    const message = `${manifest.message}\n\nshadow-commit: ${manifest.commitHash}`;
+    const commitArgs = [
+      "-c",
+      "user.name=agency",
+      "-c",
+      "user.email=agency@localhost",
+      "commit",
+      ...(gitRels.length === 0 ? ["--allow-empty"] : []),
+      "-m",
+      message,
+    ];
+    const commit = runGit(commitArgs, { cwd: targetDir });
+    if (commit.exitCode !== 0) throw gitFailure(["commit"], commit);
+    const rev = runGit(["rev-parse", "HEAD"], { cwd: targetDir });
+    if (rev.exitCode !== 0) throw gitFailure(["rev-parse"], rev);
+    const gitCommit = rev.stdout.trim();
+    const record: ShadowMaterializationRecord = {
+      kind: "materialized",
+      commitHash: manifest.commitHash,
+      gitCommit,
+      targetDir: resolve(targetDir),
+      materializedAt: new Date().toISOString(),
+    };
+    try {
+      appendFileSync(join(this.storeDir, "shadow-journal.jsonl"), `${JSON.stringify(record)}\n`, "utf8");
+    } catch (error) {
+      console.warn(
+        `[snapshot] materialization journal append failed for ${manifest.commitHash}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return { commitHash: manifest.commitHash, gitCommit, files: written };
+  }
+
+  /**
+   * Returns the latest materialization correlation for a shadow commit hash,
+   * scanning the journal file so the mapping survives restarts. Manifest
+   * lines (no `kind`) are skipped; only additive `materialized` lines match.
+   */
+  readMaterialization(commitHash: string): ShadowMaterializationRecord | undefined {
+    let text: string;
+    try {
+      text = readFileSync(join(this.storeDir, "shadow-journal.jsonl"), "utf8");
+    } catch {
+      return undefined;
+    }
+    let latest: ShadowMaterializationRecord | undefined;
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const record = parsed as Record<string, unknown>;
+      if (
+        record.kind === "materialized" &&
+        record.commitHash === commitHash &&
+        typeof record.gitCommit === "string" &&
+        typeof record.targetDir === "string" &&
+        typeof record.materializedAt === "string"
+      ) {
+        latest = parsed as ShadowMaterializationRecord;
+      }
+    }
+    return latest;
+  }
+
   /** Reads a persisted shadow-commit manifest, if the hash exists. */
   readShadowCommit(commitHash: string): ShadowCommitManifest | undefined {
     const file = join(this.storeDir, "shadow-commits", `${commitHash}.json`);
@@ -318,6 +554,45 @@ export class SnapshotStore {
     } catch {
       return undefined;
     }
+  }
+
+  restoreShadowCommit(commitHash: string, options: RestoreShadowCommitOptions): RestoreShadowCommitOutcome {
+    if (commitHash.trim().length === 0) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, "restore requires a non-empty commit hash", {
+        source: "snapshot",
+        context: {},
+      });
+    }
+    const manifest = this.readShadowCommit(commitHash);
+    if (!manifest) {
+      throw new AgencyError(ErrorCode.TOOL_ERROR, `unknown shadow commit ${commitHash}`, {
+        source: "snapshot",
+        context: { commitHash },
+      });
+    }
+    const { targetDir } = options;
+    const sessionRoot = options.sessionRoot ?? targetDir;
+    const plan: Array<{ rel: string; hash: string }> = [];
+    for (const file of manifest.files) {
+      const rel = toRepoRel(sessionRoot, file.path);
+      if (rel === undefined) continue;
+      const blob = blobPath(this.storeDir, file.hash);
+      if (!existsSync(blob)) {
+        throw new AgencyError(ErrorCode.TOOL_ERROR, `snapshot blob missing for ${file.path}`, {
+          source: "snapshot",
+          context: { commitHash, path: file.path, hash: file.hash },
+        });
+      }
+      plan.push({ rel, hash: file.hash });
+    }
+    const written: string[] = [];
+    for (const item of plan) {
+      const dest = join(resolve(targetDir), item.rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, readFileSync(blobPath(this.storeDir, item.hash), "utf8"), "utf8");
+      written.push(item.rel);
+    }
+    return { commitHash: manifest.commitHash, files: written, restored: written.length };
   }
 
   /**

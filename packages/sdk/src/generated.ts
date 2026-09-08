@@ -105,6 +105,11 @@ export interface ApprovalRequest {
   title: string;
   command?: string;
   path?: string;
+  riskTier?: string;
+  sessionId?: string;
+  turnId?: string;
+  source?: string;
+  argsSummary?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -196,6 +201,11 @@ export interface FallbackEvent {
 export interface ApprovalRequestedEvent {
   type: string;
   requestId: string;
+  sessionId: string;
+  turnId: string;
+  riskTier: string;
+  source: string;
+  argsSummary: string;
   request: ApprovalRequest;
 }
 export type SessionChannel = `session.${string}`;
@@ -358,7 +368,7 @@ export interface SurfaceClient {
   trace_replay(params?: Record<string, unknown>): Promise<unknown>;
   /** Undo the last snapshot-backed file change. */
   undo(params?: Record<string, unknown>): Promise<unknown>;
-  /** Roll a session back to its pre-turn checkpoint (Phase 8 generalizes to team runs). */
+  /** Roll a session back to its pre-turn checkpoint; with mode files-only|task-only|both restores a shadow commit's files and/or the session tip. */
   undo_run(params?: Record<string, unknown>): Promise<unknown>;
   /** Register a standing wake interest: a handle woken on scoped ready_for_review. */
   wake_subscribe(params?: Record<string, unknown>): Promise<unknown>;

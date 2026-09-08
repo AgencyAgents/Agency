@@ -1104,7 +1104,14 @@ describe("A5 permissions and sandbox", () => {
       session: [],
     });
     await new Promise((r) => setTimeout(r, 100));
-    const ask = events1.find((e) => e.type === "approval_requested");
+    let ask = events1.find((e) => e.type === "approval_requested");
+    // Fixed sleeps flake under suite load (event delivery has no latency
+    // bound), so poll like the other approval tests instead of asserting once.
+    const deadline1 = Date.now() + 15_000;
+    while (ask?.requestId === undefined && Date.now() < deadline1) {
+      await new Promise((r) => setTimeout(r, 50));
+      ask = events1.find((e) => e.type === "approval_requested");
+    }
     expect(ask?.requestId).toBeTruthy();
     const responded = await client.call("approval_respond", {
       requestId: ask?.requestId,
@@ -1130,7 +1137,12 @@ describe("A5 permissions and sandbox", () => {
       session: [],
     });
     await new Promise((r) => setTimeout(r, 100));
-    const ask2 = events2.find((e) => e.type === "approval_requested");
+    let ask2 = events2.find((e) => e.type === "approval_requested");
+    const deadline2 = Date.now() + 15_000;
+    while (ask2?.requestId === undefined && Date.now() < deadline2) {
+      await new Promise((r) => setTimeout(r, 50));
+      ask2 = events2.find((e) => e.type === "approval_requested");
+    }
     expect(ask2?.requestId).toBeTruthy();
     await client.call("approval_respond", { requestId: ask2?.requestId, decision: "always" });
     await run2;

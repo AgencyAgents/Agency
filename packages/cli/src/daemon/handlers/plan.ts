@@ -1,4 +1,4 @@
-import type { RequestApproval } from "@agency/guard";
+import { type ApprovalRequest, approvalArgsSummary, type RequestApproval } from "@agency/guard";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { writeApprovalRecord } from "@agency/tools";
@@ -10,7 +10,7 @@ export function createTurnApproval(
   sessionId: string,
   eventStream: string,
 ): RequestApproval {
-  const { approvalsFor, broadcast, eventBus } = ctx;
+  const { approvalsFor, broadcast, eventBus, redactor } = ctx;
   const approvals = approvalsFor(sessionId);
   return async (request) => {
     const reply = (decision: string, closeReason: string): void => {
@@ -42,7 +42,40 @@ export function createTurnApproval(
       return "once";
     }
     const { id, promise } = approvals.createPending(request, params.turnId);
-    const payload = { type: "approval_requested" as const, requestId: id, request };
+    const metaTier = request.metadata?.riskTier;
+    const tier = request.riskTier ?? (typeof metaTier === "string" ? metaTier : undefined);
+    const riskTier = tier ?? "unknown";
+    const metaSource = request.metadata?.source;
+    const source = request.source ?? (typeof metaSource === "string" ? metaSource : undefined) ?? "unknown";
+    const title = redactor.redact(request.title);
+    const command = request.command !== undefined ? redactor.redact(request.command) : undefined;
+    const path = request.path !== undefined ? redactor.redact(request.path) : undefined;
+    const argsSummary = approvalArgsSummary({
+      ...(command !== undefined ? { command } : {}),
+      ...(path !== undefined ? { path } : {}),
+      title,
+    });
+    const redacted: ApprovalRequest = {
+      ...request,
+      title,
+      ...(command !== undefined ? { command } : {}),
+      ...(path !== undefined ? { path } : {}),
+      ...(tier !== undefined ? { riskTier: tier as ApprovalRequest["riskTier"] } : {}),
+      sessionId,
+      turnId: params.turnId,
+      source,
+      argsSummary,
+    };
+    const payload = {
+      type: "approval_requested" as const,
+      requestId: id,
+      sessionId,
+      turnId: params.turnId,
+      riskTier,
+      source,
+      argsSummary,
+      request: redacted,
+    };
     broadcast(eventStream, payload);
     if (params.sessionId !== undefined) broadcast(`session.${sessionId}`, payload);
     if (params.nonInteractive === true) {

@@ -125,6 +125,10 @@ function envOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.AGENCY_SANDBOX_NETWORK !== undefined) sandbox.network = env.AGENCY_SANDBOX_NETWORK;
   if (env.AGENCY_SANDBOX_CAP_DROP !== undefined) sandbox.capDrop = envList(env.AGENCY_SANDBOX_CAP_DROP);
   if (Object.keys(sandbox).length > 0) out.sandbox = sandbox;
+  if (env.AGENCY_GIT_WRITE !== undefined) {
+    const current = isPlainObject(out.permissions) ? out.permissions : {};
+    out.permissions = { ...current, git_write: env.AGENCY_GIT_WRITE };
+  }
   return out;
 }
 

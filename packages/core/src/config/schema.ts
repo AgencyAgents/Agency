@@ -87,6 +87,13 @@ export const ToolPermissionSchema = z.union([
 ]);
 export type ToolPermission = z.infer<typeof ToolPermissionSchema>;
 
+/** Well-known key gating real git writes (Todo 8 materialization checks it). */
+export const GIT_WRITE_PERMISSION_KEY = "git_write" as const;
+export const GitWriteDecisionSchema = z.enum(["allow", "ask", "deny"]);
+export type GitWriteDecision = z.infer<typeof GitWriteDecisionSchema>;
+/** Absent key means deny, preserving the current no-git-write posture. */
+export const GIT_WRITE_DEFAULT: GitWriteDecision = "deny";
+
 /** Tool name (or `external_directory`) -> bare decision or pattern map. */
 export type PermissionsConfig = Record<string, ToolPermission>;
 

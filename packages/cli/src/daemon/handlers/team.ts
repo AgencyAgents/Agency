@@ -171,17 +171,24 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       decision: "once" | "always" | "reject";
       sessionId?: string;
     };
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      throw new AgencyError(ErrorCode.INTERNAL, "approval_respond requires requestId", {
+        source: "approval",
+      });
+    }
     if (decision !== "once" && decision !== "always" && decision !== "reject") {
       throw new AgencyError(ErrorCode.INTERNAL, `invalid approval decision: ${String(decision)}`, {
         source: "approval",
       });
     }
     const managers = sessionId ? [approvalManagers.get(sessionId)] : [...approvalManagers.values()];
+    let settled: { resolved: boolean; retroactive: number; closeReason?: string } | undefined;
     for (const manager of managers) {
       const outcome = manager?.respond(requestId, decision);
       if (outcome?.resolved) return outcome;
+      if (outcome?.closeReason !== undefined) settled = outcome;
     }
-    return { resolved: false, retroactive: 0 };
+    return settled ?? { resolved: false, retroactive: 0 };
   };
   handlers.agent_message = async (rawParams) => {
     const { from, to, body, sessionId } = rawParams as {

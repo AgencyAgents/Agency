@@ -24,7 +24,8 @@ export const METHOD_DOCS: Record<string, string> = {
   todo_read: "Read the latest persisted todo_state for a session.",
   todo_write: "Persist a todo_state entry for a session.",
   cost_report: "Sum usage entries plus trace spans per session and agent (Phase 9 adds budgets and caps).",
-  undo_run: "Roll a session back to its pre-turn checkpoint (Phase 8 generalizes to team runs).",
+  undo_run:
+    "Roll a session back to its pre-turn checkpoint; with mode files-only|task-only|both restores a shadow commit's files and/or the session tip.",
   undo: "Undo the last snapshot-backed file change.",
   redo: "Redo a snapshot-backed file change.",
   prompt_inspect: "Resolve the system prompt without running a turn.",
