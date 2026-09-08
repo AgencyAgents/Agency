@@ -6,14 +6,15 @@ import {
   type Budget,
   ChannelStore,
   ChoiceLog,
+  type Config,
   collectPluginAgents,
   collectPluginCommands,
-  type Config,
   configDir,
   createRotatingFileSink,
   DispatchStateStore,
   dataDir,
   EventBus,
+  hasBoardItemShape,
   InboxStore,
   Logger,
   loadCommands,
@@ -378,6 +379,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       }
     },
   });
+  try {
+    const entries = todoStore.load("team-shared");
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry?.type === "todo_state" && Array.isArray(entry.todos)) {
+        boardStore.hydrate(entry.todos.filter(hasBoardItemShape));
+        break;
+      }
+    }
+  } catch (error: unknown) {
+    warnPersistence("board hydrate", error);
+  }
   const teamContexts = new Map<string, TeamContext>();
   const teamMcpPools = new Map<string, TeamMcpPool>();
   const teamFor = (parentSessionId: string): TeamContext => {
