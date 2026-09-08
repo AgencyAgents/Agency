@@ -25,6 +25,7 @@ export interface BuiltinToolsOptions {
   todoPersistence?: TodoPersistence;
   websearch?: WebSearchConfig;
   mcpServers?: unknown;
+  mcpDeferred?: boolean;
   lspServers?: unknown;
   lspRegistry?: LspRegistry;
   mcpTransportFor?: McpManagerOptions["transportFor"];
@@ -40,6 +41,7 @@ export interface BuiltinTools {
   snapshots: SnapshotStore;
   mcpFailures: ReadonlyMap<string, string>;
   lspRegistry?: LspRegistry;
+  promoteMcp(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -54,8 +56,11 @@ export async function createBuiltinTools(options: BuiltinToolsOptions): Promise<
     bashState: scope.bashState,
     readState: scope.readState,
     snapshots: scope.snapshots,
-    mcpFailures: scope.mcpFailures,
+    get mcpFailures(): ReadonlyMap<string, string> {
+      return scope.mcpFailures;
+    },
     lspRegistry: scope.lspRegistry,
+    promoteMcp: scope.promoteMcp,
     dispose: scope.dispose,
   };
 }

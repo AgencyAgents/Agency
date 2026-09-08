@@ -105,6 +105,8 @@ export * from "./mcp/index.ts";
 export * from "./process-manager.ts";
 export * from "./read-state.ts";
 export * from "./registry.ts";
+export * from "./repomap.ts";
+export * from "./semantic-index.ts";
 export * from "./session-scope.ts";
 export * from "./shell.ts";
 export * from "./snapshot.ts";
