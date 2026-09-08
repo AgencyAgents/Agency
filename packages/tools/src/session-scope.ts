@@ -26,6 +26,7 @@ import {
   mcpIdentityFor,
   startMcpServersFromRaw,
 } from "./mcp/manager.ts";
+import { transportForWithContainerSandbox } from "./mcp/transport.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { ReadState } from "./read-state.ts";
 import { ToolRegistry } from "./registry.ts";
@@ -323,10 +324,16 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
 
   let mcp: McpManager | undefined;
   if (options.mcpServers !== undefined) {
+    // Explicit transportFor wins; a container sandbox routes stdio across
+    // the mount (software yields undefined, keeping the default spawn path).
+    const containerTransportFor = transportForWithContainerSandbox(options.deps.sandbox, {
+      cwd: options.workspaceRoot,
+      adopt: (proc, command) => processManager.adopt(proc, command),
+    });
     mcp = await startMcpServersFromRaw(options.mcpServers, {
       capabilities: options.deps.capabilities,
       processManager,
-      transportFor: options.mcpTransportFor,
+      transportFor: options.mcpTransportFor ?? containerTransportFor,
       registry,
       identityFor: options.identityFor,
     });

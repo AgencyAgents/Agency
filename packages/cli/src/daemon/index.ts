@@ -8,6 +8,7 @@ import {
   ChoiceLog,
   collectPluginAgents,
   collectPluginCommands,
+  type Config,
   configDir,
   createRotatingFileSink,
   DispatchStateStore,
@@ -27,9 +28,14 @@ import {
 import {
   ApprovalManager,
   type Capabilities,
+  type CommandPolicy,
   createFileTrustStore,
+  DockerSandboxBackend,
+  type ExternalDirectoryDecision,
+  ensureSandboxAvailable,
   PermissionsGate,
   Redactor,
+  type SandboxBackend,
   SandboxBoundary,
   type ToolPermissionValue,
   type TrustStore,
@@ -86,6 +92,30 @@ import {
 
 export * from "./config-fingerprint.ts";
 export * from "./types.ts";
+/**
+ * Builds the sandbox backend named by config. Software boots as before;
+ * docker maps the sandbox keys onto DockerSandboxOptions. Pure so tests
+ * can assert the branch without starting a daemon.
+ */
+export function createSandboxBackend(
+  workspaceRoot: string,
+  commandPolicy: CommandPolicy,
+  externalDecision: ExternalDirectoryDecision | undefined,
+  sandboxConfig?: Config["sandbox"],
+): SandboxBackend {
+  if (sandboxConfig?.backend === "docker") {
+    return new DockerSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
+      image: sandboxConfig.image,
+      container: sandboxConfig.container,
+      containerRoot: sandboxConfig.containerRoot,
+      dockerBin: sandboxConfig.dockerBin,
+      egress: sandboxConfig.egress,
+      network: sandboxConfig.network,
+      capDrop: sandboxConfig.capDrop,
+    });
+  }
+  return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
+}
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
   const providers = config.provider;
@@ -145,9 +175,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
   const shellLabel = resolveShell(process.platform, config.windowsShell).label;
-  const sandbox = new SandboxBoundary(options.workspaceRoot, commandPolicy, (resolved) =>
-    gate.externalDirectoryDecision(resolved),
+  const sandbox = createSandboxBackend(
+    options.workspaceRoot,
+    commandPolicy,
+    (resolved) => gate.externalDirectoryDecision(resolved),
+    config.sandbox,
   );
+  // Fail-closed Docker gate at boot (not lazy scope creation): a docker
+  // backend without a reachable daemon refuses to serve rather than running
+  // turns against an unintended backend. Software backends have no probe
+  // and skip this with zero added latency.
+  await ensureSandboxAvailable(sandbox);
 
   /**
    * Per-agent PermissionsGate: returns a gate sourced from the agent's own
