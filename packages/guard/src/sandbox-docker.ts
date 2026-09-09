@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RequestApproval } from "./approval.ts";
@@ -129,6 +130,15 @@ export function normalizeContainerRoot(root: string): string {
   return out;
 }
 
+/** realpathSync with try/catch fallback to the unresolved path (missing paths must not crash). */
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 /** Host-side prefix compare honoring Windows case-insensitivity (no fs access). */
 function hostStartsWith(resolved: string, root: string): boolean {
   if (process.platform === "win32") {
@@ -148,13 +158,18 @@ export function translateHostToMount(
   hostRoot: string,
   containerRoot: string,
 ): string {
-  if (!hostStartsWith(resolvedHostPath, hostRoot)) {
+  // Normalize both sides through realpath so symlinked components
+  // (e.g. /var/folders → /private/var/folders on macOS) don't cause
+  // a false "outside the mounted root" rejection.
+  const normalizedPath = tryRealpath(resolvedHostPath);
+  const normalizedRoot = tryRealpath(hostRoot);
+  if (!hostStartsWith(normalizedPath, normalizedRoot)) {
     throw new AgencyError(ErrorCode.PERMISSION_DENIED, `"${resolvedHostPath}" is outside the mounted root`, {
       source: "sandbox-docker",
       context: { path: resolvedHostPath, root: hostRoot },
     });
   }
-  const rel = relative(hostRoot, resolvedHostPath);
+  const rel = relative(normalizedRoot, normalizedPath);
   const mount = normalizeContainerRoot(containerRoot);
   if (rel === "") return mount;
   return `${mount}/${rel.split(sep).join("/")}`;
