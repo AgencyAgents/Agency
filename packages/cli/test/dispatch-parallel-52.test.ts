@@ -102,7 +102,7 @@ function parallelAdapter(state: {
           // must still report results in input order. Base delay dwarfs the
           // pre-stream setup stagger so all five overlap in stream().
           const idx = HANDLES.findIndex((h) => txt === `brief for ${h}`);
-          await sleep(300 + (HANDLES.length - idx) * 50);
+          await sleep(500 + (HANDLES.length - idx) * 80);
           yield { type: "text_delta", text: `child output for ${txt}` };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
