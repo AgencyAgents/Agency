@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createFileTrustStore, Redactor } from "@agency/guard";
-import { type ErrorCode } from "@agency/schema";
+import type { ErrorCode } from "@agency/schema";
 import {
   ManifestError,
   type ManifestIssue,

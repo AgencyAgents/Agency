@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
-import type { ToolDeps } from "../src/contract.ts";
 import { isActTransitionAllowed } from "../../core/src/prompt/plan.ts";
 import {
   assertActTransitionAllowed,
@@ -21,6 +20,7 @@ import {
   writePlanIssues,
 } from "../src/builtins/plan.ts";
 import { TodoStore } from "../src/builtins/todo.ts";
+import type { ToolDeps } from "../src/contract.ts";
 
 const dirs: string[] = [];
 afterEach(() => {

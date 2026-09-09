@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTrustStore } from "@agency/guard";
-import { type ErrorCode } from "@agency/schema";
+import type { ErrorCode } from "@agency/schema";
 import {
   ManifestError,
   type ManifestIssue,
