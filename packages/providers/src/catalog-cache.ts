@@ -47,7 +47,7 @@ export function saveCachedCatalog(cacheDir: string, models: ModelInfo[]): void {
 }
 
 export function isStale(catalog: CachedCatalog, ttlMs: number): boolean {
-  return Date.now() - new Date(catalog.savedAt).getTime() > ttlMs;
+  return Date.now() - new Date(catalog.savedAt).getTime() >= ttlMs;
 }
 
 export interface RefreshTarget {
