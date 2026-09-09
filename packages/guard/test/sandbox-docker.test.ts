@@ -126,11 +126,18 @@ describe("sandbox-docker pure translation (no daemon)", () => {
       expect(backend.toContainerPath(`${join("sub")}/`)).toBe("/workspace/sub");
       // Dot segments that stay inside resolve normally.
       expect(backend.toContainerPath(join("sub", ".", "f.txt"))).toBe("/workspace/sub/f.txt");
-      // UNC, parent escapes, and absolute outside paths are denied.
-      denied(() => backend.toContainerPath("\\\\server\\share\\file.txt"));
+      // UNC paths and drive-relative paths are absolute/outside-root on
+      // Windows (denied) but plain relative paths resolving INSIDE the root
+      // on POSIX (no throw — they translate under the mount).
+      if (process.platform === "win32") {
+        denied(() => backend.toContainerPath("\\\\server\\share\\file.txt"));
+        denied(() => backend.toContainerPath("C:/Windows/System32/drivers/etc/hosts"));
+      } else {
+        expect(backend.toContainerPath("\\\\server\\share\\file.txt")).toContain("/workspace/");
+        expect(backend.toContainerPath("C:/Windows/System32/drivers/etc/hosts")).toContain("/workspace/");
+      }
+      // Parent escapes are always denied regardless of platform.
       denied(() => backend.toContainerPath(join("..", "..", "evil.txt")));
-      // Drive-relative spellings resolve against cwd: outside-root ones deny.
-      denied(() => backend.toContainerPath("C:/Windows/System32/drivers/etc/hosts"));
     } finally {
       cleanup(dir);
     }
