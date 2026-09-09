@@ -7,7 +7,7 @@ import {
   storagePaths,
   type ToolSpec,
 } from "@agency/core";
-import type { CallerIdentity, PermissionsGate, SandboxBoundary } from "@agency/guard";
+import type { CallerIdentity, PermissionsGate, SandboxBackend } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { createSessionScope, type SessionScope, type TeamMcpPool, type TodoPersistence } from "@agency/tools";
 import {
@@ -26,7 +26,7 @@ export interface SessionScopeFactoryDeps {
   config: Config;
   http: HttpClient;
   identity: CallerIdentity;
-  sandbox: SandboxBoundary;
+  sandbox: SandboxBackend;
   todoPersistence: TodoPersistence;
   teamMcpPools: Map<string, TeamMcpPool>;
   teamContexts: Map<string, TeamContext>;

@@ -20,12 +20,26 @@ export interface CommandPolicy {
 export type ExternalDirectoryDecision = (resolvedPath: string) => Decision;
 
 /**
+ * Pluggable container seam (R2): the exact surface callers use.
+ * SandboxBoundary is the local software backend; future backends
+ * (containers, namespaces) implement this without any caller changing.
+ */
+export interface SandboxBackend {
+  /** Resolves `candidate` inside the root; throws when it escapes. */
+  resolvePath(candidate: string): string;
+  /** Resolve with the external_directory gate applied (see impl). */
+  resolvePathGated(candidate: string, opts: { tool: string; ask?: RequestApproval }): Promise<string>;
+  /** Throws PERMISSION_DENIED when `command` is denied or unallowlisted. */
+  checkCommand(command: string): void;
+}
+
+/**
  * Bounds where tool execution is allowed to touch: a resolved-path scope and
  * a command allow/deny policy. This is a software boundary, not OS isolation.
  * It's the seam future work (containers, namespaces) plugs into without any
  * caller changing (R2).
  */
-export class SandboxBoundary {
+export class SandboxBoundary implements SandboxBackend {
   constructor(
     private readonly root: string,
     private readonly commandPolicy: CommandPolicy = {},

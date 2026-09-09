@@ -89,6 +89,25 @@ describe("loadConfig", () => {
     expect(flags).toEqual({ model: "openai/gpt-5.2" });
   });
 
+  test("AGENCY_GIT_WRITE maps into permissions.git_write; flags layer carries it", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    const fromEnv = loadConfig({ globalDir, env: { AGENCY_GIT_WRITE: "ask" } });
+    expect(fromEnv.permissions.git_write).toBe("ask");
+    const fromFlags = loadConfig({
+      globalDir,
+      env: {},
+      flags: { permissions: { git_write: "allow" } },
+    });
+    expect(fromFlags.permissions.git_write).toBe("allow");
+  });
+
+  test("AGENCY_GIT_WRITE with an unknown value fails load", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    expect(() => loadConfig({ globalDir, env: { AGENCY_GIT_WRITE: "sometimes" } })).toThrow();
+  });
+
   test("managed config overrides even CLI flags", () => {
     const globalDir = tempDir();
     cleanup.push(globalDir);

@@ -30,6 +30,9 @@ export interface SessionMeta {
   createdAt: string;
 }
 
+/** Best-effort observer of successful appends (memory indexing lives here). */
+export type SessionAppendListener = (sessionId: string, entry: SessionEntry) => void;
+
 function sessionPath(sessionsDir: string, sessionId: string): string {
   return join(sessionsDir, `${sessionId}.jsonl`);
 }
@@ -73,6 +76,7 @@ interface LoadCache {
  */
 export class SessionStore {
   private readonly caches = new Map<string, LoadCache>();
+  private readonly appendListeners = new Set<SessionAppendListener>();
   private bus?: { emit: (event: string, payload: unknown) => void };
   private logger?: Logger;
 
@@ -91,6 +95,18 @@ export class SessionStore {
   /** Returns the event bus if one was set via constructor or setBus(). */
   getBus(): { emit: (event: string, payload: unknown) => void } | undefined {
     return this.bus;
+  }
+
+  /** Registers a best-effort observer called after each successful append. */
+  addAppendListener(listener: SessionAppendListener): () => void {
+    this.appendListeners.add(listener);
+    return () => {
+      this.appendListeners.delete(listener);
+    };
+  }
+
+  removeAppendListener(listener: SessionAppendListener): void {
+    this.appendListeners.delete(listener);
   }
 
   create(sessionId: string = newEntryId()): SessionMeta {
@@ -144,6 +160,7 @@ export class SessionStore {
       } else {
         this.caches.delete(sessionId);
       }
+      this.notifyAppended(sessionId, full);
       return full;
     } finally {
       this.releaseLock(lockPath);
@@ -195,12 +212,13 @@ export class SessionStore {
   list(): string[] {
     if (!existsSync(this.sessionsDir)) return [];
     return readdirSync(this.sessionsDir)
-      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl"))
+      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl") && !f.endsWith(".memory.jsonl"))
       .map((f) => f.slice(0, -".jsonl".length));
   }
 
   delete(sessionId: string): void {
     rmSync(sessionPath(this.sessionsDir, sessionId), { force: true });
+    rmSync(join(this.sessionsDir, `${sessionId}.memory.jsonl`), { force: true });
     rmSync(join(this.sessionsDir, `${sessionId}.trace.jsonl`), { force: true });
     if (existsSync(this.sessionsDir)) {
       for (const f of readdirSync(this.sessionsDir)) {
@@ -422,6 +440,23 @@ export class SessionStore {
 
   private releaseLock(lockPath: string): void {
     rmSync(lockPath, { force: true });
+  }
+
+  /** Fires append listeners without ever breaking the session path. */
+  private notifyAppended(sessionId: string, entry: SessionEntry): void {
+    for (const listener of [...this.appendListeners]) {
+      try {
+        listener(sessionId, entry);
+      } catch (error) {
+        this.logger?.warn(
+          `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (!this.logger)
+          console.warn(
+            `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,
+          );
+      }
+    }
   }
 }
 

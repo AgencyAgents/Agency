@@ -10,7 +10,7 @@ import {
   resolveFileRoster,
   spawnParallel,
 } from "@agency/core";
-import { clampEffortForModel, resolveApiKey } from "@agency/providers";
+import { resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { recordTurnCompletion } from "../costing.ts";
@@ -33,7 +33,7 @@ type FileBackedAgent = AgentConfig & {
 };
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
-  const { catalogModel, config, logger, resolveAgentModel, teamRegistry } = ctx;
+  const { config, logger, teamRegistry } = ctx;
   const cfg = config as unknown as {
     agents?: Record<string, FileBackedAgent>;
     leader?: string;
@@ -112,18 +112,12 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
       continue;
     }
     if (!teamRegistry.has(handle)) {
-      const resolvedModel = resolveAgentModel(a.provider, a.model);
-      const modelInfo = catalogModel(a.provider, resolvedModel);
-      const clampedEffort = clampEffortForModel(
-        a.effort as import("@agency/providers").EffortLevel,
-        modelInfo,
-      );
       teamRegistry.register({
         handle,
         role: a.role,
         provider: a.provider,
-        model: resolvedModel,
-        effort: clampedEffort,
+        model: a.model,
+        effort: a.effort,
         sessionId: `team-${handle}`,
         mailbox: [],
         ...(a.systemPrompt !== undefined && a.systemPrompt.length > 0
@@ -171,17 +165,24 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       decision: "once" | "always" | "reject";
       sessionId?: string;
     };
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      throw new AgencyError(ErrorCode.INTERNAL, "approval_respond requires requestId", {
+        source: "approval",
+      });
+    }
     if (decision !== "once" && decision !== "always" && decision !== "reject") {
       throw new AgencyError(ErrorCode.INTERNAL, `invalid approval decision: ${String(decision)}`, {
         source: "approval",
       });
     }
     const managers = sessionId ? [approvalManagers.get(sessionId)] : [...approvalManagers.values()];
+    let settled: { resolved: boolean; retroactive: number; closeReason?: string } | undefined;
     for (const manager of managers) {
       const outcome = manager?.respond(requestId, decision);
       if (outcome?.resolved) return outcome;
+      if (outcome?.closeReason !== undefined) settled = outcome;
     }
-    return { resolved: false, retroactive: 0 };
+    return settled ?? { resolved: false, retroactive: 0 };
   };
   handlers.agent_message = async (rawParams) => {
     const { from, to, body, sessionId } = rawParams as {
@@ -383,6 +384,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             pricing: childModelInfo.pricing,
             eventStreams: [`team.${childSessionId}`],
             parentSessionId,
+            taskId: itemId,
           });
           boardStore.recordCost(
             itemId,

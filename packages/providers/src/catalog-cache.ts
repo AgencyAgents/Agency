@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { CATALOG_FRESH_TTL_MS, loadModelsDevCatalog } from "./catalog/models-dev.ts";
-import { BUILTIN_MODELS, fetchLiveIdsForFamily, type ModelInfo, ModelRegistry } from "./registry.ts";
+import {
+  BUILTIN_MODELS,
+  CATALOG_CACHE_VERSION,
+  fetchLiveIdsForFamily,
+  type ModelInfo,
+  ModelRegistry,
+  normalizeCachedCatalog,
+} from "./registry.ts";
 
 /**
  * Single canonical catalog TTL. The old per-family 24h window is gone: one
@@ -11,6 +18,8 @@ import { BUILTIN_MODELS, fetchLiveIdsForFamily, type ModelInfo, ModelRegistry } 
 export const CATALOG_TTL_MS = CATALOG_FRESH_TTL_MS;
 
 export interface CachedCatalog {
+  /** Schema version; absent means v1 legacy, migrated forward on load. */
+  version?: number;
   savedAt: string;
   models: ModelInfo[];
 }
@@ -23,7 +32,7 @@ export function loadCachedCatalog(cacheDir: string): CachedCatalog | undefined {
   const path = catalogPath(cacheDir);
   if (!existsSync(path)) return undefined;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as CachedCatalog;
+    return normalizeCachedCatalog(JSON.parse(readFileSync(path, "utf8"))) ?? undefined;
   } catch {
     return undefined;
   }
@@ -33,12 +42,12 @@ export function saveCachedCatalog(cacheDir: string, models: ModelInfo[]): void {
   mkdirSync(cacheDir, { recursive: true });
   writeFileSync(
     catalogPath(cacheDir),
-    JSON.stringify({ savedAt: new Date().toISOString(), models }, null, 2),
+    JSON.stringify({ version: CATALOG_CACHE_VERSION, savedAt: new Date().toISOString(), models }, null, 2),
   );
 }
 
 export function isStale(catalog: CachedCatalog, ttlMs: number): boolean {
-  return Date.now() - new Date(catalog.savedAt).getTime() > ttlMs;
+  return Date.now() - new Date(catalog.savedAt).getTime() >= ttlMs;
 }
 
 export interface RefreshTarget {
@@ -145,12 +154,15 @@ export async function loadModelRegistry(options: {
         modelsDev: options.modelsDev ?? [],
         liveIds,
       });
-      saveCachedCatalog(options.cacheDir, merged);
-      return new ModelRegistry(merged);
+      // Merge order and dedup above are untouched; an empty merge still
+      // serves the builtin snapshot so the registry never goes empty.
+      const models = merged.length > 0 ? merged : [...BUILTIN_MODELS];
+      saveCachedCatalog(options.cacheDir, models);
+      return new ModelRegistry(models);
     }
   }
 
-  return new ModelRegistry(cached?.models);
+  return new ModelRegistry(cached?.models?.length ? cached.models : undefined);
 }
 
 export async function loadCanonicalCatalog(options: {
@@ -190,6 +202,10 @@ export async function loadCanonicalCatalog(options: {
     dev.source === "builtin" && Object.keys(liveIds).length === 0
       ? [...BUILTIN_MODELS]
       : refreshCatalog({ builtin: BUILTIN_MODELS, modelsDev: dev.models, liveIds });
+  if (models.length === 0) {
+    console.warn("[catalog] merged catalog is empty; serving builtin snapshot");
+    return { models: [...BUILTIN_MODELS], source: "builtin" as const };
+  }
   saveCachedCatalog(options.cacheDir, models);
   return { models, source: dev.source };
 }

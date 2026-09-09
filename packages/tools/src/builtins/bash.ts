@@ -1,8 +1,10 @@
 import { t } from "@agency/i18n";
-import type { ToolDeps, ToolSpec } from "../contract.ts";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.ts";
+import type { ToolContext, ToolDeps, ToolResult, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
-import { parseShellOutput, type ShellConfig } from "../shell.ts";
+import { CWD_MARKER, EXIT_MARKER, parseShellOutput, type ShellConfig } from "../shell.ts";
 import { truncateWithSpill } from "../truncate.ts";
 
 /**
@@ -51,6 +53,91 @@ function truncateResult(content: string): string {
   });
 }
 
+/**
+ * Container branch of the bash handler. The backend owns cwd translation
+ * (host paths in, mount paths on the docker CLI) and the kill; this side
+ * only coerces the settled output through the shared finish so labels and
+ * the cwd/error contract match the software path exactly.
+ */
+async function runContainerExec(
+  backend: SandboxWithExec,
+  argv: string[],
+  cwd: string,
+  ctx: ToolContext,
+  timeout: number | undefined,
+  finish: (
+    outcome: { aborted: boolean; stdout: string; stderr: string },
+    timedOut: boolean,
+    normalizeCwd?: (cwd: string) => string,
+  ) => ToolResult,
+): Promise<ToolResult> {
+  let abortFired = false;
+  const onAbort = (): void => {
+    abortFired = true;
+  };
+  if (ctx.signal.aborted) onAbort();
+  else ctx.signal.addEventListener("abort", onAbort);
+
+  const startedAt = Date.now();
+  const progressTimer = ctx.onProgress
+    ? setInterval(() => {
+        const seconds = Math.round((Date.now() - startedAt) / 1000);
+        ctx.onProgress?.(`still running (${seconds}s)`);
+      }, PROGRESS_TICK_MS)
+    : undefined;
+
+  try {
+    // Marker paths printed inside the container live under the mount, so
+    // they map back before the shared sandbox-bound check. Best-effort by
+    // design: markerless output (aborts) and escapes fall through to the
+    // resolvePath verdict below, which stays the containment authority.
+    const toHost = (cwd: string): string => {
+      try {
+        return backend.toHostPath?.(cwd) ?? cwd;
+      } catch {
+        return cwd;
+      }
+    };
+    let execResult: { stdout: string; stderr: string; exitCode: number };
+    try {
+      execResult = await backend.exec(argv, { cwd, timeoutMs: timeout, signal: ctx.signal });
+    } catch (e) {
+      if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
+        const partial = (value: unknown): string => (typeof value === "string" ? value : "");
+        return finish(
+          { aborted: true, stdout: partial(e.context.stdout), stderr: partial(e.context.stderr) },
+          true,
+          toHost,
+        );
+      }
+      throw e;
+    }
+    // Abort intent wins over a simultaneous clean exit, same coercion as local.
+    if (abortFired) {
+      return finish({ aborted: true, stdout: execResult.stdout, stderr: execResult.stderr }, false, toHost);
+    }
+    const completed = finish(
+      { aborted: false, stdout: execResult.stdout, stderr: execResult.stderr },
+      false,
+      toHost,
+    );
+    // Docker-level failures print no shell markers, so the marker exit reads
+    // 0; the exec exit is the only signal and must fail closed, never silent.
+    if (
+      execResult.exitCode !== 0 &&
+      (!execResult.stdout.includes(EXIT_MARKER) || !execResult.stdout.includes(CWD_MARKER))
+    ) {
+      const note = t("tool.bash.exit_code", { code: execResult.exitCode });
+      const content = completed.content ? `${completed.content}\n${note}` : note;
+      return { content: truncateResult(content), isError: true as const };
+    }
+    return completed;
+  } finally {
+    ctx.signal.removeEventListener("abort", onAbort);
+    if (progressTimer !== undefined) clearInterval(progressTimer);
+  }
+}
+
 export function createBashTool(
   deps: ToolDeps,
   shell: ShellConfig,
@@ -92,6 +179,63 @@ export function createBashTool(
 
       const wrapped = shell.wrapCommand(input.command);
       const argv = [shell.command, ...shell.buildArgs(wrapped)];
+
+      const timeout =
+        typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0
+          ? input.timeout
+          : undefined;
+
+      // Shared result finishing for both backends: marker parse, the
+      // sandbox bound on persisted cwd, and the stderr/exit/cancel labels.
+      // normalizeCwd maps container marker paths back to host paths; the
+      // software path passes identity, so its behavior is untouched.
+      const finish = (
+        outcome: { aborted: boolean; stdout: string; stderr: string },
+        timedOut: boolean,
+        normalizeCwd: (cwd: string) => string = (cwd) => cwd,
+      ): ToolResult => {
+        const { output, cwd: markerCwd, exitCode } = parseShellOutput(outcome.stdout, state.cwd);
+        const cwd = normalizeCwd(markerCwd);
+        // A cancelled command keeps no cwd side-effect: its wrapper may not
+        // even have run to completion, so the marker cannot be trusted.
+        // The sandbox bound is what makes a persisted cwd safe to keep: a
+        // `cd` that walks out of the workspace (or through a symlink) is
+        // refused and the previous directory retained, otherwise every later
+        // command would silently run — and write — outside containment.
+        let cwdNotice: string | undefined;
+        if (!outcome.aborted) {
+          try {
+            deps.sandbox.resolvePath(cwd);
+            state.cwd = cwd;
+          } catch {
+            cwdNotice = `\n${t("tool.bash.cwd_kept", { cwd })}`;
+          }
+        }
+
+        let combined = outcome.stderr ? `${output}\n[stderr]\n${outcome.stderr}` : output;
+        if (cwdNotice) combined += cwdNotice;
+        if (outcome.aborted) {
+          // Cancellation must not read as a silent success with exit code 0.
+          const notice = timedOut ? t("tool.bash.timeout", { ms: timeout ?? 0 }) : t("tool.bash.cancelled");
+          combined = combined ? `${combined}\n${notice}` : notice;
+        } else if (exitCode !== 0) {
+          combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;
+        }
+
+        // Abort (user cancellation or timeout kill) and non-zero exit
+        // surface as errors so callers react instead of continuing;
+        // partial output is retained alongside the label.
+        const failed = outcome.aborted || exitCode !== 0;
+        return failed
+          ? { content: truncateResult(combined), isError: true as const }
+          : { content: truncateResult(combined) };
+      };
+
+      const container = asContainerExecBackend(deps.sandbox);
+      if (container !== undefined) {
+        return runContainerExec(container, argv, state.cwd, ctx, timeout, finish);
+      }
+
       const proc = Bun.spawn(argv, { cwd: state.cwd, stdout: "pipe", stderr: "pipe" });
 
       // Reads start immediately and stay in flight across the race below:
@@ -178,10 +322,6 @@ export function createBashTool(
       if (ctx.signal.aborted) onAbort();
       else ctx.signal.addEventListener("abort", onAbort);
 
-      const timeout =
-        typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0
-          ? input.timeout
-          : undefined;
       const timeoutTimer =
         timeout !== undefined
           ? setTimeout(() => {
@@ -232,40 +372,7 @@ export function createBashTool(
           outcome = { aborted: true as const, stdout: outcome.stdout, stderr: outcome.stderr };
         }
 
-        const { output, cwd, exitCode } = parseShellOutput(outcome.stdout, state.cwd);
-        // A cancelled command keeps no cwd side-effect: its wrapper may not
-        // even have run to completion, so the marker cannot be trusted.
-        // The sandbox bound is what makes a persisted cwd safe to keep: a
-        // `cd` that walks out of the workspace (or through a symlink) is
-        // refused and the previous directory retained, otherwise every later
-        // command would silently run — and write — outside containment.
-        let cwdNotice: string | undefined;
-        if (!outcome.aborted) {
-          try {
-            deps.sandbox.resolvePath(cwd);
-            state.cwd = cwd;
-          } catch {
-            cwdNotice = `\n${t("tool.bash.cwd_kept", { cwd })}`;
-          }
-        }
-
-        let combined = outcome.stderr ? `${output}\n[stderr]\n${outcome.stderr}` : output;
-        if (cwdNotice) combined += cwdNotice;
-        if (outcome.aborted) {
-          // Cancellation must not read as a silent success with exit code 0.
-          const notice = timedOut ? t("tool.bash.timeout", { ms: timeout ?? 0 }) : t("tool.bash.cancelled");
-          combined = combined ? `${combined}\n${notice}` : notice;
-        } else if (exitCode !== 0) {
-          combined += `\n${t("tool.bash.exit_code", { code: exitCode })}`;
-        }
-
-        // Abort (user cancellation or timeout kill) and non-zero exit
-        // surface as errors so callers react instead of continuing;
-        // partial output is retained alongside the label.
-        const failed = outcome.aborted || exitCode !== 0;
-        return failed
-          ? { content: truncateResult(combined), isError: true as const }
-          : { content: truncateResult(combined) };
+        return finish(outcome, timedOut);
       } finally {
         ctx.signal.removeEventListener("abort", onAbort);
         if (progressTimer !== undefined) clearInterval(progressTimer);

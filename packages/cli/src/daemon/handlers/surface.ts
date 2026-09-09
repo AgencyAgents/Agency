@@ -1,14 +1,16 @@
+import { join } from "node:path";
 import {
   announceHook,
   getSessionTitle,
   loadTraceSpansSync,
   restoreIntegrationCheckpoint,
+  storagePaths,
 } from "@agency/core";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { isUsageEntry } from "@agency/telemetry";
-import { TEAM_MCP_PROCESS_CAP } from "@agency/tools";
+import { SnapshotStore, TEAM_MCP_PROCESS_CAP } from "@agency/tools";
 import { teamRunUsage } from "../costing.ts";
 import { agentsListPayload } from "../team-context.ts";
 import {
@@ -35,6 +37,130 @@ function requireSessionId(rawParams: unknown, method: string): string {
   if (!sessionId)
     throw new AgencyError(ErrorCode.INTERNAL, `${method} requires sessionId`, { source: "surface" });
   return sessionId;
+}
+
+function snapshotStoreForSession(ctx: DaemonContext, sessionId: string): SnapshotStore {
+  const existing = ctx.sessionScopes.get(sessionId)?.snapshots;
+  if (existing) return existing;
+  const snapshotsDir = storagePaths(ctx.options.workspaceRoot).snapshotsDir;
+  return new SnapshotStore(snapshotsDir, {
+    journalFile: join(snapshotsDir, "journals", `${sessionId}.journal.jsonl`),
+  });
+}
+
+async function rollbackRestoreTip(
+  ctx: DaemonContext,
+  sessionId: string,
+  tipId: string | null | undefined,
+): Promise<{ rolledBack: boolean; tipId?: string | null }> {
+  if (tipId !== undefined) {
+    try {
+      await ctx.todoStore.rollback(sessionId, tipId);
+    } catch (error) {
+      throw new AgencyError(
+        ErrorCode.INTERNAL,
+        `undo_run failed: ${error instanceof Error ? error.message : String(error)}`,
+        { source: "surface" },
+      );
+    }
+    return { rolledBack: true, tipId };
+  }
+  const stack = ctx.turnCheckpoints.get(sessionId);
+  const tip = stack !== undefined && stack.length > 0 ? stack[stack.length - 1] : undefined;
+  if (tip === undefined) return { rolledBack: false };
+  try {
+    await ctx.todoStore.rollback(sessionId, tip);
+  } catch (error) {
+    throw new AgencyError(
+      ErrorCode.INTERNAL,
+      `undo_run failed: ${error instanceof Error ? error.message : String(error)}`,
+      { source: "surface" },
+    );
+  }
+  stack?.pop();
+  return { rolledBack: true, tipId: tip };
+}
+
+async function restoreWithMode(
+  ctx: DaemonContext,
+  sessionId: string,
+  rawParams: unknown,
+): Promise<Record<string, unknown>> {
+  const { mode, commitHash, tipId } = (rawParams ?? {}) as {
+    mode?: string;
+    commitHash?: string;
+    tipId?: string | null;
+  };
+  if (mode !== "files-only" && mode !== "task-only" && mode !== "both") {
+    throw new AgencyError(ErrorCode.INTERNAL, `undo_run: unknown mode "${mode}"`, { source: "surface" });
+  }
+  const needsFiles = mode === "files-only" || mode === "both";
+  if (needsFiles && (typeof commitHash !== "string" || commitHash.trim().length === 0)) {
+    throw new AgencyError(ErrorCode.INTERNAL, `undo_run: mode "${mode}" requires commitHash`, {
+      source: "surface",
+    });
+  }
+  let files: string[] = [];
+  if (needsFiles) {
+    const snapshots = snapshotStoreForSession(ctx, sessionId);
+    files = snapshots.restoreShadowCommit(commitHash as string, {
+      targetDir: ctx.options.workspaceRoot,
+      sessionRoot: ctx.options.workspaceRoot,
+    }).files;
+  }
+  if (mode === "files-only") {
+    const entries = ctx.todoStore.load(sessionId);
+    return {
+      undone: true,
+      sessionId,
+      mode,
+      commitHash,
+      restored: files.length,
+      files,
+      tipId: ctx.todoStore.latestTip(entries) ?? null,
+    };
+  }
+  let tip: { rolledBack: boolean; tipId?: string | null };
+  try {
+    tip = await rollbackRestoreTip(ctx, sessionId, tipId);
+  } catch (error) {
+    throw new AgencyError(
+      ErrorCode.INTERNAL,
+      `undo_run: partial restore of ${commitHash}: files restored but tip rollback failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      {
+        source: "surface",
+        context: {
+          mode,
+          commitHash,
+          files,
+          tipRolledBack: false,
+          tipError: error instanceof Error ? error.message : String(error),
+        },
+      },
+    );
+  }
+  if (!tip.rolledBack) {
+    if (mode === "both") {
+      throw new AgencyError(
+        ErrorCode.INTERNAL,
+        `undo_run: partial restore of ${commitHash}: files restored but no session checkpoint to roll back`,
+        {
+          source: "surface",
+          context: { mode, commitHash, files, tipRolledBack: false },
+        },
+      );
+    }
+    return { undone: false, reason: "no checkpoint: session_send records one per turn" };
+  }
+  return {
+    undone: true,
+    sessionId,
+    mode,
+    ...(needsFiles ? { commitHash, restored: files.length, files } : {}),
+    tipId: tip.tipId ?? null,
+  };
 }
 
 export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
@@ -223,6 +349,10 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
 
   handlers.undo_run = async (rawParams) => {
     const sessionId = requireSessionId(rawParams, "undo_run");
+    const { mode } = (rawParams ?? {}) as { mode?: string };
+    if (mode !== undefined) {
+      return await restoreWithMode(ctx, sessionId, rawParams);
+    }
     const tip = turnCheckpoints.get(sessionId)?.pop();
     if (tip !== undefined) {
       try {

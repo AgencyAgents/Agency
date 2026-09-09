@@ -1,3 +1,10 @@
+import type { SandboxBackend } from "@agency/guard";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import {
+  asContainerExecBackend,
+  asContainerStdioBackend,
+  type ContainerStdioBackend,
+} from "../container-exec.ts";
 import type { McpServerConfig } from "./config.ts";
 
 export interface McpTransport {
@@ -11,6 +18,8 @@ export interface McpTransport {
 
 export interface TransportOptions {
   adopt?: (proc: { pid?: number; kill: () => void }, command: string) => void;
+  /** Host cwd the container backend maps into the mount; unset keeps the backend default. */
+  cwd?: string;
 }
 
 export function createMcpTransport(
@@ -25,6 +34,53 @@ export function createMcpTransport(
     return createStdioTransport(config.command, config.args ?? [], config.env ?? {}, options);
   }
   throw new Error(`MCP server config needs command or url`);
+}
+
+/**
+ * Routes stdio servers into the container when the sandbox offers the
+ * streaming spawn surface. HTTP/SSE configs always use the host HTTP
+ * transport; software sandboxes yield undefined so the manager keeps its
+ * default spawn path. An exec-only container backend fails closed with a
+ * typed error at selection time, never silently on the host.
+ */
+export function transportForWithContainerSandbox(
+  sandbox: SandboxBackend,
+  options: TransportOptions = {},
+): ((serverName: string, config: McpServerConfig) => McpTransport) | undefined {
+  const stdio = asContainerStdioBackend(sandbox);
+  if (stdio) {
+    return (_serverName, config) => {
+      if (config.url) return createMcpTransport(_serverName, config);
+      return createContainerStdioTransport(stdio, config, options);
+    };
+  }
+  if (asContainerExecBackend(sandbox) !== undefined) {
+    return (serverName, config) => {
+      if (config.url) return createMcpTransport(serverName, config);
+      throw new AgencyError(
+        ErrorCode.INTERNAL,
+        `MCP server "${serverName}" needs container stdio, but the sandbox backend has no streaming spawn surface`,
+        { source: "mcp-container-transport", context: { serverName } },
+      );
+    };
+  }
+  return undefined;
+}
+
+/** Spawns a stdio server across the mount; JSONL pumps and kill-on-close match the local path. */
+export function createContainerStdioTransport(
+  backend: ContainerStdioBackend,
+  config: McpServerConfig,
+  options: TransportOptions = {},
+): McpTransport {
+  if (!config.command) throw new Error(`MCP server config needs command or url`);
+  const argv = [config.command, ...(config.args ?? [])];
+  const env = config.env ?? {};
+  return createStdioTransportFromChild(
+    () => backend.spawnStdio(argv, { ...(options.cwd !== undefined ? { cwd: options.cwd } : {}), env }),
+    config.command,
+    options,
+  );
 }
 
 function parseSseBlock(block: string): Record<string, unknown> | undefined {
@@ -223,7 +279,35 @@ function createStdioTransport(
   env: Record<string, string>,
   options: TransportOptions,
 ): McpTransport {
-  let proc: ReturnType<typeof Bun.spawn> | undefined;
+  return createStdioTransportFromChild(
+    () =>
+      Bun.spawn([command, ...args], {
+        env: { ...process.env, ...env } as Record<string, string>,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    command,
+    options,
+  );
+}
+
+/** Piped child subset the JSONL pumps drive; both Bun.spawn results and container children fit. */
+interface StdioChild {
+  readonly stdin: unknown;
+  readonly stdout: unknown;
+  readonly stderr: unknown;
+  readonly exited: Promise<number>;
+  readonly pid?: number;
+  kill(): void;
+}
+
+function createStdioTransportFromChild(
+  startChild: () => StdioChild | Promise<StdioChild>,
+  command: string,
+  options: TransportOptions,
+): McpTransport {
+  let proc: StdioChild | undefined;
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
   let closeHandler: (() => void) | undefined;
   let stderrBuf = "";
@@ -236,17 +320,12 @@ function createStdioTransport(
 
   return {
     async start() {
-      proc = Bun.spawn([command, ...args], {
-        env: { ...process.env, ...env } as Record<string, string>,
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      proc = await startChild();
       if (options.adopt && proc.pid) {
         options.adopt({ pid: proc.pid, kill: () => proc?.kill() }, command);
       }
       if (proc.stdout && typeof proc.stdout !== "number") {
-        const reader = proc.stdout.getReader();
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
         let buf = "";
         const pump = async () => {
           while (true) {
@@ -272,7 +351,7 @@ function createStdioTransport(
         void pump();
       }
       if (proc.stderr && typeof proc.stderr !== "number") {
-        const reader = proc.stderr.getReader();
+        const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
         const pumpErr = async () => {
           while (true) {
             const { value, done } = await reader.read();

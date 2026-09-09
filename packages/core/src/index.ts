@@ -12,6 +12,8 @@ export * from "./loop.ts";
 export * from "./paths.ts";
 export * from "./plugins/importer.ts";
 export * from "./plugins/loader.ts";
+export * from "./plugins/manifest.ts";
+export * from "./plugins/marketplace.ts";
 export * from "./plugins/types.ts";
 export * from "./progress/index.ts";
 export * from "./prompt/index.ts";

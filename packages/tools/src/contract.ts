@@ -1,4 +1,4 @@
-import type { ApprovalRequest, CallerIdentity, Capabilities, SandboxBoundary } from "@agency/guard";
+import type { ApprovalRequest, CallerIdentity, Capabilities, SandboxBackend } from "@agency/guard";
 import type { ImageBlock } from "@agency/schema";
 
 export type RiskTier = "safe" | "moderate" | "dangerous";
@@ -77,5 +77,5 @@ export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
 export interface ToolDeps {
   identity: CallerIdentity;
   capabilities: Capabilities;
-  sandbox: SandboxBoundary;
+  sandbox: SandboxBackend;
 }

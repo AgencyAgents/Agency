@@ -34,6 +34,14 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
+| `sandbox.backend` | `software\|docker` | `software` | Sandbox backend: in-process boundary or container exec |
+| `sandbox.image` | string | — | Image for one-shot `docker run` exec |
+| `sandbox.container` | string | — | Existing container for `docker exec`; unset means `docker run --rm` |
+| `sandbox.containerRoot` | string | — | Container-side mount point; defaults to `/workspace` |
+| `sandbox.dockerBin` | string | — | Docker CLI binary; defaults to `docker` |
+| `sandbox.egress` | `string[]` | — | Egress hostname allowlist; defined (even empty) is deny-by-default (see Sandbox) |
+| `sandbox.network` | string | — | Named Docker network for one-shot runs; wins over the egress default |
+| `sandbox.capDrop` | `string[]` | — | Linux capabilities to drop (`--cap-drop`); unknown names fail boot |
 | `sandbox.forecastCostUsd` | number | — | Pre-dispatch cost threshold that triggers an ask |
 | `formatter` | `{command?: string[]}` | — | Appended with the file path after each write/edit |
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only; default `powershell` |
@@ -104,6 +112,15 @@ Mapped via `envOverrides`:
 - `AGENCY_CRASH_REPORTS` (same truthy set) -> `crashReportsEnabled`
 - `AGENCY_DISABLED_PROVIDERS` (comma-separated) -> `disabled_providers`
 - `AGENCY_ENABLED_PROVIDERS` (comma-separated) -> `enabled_providers`
+- `AGENCY_SANDBOX_BACKEND` -> `sandbox.backend`
+- `AGENCY_SANDBOX_IMAGE` -> `sandbox.image`
+- `AGENCY_SANDBOX_CONTAINER` -> `sandbox.container`
+- `AGENCY_SANDBOX_CONTAINER_ROOT` -> `sandbox.containerRoot`
+- `AGENCY_SANDBOX_DOCKER_BIN` -> `sandbox.dockerBin`
+- `AGENCY_SANDBOX_EGRESS` (comma-separated) -> `sandbox.egress`
+- `AGENCY_SANDBOX_NETWORK` -> `sandbox.network`
+- `AGENCY_SANDBOX_CAP_DROP` (comma-separated) -> `sandbox.capDrop`
+- `AGENCY_GIT_WRITE` (`allow|ask|deny`) -> `permissions.git_write` (invalid values fail load via Zod)
 - `AGENCY_MODELS_URL` -> model catalog source URL (default `https://models.opencode.ai/api.json`; `OPENCODE_MODELS_URL` still honored as a one-release fallback)
 - `AGENCY_DISABLE_MODELS_FETCH` (set to anything) -> serve the catalog from disk cache or the builtin snapshot without fetching (`OPENCODE_DISABLE_MODELS_FETCH` still honored as a one-release fallback)
 
@@ -116,6 +133,21 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 ## Permissions
 
 `permissions` maps a tool name (or `external_directory`) to a bare decision or a pattern map. Pattern maps use last-match-wins: e.g. `{"bash": {"*":"ask","git *":"allow","rm *":"deny"}}`. Path patterns match workspace-relative forward-slash paths. The daemon builds a `PermissionsGate`; the sandbox enforces `external_directory` and a deny-only `CommandPolicy` derived from `bash` deny patterns. Unknown/riskTier-less tools default to `allow` so that MCP/tool-injected tools are not spuriously gated — the trust and capability layers own those.
+
+`permissions.git_write` (`allow|ask|deny`, default `deny`) gates real git writes: Todo 8 materialization calls `assertGitWriteAllowed` (packages/guard/src/git-write.ts) before creating commits. `allow` proceeds, `ask` routes through the existing `approval_requested` / `approval_respond` RPC surface (`once`/`always` proceed, `reject`/timeout deny), `deny` refuses with typed `PERMISSION_DENIED`. Non-interactive runs always deny regardless of setting. Only bare decisions are read; pattern maps and unknown values fail closed to `deny`.
+
+## Sandbox
+
+Two backends, selected by `sandbox.backend` (`software`, the default, or `docker`):
+
+- `software` runs commands in-process behind `SandboxBoundary` (path containment + command policy). No daemon, no probe, no added boot latency.
+- `docker` runs commands across a volume mount via `DockerSandboxBackend`: `docker exec` against `sandbox.container` when set, otherwise one-shot `docker run --rm` with `sandbox.image` (defaults to `alpine`). Construction is side-effect free; no container is created and no daemon is contacted until exec/probe runs.
+
+Fail-closed, never silent fallback: when `sandbox.backend` is `docker` but no daemon answers `docker info`, daemon boot throws a typed `AgencyError` (`internal`) telling the operator to start the Docker daemon or set `sandbox.backend` to `software` (`AGENCY_SANDBOX_BACKEND=software`). The check runs at boot — before any RPC is served — so a misconfigured daemon refuses to serve rather than running turns against an unintended backend. There is no code path that falls back to software: backend selection (`createSandboxBackend`) is a pure branch on config, and the boot gate (`ensureSandboxAvailable`) only probes container-backed backends (capability-checked, so software never pays for a probe).
+
+Egress (deny-by-default once configured): `sandbox.egress` undefined means unrestricted (no `--network` flag, current behavior). A defined allowlist — even empty — isolates one-shot `docker run` with `--network=none`, unless `sandbox.network` names an explicit network (explicit intent wins, including without egress). Per-hostname enforcement is deliberately NOT at the container-flag level — plain `docker run` flags cannot express hostname allowlists — so the allowlist itself is enforced at tool-policy level (`requireNetwork` over `capabilities.network`, the same gate `fetch`/`browser`/`websearch` use); the `--network` flag is the coarse container-level lock. DNS-level filtering inside the container is out of reach and not claimed.
+
+Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
 ## MCP / LSP
 

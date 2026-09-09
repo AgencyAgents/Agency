@@ -35,7 +35,7 @@ const EVENT_TYPES: Record<string, string> = {
   heartbeat: "export interface HeartbeatEvent { type: string; }",
   fallback: "export interface FallbackEvent { type: string; from: string; to: string; reason: string; }",
   approval_requested:
-    "export interface ApprovalRequestedEvent { type: string; requestId: string; request: ApprovalRequest; }",
+    "export interface ApprovalRequestedEvent { type: string; requestId: string; sessionId: string; turnId: string; riskTier: string; source: string; argsSummary: string; request: ApprovalRequest; }",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted SDK code, not a template
   "session.*": "export type SessionChannel = `session.${string}`;",
   session_message: "export interface SessionMessageEvent { type: string; sessionId: string; }",
@@ -129,6 +129,11 @@ export interface ApprovalRequest {
   title: string;
   command?: string;
   path?: string;
+  riskTier?: string;
+  sessionId?: string;
+  turnId?: string;
+  source?: string;
+  argsSummary?: string;
   metadata?: Record<string, unknown>;
 }
 

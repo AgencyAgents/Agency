@@ -1,4 +1,5 @@
 import type { HttpClient } from "@agency/net";
+import type { ProviderAdapter } from "./types.ts";
 
 export interface ModelPricing {
   /** USD per million input tokens. */
@@ -119,6 +120,35 @@ export const BUILTIN_MODELS: ModelInfo[] = [
     releaseDate: "2026-05-15",
   },
 ];
+
+/**
+ * On-disk catalog cache schema version. v1 is the unversioned legacy shape
+ * (no `version` field); v2+ stamps it. Lives here (not catalog-cache.ts) so
+ * both cache files share one version without an import cycle.
+ */
+export const CATALOG_CACHE_VERSION = 2;
+
+/**
+ * Tolerantly normalizes a parsed cache blob. Unversioned legacy files migrate
+ * forward (version defaults to 1); future versions are accepted as-is so a
+ * newer writer never yields an empty registry. Non-blobs return undefined.
+ */
+export function normalizeCachedCatalog(parsed: unknown):
+  | {
+      version: number;
+      savedAt: string;
+      models: ModelInfo[];
+    }
+  | undefined {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const record = parsed as { version?: unknown; savedAt?: unknown; models?: unknown };
+  if (!Array.isArray(record.models)) return undefined;
+  return {
+    version: typeof record.version === "number" ? record.version : 1,
+    savedAt: typeof record.savedAt === "string" ? record.savedAt : new Date(0).toISOString(),
+    models: record.models as ModelInfo[],
+  };
+}
 
 /**
  * Sort derived from the catalog itself: newest releaseDate first, then id
@@ -337,6 +367,42 @@ export class ModelRegistry {
   }
 }
 
+/** Non-OK statuses (429 included) throw; catalog-cache catches and serves stale cache. */
+async function getLiveJson(
+  family: string,
+  http: HttpClient,
+  url: string,
+  headers?: Record<string, string>,
+): Promise<unknown> {
+  const res = await http.fetch(url, headers ? { headers } : undefined);
+  if (!res.ok) {
+    throw new Error(`live model list for "${family}" failed with ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as unknown;
+}
+
+function fieldOf(body: unknown, field: string): unknown {
+  return typeof body === "object" && body !== null ? (body as Record<string, unknown>)[field] : undefined;
+}
+
+/** Non-array fields throw (degrades upstream); entries without a string id are skipped. */
+function payloadIds(family: string, value: unknown, pick: (entry: unknown) => unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`live model list for "${family}" returned a malformed payload`);
+  }
+  return value.map(pick).filter((id): id is string => typeof id === "string");
+}
+
+/** OpenAI/Anthropic list shape: { data: [{ id }] }. */
+function openAiShapeIds(family: string, body: unknown): string[] {
+  return payloadIds(family, fieldOf(body, "data"), (entry) => fieldOf(entry, "id"));
+}
+
+/** Google/Ollama list shape: { models: [{ name }] }. */
+function googleShapeIds(family: string, body: unknown): string[] {
+  return payloadIds(family, fieldOf(body, "models"), (entry) => fieldOf(entry, "name"));
+}
+
 /**
  * Live model IDs for one provider family, covering every known family plus a
  * generic OpenAI-compatible `/v1/models` fallback so custom gateways resolve
@@ -354,34 +420,66 @@ export async function fetchLiveIdsForFamily(
     case "glm": {
       const base = baseUrl ?? (family === "openai" ? "https://api.openai.com/v1" : undefined);
       const url = base ? `${base.replace(/\/+$/, "")}/models` : "https://api.openai.com/v1/models";
-      const res = await http.fetch(url, {
-        headers: { authorization: `Bearer ${apiKey}` },
-      });
-      const body = (await res.json()) as { data: Array<{ id: string }> };
-      return body.data.map((m) => m.id);
+      return openAiShapeIds(
+        family,
+        await getLiveJson(family, http, url, { authorization: `Bearer ${apiKey}` }),
+      );
     }
     case "anthropic": {
-      const res = await http.fetch("https://api.anthropic.com/v1/models", {
-        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      });
-      const body = (await res.json()) as { data: Array<{ id: string }> };
-      return body.data.map((m) => m.id);
+      return openAiShapeIds(
+        family,
+        await getLiveJson(family, http, "https://api.anthropic.com/v1/models", {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        }),
+      );
     }
     case "google": {
-      const res = await http.fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-      const body = (await res.json()) as { models: Array<{ name: string }> };
+      const ids = googleShapeIds(
+        family,
+        await getLiveJson(
+          family,
+          http,
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+        ),
+      );
       // Google returns "models/gemini-3-pro"; the bare id is what requests use.
-      return body.models.map((m) => m.name.replace(/^models\//, ""));
+      return ids.map((id) => id.replace(/^models\//, ""));
+    }
+    case "openrouter": {
+      const base = (baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+      return openAiShapeIds(
+        family,
+        await getLiveJson(family, http, `${base}/models`, { authorization: `Bearer ${apiKey}` }),
+      );
+    }
+    case "groq": {
+      const base = (baseUrl ?? "https://api.groq.com/openai/v1").replace(/\/+$/, "");
+      return openAiShapeIds(
+        family,
+        await getLiveJson(family, http, `${base}/models`, { authorization: `Bearer ${apiKey}` }),
+      );
+    }
+    case "xai": {
+      const base = (baseUrl ?? "https://api.x.ai/v1").replace(/\/+$/, "");
+      return openAiShapeIds(
+        family,
+        await getLiveJson(family, http, `${base}/models`, { authorization: `Bearer ${apiKey}` }),
+      );
+    }
+    case "ollama": {
+      // Ollama lists tags, not OpenAI models: { models: [{ name }] }.
+      const base = (baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
+      return googleShapeIds(family, await getLiveJson(family, http, `${base}/api/tags`));
     }
     default: {
       // Any other family (custom gateway): try the OpenAI-compatible shape
       // when a baseUrl is known, otherwise there is nothing to query.
       if (!baseUrl) return [];
-      const res = await http.fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
-        headers: { authorization: `Bearer ${apiKey}` },
+      const body = await getLiveJson(family, http, `${baseUrl.replace(/\/+$/, "")}/models`, {
+        authorization: `Bearer ${apiKey}`,
       });
-      const body = (await res.json()) as { data: Array<{ id: string }> };
-      return body.data.map((m) => m.id);
+      return openAiShapeIds(family, body);
     }
   }
 }
@@ -421,49 +519,43 @@ export class UnknownProviderError extends Error {
   }
 }
 
-/** Hand-tuned per-provider facts; mirrors the families in BUILTIN_MODELS. */
-export const BUILTIN_PROVIDER_METADATA: readonly ProviderMetadata[] = [
-  {
-    id: "anthropic",
-    family: "anthropic",
-    contextWindow: 200_000,
-    costTier: "premium",
-    authKinds: ["api-key", "oauth"],
-    rateLimit: { requestsPerMinute: 60 },
-  },
-  {
-    id: "openai",
-    family: "openai",
-    contextWindow: 400_000,
-    costTier: "standard",
-    authKinds: ["api-key", "oauth"],
-    rateLimit: { requestsPerMinute: 500 },
-  },
-  {
-    id: "google",
-    family: "google",
-    contextWindow: 1_000_000,
-    costTier: "standard",
-    authKinds: ["api-key", "oauth"],
-    rateLimit: { requestsPerMinute: 300 },
-  },
-  {
-    id: "deepseek",
-    family: "deepseek",
-    contextWindow: 128_000,
-    costTier: "cheap",
-    authKinds: ["api-key"],
-    rateLimit: { requestsPerMinute: 200 },
-  },
-  {
-    id: "glm",
-    family: "glm",
-    contextWindow: 128_000,
-    costTier: "cheap",
-    authKinds: ["api-key"],
-    rateLimit: { requestsPerMinute: 200 },
-  },
+/** One metadata row: id, context window, cost tier, auth kinds, rpm limit. */
+type ProviderMetadataRow = readonly [
+  id: string,
+  contextWindow: number,
+  costTier: string,
+  authKinds: readonly string[],
+  requestsPerMinute?: number,
 ];
+
+/** Single table behind the export; add rows, not branches or new lookups. */
+const PROVIDER_METADATA_TABLE: readonly ProviderMetadataRow[] = [
+  ["anthropic", 200_000, "premium", ["api-key", "oauth"], 60],
+  ["openai", 400_000, "standard", ["api-key", "oauth"], 500],
+  ["google", 1_000_000, "standard", ["api-key", "oauth"], 300],
+  ["deepseek", 128_000, "cheap", ["api-key"], 200],
+  ["glm", 128_000, "cheap", ["api-key"], 200],
+  ["openrouter", 200_000, "standard", ["api-key"], 200],
+  ["groq", 128_000, "cheap", ["api-key"], 300],
+  ["xai", 128_000, "standard", ["api-key"], 300],
+  ["ollama", 128_000, "cheap", ["none"], undefined],
+];
+
+function toProviderMetadata(row: ProviderMetadataRow): ProviderMetadata {
+  const [id, contextWindow, costTier, authKinds, requestsPerMinute] = row;
+  return {
+    id,
+    family: id,
+    contextWindow,
+    costTier,
+    authKinds,
+    ...(requestsPerMinute === undefined ? {} : { rateLimit: { requestsPerMinute } }),
+  };
+}
+
+/** Derived from PROVIDER_METADATA_TABLE; the first five mirror BUILTIN_MODELS. */
+export const BUILTIN_PROVIDER_METADATA: readonly ProviderMetadata[] =
+  PROVIDER_METADATA_TABLE.map(toProviderMetadata);
 
 const providerMetadataById = new Map(BUILTIN_PROVIDER_METADATA.map((m) => [m.id, m]));
 
@@ -472,4 +564,142 @@ export function getProviderMetadata(id: string): ProviderMetadata {
   const meta = providerMetadataById.get(id);
   if (!meta) throw new UnknownProviderError(id);
   return meta;
+}
+
+// ---------------------------------------------------------------------------
+// Adapter registry: family-keyed seam for a 75+ catalog. Concrete adapters
+// and the openai-compatible factory share one namespace; resolve stays sync
+// (map lookup, no lazy imports), so error timing never shifts for families.
+// ---------------------------------------------------------------------------
+
+/** Rejected at registration: adapter breaks the ProviderAdapter contract. */
+export class InvalidAdapterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAdapterError";
+  }
+}
+
+/** Rejected at registration: family or apiNpm alias already registered. */
+export class DuplicateAdapterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DuplicateAdapterError";
+  }
+}
+
+/** Extra apiNpm aliases an adapter answers to, from the catalog record. */
+export interface RegisterAdapterOptions {
+  readonly apiNpm?: readonly string[];
+}
+
+/** Builds a family adapter on demand; creation itself is synchronous. */
+export type AdapterFactory = (family: string, baseUrl: string) => ProviderAdapter;
+
+const adapterByFamily = new Map<string, ProviderAdapter>();
+const factoryByFamily = new Map<string, AdapterFactory>();
+const familyByApiNpm = new Map<string, string>();
+
+/** Structural ProviderAdapter check: non-empty family string, stream fn. */
+export function assertValidAdapter(adapter: unknown): asserts adapter is ProviderAdapter {
+  if (typeof adapter !== "object" || adapter === null) {
+    throw new InvalidAdapterError("adapter must be an object with family and stream");
+  }
+  const candidate = adapter as { family?: unknown; stream?: unknown };
+  if (typeof candidate.family !== "string" || candidate.family.length === 0) {
+    throw new InvalidAdapterError("adapter.family must be a non-empty string");
+  }
+  if (typeof candidate.stream !== "function") {
+    throw new InvalidAdapterError(`adapter "${candidate.family}" stream must be a function`);
+  }
+}
+
+function claimFamily(family: string, what: string): void {
+  if (adapterByFamily.has(family) || factoryByFamily.has(family)) {
+    throw new DuplicateAdapterError(`${what} "${family}" is already registered`);
+  }
+}
+
+function claimApiNpmAliases(family: string, apiNpm: readonly string[] | undefined): void {
+  for (const npm of apiNpm ?? []) {
+    if (typeof npm !== "string" || npm.length === 0) {
+      throw new InvalidAdapterError(`adapter "${family}" apiNpm aliases must be non-empty strings`);
+    }
+    const owner = familyByApiNpm.get(npm);
+    if (owner !== undefined && owner !== family) {
+      throw new DuplicateAdapterError(`apiNpm "${npm}" is already registered for "${owner}"`);
+    }
+  }
+  for (const npm of apiNpm ?? []) familyByApiNpm.set(npm, family);
+}
+
+/** Registers one concrete adapter; same validation path as the factory. */
+export function registerAdapter(adapter: ProviderAdapter, options?: RegisterAdapterOptions): void {
+  assertValidAdapter(adapter);
+  claimFamily(adapter.family, "adapter");
+  claimApiNpmAliases(adapter.family, options?.apiNpm);
+  adapterByFamily.set(adapter.family, adapter);
+}
+
+/** Registers the openai-compatible template; gateway families resolve via it. */
+export function registerAdapterFactory(
+  family: string,
+  create: AdapterFactory,
+  options?: RegisterAdapterOptions,
+): void {
+  if (typeof family !== "string" || family.length === 0) {
+    throw new InvalidAdapterError("adapter family must be a non-empty string");
+  }
+  if (typeof create !== "function") {
+    throw new InvalidAdapterError(`adapter factory "${family}" must be a function`);
+  }
+  claimFamily(family, "adapter factory");
+  claimApiNpmAliases(family, options?.apiNpm);
+  factoryByFamily.set(family, create);
+}
+
+/** Families with an instance or factory entry, sorted for stable output. */
+export function listAdapterFamilies(): string[] {
+  return [...adapterByFamily.keys(), ...factoryByFamily.keys()].sort();
+}
+
+/**
+ * Family lookup; apiNpm aliases answer too. Unknown families with a baseUrl
+ * build through the openai-compatible template (uncached); without one they
+ * throw UnknownProviderError. The template family itself needs a baseUrl.
+ */
+export function resolveAdapterByFamily(family: string, options?: { baseUrl?: string }): ProviderAdapter {
+  const direct = adapterByFamily.get(family);
+  if (direct) return direct;
+  const factory = factoryByFamily.get(family);
+  if (factory) {
+    const baseUrl = options?.baseUrl;
+    if (typeof baseUrl !== "string" || baseUrl.length === 0) {
+      throw new Error(`adapter "${family}" needs a baseUrl (no native endpoint for its family)`);
+    }
+    const built = factory(family, baseUrl);
+    assertValidAdapter(built);
+    return built;
+  }
+  const aliased = familyByApiNpm.get(family);
+  if (aliased !== undefined) {
+    const adapter = adapterByFamily.get(aliased);
+    if (adapter) return adapter;
+  }
+  if (typeof options?.baseUrl === "string" && options.baseUrl.length > 0) {
+    const fallback = factoryByFamily.get("openai-compatible");
+    if (fallback) {
+      const built = fallback(family, options.baseUrl);
+      assertValidAdapter(built);
+      return built;
+    }
+  }
+  throw new UnknownProviderError(family);
+}
+
+/** apiNpm lookup from the catalog record; absent aliases throw typed. */
+export function resolveAdapterByApiNpm(npm: string): ProviderAdapter {
+  const family = familyByApiNpm.get(npm);
+  if (family === undefined) throw new UnknownProviderError(npm);
+  return resolveAdapterByFamily(family);
 }

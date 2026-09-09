@@ -6,6 +6,7 @@ import {
   type Budget,
   ChannelStore,
   ChoiceLog,
+  type Config,
   collectPluginAgents,
   collectPluginCommands,
   configDir,
@@ -13,6 +14,7 @@ import {
   DispatchStateStore,
   dataDir,
   EventBus,
+  hasBoardItemShape,
   InboxStore,
   Logger,
   loadCommands,
@@ -27,9 +29,14 @@ import {
 import {
   ApprovalManager,
   type Capabilities,
+  type CommandPolicy,
   createFileTrustStore,
+  DockerSandboxBackend,
+  type ExternalDirectoryDecision,
+  ensureSandboxAvailable,
   PermissionsGate,
   Redactor,
+  type SandboxBackend,
   SandboxBoundary,
   type ToolPermissionValue,
   type TrustStore,
@@ -74,6 +81,7 @@ import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
 import { createSessionScopes } from "./session-scopes.ts";
 import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
+import { TaskUsageTracker } from "./task-ledger.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
   type AgentDaemon,
@@ -86,6 +94,30 @@ import {
 
 export * from "./config-fingerprint.ts";
 export * from "./types.ts";
+/**
+ * Builds the sandbox backend named by config. Software boots as before;
+ * docker maps the sandbox keys onto DockerSandboxOptions. Pure so tests
+ * can assert the branch without starting a daemon.
+ */
+export function createSandboxBackend(
+  workspaceRoot: string,
+  commandPolicy: CommandPolicy,
+  externalDecision: ExternalDirectoryDecision | undefined,
+  sandboxConfig?: Config["sandbox"],
+): SandboxBackend {
+  if (sandboxConfig?.backend === "docker") {
+    return new DockerSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
+      image: sandboxConfig.image,
+      container: sandboxConfig.container,
+      containerRoot: sandboxConfig.containerRoot,
+      dockerBin: sandboxConfig.dockerBin,
+      egress: sandboxConfig.egress,
+      network: sandboxConfig.network,
+      capDrop: sandboxConfig.capDrop,
+    });
+  }
+  return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
+}
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
   const providers = config.provider;
@@ -145,9 +177,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
   const shellLabel = resolveShell(process.platform, config.windowsShell).label;
-  const sandbox = new SandboxBoundary(options.workspaceRoot, commandPolicy, (resolved) =>
-    gate.externalDirectoryDecision(resolved),
+  const sandbox = createSandboxBackend(
+    options.workspaceRoot,
+    commandPolicy,
+    (resolved) => gate.externalDirectoryDecision(resolved),
+    config.sandbox,
   );
+  // Fail-closed Docker gate at boot (not lazy scope creation): a docker
+  // backend without a reachable daemon refuses to serve rather than running
+  // turns against an unintended backend. Software backends have no probe
+  // and skip this with zero added latency.
+  await ensureSandboxAvailable(sandbox);
 
   /**
    * Per-agent PermissionsGate: returns a gate sourced from the agent's own
@@ -340,6 +380,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       }
     },
   });
+  try {
+    const entries = todoStore.load("team-shared");
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry?.type === "todo_state" && Array.isArray(entry.todos)) {
+        boardStore.hydrate(entry.todos.filter(hasBoardItemShape));
+        break;
+      }
+    }
+  } catch (error: unknown) {
+    warnPersistence("board hydrate", error);
+  }
   const teamContexts = new Map<string, TeamContext>();
   const teamMcpPools = new Map<string, TeamMcpPool>();
   const teamFor = (parentSessionId: string): TeamContext => {
@@ -453,6 +505,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     turnCheckpoints: new Map<string, Array<string | null>>(),
     sessionBudgets: new Map(),
     spendLedger: new SpendLedger({ sessionsDir: todoSessionsDir }),
+    taskLedger: new TaskUsageTracker({ sessionsDir: todoSessionsDir }),
     teamCheckpoints: new Map(),
     teamMcpPools,
     listModels: models.listModels,

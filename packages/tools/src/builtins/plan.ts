@@ -73,6 +73,44 @@ export class PlanSidecarCorruptError extends Error {
   }
 }
 
+/** Typed denial when plan approval is refused; reason names the cause. */
+export type PlanApprovalDenyReason = "unresolved-comments";
+
+export class PlanApprovalDeniedError extends Error {
+  readonly reason: PlanApprovalDenyReason;
+  readonly unresolved: number;
+  constructor(reason: PlanApprovalDenyReason, unresolved: number) {
+    super(
+      `[plan-approval-denied:${reason}] cannot approve plan: ${unresolved} unresolved comment(s): resolve them before approving`,
+    );
+    this.name = "PlanApprovalDeniedError";
+    this.reason = reason;
+    this.unresolved = unresolved;
+  }
+}
+
+/** Typed denial for a plan-agent write outside the plan directories. */
+export class PlanAgentWriteDeniedError extends Error {
+  readonly target: string;
+  constructor(target: string) {
+    super(`[plan-agent-write-denied] plan agent cannot write outside plan dirs: ${target}`);
+    this.name = "PlanAgentWriteDeniedError";
+    this.target = target;
+  }
+}
+
+/** Typed denial for a Plan-to-Act transition without a valid approval. */
+export type PlanActDenyReason = "missing-approval" | "hash-mismatch" | "gate-blocked";
+
+export class PlanActTransitionDeniedError extends Error {
+  readonly reason: PlanActDenyReason;
+  constructor(reason: PlanActDenyReason, detail: string) {
+    super(`[plan-act-denied:${reason}] ${detail}`);
+    this.name = "PlanActTransitionDeniedError";
+    this.reason = reason;
+  }
+}
+
 /** How many comments are unresolved; throws PlanSidecarCorruptError when corrupt. */
 export function countUnresolvedComments(planPath: string): number {
   const file = commentsPath(planPath);
@@ -112,9 +150,7 @@ export function writeApprovalRecord(
 ): PlanApprovalRecord {
   const unresolved = countUnresolvedComments(planPath);
   if (unresolved > 0) {
-    throw new Error(
-      `cannot approve plan: ${unresolved} unresolved comment(s): resolve them before approving`,
-    );
+    throw new PlanApprovalDeniedError("unresolved-comments", unresolved);
   }
   const content = options.content ?? readFileSync(planPath, "utf8");
   const record: PlanApprovalRecord = {
@@ -380,6 +416,58 @@ export function planAgentPermissions(): Record<string, unknown> {
   };
 }
 
+/** Directory-level write check: true only inside the three plan dirs. */
+export function isPlanAgentWriteAllowed(targetPath: string): boolean {
+  return isPlanPath(targetPath);
+}
+
+/** Throw PlanAgentWriteDeniedError unless the target is inside a plan dir. */
+export function assertPlanAgentWriteAllowed(targetPath: string): void {
+  if (!isPlanAgentWriteAllowed(targetPath)) throw new PlanAgentWriteDeniedError(targetPath);
+}
+
+/** Validated Plan-to-Act transition: approval record plus matching content. */
+export interface PlanActTransition {
+  record: PlanApprovalRecord;
+  content: string;
+  hash: string;
+}
+
+/** Enforce the Plan-to-Act gate: valid approval, matching hash, passing gate. */
+export function assertActTransitionAllowed(
+  planPath: string,
+  options: { content?: string; pathLabel?: string } = {},
+): PlanActTransition {
+  const label = options.pathLabel ?? planPath;
+  const gate = evaluatePlanGate(planPath);
+  if (!gate.pass) {
+    const detail =
+      gate.reason === "fail-unresolved-comments"
+        ? `${gate.unresolved} unresolved comment(s): resolve them before executing`
+        : `blocking issue(s): ${gate.blocking.map((issue) => `[${issue.severity}] ${issue.message}`).join("; ")}`;
+    throw new PlanActTransitionDeniedError(
+      "gate-blocked",
+      `${label} blocked by plan gate [${gate.reason}]: ${detail}`,
+    );
+  }
+  const record = readApprovalRecord(planPath);
+  if (!record) {
+    throw new PlanActTransitionDeniedError(
+      "missing-approval",
+      `${label} has no plan_approval record: present the plan for approval before executing it`,
+    );
+  }
+  const content = options.content ?? readFileSync(planPath, "utf8");
+  const hash = planContentHash(content);
+  if (record.hash !== hash) {
+    throw new PlanActTransitionDeniedError(
+      "hash-mismatch",
+      `${label} changed after it was approved (content hash mismatch): re-approve the current version before executing`,
+    );
+  }
+  return { record, content, hash };
+}
+
 /** Collapsed one-line scrollback rendering for a plan block. */
 export function renderPlanBlockForScrollback(planPath: string): string {
   return `${PLAN_BLOCK_ICON} plan ${planPath}`;
@@ -501,42 +589,16 @@ export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpe
         ask: ctx.requestApproval,
       });
 
-      let gate: PlanGateDecision;
+      let transition: PlanActTransition;
       try {
-        gate = evaluatePlanGate(resolved);
+        transition = assertActTransitionAllowed(resolved, { pathLabel: String(input.path) });
       } catch (error) {
         return {
           content: error instanceof Error ? error.message : String(error),
           isError: true,
         };
       }
-      if (!gate.pass) {
-        const detail =
-          gate.reason === "fail-unresolved-comments"
-            ? `${gate.unresolved} unresolved comment(s): resolve them before executing`
-            : `blocking issue(s): ${gate.blocking.map((issue) => `[${issue.severity}] ${issue.message}`).join("; ")}`;
-        return {
-          content: `${input.path} blocked by plan gate [${gate.reason}]: ${detail}`,
-          isError: true,
-        };
-      }
-
-      const record = readApprovalRecord(resolved);
-      if (!record) {
-        return {
-          content: `${input.path} has no plan_approval record: present the plan for approval before executing it`,
-          isError: true,
-        };
-      }
-
-      const content = readFileSync(resolved, "utf8");
-      const hash = planContentHash(content);
-      if (record.hash !== hash) {
-        return {
-          content: `${input.path} changed after it was approved (content hash mismatch): re-approve the current version before executing`,
-          isError: true,
-        };
-      }
+      const { record, content } = transition;
 
       const steps = parsePlanSteps(content).filter((step) => !step.checked);
       if (steps.length === 0) {
