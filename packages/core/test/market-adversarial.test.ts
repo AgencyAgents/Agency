@@ -3,25 +3,25 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
-  writeFileSync,
-  mkdtempSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createFileTrustStore, Redactor } from "@agency/guard";
 import {
   ManifestError,
-  validatePackageManifest,
-  signManifestBody,
   type PackageManifestBody,
+  signManifestBody,
+  validatePackageManifest,
 } from "../src/plugins/manifest.ts";
 import {
-  MarketplaceError,
   installMarketplacePackage as installPkg,
+  MarketplaceError,
   rollbackMarketplacePackage,
   trustMarketplacePackage,
 } from "../src/plugins/marketplace.ts";
@@ -104,8 +104,7 @@ function makePackage(
       "utf8",
     );
   }
-  const payload =
-    opts?.rawManifest ?? { manifest: b, signature: signManifestBody(b, key) };
+  const payload = opts?.rawManifest ?? { manifest: b, signature: signManifestBody(b, key) };
   writeFileSync(join(pkgDir, "agency-package.json"), JSON.stringify(payload), "utf8");
 }
 
@@ -144,7 +143,9 @@ function snapshotTree(dir: string): string[] {
 function expectTreeUnchanged(before: string[], ws: string, label: string): void {
   const after = snapshotTree(ws);
   if (after.join("\n") !== before.join("\n")) {
-    throw new Error(`${label}: workspace tree changed by rejected attack.\nbefore:\n${before.join("\n")}\nafter:\n${after.join("\n")}`);
+    throw new Error(
+      `${label}: workspace tree changed by rejected attack.\nbefore:\n${before.join("\n")}\nafter:\n${after.join("\n")}`,
+    );
   }
 }
 
@@ -158,7 +159,7 @@ function expectManifestReject(fn: () => unknown, reason: string, code: string): 
     expect(e.code).toBe(code);
     // Audit evidence: structured source + reason + identifiers in context.
     expect(e.source).toBe("market-manifest");
-    expect(e.context["reason"]).toBe(reason);
+    expect(e.context.reason).toBe(reason);
     return e;
   }
   throw new Error(`expected ManifestError(${reason}) but nothing threw`);
@@ -173,7 +174,7 @@ function expectMarketplaceReject(fn: () => unknown, reason: string): Marketplace
     expect(e.reason).toBe(reason);
     expect(e.code).toBe("tool_error");
     expect(e.source).toBe("market-lifecycle");
-    expect(e.context["reason"]).toBe(reason);
+    expect(e.context.reason).toBe(reason);
     return e;
   }
   throw new Error(`expected MarketplaceError(${reason}) but nothing threw`);
@@ -221,7 +222,9 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
 
   test("2. permission escape beyond the allowlist rejected typed, zero writes (install path)", () => {
     const { ws, pkgDir, store } = setup();
-    const b = body({ permissions: { read: "allow", dispatch: "allow" } as unknown as PackageManifestBody["permissions"] });
+    const b = body({
+      permissions: { read: "allow", dispatch: "allow" } as unknown as PackageManifestBody["permissions"],
+    });
     makePackage(pkgDir, b, privateKey);
     trustAndPin(store, ws, pkgDir, b, privateKey);
     const before = snapshotTree(ws);
@@ -230,7 +233,7 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
       "permission-escape",
       "permission_denied",
     );
-    expect(err.context["key"]).toBe("dispatch");
+    expect(err.context.key).toBe("dispatch");
     expectTreeUnchanged(before, ws, "permission-escape");
     expect(existsSync(join(ws, ".agency", "marketplace", "installed.json"))).toBe(false);
   });
@@ -258,7 +261,12 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
   test("4. absolute / windows-drive / backslash-dotdot skill paths rejected typed, zero writes", () => {
     const { ws } = setup();
     const before = snapshotTree(ws);
-    for (const path of ["/etc/SKILL.md", "C:/Windows/SKILL.md", "..\\..\\escape\\SKILL.md", "//server/share/SKILL.md"]) {
+    for (const path of [
+      "/etc/SKILL.md",
+      "C:/Windows/SKILL.md",
+      "..\\..\\escape\\SKILL.md",
+      "//server/share/SKILL.md",
+    ]) {
       const b = body({ skills: [{ name: "evil", path }] });
       const raw = { manifest: b, signature: signManifestBody(b, privateKey) };
       expectManifestReject(() => validatePackageManifest(raw), "path-traversal", "tool_error");
@@ -275,7 +283,11 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
     const src = join(pkgDir, "skills/beta/SKILL.md");
     mkdirSync(join(src, ".."), { recursive: true });
     writeFileSync(src, "---\nname: beta\ndescription: fixture\n---\n# beta\n", "utf8");
-    writeFileSync(join(pkgDir, "agency-package.json"), JSON.stringify({ manifest: bB, signature: sigA }), "utf8");
+    writeFileSync(
+      join(pkgDir, "agency-package.json"),
+      JSON.stringify({ manifest: bB, signature: sigA }),
+      "utf8",
+    );
     store.trust(pkgDir);
     const before = snapshotTree(ws);
     expectManifestReject(
@@ -314,7 +326,9 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
     expectTreeUnchanged(before, ws, "version-downgrade");
     const state = JSON.parse(readFileSync(join(ws, ".agency", "marketplace", "installed.json"), "utf8"));
     expect(state["acme/notes"].version).toBe("2.0.0");
-    expect(readFileSync(join(ws, ".agency", "skills", "summarize", "SKILL.md"), "utf8")).toBe("v2-marker-content");
+    expect(readFileSync(join(ws, ".agency", "skills", "summarize", "SKILL.md"), "utf8")).toBe(
+      "v2-marker-content",
+    );
   });
 
   test("7. oversized payloads (name / skill count / permission count / mcp count) rejected typed, zero writes", () => {
@@ -327,7 +341,10 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
       ["oversized-skills", body({ skills: many(65, "s") })],
       [
         "oversized-permissions",
-        { ...body(), permissions: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`k${i}`, "allow"])) } as unknown as PackageManifestBody,
+        {
+          ...body(),
+          permissions: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`k${i}`, "allow"])),
+        } as unknown as PackageManifestBody,
       ],
       [
         "oversized-mcp",
@@ -360,7 +377,11 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
     const src = join(pkgDir, "skills/summarize/SKILL.md");
     mkdirSync(join(src, ".."), { recursive: true });
     writeFileSync(src, "---\nname: summarize\ndescription: fixture\n---\n# summarize\n", "utf8");
-    writeFileSync(join(pkgDir, "agency-package.json"), JSON.stringify({ manifest: tampered, signature: sig }), "utf8");
+    writeFileSync(
+      join(pkgDir, "agency-package.json"),
+      JSON.stringify({ manifest: tampered, signature: sig }),
+      "utf8",
+    );
     store.trust(pkgDir);
     const before = snapshotTree(ws);
     expectManifestReject(

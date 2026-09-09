@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { SandboxBackend } from "@agency/guard";
 import {
   DockerSandboxBackend,
   FULL_CAPABILITIES,
@@ -13,16 +14,12 @@ import {
 } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import type { SandboxBackend } from "@agency/guard";
 import { asContainerStdioBackend, type ContainerStdioOptions } from "../src/container-exec.ts";
 import type { ToolDeps } from "../src/contract.ts";
 import { McpClient } from "../src/mcp/client.ts";
 import { startMcpServers } from "../src/mcp/manager.ts";
 import { TEAM_MCP_PROCESS_CAP, TeamMcpPool } from "../src/mcp/team-policy.ts";
-import {
-  createContainerStdioTransport,
-  transportForWithContainerSandbox,
-} from "../src/mcp/transport.ts";
+import { createContainerStdioTransport, transportForWithContainerSandbox } from "../src/mcp/transport.ts";
 import { createSessionScope } from "../src/session-scope.ts";
 
 // MCP servers in containers (wave1-todo5). A fake stdio backend stands in for
@@ -178,7 +175,7 @@ describe("container transport selection", () => {
     const root = tempRoot("select");
     expect(transportForWithContainerSandbox(new SandboxBoundary(root))).toBeUndefined();
     const impostor = new FakeStdioBackend(root) as unknown as Record<string, unknown>;
-    impostor["spawnStdio"] = 42;
+    impostor.spawnStdio = 42;
     expect(asContainerStdioBackend(impostor as unknown as SandboxBackend)).toBeUndefined();
   });
 
@@ -251,7 +248,9 @@ describe("container transport selection", () => {
     fakes.push(deniedPolicy);
     const blocked = createContainerStdioTransport(deniedPolicy, { command: "definitely-blocked-server" });
     await expect(blocked.start()).rejects.toBeInstanceOf(AgencyError);
-    const escaped = createContainerStdioTransport(denied, serverConfig(), { cwd: join(root, "..", "outside") });
+    const escaped = createContainerStdioTransport(denied, serverConfig(), {
+      cwd: join(root, "..", "outside"),
+    });
     const err = await escaped.start().catch((e) => e);
     expect(err).toBeInstanceOf(AgencyError);
     expect((err as AgencyError).code).toBe(ErrorCode.PERMISSION_DENIED);
@@ -279,11 +278,17 @@ describe("container MCP round trip", () => {
     const root = tempRoot("notify");
     const backend = fakeBackend(root);
     const received: Record<string, unknown>[] = [];
-    const transport = createContainerStdioTransport(backend, serverConfig({ MCP_NOTIFY: "1" }), { cwd: root });
+    const transport = createContainerStdioTransport(backend, serverConfig({ MCP_NOTIFY: "1" }), {
+      cwd: root,
+    });
     transport.onMessage((msg) => received.push(msg));
     await transport.start();
     await transport.send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
-    await waitFor(() => received.some((m) => m.method === "notifications/tools/list_changed"), 10_000, "list_changed");
+    await waitFor(
+      () => received.some((m) => m.method === "notifications/tools/list_changed"),
+      10_000,
+      "list_changed",
+    );
     await transport.close();
   }, 30_000);
 
@@ -301,7 +306,11 @@ describe("container MCP round trip", () => {
     try {
       expect(mgr.tools.map((t) => t.name)).toContain("srv_echo");
       await waitFor(() => backend.spawnCalls.length >= 2, 15_000, "container restart");
-      await waitFor(() => mgr.tools.some((t) => t.name === "srv_echo") && mgr.failures.size === 0, 15_000, "healthy tools");
+      await waitFor(
+        () => mgr.tools.some((t) => t.name === "srv_echo") && mgr.failures.size === 0,
+        15_000,
+        "healthy tools",
+      );
     } finally {
       await mgr.dispose();
     }
@@ -403,7 +412,7 @@ describe("session-scope container wiring", () => {
   }, 30_000);
 });
 
-const DOCKER_IMAGE = process.env["AGENCY_DOCKER_MCP_TEST_IMAGE"] ?? "node:22-alpine";
+const DOCKER_IMAGE = process.env.AGENCY_DOCKER_MCP_TEST_IMAGE ?? "node:22-alpine";
 const haveDocker = await isDockerAvailable(undefined, 5_000);
 const haveImage = haveDocker && hasLocalImage(DOCKER_IMAGE);
 const itContainer = haveDocker && haveImage ? test : test.skip;

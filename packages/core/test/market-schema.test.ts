@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { createFileTrustStore } from "@agency/guard";
 import {
   ManifestError,
+  type PackageManifestBody,
+  packageInstallAllowed,
+  requirePackageTrust,
   signManifestBody,
   validatePackageManifest,
-  requirePackageTrust,
-  packageInstallAllowed,
-  type PackageManifestBody,
 } from "../src/plugins/manifest.ts";
 
 // ---------------------------------------------------------------------------
@@ -71,8 +71,14 @@ describe("marketplace manifest schema", () => {
 
   test("tampered body rejected (invalid-signature)", () => {
     const b = body();
-    const raw = signedRaw(b) as { manifest: PackageManifestBody; signature: { publicKey: string; signature: string } };
-    const tampered = { manifest: { ...b, permissions: { ...b.permissions, write: "allow" } }, signature: raw.signature };
+    const raw = signedRaw(b) as {
+      manifest: PackageManifestBody;
+      signature: { publicKey: string; signature: string };
+    };
+    const tampered = {
+      manifest: { ...b, permissions: { ...b.permissions, write: "allow" } },
+      signature: raw.signature,
+    };
     expectManifestError(() => validatePackageManifest(tampered), "invalid-signature", "tool_error");
   });
 
@@ -89,7 +95,10 @@ describe("marketplace manifest schema", () => {
   });
 
   test("corrupt signature bytes rejected (invalid-signature)", () => {
-    const raw = signedRaw(body()) as { manifest: PackageManifestBody; signature: { publicKey: string; signature: string } };
+    const raw = signedRaw(body()) as {
+      manifest: PackageManifestBody;
+      signature: { publicKey: string; signature: string };
+    };
     raw.signature.signature = Buffer.from("x".repeat(64)).toString("base64");
     expectManifestError(() => validatePackageManifest(raw), "invalid-signature", "tool_error");
   });
@@ -161,7 +170,7 @@ describe("marketplace manifest schema", () => {
 
   test("malformed: non-object / corrupt JSON shape rejected (invalid-manifest)", () => {
     expectManifestError(() => validatePackageManifest(null), "invalid-manifest", "tool_error");
-    expectManifestError(() => validatePackageManifest("{\"name\":"), "invalid-manifest", "tool_error");
+    expectManifestError(() => validatePackageManifest('{"name":'), "invalid-manifest", "tool_error");
     expectManifestError(() => validatePackageManifest({}), "invalid-manifest", "tool_error");
   });
 

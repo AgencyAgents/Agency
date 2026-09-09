@@ -133,11 +133,13 @@ export const CATALOG_CACHE_VERSION = 2;
  * forward (version defaults to 1); future versions are accepted as-is so a
  * newer writer never yields an empty registry. Non-blobs return undefined.
  */
-export function normalizeCachedCatalog(parsed: unknown): {
-  version: number;
-  savedAt: string;
-  models: ModelInfo[];
-} | undefined {
+export function normalizeCachedCatalog(parsed: unknown):
+  | {
+      version: number;
+      savedAt: string;
+      models: ModelInfo[];
+    }
+  | undefined {
   if (typeof parsed !== "object" || parsed === null) return undefined;
   const record = parsed as { version?: unknown; savedAt?: unknown; models?: unknown };
   if (!Array.isArray(record.models)) return undefined;
@@ -435,7 +437,11 @@ export async function fetchLiveIdsForFamily(
     case "google": {
       const ids = googleShapeIds(
         family,
-        await getLiveJson(family, http, `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`),
+        await getLiveJson(
+          family,
+          http,
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+        ),
       );
       // Google returns "models/gemini-3-pro"; the bare id is what requests use.
       return ids.map((id) => id.replace(/^models\//, ""));

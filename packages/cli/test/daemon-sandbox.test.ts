@@ -34,7 +34,12 @@ describe("daemon sandbox backend selection", () => {
   test("default config boots the software backend", () => {
     const config = loadConfig({ globalDir: tempDir("agency-sandbox-global-"), env: {} });
     expect(config.sandbox.backend).toBe("software");
-    const sandbox = createSandboxBackend(tempDir("agency-sandbox-root-"), { deny: [] }, undefined, config.sandbox);
+    const sandbox = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      config.sandbox,
+    );
     expect(sandbox).toBeInstanceOf(SandboxBoundary);
     expect(sandbox).not.toBeInstanceOf(DockerSandboxBackend);
   });
@@ -45,7 +50,12 @@ describe("daemon sandbox backend selection", () => {
       env: {},
       flags: { sandbox: { backend: "software" } },
     });
-    const sandbox = createSandboxBackend(tempDir("agency-sandbox-root-"), { deny: [] }, undefined, config.sandbox);
+    const sandbox = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      config.sandbox,
+    );
     expect(sandbox).toBeInstanceOf(SandboxBoundary);
   });
 
@@ -56,7 +66,12 @@ describe("daemon sandbox backend selection", () => {
       flags: { sandbox: { backend: "docker", image: "alpine:3.21", containerRoot: "/w" } },
     });
     expect(config.sandbox.backend).toBe("docker");
-    const sandbox = createSandboxBackend(tempDir("agency-sandbox-root-"), { deny: [] }, undefined, config.sandbox);
+    const sandbox = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      config.sandbox,
+    );
     expect(sandbox).toBeInstanceOf(DockerSandboxBackend);
     expect((sandbox as DockerSandboxBackend).containerRoot).toBe("/w");
   });
@@ -71,9 +86,7 @@ describe("daemon sandbox backend selection", () => {
   test("malformed backend values are rejected", () => {
     const dir = tempDir("agency-sandbox-global-");
     for (const backend of ["", "DOCKER", null, 42, { nested: true }]) {
-      expectZodSandboxError(() =>
-        loadConfig({ globalDir: dir, env: {}, flags: { sandbox: { backend } } }),
-      );
+      expectZodSandboxError(() => loadConfig({ globalDir: dir, env: {}, flags: { sandbox: { backend } } }));
     }
   });
 
@@ -83,13 +96,22 @@ describe("daemon sandbox backend selection", () => {
       env: { AGENCY_SANDBOX_BACKEND: "docker" },
     });
     expect(config.sandbox.backend).toBe("docker");
-    const sandbox = createSandboxBackend(tempDir("agency-sandbox-root-"), { deny: [] }, undefined, config.sandbox);
+    const sandbox = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      config.sandbox,
+    );
     expect(sandbox).toBeInstanceOf(DockerSandboxBackend);
   });
 
-  test("flags override the file layers and nested keys merge across layers", () => {    const globalDir = tempDir("agency-sandbox-global-");
+  test("flags override the file layers and nested keys merge across layers", () => {
+    const globalDir = tempDir("agency-sandbox-global-");
     const projectRoot = tempDir("agency-sandbox-project-");
-    writeFileSync(join(globalDir, "config.jsonc"), `{ "schemaVersion": 2, "sandbox": { "backend": "docker" } }`);
+    writeFileSync(
+      join(globalDir, "config.jsonc"),
+      `{ "schemaVersion": 2, "sandbox": { "backend": "docker" } }`,
+    );
     mkdirSync(join(projectRoot, ".agency"));
     writeFileSync(
       join(projectRoot, ".agency", "config.jsonc"),

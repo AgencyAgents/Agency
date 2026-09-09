@@ -56,7 +56,6 @@ import {
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import { resolveShell, type TeamMcpPool } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
-import { TaskUsageTracker } from "./task-ledger.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
 import {
@@ -82,6 +81,7 @@ import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
 import { createSessionScopes } from "./session-scopes.ts";
 import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
+import { TaskUsageTracker } from "./task-ledger.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
   type AgentDaemon,

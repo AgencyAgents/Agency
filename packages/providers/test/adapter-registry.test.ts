@@ -53,14 +53,16 @@ describe("adapter registry", () => {
     const first = resolveAdapterByFamily("test-gateway-registry", { baseUrl: "https://gw.example.com/v1" });
     expect(first.family).toBe("test-gateway-registry");
     expect(typeof first.stream).toBe("function");
-    expect(resolveAdapterByFamily("test-gateway-registry", { baseUrl: "https://gw.example.com/v1" })).not.toBe(
-      first,
-    );
+    expect(
+      resolveAdapterByFamily("test-gateway-registry", { baseUrl: "https://gw.example.com/v1" }),
+    ).not.toBe(first);
   });
 
   test("duplicate registration throws typed errors", () => {
     expect(() => registerAdapter(fakeAdapter("anthropic"))).toThrow(DuplicateAdapterError);
-    expect(() => registerAdapterFactory("openai", () => fakeAdapter("openai"))).toThrow(DuplicateAdapterError);
+    expect(() => registerAdapterFactory("openai", () => fakeAdapter("openai"))).toThrow(
+      DuplicateAdapterError,
+    );
     expect(() => registerAdapterFactory("openai-compatible", () => fakeAdapter("openai-compatible"))).toThrow(
       DuplicateAdapterError,
     );
@@ -71,14 +73,14 @@ describe("adapter registry", () => {
 
   test("malformed adapters rejected at registration with typed errors", () => {
     expect(() => registerAdapter(null as unknown as ProviderAdapter)).toThrow(InvalidAdapterError);
-    expect(() => registerAdapter({ family: "", stream: async function* () {} } as unknown as ProviderAdapter)).toThrow(
-      InvalidAdapterError,
-    );
+    expect(() =>
+      registerAdapter({ family: "", stream: async function* () {} } as unknown as ProviderAdapter),
+    ).toThrow(InvalidAdapterError);
     expect(() => registerAdapter({ family: "test-no-stream" } as unknown as ProviderAdapter)).toThrow(
       InvalidAdapterError,
     );
-    expect(
-      () => registerAdapter({ family: "test-bad-stream", stream: "nope" } as unknown as ProviderAdapter),
+    expect(() =>
+      registerAdapter({ family: "test-bad-stream", stream: "nope" } as unknown as ProviderAdapter),
     ).toThrow(InvalidAdapterError);
     expect(() => registerAdapterFactory("", () => fakeAdapter(""))).toThrow(InvalidAdapterError);
   });

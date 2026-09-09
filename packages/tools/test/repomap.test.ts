@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { estimateTokens } from "@agency/providers";
@@ -7,8 +7,9 @@ import {
   buildRepoMap,
   isRepoMapFresh,
   queryRepoMap,
-  renderRepoMap,
   REPOMAP_TRUNCATION_MARKER,
+  type RepoMapIndex,
+  renderRepoMap,
 } from "../src/repomap.ts";
 
 const dirs: string[] = [];
@@ -80,7 +81,9 @@ describe("repomap ignore", () => {
     expect(paths).not.toContain("dist/bundle.ts");
     expect(paths).toContain("src/auth.ts");
     const ranked = queryRepoMap(buildRepoMap(fixture()), "authenticate").map((f) => f.path);
-    expect(ranked.some((p) => p.includes("node_modules") || p.startsWith(".git/") || p.startsWith("dist/"))).toBe(false);
+    expect(
+      ranked.some((p) => p.includes("node_modules") || p.startsWith(".git/") || p.startsWith("dist/")),
+    ).toBe(false);
   });
 });
 
@@ -89,7 +92,10 @@ describe("repomap staleness", () => {
     const root = fixture();
     const index = buildRepoMap(root);
     expect(isRepoMapFresh(index)).toBe(true);
-    writeFileSync(join(root, "src/noise.ts"), "export function unrelatedWidget() {}\nexport function extra() {}\n");
+    writeFileSync(
+      join(root, "src/noise.ts"),
+      "export function unrelatedWidget() {}\nexport function extra() {}\n",
+    );
     expect(isRepoMapFresh(index)).toBe(false);
     expect(isRepoMapFresh(buildRepoMap(root))).toBe(true);
   });
@@ -115,7 +121,7 @@ describe("repomap malformed", () => {
     } catch {
       // symlink privilege absent: loop vector not exercisable here
     }
-    let index;
+    let index: RepoMapIndex;
     try {
       index = buildRepoMap(root);
     } finally {

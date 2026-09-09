@@ -21,7 +21,10 @@ describe("withMemoryFacts", () => {
   test("facts render under the default 2000-token cap with no marker", () => {
     expect(DEFAULT_MEMORY_TOKEN_CAP).toBe(2000);
     const composed = composeSystemPrompt(SECTIONS);
-    const withMem = withMemoryFacts(composed, [{ text: "prefers bun over npm" }, { text: "repo uses zod v4" }]);
+    const withMem = withMemoryFacts(composed, [
+      { text: "prefers bun over npm" },
+      { text: "repo uses zod v4" },
+    ]);
     expect(withMem.text).toContain("prefers bun over npm");
     expect(withMem.text).toContain("repo uses zod v4");
     expect(withMem.text).not.toContain(MEMORY_TRUNCATION_MARKER);

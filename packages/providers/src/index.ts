@@ -7,9 +7,10 @@ import { registerAdapter, registerAdapterFactory } from "./registry.ts";
 registerAdapter(anthropicAdapter);
 registerAdapter(openaiAdapter);
 registerAdapter(googleAdapter);
-registerAdapterFactory("openai-compatible", (family, baseUrl) => createOpenAiCompatibleAdapter(family, baseUrl));
+registerAdapterFactory("openai-compatible", (family, baseUrl) =>
+  createOpenAiCompatibleAdapter(family, baseUrl),
+);
 
-export { anthropicAdapter, createOpenAiCompatibleAdapter, googleAdapter, openaiAdapter };
 export * from "./auth/index.ts";
 export * from "./cache-policy.ts";
 export * from "./catalog/index.ts";
@@ -23,3 +24,4 @@ export * from "./sse.ts";
 export * from "./stream-recovery.ts";
 export * from "./tokenizers/index.ts";
 export * from "./types.ts";
+export { anthropicAdapter, createOpenAiCompatibleAdapter, googleAdapter, openaiAdapter };

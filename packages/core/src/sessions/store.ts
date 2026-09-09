@@ -448,7 +448,9 @@ export class SessionStore {
       try {
         listener(sessionId, entry);
       } catch (error) {
-        this.logger?.warn(`[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`);
+        this.logger?.warn(
+          `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,
+        );
         if (!this.logger)
           console.warn(
             `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,

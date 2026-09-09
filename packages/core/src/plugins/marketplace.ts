@@ -3,11 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { parse as parseJsonc } from "jsonc-parser";
-import {
-  requirePackageTrust,
-  validatePackageManifest,
-  type PackageManifestBody,
-} from "./manifest.ts";
+import { type PackageManifestBody, requirePackageTrust, validatePackageManifest } from "./manifest.ts";
 
 // ---------------------------------------------------------------------------
 // Marketplace lifecycle (Wave 4B, Todo 24).
@@ -122,15 +118,21 @@ function readPins(workspaceRoot: string): Record<string, string> {
 function readSnapshot(workspaceRoot: string, packageName: string): InstallSnapshot {
   const path = snapshotPath(workspaceRoot, packageName);
   if (!existsSync(path)) {
-    throw new MarketplaceError("no-snapshot", `no install snapshot for "${packageName}"; nothing to roll back`, {
-      packageName,
-    });
+    throw new MarketplaceError(
+      "no-snapshot",
+      `no install snapshot for "${packageName}"; nothing to roll back`,
+      {
+        packageName,
+      },
+    );
   }
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new MarketplaceError("corrupt-state", `install snapshot for "${packageName}" is corrupt`, { packageName });
+    throw new MarketplaceError("corrupt-state", `install snapshot for "${packageName}" is corrupt`, {
+      packageName,
+    });
   }
   if (
     !isRecord(raw) ||
@@ -181,11 +183,7 @@ export function trustMarketplacePackage(options: {
   writeJsonFile(pinsPath(options.workspaceRoot), pins);
 }
 
-function pinnedKey(
-  workspaceRoot: string,
-  packageDir: string,
-  explicit?: string,
-): string | undefined {
+function pinnedKey(workspaceRoot: string, packageDir: string, explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
   return readPins(workspaceRoot)[resolve(packageDir)];
 }
@@ -198,7 +196,9 @@ function readPackageRaw(packageDir: string): unknown {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new MarketplaceError("corrupt-state", `package manifest at ${path} is not valid JSON`, { packageDir });
+    throw new MarketplaceError("corrupt-state", `package manifest at ${path} is not valid JSON`, {
+      packageDir,
+    });
   }
 }
 
@@ -209,19 +209,29 @@ function checkConflicts(options: {
 }): void {
   for (const skill of options.body.skills) {
     if (options.registry?.has(skill.name)) {
-      throw new MarketplaceError("namespace-conflict", `skill "${skill.name}" collides with a registered tool`, {
-        skill: skill.name,
-      });
+      throw new MarketplaceError(
+        "namespace-conflict",
+        `skill "${skill.name}" collides with a registered tool`,
+        {
+          skill: skill.name,
+        },
+      );
     }
   }
   for (const name of Object.keys(options.body.mcpServers)) {
     if (name in options.existingMcp) {
-      throw new MarketplaceError("namespace-conflict", `MCP server "${name}" already configured`, { server: name });
-    }
-    if (options.registry?.has(name) || options.registry?.names().some((n) => n.startsWith(`${name}_`))) {
-      throw new MarketplaceError("namespace-conflict", `MCP server "${name}" collides with a registered tool`, {
+      throw new MarketplaceError("namespace-conflict", `MCP server "${name}" already configured`, {
         server: name,
       });
+    }
+    if (options.registry?.has(name) || options.registry?.names().some((n) => n.startsWith(`${name}_`))) {
+      throw new MarketplaceError(
+        "namespace-conflict",
+        `MCP server "${name}" collides with a registered tool`,
+        {
+          server: name,
+        },
+      );
     }
   }
 }
@@ -246,7 +256,11 @@ export interface MarketplaceReceipt {
 
 /** Install: validate, snapshot prior state, copy skills, record disabled state. */
 export function installMarketplacePackage(options: InstallMarketplaceOptions): MarketplaceReceipt {
-  requirePackageTrust({ store: options.store, packageDir: options.packageDir, explicitTrust: options.explicitTrust });
+  requirePackageTrust({
+    store: options.store,
+    packageDir: options.packageDir,
+    explicitTrust: options.explicitTrust,
+  });
   const raw = readPackageRaw(options.packageDir);
   const { manifest: body } = validatePackageManifest(
     raw,
@@ -298,7 +312,11 @@ export function installMarketplacePackage(options: InstallMarketplaceOptions): M
     createdSkillDirs,
   };
   mkdirSync(dirname(snapshotPath(options.workspaceRoot, body.name)), { recursive: true });
-  writeFileSync(snapshotPath(options.workspaceRoot, body.name), `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  writeFileSync(
+    snapshotPath(options.workspaceRoot, body.name),
+    `${JSON.stringify(snapshot, null, 2)}\n`,
+    "utf8",
+  );
   state[body.name] = {
     version: body.version,
     packageDir: options.packageDir,

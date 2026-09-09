@@ -8,8 +8,8 @@ import {
   BUILTIN_PROVIDER_METADATA,
   fetchLiveIdsForFamily,
   getProviderMetadata,
-  UnknownProviderError,
   type ModelInfo,
+  UnknownProviderError,
 } from "../src/registry.ts";
 
 const dirs: string[] = [];
@@ -155,7 +155,12 @@ describe("live model ids", () => {
     await fetchLiveIdsForFamily("xai", jsonHttp({ data: [] }, 200, seen), "k");
     expect(seen.url).toBe("https://api.x.ai/v1/models");
 
-    await fetchLiveIdsForFamily("openrouter", jsonHttp({ data: [] }, 200, seen), "k", "https://proxy.local/oai/");
+    await fetchLiveIdsForFamily(
+      "openrouter",
+      jsonHttp({ data: [] }, 200, seen),
+      "k",
+      "https://proxy.local/oai/",
+    );
     expect(seen.url).toBe("https://proxy.local/oai/models");
   });
 

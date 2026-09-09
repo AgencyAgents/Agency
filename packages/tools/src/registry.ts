@@ -85,7 +85,10 @@ export class ToolRegistry {
     try {
       pass = entry.predicate(entry.name, entry.riskTier);
     } catch (error) {
-      entry.failure = promotionFailedError(entry.name, `predicate threw: ${error instanceof Error ? error.message : String(error)}`);
+      entry.failure = promotionFailedError(
+        entry.name,
+        `predicate threw: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return this.awaitingPlaceholder(entry);
     }
     if (!pass) return unpromotedPlaceholder(entry.name, entry.riskTier, entry.description);
@@ -106,10 +109,7 @@ export class ToolRegistry {
 
   /** Placeholder whose handler awaits the shared inflight promotion, then
    *  delegates to the real tool; surfaces the typed failure when it rejects. */
-  private awaitingPlaceholder(
-    entry: DeferredEntry,
-    inflightOverride?: Promise<ToolSpec>,
-  ): ToolSpec {
+  private awaitingPlaceholder(entry: DeferredEntry, inflightOverride?: Promise<ToolSpec>): ToolSpec {
     if (entry.failure) {
       const message = entry.failure.message;
       return {
@@ -217,7 +217,10 @@ export class ToolRegistry {
     try {
       pass = entry.predicate(entry.name, entry.riskTier);
     } catch (error) {
-      entry.failure = promotionFailedError(entry.name, `predicate threw: ${error instanceof Error ? error.message : String(error)}`);
+      entry.failure = promotionFailedError(
+        entry.name,
+        `predicate threw: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw entry.failure;
     }
     if (!pass) {

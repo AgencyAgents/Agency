@@ -40,7 +40,12 @@ function stubCtx(board: BoardStore, team: ReturnType<typeof createTeamContext>, 
   } as unknown as DaemonContext;
 }
 
-function claim(board: BoardStore, handle: string, content: string, budgets?: { budgetUsd?: number; budgetTurns?: number }): string {
+function claim(
+  board: BoardStore,
+  handle: string,
+  content: string,
+  budgets?: { budgetUsd?: number; budgetTurns?: number },
+): string {
   const filed = board.file({ content, ...budgets }, "lead");
   expect(filed.ok).toBe(true);
   const id = (filed as { ok: true; item: { id: string } }).item.id;
@@ -211,7 +216,13 @@ describe("task-ledger", () => {
     expect(history[2]?.costUsd).toBeCloseTo(0.135, 9);
     expect(ledger.historyFor(taskB).length).toBe(1);
     expect(ledger.historyFor("no-such-task")).toEqual([]);
-    expect(ledger.totalsFor("no-such-task")).toEqual({ turns: 0, costUsd: 0, tokens: 0, inputTokens: 0, outputTokens: 0 });
+    expect(ledger.totalsFor("no-such-task")).toEqual({
+      turns: 0,
+      costUsd: 0,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    });
   });
 
   test("missing pricing records zero cost with tokens preserved, never crashes", () => {
@@ -277,7 +288,14 @@ describe("task-ledger", () => {
     expect(entry?.costUsd).toBe(0);
     expect(entry?.tokens).toBe(0);
     expect(ledger.totalsFor("t9").tokens).toBe(0);
-    expect(ledger.recordTurn("", { usage: { inputTokens: 1, outputTokens: 1 }, costUsd: 1, model: "m", handle: "h" })).toBeNull();
+    expect(
+      ledger.recordTurn("", {
+        usage: { inputTokens: 1, outputTokens: 1 },
+        costUsd: 1,
+        model: "m",
+        handle: "h",
+      }),
+    ).toBeNull();
     expect(warnings.length).toBeGreaterThanOrEqual(1);
   });
 

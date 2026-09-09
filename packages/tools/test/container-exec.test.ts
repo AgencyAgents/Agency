@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { SandboxBackend } from "@agency/guard";
 import {
   DockerSandboxBackend,
   FULL_CAPABILITIES,
@@ -19,7 +28,6 @@ import {
   type ContainerExecOptions,
   type ContainerExecResult,
 } from "../src/container-exec.ts";
-import type { SandboxBackend } from "@agency/guard";
 import type { ToolDeps } from "../src/contract.ts";
 import { ProcessManager } from "../src/process-manager.ts";
 import { CWD_MARKER, resolveShell } from "../src/shell.ts";
@@ -100,7 +108,11 @@ class FakeContainerBackend extends SandboxBoundary {
           context: { argv, timedOut: true, stdout, stderr },
         });
       }
-      return { stdout: toContainerMarkers(stdout, (printed) => this.toContainerPath(printed)), stderr, exitCode };
+      return {
+        stdout: toContainerMarkers(stdout, (printed) => this.toContainerPath(printed)),
+        stderr,
+        exitCode,
+      };
     } finally {
       opts.signal?.removeEventListener("abort", onAbort);
       if (timer !== undefined) clearTimeout(timer);
@@ -194,7 +206,7 @@ describe("container-exec branch selection", () => {
     fakes.push(backend);
     expect(asContainerExecBackend(backend)).not.toBeUndefined();
     const impostor = new SandboxBoundary(root) as unknown as Record<string, unknown>;
-    impostor["exec"] = 42;
+    impostor.exec = 42;
     expect(asContainerExecBackend(impostor as unknown as SandboxBackend)).toBeUndefined();
   });
 
@@ -357,7 +369,7 @@ describe("file tools stay on host paths under a container backend", () => {
   });
 });
 
-const DOCKER_IMAGE = process.env["AGENCY_DOCKER_TEST_IMAGE"] ?? "alpine";
+const DOCKER_IMAGE = process.env.AGENCY_DOCKER_TEST_IMAGE ?? "alpine";
 const haveDocker = await isDockerAvailable(undefined, 5_000);
 const haveImage = haveDocker && hasLocalImage(DOCKER_IMAGE);
 const itContainer = haveDocker && haveImage ? test : test.skip;

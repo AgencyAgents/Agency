@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { estimateTokens } from "@agency/providers";
 import { loadGitignore } from "./gitignore.ts";
@@ -96,7 +96,7 @@ function walkRelPaths(root: string): { paths: WalkedFile[]; capped: boolean } {
   const stack: string[] = [""];
   outer: while (stack.length > 0) {
     const dir = stack.pop() as string;
-    let entries;
+    let entries: Dirent[];
     try {
       entries = readdirSync(join(root, dir), { withFileTypes: true });
     } catch {
@@ -237,7 +237,12 @@ export function renderRepoMap(
     }
     const marker = markerFor(index.capped ? ranked.length - lines.length : omitted);
     acc = lines.length > 0 ? `${lines.join("\n")}\n${marker}` : marker;
-    return { text: acc, truncated: true, omitted: ranked.length - lines.length, estimatedTokens: estimateTokens(acc) };
+    return {
+      text: acc,
+      truncated: true,
+      omitted: ranked.length - lines.length,
+      estimatedTokens: estimateTokens(acc),
+    };
   }
   return { text: acc, truncated: false, omitted: 0, estimatedTokens: estimateTokens(acc) };
 }

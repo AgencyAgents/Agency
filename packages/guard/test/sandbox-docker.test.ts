@@ -3,21 +3,20 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { SandboxBoundary } from "../src/sandbox.ts";
 import {
-  DockerSandboxBackend,
   buildVolumeArgs,
+  DockerSandboxBackend,
   hasLocalImage,
   isDockerAvailable,
   normalizeContainerRoot,
   translateHostToMount,
-  translateMountToHost,
 } from "../src/sandbox-docker.ts";
-import { SandboxBoundary } from "../src/sandbox.ts";
 
 // Docker container backend (wave1-todo2). Pure translation logic is
 // unit-tested with no daemon; container exec is gated and skips cleanly
 // when no daemon (or no local image, so suites never pull) is reachable.
-const DOCKER_IMAGE = process.env["AGENCY_DOCKER_TEST_IMAGE"] ?? "alpine";
+const DOCKER_IMAGE = process.env.AGENCY_DOCKER_TEST_IMAGE ?? "alpine";
 const haveDocker = await isDockerAvailable(undefined, 5_000);
 const haveImage = haveDocker && hasLocalImage(DOCKER_IMAGE);
 const canRunContainer = haveDocker && haveImage;
@@ -124,7 +123,7 @@ describe("sandbox-docker pure translation (no daemon)", () => {
     try {
       const backend = new DockerSandboxBackend(root);
       // Trailing slash on an in-root dir still maps inside the mount.
-      expect(backend.toContainerPath(join("sub") + "/")).toBe("/workspace/sub");
+      expect(backend.toContainerPath(`${join("sub")}/`)).toBe("/workspace/sub");
       // Dot segments that stay inside resolve normally.
       expect(backend.toContainerPath(join("sub", ".", "f.txt"))).toBe("/workspace/sub/f.txt");
       // UNC, parent escapes, and absolute outside paths are denied.

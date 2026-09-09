@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -49,7 +57,9 @@ function blobCount(storeDir: string): number {
 function journalLines(storeDir: string): string[] {
   const file = join(storeDir, "shadow-journal.jsonl");
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split("\n").filter((l) => l.length > 0);
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0);
 }
 
 describe("checkpoint boundary: pre-merge capture plus turn-level shadows", () => {
@@ -59,7 +69,10 @@ describe("checkpoint boundary: pre-merge capture plus turn-level shadows", () =>
     const captured = recordIntegrationCheckpoint([a, b]);
 
     const snapshots = new SnapshotStore(store);
-    for (const [path, text] of [[a, "alpha-v1"], [b, "beta-v1"]] as const) {
+    for (const [path, text] of [
+      [a, "alpha-v1"],
+      [b, "beta-v1"],
+    ] as const) {
       snapshots.capture(path, text);
       snapshots.recordAfter(path);
     }
@@ -104,7 +117,7 @@ describe("checkpoint boundary: pre-merge capture plus turn-level shadows", () =>
     writeState(a, b, "alpha-v2", "beta-v2");
     snapshots.restoreShadowCommit(hash, { targetDir: work, sessionRoot: work });
     restoreIntegrationCheckpoint(correlated);
-    const stateOnce = sha(readFileSync(a, "utf8") + "\n" + readFileSync(b, "utf8"));
+    const stateOnce = sha(`${readFileSync(a, "utf8")}\n${readFileSync(b, "utf8")}`);
     const journalOnce = journalLines(store);
     const blobsOnce = blobCount(store);
 
@@ -112,7 +125,7 @@ describe("checkpoint boundary: pre-merge capture plus turn-level shadows", () =>
     const integAgain = restoreIntegrationCheckpoint(correlated);
     expect(shadowAgain.files.length).toBe(2);
     expect(new Set(integAgain.restored)).toEqual(new Set([a, b]));
-    expect(sha(readFileSync(a, "utf8") + "\n" + readFileSync(b, "utf8"))).toBe(stateOnce);
+    expect(sha(`${readFileSync(a, "utf8")}\n${readFileSync(b, "utf8")}`)).toBe(stateOnce);
     expect(journalLines(store)).toEqual(journalOnce);
     expect(journalOnce.length).toBe(1);
     expect(blobCount(store)).toBe(blobsOnce);

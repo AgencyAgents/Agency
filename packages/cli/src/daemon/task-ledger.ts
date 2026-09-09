@@ -60,7 +60,12 @@ export class TaskUsageTracker {
   private readonly onWarn: (message: string) => void;
 
   constructor(
-    opts: { file?: string; sessionsDir?: string; now?: () => number; onWarn?: (message: string) => void } = {},
+    opts: {
+      file?: string;
+      sessionsDir?: string;
+      now?: () => number;
+      onWarn?: (message: string) => void;
+    } = {},
   ) {
     this.file = opts.file ?? (opts.sessionsDir ? join(opts.sessionsDir, "task-ledger.jsonl") : undefined);
     this.now = opts.now ?? Date.now;
@@ -168,7 +173,9 @@ export class TaskUsageTracker {
       try {
         parsed = JSON.parse(line);
       } catch (error) {
-        this.onWarn(`corrupt ledger line ${offset + 1} skipped: ${error instanceof Error ? error.message : String(error)}`);
+        this.onWarn(
+          `corrupt ledger line ${offset + 1} skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
         continue;
       }
       if (!hasTaskEntryShape(parsed)) {
@@ -243,7 +250,10 @@ export function assertTaskPreflightCaps(args: {
   );
   if (!gate.ok) {
     if (args.announce !== undefined) {
-      announceHook(args.announce.bus, "cost.threshold", { reason: gate.reason, sessionId: args.announce.sessionId });
+      announceHook(args.announce.bus, "cost.threshold", {
+        reason: gate.reason,
+        sessionId: args.announce.sessionId,
+      });
     }
     throw new AgencyError(ErrorCode.PERMISSION_DENIED, gate.reason, { source: "spend" });
   }

@@ -240,7 +240,9 @@ export function loadSemanticIndex(
     try {
       parsed = JSON.parse(line) as ChunkLine;
     } catch (error) {
-      warn(`corrupt chunk line ${offset + 1} skipped: ${error instanceof Error ? error.message : String(error)}`);
+      warn(
+        `corrupt chunk line ${offset + 1} skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
       continue;
     }
     if (typeof parsed === "object" && parsed !== null && (parsed as ChunkLine).kind === "header") {

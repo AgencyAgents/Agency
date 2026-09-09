@@ -11,7 +11,12 @@ import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agenc
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { SessionScope } from "@agency/tools";
-import { assertPreflightCaps, estimatePreflightTurnCostUsd, priceForModel, recordTurnCompletion } from "../costing.ts";
+import {
+  assertPreflightCaps,
+  estimatePreflightTurnCostUsd,
+  priceForModel,
+  recordTurnCompletion,
+} from "../costing.ts";
 import { assertTaskPreflightCaps } from "../task-ledger.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {

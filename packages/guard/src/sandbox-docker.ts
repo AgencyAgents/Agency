@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { relative, resolve, sep } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RequestApproval } from "./approval.ts";
-import { SandboxBoundary } from "./sandbox.ts";
 import type { CommandPolicy, ExternalDirectoryDecision, SandboxBackend } from "./sandbox.ts";
+import { SandboxBoundary } from "./sandbox.ts";
 
 /** Container path the workspace root mounts at (POSIX inside the container). */
 export const DEFAULT_CONTAINER_ROOT = "/workspace";
@@ -91,7 +91,10 @@ export function buildCapDropArgs(caps: readonly string[] | undefined): string[] 
  * so the allowlist itself is enforced at tool-policy level (`requireNetwork`
  * over capabilities); this flag is the coarse container-level lock.
  */
-export function buildNetworkArgs(egress: readonly string[] | undefined, network: string | undefined): string[] {
+export function buildNetworkArgs(
+  egress: readonly string[] | undefined,
+  network: string | undefined,
+): string[] {
   if (network !== undefined) return ["--network", network];
   if (egress !== undefined) return ["--network", "none"];
   return [];
@@ -140,7 +143,11 @@ function hostStartsWith(resolved: string, root: string): boolean {
  * Maps an already-resolved host path to its container path.
  * Throws PERMISSION_DENIED when the path is not under the host root.
  */
-export function translateHostToMount(resolvedHostPath: string, hostRoot: string, containerRoot: string): string {
+export function translateHostToMount(
+  resolvedHostPath: string,
+  hostRoot: string,
+  containerRoot: string,
+): string {
   if (!hostStartsWith(resolvedHostPath, hostRoot)) {
     throw new AgencyError(ErrorCode.PERMISSION_DENIED, `"${resolvedHostPath}" is outside the mounted root`, {
       source: "sandbox-docker",
@@ -184,8 +191,11 @@ export function buildVolumeArgs(hostRoot: string, containerRoot: string): string
 }
 
 /** True when a Docker daemon answers `docker info` within the timeout. */
-export async function isDockerAvailable(dockerBin?: string, timeoutMs: number = DOCKER_PROBE_TIMEOUT_MS): Promise<boolean> {
-  const bin = dockerBin ?? process.env["AGENCY_DOCKER_BIN"] ?? "docker";
+export async function isDockerAvailable(
+  dockerBin?: string,
+  timeoutMs: number = DOCKER_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  const bin = dockerBin ?? process.env.AGENCY_DOCKER_BIN ?? "docker";
   try {
     const child = Bun.spawn([bin, "info", "--format", "{{.ServerVersion}}"], {
       stdout: "pipe",
@@ -211,9 +221,12 @@ export async function isDockerAvailable(dockerBin?: string, timeoutMs: number = 
 
 /** True when the image exists locally (no pull); keeps integration tests offline. */
 export function hasLocalImage(image: string, dockerBin?: string): boolean {
-  const bin = dockerBin ?? process.env["AGENCY_DOCKER_BIN"] ?? "docker";
+  const bin = dockerBin ?? process.env.AGENCY_DOCKER_BIN ?? "docker";
   try {
-    const out = spawnSync(bin, ["image", "inspect", image], { stdio: "ignore", timeout: DOCKER_PROBE_TIMEOUT_MS });
+    const out = spawnSync(bin, ["image", "inspect", image], {
+      stdio: "ignore",
+      timeout: DOCKER_PROBE_TIMEOUT_MS,
+    });
     return out.status === 0;
   } catch {
     return false;
@@ -244,9 +257,9 @@ export class DockerSandboxBackend implements SandboxBackend {
   ) {
     this.local = new SandboxBoundary(root, commandPolicy, externalDecision);
     this.containerRoot = normalizeContainerRoot(options.containerRoot ?? DEFAULT_CONTAINER_ROOT);
-    this.image = options.image ?? process.env["AGENCY_DOCKER_TEST_IMAGE"] ?? "alpine";
+    this.image = options.image ?? process.env.AGENCY_DOCKER_TEST_IMAGE ?? "alpine";
     this.container = options.container;
-    this.dockerBin = options.dockerBin ?? process.env["AGENCY_DOCKER_BIN"] ?? "docker";
+    this.dockerBin = options.dockerBin ?? process.env.AGENCY_DOCKER_BIN ?? "docker";
     this.networkFlags = buildNetworkArgs(options.egress, options.network);
     this.capFlags = buildCapDropArgs(options.capDrop);
     this.probeTimeoutMs = options.probeTimeoutMs ?? DOCKER_PROBE_TIMEOUT_MS;
@@ -284,13 +297,27 @@ export class DockerSandboxBackend implements SandboxBackend {
   }
 
   /** Docker CLI argv for a container run; `-i` keeps stdio attached for streamed children. */
-  private runArgs(argv: string[], workdir: string, interactive: boolean, env?: Record<string, string>): string[] {
+  private runArgs(
+    argv: string[],
+    workdir: string,
+    interactive: boolean,
+    env?: Record<string, string>,
+  ): string[] {
     const envFlags = interactive ? Object.entries(env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]) : [];
     // Pinned-container `docker exec` cannot set network or capabilities: the
     // container's network/caps are fixed at creation, so the knobs apply to
     // one-shot `docker run` only (documented in configuration.md).
     return this.container
-      ? [this.dockerBin, "exec", ...(interactive ? ["-i"] : []), ...envFlags, "-w", workdir, this.container, ...argv]
+      ? [
+          this.dockerBin,
+          "exec",
+          ...(interactive ? ["-i"] : []),
+          ...envFlags,
+          "-w",
+          workdir,
+          this.container,
+          ...argv,
+        ]
       : [
           this.dockerBin,
           "run",
@@ -372,7 +399,15 @@ export class DockerSandboxBackend implements SandboxBackend {
   async spawnStdio(
     argv: string[],
     opts: { cwd?: string; env?: Record<string, string> } = {},
-  ): Promise<{ stdin: unknown; stdout: unknown; stderr: unknown; exited: Promise<number>; pid?: number; kill(): void }> {    this.checkCommand(argv.join(" "));
+  ): Promise<{
+    stdin: unknown;
+    stdout: unknown;
+    stderr: unknown;
+    exited: Promise<number>;
+    pid?: number;
+    kill(): void;
+  }> {
+    this.checkCommand(argv.join(" "));
     const workdir = opts.cwd ? this.toContainerPath(opts.cwd) : this.containerRoot;
     const child = Bun.spawn(this.runArgs(argv, workdir, true, opts.env), {
       stdin: "pipe",
@@ -412,8 +447,8 @@ export async function ensureSandboxAvailable(backend: SandboxBackend): Promise<v
   if (reachable) return;
   throw new AgencyError(
     ErrorCode.INTERNAL,
-    "sandbox.backend is \"docker\" but no Docker daemon is reachable (`docker info` failed). " +
-      "Start the Docker daemon, or set sandbox.backend to \"software\" (AGENCY_SANDBOX_BACKEND=software).",
+    'sandbox.backend is "docker" but no Docker daemon is reachable (`docker info` failed). ' +
+      'Start the Docker daemon, or set sandbox.backend to "software" (AGENCY_SANDBOX_BACKEND=software).',
     { source: "sandbox-docker" },
   );
 }

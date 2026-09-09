@@ -3,13 +3,13 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { SandboxBoundary } from "../src/sandbox.ts";
 import {
-  DockerSandboxBackend,
   buildCapDropArgs,
   buildNetworkArgs,
+  DockerSandboxBackend,
   ensureSandboxAvailable,
 } from "../src/sandbox-docker.ts";
-import { SandboxBoundary } from "../src/sandbox.ts";
 
 // Wave1-todo6: egress + cap-drop flag construction, constructor validation,
 // and the fail-closed no-daemon gate. All daemon-free: asserts argv helper

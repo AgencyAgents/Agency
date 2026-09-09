@@ -78,7 +78,9 @@ export class JsonlFileMemoryStorage implements MemoryStorage {
         continue;
       }
       if (!hasFactShape(parsed, sessionId)) {
-        this.warn(`memory line ${offset + 1} in ${sessionId}.memory.jsonl skipped (shape or session mismatch)`);
+        this.warn(
+          `memory line ${offset + 1} in ${sessionId}.memory.jsonl skipped (shape or session mismatch)`,
+        );
         continue;
       }
       facts.push({ ...parsed, source: parsed.source ?? "unknown" });
@@ -138,7 +140,7 @@ export class MemoryStore {
       source,
     };
     await this.storage.append(sessionId, fact);
-    (this.cache.get(sessionId) ?? this.cache.set(sessionId, []).get(sessionId) as MemoryFact[]).push(fact);
+    (this.cache.get(sessionId) ?? (this.cache.set(sessionId, []).get(sessionId) as MemoryFact[])).push(fact);
     this.loaded.add(sessionId);
     return fact;
   }

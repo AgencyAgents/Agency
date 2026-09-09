@@ -3,7 +3,13 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
 import type { CachedCatalog } from "../catalog-cache.ts";
-import { BUILTIN_MODELS, CATALOG_CACHE_VERSION, type ModelInfo, type ModelStatus, normalizeCachedCatalog } from "../registry.ts";
+import {
+  BUILTIN_MODELS,
+  CATALOG_CACHE_VERSION,
+  type ModelInfo,
+  type ModelStatus,
+  normalizeCachedCatalog,
+} from "../registry.ts";
 
 /**
  * The models.dev catalog (mirrored at models.opencode.ai) as a single blob:
@@ -118,8 +124,7 @@ function mapModel(
     pricing: {
       inputPerMTok: (model.cost?.input ?? 0) * PER_MTOK,
       outputPerMTok: (model.cost?.output ?? 0) * PER_MTOK,
-      cachedInputPerMTok:
-        model.cost?.cache_read !== undefined ? model.cost.cache_read * PER_MTOK : undefined,
+      cachedInputPerMTok: model.cost?.cache_read !== undefined ? model.cost.cache_read * PER_MTOK : undefined,
     },
     capabilities: {
       tools: model.tool_call ?? false,

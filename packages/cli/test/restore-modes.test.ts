@@ -64,7 +64,12 @@ async function startDaemon() {
     tools: [],
   });
   daemons.push(daemon);
-  return { daemon, workspaceRoot, base: `http://127.0.0.1:${daemon.httpPort}`, token: daemon.server.token as string };
+  return {
+    daemon,
+    workspaceRoot,
+    base: `http://127.0.0.1:${daemon.httpPort}`,
+    token: daemon.server.token as string,
+  };
 }
 
 async function rpcCall(
@@ -84,7 +89,12 @@ async function rpcCall(
   };
 }
 
-async function rpcOk(base: string, token: string, method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+async function rpcOk(
+  base: string,
+  token: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<unknown> {
   const { status, body } = await rpcCall(base, token, method, params);
   if (status !== 200 || body.error !== undefined || body.result === undefined) {
     throw new Error(`rpc ${method} failed (${status}): ${JSON.stringify(body)}`);
@@ -154,7 +164,9 @@ describe("undo_run restore modes", () => {
     expect(await tipOf(base, token, sessionId)).toBe(tipBefore);
     expect(result.tipId).toBe(tipBefore);
     expect(await entryCount(base, token, sessionId)).toBe(entriesBefore);
-    console.log(`restore-modes files-only: restored=${result.restored} tip-kept=${result.tipId === tipBefore}`);
+    console.log(
+      `restore-modes files-only: restored=${result.restored} tip-kept=${result.tipId === tipBefore}`,
+    );
   }, 30_000);
 
   test("task-only rolls the session back without touching files", async () => {
@@ -177,7 +189,9 @@ describe("undo_run restore modes", () => {
     expect(await entryCount(base, token, sessionId)).toBeLessThan(entriesBefore);
     expect(readFileSync(join(workspaceRoot, "note.txt"), "utf8")).toBe("dirty\n");
     expect(commitHash.length).toBe(64);
-    console.log(`restore-modes task-only: tip ${String(tipBefore).slice(0, 8)} -> ${String(result.tipId).slice(0, 8)} file-untouched=true`);
+    console.log(
+      `restore-modes task-only: tip ${String(tipBefore).slice(0, 8)} -> ${String(result.tipId).slice(0, 8)} file-untouched=true`,
+    );
   }, 30_000);
 
   test("both restores files and rolls the tip back", async () => {

@@ -3,13 +3,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
-import { loadCanonicalCatalog, loadCachedCatalog, loadModelRegistry, refreshCatalog, saveCachedCatalog } from "../src/catalog-cache.ts";
 import {
   convertModelsDevCatalogLenient,
   loadCachedModelsDevCatalog,
   MODELS_DEV_CACHE_FILE,
   saveModelsDevCatalog,
 } from "../src/catalog/models-dev.ts";
+import {
+  loadCachedCatalog,
+  loadCanonicalCatalog,
+  loadModelRegistry,
+  refreshCatalog,
+  saveCachedCatalog,
+} from "../src/catalog-cache.ts";
 import { BUILTIN_MODELS, CATALOG_CACHE_VERSION, type ModelInfo } from "../src/registry.ts";
 
 const dirs: string[] = [];
@@ -110,8 +116,12 @@ describe("catalog expansion toward 75+ providers", () => {
   });
 
   test("merge order holds: builtin base, models.dev overlay, live bare ids", () => {
-    const builtin = [model({ id: "m", family: "f", name: "base", pricing: { inputPerMTok: 1, outputPerMTok: 1 } })];
-    const modelsDev = [model({ id: "m", family: "f", name: "overlay", pricing: { inputPerMTok: 9, outputPerMTok: 9 } })];
+    const builtin = [
+      model({ id: "m", family: "f", name: "base", pricing: { inputPerMTok: 1, outputPerMTok: 1 } }),
+    ];
+    const modelsDev = [
+      model({ id: "m", family: "f", name: "overlay", pricing: { inputPerMTok: 9, outputPerMTok: 9 } }),
+    ];
     const merged = refreshCatalog({ builtin, modelsDev, liveIds: { f: ["m", "fresh-id"], g: ["m"] } });
     expect(merged.filter((m) => `${m.family}:${m.id}` === "f:m")).toHaveLength(1);
     expect(merged.find((m) => m.family === "f" && m.id === "m")?.pricing.inputPerMTok).toBe(9);
@@ -148,7 +158,11 @@ describe("versioned caches with unversioned migration", () => {
     writeFileSync(join(dir, MODELS_DEV_CACHE_FILE), JSON.stringify({ models: "nope" }));
     expect(loadCachedCatalog(dir)).toBeUndefined();
     expect(loadCachedModelsDevCatalog(dir)).toBeUndefined();
-    const skewed = { version: 99, savedAt: new Date().toISOString(), models: [model({ id: "s", family: "f" })] };
+    const skewed = {
+      version: 99,
+      savedAt: new Date().toISOString(),
+      models: [model({ id: "s", family: "f" })],
+    };
     writeFileSync(join(dir, "model-catalog.json"), JSON.stringify(skewed));
     expect(loadCachedCatalog(dir)?.models[0]?.id).toBe("s");
   });

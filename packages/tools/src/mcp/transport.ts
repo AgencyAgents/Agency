@@ -1,6 +1,10 @@
 import type { SandboxBackend } from "@agency/guard";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { asContainerExecBackend, asContainerStdioBackend, type ContainerStdioBackend } from "../container-exec.ts";
+import {
+  asContainerExecBackend,
+  asContainerStdioBackend,
+  type ContainerStdioBackend,
+} from "../container-exec.ts";
 import type { McpServerConfig } from "./config.ts";
 
 export interface McpTransport {

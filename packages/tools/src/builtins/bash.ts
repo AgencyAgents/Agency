@@ -1,11 +1,11 @@
 import { t } from "@agency/i18n";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.ts";
 import type { ToolContext, ToolDeps, ToolResult, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { CWD_MARKER, EXIT_MARKER, parseShellOutput, type ShellConfig } from "../shell.ts";
 import { truncateWithSpill } from "../truncate.ts";
-import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.ts";
 
 /**
  * Byte cap for a single bash result. The session-wide caps in
@@ -102,10 +102,10 @@ async function runContainerExec(
     try {
       execResult = await backend.exec(argv, { cwd, timeoutMs: timeout, signal: ctx.signal });
     } catch (e) {
-      if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context["timedOut"] === true) {
+      if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
         const partial = (value: unknown): string => (typeof value === "string" ? value : "");
         return finish(
-          { aborted: true, stdout: partial(e.context["stdout"]), stderr: partial(e.context["stderr"]) },
+          { aborted: true, stdout: partial(e.context.stdout), stderr: partial(e.context.stderr) },
           true,
           toHost,
         );

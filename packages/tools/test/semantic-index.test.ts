@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -74,7 +74,12 @@ describe("semantic-index recall", () => {
     const root = fixture();
     const index = buildSemanticIndex(root);
     const { hits } = querySemanticIndex(index, "quantum photosynthesis orbital entanglement");
-    const best = Math.max(0, ...index.chunks.map((c) => cosineSimilarity(hashedTokenVector("quantum photosynthesis orbital entanglement"), c.vector)));
+    const best = Math.max(
+      0,
+      ...index.chunks.map((c) =>
+        cosineSimilarity(hashedTokenVector("quantum photosynthesis orbital entanglement"), c.vector),
+      ),
+    );
     console.log(`negative best=${best.toFixed(3)} hits=${hits.length}`);
     expect(best).toBeLessThan(DEFAULT_SEMANTIC_THRESHOLD);
     expect(hits).toEqual([]);

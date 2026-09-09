@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
-import { createPrivateKey, createPublicKey, sign, verify, type KeyObject } from "node:crypto";
-import { z } from "zod";
+import { createPrivateKey, createPublicKey, type KeyObject, sign, verify } from "node:crypto";
 import type { ToolPermissionValue, TrustStore } from "@agency/guard";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { McpServerConfigSchema } from "@agency/tools";
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Marketplace package manifest (Wave 4B, Todo 23).
@@ -146,15 +146,25 @@ export function signManifestBodyWithB64Key(
   body: PackageManifestBody,
   privateKeyB64: string,
 ): { publicKey: string; signature: string } {
-  return signManifestBody(body, createPrivateKey({ key: Buffer.from(privateKeyB64, "base64"), format: "der", type: "pkcs8" }));
+  return signManifestBody(
+    body,
+    createPrivateKey({ key: Buffer.from(privateKeyB64, "base64"), format: "der", type: "pkcs8" }),
+  );
 }
 
 /** Verify the detached signature. Any failure (bad key, bad length, crypto
  *  mismatch) is a typed invalid-signature rejection — fail closed. */
-export function verifyManifestSignature(body: PackageManifestBody, signature: PackageManifest["signature"]): void {
+export function verifyManifestSignature(
+  body: PackageManifestBody,
+  signature: PackageManifest["signature"],
+): void {
   let keyObject: KeyObject;
   try {
-    keyObject = createPublicKey({ key: Buffer.from(signature.publicKey, "base64"), format: "der", type: "spki" });
+    keyObject = createPublicKey({
+      key: Buffer.from(signature.publicKey, "base64"),
+      format: "der",
+      type: "spki",
+    });
   } catch {
     throw new ManifestError("invalid-signature", "manifest public key is not a valid ed25519 SPKI key");
   }
@@ -165,7 +175,10 @@ export function verifyManifestSignature(body: PackageManifestBody, signature: Pa
     throw new ManifestError("invalid-signature", "manifest signature is not valid base64");
   }
   if (sigBytes.length !== 64) {
-    throw new ManifestError("invalid-signature", `manifest signature must be 64 bytes, got ${sigBytes.length}`);
+    throw new ManifestError(
+      "invalid-signature",
+      `manifest signature must be 64 bytes, got ${sigBytes.length}`,
+    );
   }
   let ok = false;
   try {
@@ -173,7 +186,11 @@ export function verifyManifestSignature(body: PackageManifestBody, signature: Pa
   } catch {
     ok = false;
   }
-  if (!ok) throw new ManifestError("invalid-signature", "manifest signature verification failed (tampered or wrong key)");
+  if (!ok)
+    throw new ManifestError(
+      "invalid-signature",
+      "manifest signature verification failed (tampered or wrong key)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -184,17 +201,24 @@ export function verifyManifestSignature(body: PackageManifestBody, signature: Pa
  *  no realpath available for not-yet-installed files, so reject lexically). */
 export function assertTraversalFree(label: string, value: string): void {
   const normalized = value.replace(/\\/g, "/");
-  const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:(\/|$)/.test(normalized) || normalized.startsWith("//");
+  const isAbsolute =
+    normalized.startsWith("/") || /^[A-Za-z]:(\/|$)/.test(normalized) || normalized.startsWith("//");
   const segments = normalized.split("/");
   if (isAbsolute || segments.includes("..")) {
-    throw new ManifestError("path-traversal", `${label} must be a relative in-package path without "..": ${value}`);
+    throw new ManifestError(
+      "path-traversal",
+      `${label} must be a relative in-package path without "..": ${value}`,
+    );
   }
   if (value.length === 0) throw new ManifestError("path-traversal", `${label} must not be empty`);
 }
 
 function checkManifestShape(body: PackageManifestBody): void {
   if (!PACKAGE_NAME_RE.test(body.name)) {
-    throw new ManifestError("invalid-manifest", `manifest name "${body.name}" must match ${PACKAGE_NAME_RE.source}`);
+    throw new ManifestError(
+      "invalid-manifest",
+      `manifest name "${body.name}" must match ${PACKAGE_NAME_RE.source}`,
+    );
   }
   if (!SEMVER_RE.test(body.version)) {
     throw new ManifestError("invalid-manifest", `manifest version "${body.version}" must be semver x.y.z`);
@@ -202,7 +226,10 @@ function checkManifestShape(body: PackageManifestBody): void {
   const seenSkills = new Set<string>();
   for (const skill of body.skills) {
     if (!SKILL_NAME_RE.test(skill.name)) {
-      throw new ManifestError("invalid-manifest", `skill name "${skill.name}" must match ${SKILL_NAME_RE.source}`);
+      throw new ManifestError(
+        "invalid-manifest",
+        `skill name "${skill.name}" must match ${SKILL_NAME_RE.source}`,
+      );
     }
     if (seenSkills.has(skill.name)) {
       throw new ManifestError("invalid-manifest", `duplicate skill name "${skill.name}"`);
@@ -212,11 +239,17 @@ function checkManifestShape(body: PackageManifestBody): void {
   }
   const serverNames = Object.keys(body.mcpServers);
   if (serverNames.length > MANIFEST_MAX_MCP_SERVERS) {
-    throw new ManifestError("invalid-manifest", `too many mcpServers (${serverNames.length} > ${MANIFEST_MAX_MCP_SERVERS})`);
+    throw new ManifestError(
+      "invalid-manifest",
+      `too many mcpServers (${serverNames.length} > ${MANIFEST_MAX_MCP_SERVERS})`,
+    );
   }
   const permKeys = Object.keys(body.permissions);
   if (permKeys.length > MANIFEST_MAX_PERMISSIONS) {
-    throw new ManifestError("invalid-manifest", `too many permissions (${permKeys.length} > ${MANIFEST_MAX_PERMISSIONS})`);
+    throw new ManifestError(
+      "invalid-manifest",
+      `too many permissions (${permKeys.length} > ${MANIFEST_MAX_PERMISSIONS})`,
+    );
   }
   for (const [tool, value] of Object.entries(body.permissions)) {
     void (value as ToolPermissionValue);
@@ -236,9 +269,13 @@ export function assertPermissionsAllowlisted(
   const allow = new Set(allowed);
   for (const key of Object.keys(permissions)) {
     if (!allow.has(key)) {
-      throw new ManifestError("permission-escape", `permission "${key}" is outside the marketplace allowlist`, {
-        key,
-      });
+      throw new ManifestError(
+        "permission-escape",
+        `permission "${key}" is outside the marketplace allowlist`,
+        {
+          key,
+        },
+      );
     }
   }
 }
@@ -274,9 +311,13 @@ export function requirePackageTrust(options: {
 }): void {
   const status = packageInstallAllowed(options);
   if (!status.trusted) {
-    throw new ManifestError("untrusted-package", `package at "${options.packageDir}" is not trusted; explicit trust required`, {
-      packageDir: options.packageDir,
-    });
+    throw new ManifestError(
+      "untrusted-package",
+      `package at "${options.packageDir}" is not trusted; explicit trust required`,
+      {
+        packageDir: options.packageDir,
+      },
+    );
   }
 }
 
@@ -320,9 +361,14 @@ export function validatePackageManifest(
   checkManifestShape(body);
   assertPermissionsAllowlisted(body.permissions, options?.allowedPermissions);
   if (options?.expectedPublicKey !== undefined && signature.publicKey !== options.expectedPublicKey) {
-    throw new ManifestError("invalid-signature", "manifest public key does not match the pinned publisher key");
+    throw new ManifestError(
+      "invalid-signature",
+      "manifest public key does not match the pinned publisher key",
+    );
   }
   verifyManifestSignature(body, signature);
-  const trust: PackageTrustStatus = trustOptions ? packageInstallAllowed(trustOptions) : { trusted: false, enabled: false };
+  const trust: PackageTrustStatus = trustOptions
+    ? packageInstallAllowed(trustOptions)
+    : { trusted: false, enabled: false };
   return { manifest: body, trust };
 }

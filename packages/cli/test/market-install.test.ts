@@ -1,23 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFileTrustStore } from "@agency/guard";
-import { ToolRegistry } from "@agency/tools";
 import {
-  EventBus,
-  ManifestError,
-  MarketplaceError,
   disableMarketplacePackage,
+  EventBus,
   enableMarketplacePackage,
   installMarketplacePackage,
   loadPlugins,
+  ManifestError,
+  MarketplaceError,
+  type PackageManifestBody,
   rollbackMarketplacePackage,
   signManifestBody,
   trustMarketplacePackage,
-  type PackageManifestBody,
 } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
+import { ToolRegistry } from "@agency/tools";
 
 // ---------------------------------------------------------------------------
 // Helpers (local packages + fixtures only, no remote registries)
@@ -46,13 +46,21 @@ function body(overrides?: Partial<PackageManifestBody>): PackageManifestBody {
   };
 }
 
-function makePackage(pkgDir: string, b: PackageManifestBody, key: Parameters<typeof signManifestBody>[1]): void {
+function makePackage(
+  pkgDir: string,
+  b: PackageManifestBody,
+  key: Parameters<typeof signManifestBody>[1],
+): void {
   for (const skill of b.skills) {
     const src = join(pkgDir, skill.path);
     mkdirSync(join(src, ".."), { recursive: true });
     writeFileSync(src, `---\nname: ${skill.name}\ndescription: fixture\n---\n# ${skill.name}\n`, "utf8");
   }
-  writeFileSync(join(pkgDir, "agency-package.json"), JSON.stringify({ manifest: b, signature: signManifestBody(b, key) }), "utf8");
+  writeFileSync(
+    join(pkgDir, "agency-package.json"),
+    JSON.stringify({ manifest: b, signature: signManifestBody(b, key) }),
+    "utf8",
+  );
 }
 
 function setup(): {

@@ -25,10 +25,7 @@ export function isPlanWorkflowPhase(value: string): value is PlanWorkflowPhase {
 }
 
 /** Act requires a valid approval: present plan content matches approved hash. */
-export function isActTransitionAllowed(
-  approval: { hash: string } | undefined,
-  currentHash: string,
-): boolean {
+export function isActTransitionAllowed(approval: { hash: string } | undefined, currentHash: string): boolean {
   return approval !== undefined && approval.hash === currentHash;
 }
 

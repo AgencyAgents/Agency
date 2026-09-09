@@ -88,7 +88,11 @@ describe("memory store", () => {
     const mem = new MemoryStore(dir);
     const detach = mem.attach(store);
     try {
-      await store.append("sess-a", { type: "message", parentId: null, message: { role: "user", content: [] } });
+      await store.append("sess-a", {
+        type: "message",
+        parentId: null,
+        message: { role: "user", content: [] },
+      });
       expect(await mem.recall("sess-a")).toEqual([]);
       await store.append("sess-a", {
         type: "compaction_summary",

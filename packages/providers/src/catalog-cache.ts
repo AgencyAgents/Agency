@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { CATALOG_FRESH_TTL_MS, loadModelsDevCatalog } from "./catalog/models-dev.ts";
-import { BUILTIN_MODELS, CATALOG_CACHE_VERSION, fetchLiveIdsForFamily, type ModelInfo, ModelRegistry, normalizeCachedCatalog } from "./registry.ts";
+import {
+  BUILTIN_MODELS,
+  CATALOG_CACHE_VERSION,
+  fetchLiveIdsForFamily,
+  type ModelInfo,
+  ModelRegistry,
+  normalizeCachedCatalog,
+} from "./registry.ts";
 
 /**
  * Single canonical catalog TTL. The old per-family 24h window is gone: one

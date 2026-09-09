@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
-import { ToolRegistry } from "../src/registry.ts";
 import type { ToolDeps, ToolSpec } from "../src/contract.ts";
 import type { McpTransport } from "../src/mcp/transport.ts";
+import { ToolRegistry } from "../src/registry.ts";
 import { createSessionScope } from "../src/session-scope.ts";
 
 const dirs: string[] = [];
@@ -111,10 +111,14 @@ describe("ToolRegistry deferred loading", () => {
   test("unpromoted calls fail closed naming the promotion path", async () => {
     const reg = new ToolRegistry();
     let calls = 0;
-    reg.registerDeferred("gated", () => {
-      calls++;
-      return makeSpec("gated");
-    }, { riskTier: "moderate", description: "gated tool", predicate: () => false });
+    reg.registerDeferred(
+      "gated",
+      () => {
+        calls++;
+        return makeSpec("gated");
+      },
+      { riskTier: "moderate", description: "gated tool", predicate: () => false },
+    );
 
     // The gate still sees the tool: forAgent admits it as a placeholder.
     const offered = reg.forAgent(() => true);
@@ -175,11 +179,11 @@ describe("ToolRegistry deferred loading", () => {
   test("duplicate names throw in both directions", () => {
     const reg = new ToolRegistry();
     reg.register(makeSpec("dup"));
-    expect(() => reg.registerDeferred("dup", () => makeSpec("dup"))).toThrow('already registered');
+    expect(() => reg.registerDeferred("dup", () => makeSpec("dup"))).toThrow("already registered");
     const reg2 = new ToolRegistry();
     reg2.registerDeferred("dup", () => makeSpec("dup"));
-    expect(() => reg2.register(makeSpec("dup"))).toThrow('already registered');
-    expect(() => reg2.registerDeferred("dup", () => makeSpec("dup"))).toThrow('already registered');
+    expect(() => reg2.register(makeSpec("dup"))).toThrow("already registered");
+    expect(() => reg2.registerDeferred("dup", () => makeSpec("dup"))).toThrow("already registered");
   });
 
   test("async loaders single-flight concurrent first calls", async () => {
