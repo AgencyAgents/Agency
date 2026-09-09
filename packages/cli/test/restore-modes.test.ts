@@ -162,7 +162,7 @@ describe("undo_run restore modes", () => {
     expect(result.restored).toBe(1);
     expect(readFileSync(join(workspaceRoot, "note.txt"), "utf8")).toBe("original\n");
     expect(await tipOf(base, token, sessionId)).toBe(tipBefore);
-    expect(result.tipId).toBe(tipBefore);
+    expect(result.tipId).toBe(tipBefore!);
     expect(await entryCount(base, token, sessionId)).toBe(entriesBefore);
     console.log(
       `restore-modes files-only: restored=${result.restored} tip-kept=${result.tipId === tipBefore}`,

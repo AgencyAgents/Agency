@@ -138,7 +138,7 @@ function toContainerMarkers(stdout: string, translate: (hostPath: string) => str
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (line?.startsWith(CWD_MARKER) ?? false) {
-      const printed = line.slice(CWD_MARKER.length).replace(/\r$/, "");
+      const printed = line!.slice(CWD_MARKER.length).replace(/\r$/, "");
       if (printed !== "") {
         try {
           lines[i] = `${CWD_MARKER}${translate(printed)}`;

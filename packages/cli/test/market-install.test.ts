@@ -11,6 +11,7 @@ import {
   loadPlugins,
   ManifestError,
   MarketplaceError,
+  type MarketplaceIssue,
   type PackageManifestBody,
   rollbackMarketplacePackage,
   signManifestBody,
@@ -80,7 +81,7 @@ function setup(): {
   return { ws, userCfg, pkgDir, store };
 }
 
-function expectMarketplaceError(fn: () => unknown, reason: string): MarketplaceError {
+function expectMarketplaceError(fn: () => unknown, reason: MarketplaceIssue): MarketplaceError {
   try {
     fn();
   } catch (err) {

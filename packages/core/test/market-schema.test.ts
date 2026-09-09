@@ -4,8 +4,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTrustStore } from "@agency/guard";
+import { type ErrorCode } from "@agency/schema";
 import {
   ManifestError,
+  type ManifestIssue,
   type PackageManifestBody,
   packageInstallAllowed,
   requirePackageTrust,
@@ -36,7 +38,7 @@ function signedRaw(b: PackageManifestBody, key = privateKey): unknown {
   return { manifest: b, signature: signManifestBody(b, key) };
 }
 
-function expectManifestError(fn: () => unknown, reason: string, code?: string): ManifestError {
+function expectManifestError(fn: () => unknown, reason: ManifestIssue, code?: ErrorCode): ManifestError {
   try {
     fn();
   } catch (err) {

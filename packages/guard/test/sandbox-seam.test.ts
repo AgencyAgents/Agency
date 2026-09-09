@@ -3,10 +3,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import type { ToolDeps } from "@agency/tools";
+import type { CallerIdentity, Capabilities } from "../src/capabilities.ts";
 import { FULL_CAPABILITIES } from "../src/capabilities.ts";
 import type { SandboxBackend } from "../src/sandbox.ts";
 import { SandboxBoundary } from "../src/sandbox.ts";
+
+interface LocalToolDeps {
+  identity: CallerIdentity;
+  capabilities: Capabilities;
+  sandbox: SandboxBackend;
+}
 
 // Baseline characterization for the SandboxBackend seam (wave1-todo1).
 // Pins observable behavior of the local software backend before the
@@ -31,7 +37,7 @@ describe("sandbox seam baseline (local backend)", () => {
     }
   });
 
-  test("resolvePath rejects a symlink escape through ToolDeps", () => {
+  test("resolvePath rejects a symlink escape through LocalToolDeps", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "agency-seam-link-")));
     try {
       const root = join(dir, "ws");
@@ -39,7 +45,7 @@ describe("sandbox seam baseline (local backend)", () => {
       mkdirSync(join(root, "sub"), { recursive: true });
       mkdirSync(outside);
       symlinkSync(outside, join(root, "sub", "escape"), process.platform === "win32" ? "junction" : "dir");
-      const deps: ToolDeps = {
+      const deps: LocalToolDeps = {
         identity: { type: "user" },
         capabilities: FULL_CAPABILITIES,
         sandbox: new SandboxBoundary(root),
@@ -50,8 +56,8 @@ describe("sandbox seam baseline (local backend)", () => {
     }
   });
 
-  test("checkCommand through ToolDeps allows and denies per policy", () => {
-    const deps: ToolDeps = {
+  test("checkCommand through LocalToolDeps allows and denies per policy", () => {
+    const deps: LocalToolDeps = {
       identity: { type: "user" },
       capabilities: FULL_CAPABILITIES,
       sandbox: new SandboxBoundary(".", { allow: [/^git/], deny: [/^git push/] }),
@@ -68,12 +74,12 @@ describe("sandbox seam baseline (local backend)", () => {
       const outside = join(dir, "outside");
       mkdirSync(root, { recursive: true });
       mkdirSync(outside);
-      const deps: ToolDeps = {
+      const deps: LocalToolDeps = {
         identity: { type: "user" },
         capabilities: FULL_CAPABILITIES,
         sandbox: new SandboxBoundary(root),
       };
-      // In-root passes through the ToolDeps reference.
+      // In-root passes through the LocalToolDeps reference.
       await expect(deps.sandbox.resolvePathGated("new.ts", { tool: "write" })).resolves.toBe(
         join(root, "new.ts"),
       );

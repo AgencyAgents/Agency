@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
+import type { ToolDeps } from "../src/contract.ts";
 import { isActTransitionAllowed } from "../../core/src/prompt/plan.ts";
 import {
   assertActTransitionAllowed,
@@ -16,7 +17,6 @@ import {
   PlanSidecarCorruptError,
   planContentHash,
   readApprovalRecord,
-  type ToolDeps,
   writeApprovalRecord,
   writePlanIssues,
 } from "../src/builtins/plan.ts";

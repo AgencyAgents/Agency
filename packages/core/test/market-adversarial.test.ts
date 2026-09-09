@@ -13,8 +13,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createFileTrustStore, Redactor } from "@agency/guard";
+import { type ErrorCode } from "@agency/schema";
 import {
   ManifestError,
+  type ManifestIssue,
   type PackageManifestBody,
   signManifestBody,
   validatePackageManifest,
@@ -22,6 +24,7 @@ import {
 import {
   installMarketplacePackage as installPkg,
   MarketplaceError,
+  type MarketplaceIssue,
   rollbackMarketplacePackage,
   trustMarketplacePackage,
 } from "../src/plugins/marketplace.ts";
@@ -149,7 +152,7 @@ function expectTreeUnchanged(before: string[], ws: string, label: string): void 
   }
 }
 
-function expectManifestReject(fn: () => unknown, reason: string, code: string): ManifestError {
+function expectManifestReject(fn: () => unknown, reason: ManifestIssue, code: ErrorCode): ManifestError {
   try {
     fn();
   } catch (err) {
@@ -165,7 +168,7 @@ function expectManifestReject(fn: () => unknown, reason: string, code: string): 
   throw new Error(`expected ManifestError(${reason}) but nothing threw`);
 }
 
-function expectMarketplaceReject(fn: () => unknown, reason: string): MarketplaceError {
+function expectMarketplaceReject(fn: () => unknown, reason: MarketplaceIssue): MarketplaceError {
   try {
     fn();
   } catch (err) {
@@ -307,7 +310,7 @@ describe("marketplace adversarial fixtures (fail closed, zero writes)", () => {
     expect(receipt.version).toBe("2.0.0");
 
     // Attacker presents an older signed build of the same package name.
-    const root2 = join(dirs[dirs.length - 1], "pkg-old");
+    const root2 = join(dirs[dirs.length - 1]!, "pkg-old");
     mkdirSync(root2, { recursive: true });
     const v1 = body({ version: "1.0.0" });
     makePackage(root2, v1, privateKey, { skillContents: { summarize: "v1-attacker-content" } });

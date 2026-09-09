@@ -16,6 +16,7 @@ import type { HttpClient } from "@agency/net";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { asContainerStdioBackend, type ContainerStdioOptions } from "../src/container-exec.ts";
 import type { ToolDeps } from "../src/contract.ts";
+import { type McpServerConfig } from "../src/mcp/config.ts";
 import { McpClient } from "../src/mcp/client.ts";
 import { startMcpServers } from "../src/mcp/manager.ts";
 import { TEAM_MCP_PROCESS_CAP, TeamMcpPool } from "../src/mcp/team-policy.ts";
@@ -320,7 +321,7 @@ describe("container MCP round trip", () => {
   test("team pool cap holds across the container boundary", async () => {
     const root = tempRoot("pool");
     const backend = fakeBackend(root);
-    const servers: Record<string, ReturnType<typeof serverConfig>> = {};
+    const servers: Record<string, McpServerConfig> = {};
     for (let i = 0; i < 10; i++) servers[`srv${i}`] = { ...serverConfig(), readOnly: true };
     const pool = new TeamMcpPool("team1", servers, {
       capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },

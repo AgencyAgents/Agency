@@ -87,8 +87,8 @@ describe("checkpoint boundary: pre-merge capture plus turn-level shadows", () =>
 
     const shadowOut = snapshots.restoreShadowCommit(commitHash, { targetDir: work, sessionRoot: work });
     expect(shadowOut.files.length).toBe(2);
-    expect(readFileSync(a, "utf8")).toBe(captured.files[a]);
-    expect(readFileSync(b, "utf8")).toBe(captured.files[b]);
+    expect(readFileSync(a, "utf8")).toBe(captured.files[a]!);
+    expect(readFileSync(b, "utf8")).toBe(captured.files[b]!);
 
     const integOut = restoreIntegrationCheckpoint(correlated);
     expect(new Set(integOut.restored)).toEqual(new Set([a, b]));
