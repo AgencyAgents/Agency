@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { AgencyError, ErrorCode } from "@agency/schema";
 
 /**
@@ -45,6 +46,15 @@ function deny(caller: CallerIdentity, detail: string): never {
   });
 }
 
+/** realpathSync with try/catch fallback to the unresolved path (missing paths must not crash). */
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 /** Throws PERMISSION_DENIED when the caller's capability set doesn't allow `tool`. */
 export function requireTool(identity: CallerIdentity, capabilities: Capabilities, tool: string): void {
   if (capabilities.tools === "*") return;
@@ -62,7 +72,7 @@ export function requirePathScope(
 
   const normalized = absolutePath.replace(/\\/g, "/");
   const inScope = capabilities.pathScopes.some((scope) => {
-    const normalizedScope = scope.replace(/\\/g, "/").replace(/\/$/, "");
+    const normalizedScope = tryRealpath(scope).replace(/\\/g, "/").replace(/\/$/, "");
     return normalized === normalizedScope || normalized.startsWith(`${normalizedScope}/`);
   });
   if (!inScope) deny(identity, `path "${absolutePath}" is outside this caller's allowed scopes`);
