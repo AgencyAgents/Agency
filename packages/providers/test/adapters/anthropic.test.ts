@@ -241,6 +241,23 @@ describe("anthropicAdapter", () => {
     expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
   });
 
+  test("a reply that stops because the context window is full is a context overflow, not a normal end", async () => {
+    // Claude 4.5 and later accept a request that cannot fit, and stop the reply with this reason.
+    const http = fakeHttp(
+      sseResponse(
+        [
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":5}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ].join(""),
+      ),
+    );
+
+    const err = await collect(anthropicAdapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
   test("maps a 413 request-too-large response to CONTEXT_OVERFLOW", async () => {
     const http = fakeHttp(
       new Response(JSON.stringify({ error: { type: "request_too_large", message: "request too large" } }), {

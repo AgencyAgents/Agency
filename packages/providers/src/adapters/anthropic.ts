@@ -316,6 +316,16 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
       case "message_delta": {
         const delta = payload.delta as { stop_reason?: string };
         const deltaUsage = payload.usage as { output_tokens?: number } | undefined;
+        if (delta.stop_reason === "model_context_window_exceeded") {
+          // Claude 4.5 and later accept a request that cannot fit, and stop the reply when the window is full.
+          throw new AgencyError(
+            ErrorCode.CONTEXT_OVERFLOW,
+            "the context window became full during the reply",
+            {
+              source: "anthropic",
+            },
+          );
+        }
         if (delta.stop_reason) stopReason = STOP_REASON[delta.stop_reason] ?? "end_turn";
         if (deltaUsage?.output_tokens !== undefined) usage.outputTokens = deltaUsage.output_tokens;
         break;
