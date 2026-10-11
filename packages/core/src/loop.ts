@@ -1090,7 +1090,7 @@ function appendText(content: ContentBlock[], type: "text" | "thinking", delta: s
   content.push(type === "text" ? { type: "text", text: delta } : { type: "thinking", text: delta });
 }
 
-function addUsage(a: Usage, b: Usage): Usage {
+export function addUsage(a: Usage, b: Usage): Usage {
   const written = (a.cacheWriteInputTokens ?? 0) + (b.cacheWriteInputTokens ?? 0);
   return {
     inputTokens: a.inputTokens + b.inputTokens,

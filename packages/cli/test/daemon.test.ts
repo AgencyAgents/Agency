@@ -513,6 +513,73 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test.each([
+    ["moves to the fallback", ErrorCode.OVERLOAD, 101],
+    ["fails", ErrorCode.AUTH, 100],
+  ])(
+    "the tokens of a finished step count as spend when the turn then %s",
+    async (_name, code, expectedUsd) => {
+      const noop: ToolSpec = {
+        name: "noop",
+        description: "does nothing",
+        inputSchema: {},
+        riskTier: "safe",
+        handler: async () => ({ content: "done" }),
+      };
+      const usage = { inputTokens: 1_000_000, outputTokens: 0 };
+      const adapterFor = (provider: string): ProviderAdapter => ({
+        family: "fake",
+        async *stream(request): AsyncIterable<StreamEvent> {
+          const stepDone = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+          if (!stepDone) {
+            yield { type: "tool_call_start", id: "c1", name: "noop" };
+            yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+            yield { type: "tool_call_end", id: "c1" };
+            yield { type: "message_stop", stopReason: "tool_use", usage };
+            return;
+          }
+          if (provider === "anthropic") throw new AgencyError(code, "no more", { source: "fake" });
+          yield { type: "text_delta", text: "finished on the fallback" };
+          yield { type: "message_stop", stopReason: "end_turn", usage };
+        },
+      });
+      const saved = process.env.AGENCY_OPENAI_API_KEY;
+      process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+      try {
+        const { client } = await startFakeDaemon({
+          adapterFor,
+          tools: [noop],
+          configDir: writeConfigDir({
+            fallback_model: "openai/gpt-x",
+            provider: {
+              anthropic: { models: { "test-model": { pricing: { inputPerMTok: 100, outputPerMTok: 100 } } } },
+              openai: { models: { "gpt-x": { pricing: { inputPerMTok: 1, outputPerMTok: 1 } } } },
+            },
+          }),
+        });
+        const spent = async () =>
+          ((await client.call("cost_report", {})) as { spend: { dayTotalUsd: number } }).spend.dayTotalUsd;
+        const before = await spent();
+        await client
+          .call("run_turn", {
+            turnId: `t-spend-${code}`,
+            provider: "anthropic",
+            model: "test-model",
+            apiKey: "primary-key",
+            systemPrompt: "sys",
+            session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+          })
+          .catch(() => {});
+
+        expect((await spent()) - before).toBe(expectedUsd);
+      } finally {
+        if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+        else process.env.AGENCY_OPENAI_API_KEY = saved;
+      }
+    },
+    60_000,
+  );
+
   test("onIdleShutdown fires after the last client disconnects and the linger elapses", async () => {
     let shutdownCalled = false;
     const { daemon, client } = await startFakeDaemon({

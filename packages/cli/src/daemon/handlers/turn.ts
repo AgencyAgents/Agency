@@ -1,4 +1,5 @@
 import {
+  addUsage,
   isTeamLive,
   LEAD_WITHHELD_TOOLS,
   type LoopEvent,
@@ -270,7 +271,10 @@ export async function executeTurn(
           }),
           announce: { bus: ctx.eventBus, sessionId },
         });
+        // Usage of the model requests that finished. A turn that then fails or moves to the fallback still spent it.
+        let spent: import("@agency/providers").Usage = { inputTokens: 0, outputTokens: 0 };
         const wrappedOnEvent = (event: LoopEvent): void => {
+          if (event.type === "turn_complete") spent = addUsage(spent, event.usage);
           collectedTraceEvents.push(event);
           broadcast(eventStream, event);
         };
@@ -318,6 +322,26 @@ export async function executeTurn(
         let result: Awaited<ReturnType<typeof runTurn>>;
         // The model that produced the result: a fallback has its own name and price in the cost records.
         let served = { provider: resolvedProvider, model: resolvedModel, info: modelInfo };
+        const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
+        const recordSpend = (ran: Pick<typeof served, "model" | "info">, usage: typeof spent): number =>
+          recordTurnCompletion(ctx, {
+            team: turnTeam,
+            sessionId,
+            handle: childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default") ?? "lead",
+            model: ran.model,
+            usage,
+            ...(ran.info?.pricing === undefined ? {} : { pricing: ran.info.pricing }),
+            turnId: params.turnId,
+            eventStreams: [eventStream],
+            ...(childInfo?.parentSessionId === undefined
+              ? {}
+              : { parentSessionId: childInfo.parentSessionId }),
+            board: boardStore,
+          });
+        const recordFailedSpend = (ran: Pick<typeof served, "model" | "info">): void => {
+          if (spent.inputTokens + spent.outputTokens > 0) recordSpend(ran, spent);
+          spent = { inputTokens: 0, outputTokens: 0 };
+        };
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -431,6 +455,7 @@ export async function executeTurn(
             activeTurnMeta.delete(params.turnId);
           }
         } catch (error) {
+          recordFailedSpend(served);
           const isRetryable =
             error instanceof AgencyError &&
             (error.code === ErrorCode.OVERLOAD ||
@@ -522,6 +547,9 @@ export async function executeTurn(
                 },
               );
               served = { provider: fallbackRef.provider, model: fallbackRef.model, info: fallbackInfo };
+            } catch (fallbackError) {
+              recordFailedSpend({ model: fallbackRef.model, info: fallbackInfo });
+              throw fallbackError;
             } finally {
               activeTurnMeta.delete(params.turnId);
             }
@@ -548,23 +576,7 @@ export async function executeTurn(
           eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
         } catch {}
 
-        const modelPricing = served.info?.pricing;
-        const sidKey = sessionId;
-        const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
-        const turnHandle =
-          childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default") ?? "lead";
-        const turnCost = recordTurnCompletion(ctx, {
-          team: turnTeam,
-          sessionId: sidKey,
-          handle: turnHandle,
-          model: served.model,
-          usage: result.usage,
-          ...(modelPricing === undefined ? {} : { pricing: modelPricing }),
-          turnId: params.turnId,
-          eventStreams: [eventStream],
-          ...(childInfo?.parentSessionId === undefined ? {} : { parentSessionId: childInfo.parentSessionId }),
-          board: boardStore,
-        });
+        const turnCost = recordSpend(served, result.usage);
         if (budgets?.teamUsd !== undefined && turnTeam.teamTotal.value >= budgets.teamUsd) {
           for (const c of activeControllers.values())
             try {
