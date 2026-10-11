@@ -7,6 +7,7 @@ import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RunTurnParams } from "../src/daemon.ts";
 import {
   type AgentDaemon,
@@ -223,6 +224,46 @@ describe("createAgentDaemon", () => {
     // The daemon itself must still be alive after that rejection.
     expect(await client.call("cancel_turn", { turnId: "whatever" })).toEqual({ cancelled: false });
   });
+
+  test("a fallback model on a provider with no key is not used: the primary key stays with its provider", async () => {
+    const seen: Array<{ provider: string; apiKey: string }> = [];
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      // biome-ignore lint/correctness/useYield: the stand-in fails before it streams anything.
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push({ provider, apiKey: request.apiKey });
+        throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+      },
+    });
+    const saved = { a: process.env.AGENCY_OPENAI_API_KEY, b: process.env.OPENAI_API_KEY };
+    delete process.env.AGENCY_OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      let rejection: string | undefined;
+      try {
+        await client.call("run_turn", {
+          turnId: "t-fallback-keyless",
+          provider: "anthropic",
+          model: "test-model",
+          apiKey: "primary-key",
+          systemPrompt: "sys",
+          session: [],
+        });
+      } catch (error) {
+        rejection = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(rejection).toMatch(/overloaded/);
+      expect(seen.filter((call) => call.provider !== "anthropic")).toEqual([]);
+    } finally {
+      if (saved.a !== undefined) process.env.AGENCY_OPENAI_API_KEY = saved.a;
+      if (saved.b !== undefined) process.env.OPENAI_API_KEY = saved.b;
+    }
+  }, 60_000);
 
   test("onIdleShutdown fires after the last client disconnects and the linger elapses", async () => {
     let shutdownCalled = false;

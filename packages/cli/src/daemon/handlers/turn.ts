@@ -430,6 +430,19 @@ export async function executeTurn(
               error.code === ErrorCode.TRANSIENT ||
               error.code === ErrorCode.RATE_LIMIT);
           if (isRetryable && fallbackRef && fallbackRef.provider !== params.provider) {
+            let fbApiKey: string | undefined;
+            try {
+              fbApiKey = await resolveApiKey({
+                provider: fallbackRef.provider,
+                env: process.env,
+                keychain: await getKeychain().catch(() => undefined),
+                config: providers[fallbackRef.provider]?.apiKey,
+                ...oauthOverridesFor(fallbackRef.provider, providers),
+              });
+            } catch {}
+            // No key for the fallback provider: the primary key must not go to another vendor.
+            if (!fbApiKey) throw error;
+            redactor.registerSecret(fbApiKey);
             const fbEvent = {
               type: "fallback" as const,
               from: `${params.provider}/${params.model}`,
@@ -440,21 +453,6 @@ export async function executeTurn(
             try {
               eventBus.emit("model.fallback", fbEvent);
             } catch {}
-            const fbApiKey = await (async () => {
-              let kc: KeychainBackend | undefined;
-              try {
-                kc = await getKeychain();
-              } catch {}
-              const k = await resolveApiKey({
-                provider: fallbackRef.provider,
-                env: process.env,
-                keychain: kc,
-                config: providers[fallbackRef.provider]?.apiKey,
-                ...oauthOverridesFor(fallbackRef.provider, providers),
-              });
-              return k ?? apiKey;
-            })();
-            if (fbApiKey) redactor.registerSecret(fbApiKey);
             const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
             const fallbackCapabilities =
               params.capabilities ??
@@ -470,7 +468,7 @@ export async function executeTurn(
               sessionId,
               provider: fallbackRef.provider,
               model: fallbackRef.model,
-              apiKey: fbApiKey ?? apiKey,
+              apiKey: fbApiKey,
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
             });
@@ -495,7 +493,7 @@ export async function executeTurn(
                   systemSegments: fallbackPrompt.segments,
                   tools: fallbackTools,
                   model: fallbackRef.model,
-                  apiKey: fbApiKey ?? apiKey,
+                  apiKey: fbApiKey,
                   thinkingLevel: params.thinkingLevel,
                   session: params.session,
                   budget: params.budget,
