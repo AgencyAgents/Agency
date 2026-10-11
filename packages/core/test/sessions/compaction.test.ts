@@ -137,6 +137,67 @@ describe("compact", () => {
     expect(result.compacted).toBe(false);
     expect(result.tipId).toBe(entry.id);
   });
+
+  const call = (id: string, pad = 0): Message => ({
+    role: "assistant",
+    content: [{ type: "tool_call", id, name: "read", input: { path: "p".repeat(pad) } }],
+  });
+  const result = (id: string): Message => ({
+    role: "user",
+    content: [{ type: "tool_result", toolCallId: id, content: "x".repeat(20), isError: false }],
+  });
+
+  /** Compacts the transcript and returns the ids of tool results whose call is gone. */
+  async function resultsWithoutCall(transcript: Message[], contextWindow: number): Promise<string[]> {
+    const store = setup();
+    const meta = store.create("s1");
+    let parentId: string | null = null;
+    for (const message of transcript) {
+      parentId = (await store.append(meta.id, { type: "message", parentId, message })).id;
+    }
+    const outcome = await compact(
+      store,
+      meta.id,
+      parentId as unknown as string,
+      createApproximateTokenizer(1),
+      { contextWindow },
+      async () => "summary",
+      4,
+      { force: true },
+    );
+    const seen = new Set<string>();
+    const lost: string[] = [];
+    for (const message of store.messagesFor(store.load(meta.id), outcome.tipId)) {
+      for (const block of message.content) {
+        if (block.type === "tool_call") seen.add(block.id);
+        if (block.type === "tool_result" && !seen.has(block.toolCallId)) lost.push(block.toolCallId);
+      }
+    }
+    return lost;
+  }
+
+  test("the cut does not fall between a tool call and its result", async () => {
+    // A turn that ended without a closing reply: the last four messages start with a tool result.
+    const transcript = [
+      userMsg("first"),
+      call("c1"),
+      result("c1"),
+      call("c2"),
+      result("c2"),
+      userMsg("next"),
+    ];
+    expect(await resultsWithoutCall(transcript, 1_000_000)).toEqual([]);
+  });
+
+  test("the summary window never grows past a tool call alone, at any context size", async () => {
+    const transcript = [userMsg("first"), userMsg("second"), call("c1", 300), result("c1"), userMsg("next")];
+    const lost: Array<[number, string[]]> = [];
+    for (let contextWindow = 100; contextWindow <= 1500; contextWindow += 25) {
+      const ids = await resultsWithoutCall(transcript, contextWindow);
+      if (ids.length > 0) lost.push([contextWindow, ids]);
+    }
+    expect(lost).toEqual([]);
+  });
 });
 
 describe("countChainTokens", () => {

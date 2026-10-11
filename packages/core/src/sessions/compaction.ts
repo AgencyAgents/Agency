@@ -97,13 +97,23 @@ export interface CompactionPlan {
   carryForward: SessionEntry[];
 }
 
+function hasToolResult(entry: SessionEntry | undefined): boolean {
+  return (
+    entry !== undefined &&
+    isMessageEntry(entry) &&
+    entry.message.content.some((b) => b.type === "tool_result")
+  );
+}
+
 /** Keeps the most recent `keepLastN` messages out of the summary, and every
  *  todo_state plus item_state entry regardless of position: task lists and
  *  item contracts must never be lost to compaction. */
 export function planCompaction(chain: SessionEntry[], keepLastN = 4): CompactionPlan {
   const messageIndices = chain.map((e, i) => (isMessageEntry(e) ? i : -1)).filter((i) => i >= 0);
-  const cutoff =
-    messageIndices.length > keepLastN ? messageIndices[messageIndices.length - keepLastN] : chain.length;
+  let first = messageIndices.length - keepLastN;
+  // A tool result stays with its call: providers reject a request that opens with a result.
+  while (first > 0 && hasToolResult(chain[messageIndices[first] as number])) first -= 1;
+  const cutoff = messageIndices.length > keepLastN ? messageIndices[first] : chain.length;
   const before = chain.slice(0, cutoff);
   const after = chain.slice(cutoff);
 
@@ -456,10 +466,11 @@ export async function compact(
     const probeCount = await countChainTokensAsync([probe, ...carryForward], tokenizer);
     if (probeCount <= target) break;
     const movable = carryForward.filter(isMessageEntry);
-    if (passes > MAX_TARGET_PASSES || movable.length <= 1) break;
-    const oldest = movable[0];
-    if (oldest === undefined) break;
-    summarized.add(oldest.id);
+    // A call moves with its results, and at least one message stays.
+    let take = 1;
+    while (take < movable.length && hasToolResult(movable[take])) take += 1;
+    if (passes > MAX_TARGET_PASSES || take >= movable.length) break;
+    for (const entry of movable.slice(0, take)) summarized.add(entry.id);
     carryForward = plan.carryForward.filter((e) => !summarized.has(e.id));
   }
 
