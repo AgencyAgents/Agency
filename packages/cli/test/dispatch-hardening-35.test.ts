@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -183,6 +184,36 @@ describe("dispatch hardening (item 35)", () => {
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w1-b0.trace.jsonl"))).toBe(true);
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w2-b0.trace.jsonl"))).toBe(true);
   });
+
+  it("a peer that did not finish is reported as such to the lead", async () => {
+    const base = dispatchAdapter();
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request, http): AsyncIterable<StreamEvent> {
+        if (JSON.stringify(request.messages.at(-1)?.content).includes("brief two")) {
+          yield { type: "text_delta", text: "half of brief two" };
+          throw new AgencyError(ErrorCode.NETWORK, "connection reset", { source: "fake" });
+        }
+        yield* base.stream(request, http);
+      },
+    };
+    const { client } = await startDaemon({ adapter, gitRepo: true });
+    const result = (await client.call("run_turn", {
+      turnId: "dh35-unfinished",
+      provider: "anthropic",
+      model: PRICED_MODEL,
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "please dispatch" }] }],
+      sessionId: "dh35-unfinished-session",
+    })) as RunTurnRpcResult;
+
+    const lines = toolResultText(result).split("\n");
+    expect(lines.find((line) => line.startsWith("w1"))).not.toContain("did not finish");
+    expect(lines.find((line) => line.startsWith("w2"))).toContain(
+      "did not finish (network: connection reset)",
+    );
+  }, 60_000);
 
   it("a peer whose pinned provider has no key runs on the lead turn's provider, model and key", async () => {
     const seen: string[] = [];

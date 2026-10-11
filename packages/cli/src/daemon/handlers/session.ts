@@ -567,6 +567,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
         };
       }
       const finalText = extractFinalText(childResult?.messages ?? []);
+      // A worker that stopped early says so: the lead must not read partial work as a finished task.
+      if (childResult?.error) {
+        const why = `worker did not finish (${childResult.error.code}: ${childResult.error.message})`;
+        return { content: finalText ? `${why}\n${finalText}` : why, isError: true };
+      }
       return { content: finalText || "(no output)" };
     },
   });

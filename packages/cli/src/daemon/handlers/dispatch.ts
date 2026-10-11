@@ -551,9 +551,13 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 });
               } catch {}
             }
+            // A peer that stopped early says so: the lead must not read partial work as a finished task.
+            const unfinished = childResult?.error
+              ? ` did not finish (${childResult.error.code}: ${childResult.error.message})`
+              : "";
             dispatchBarrier.complete(
               slot,
-              `${a.handle} dispatched at ${effort}: ${leanSummary(finalText, 80) || "(no output)"}`,
+              `${a.handle} dispatched at ${effort}:${unfinished} ${leanSummary(finalText, 80) || "(no output)"}`,
             );
             dispatchLog.append({
               index: slot,
