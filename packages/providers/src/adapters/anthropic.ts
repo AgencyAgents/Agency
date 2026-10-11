@@ -18,6 +18,19 @@ const THINKING_BUDGET: Record<Exclude<ThinkingLevel, "off">, number> = {
   max: 32000,
 };
 
+/** The 4.5 family and older models take a thinking budget and answer 400 to adaptive thinking. Later models are the reverse. */
+const BUDGET_THINKING_MODEL = /claude-(?:3-|(?:opus|sonnet|haiku)-4-(?:[15](?!\d)|\d{8}))/;
+
+/** `output_config.effort` per unified level, for the models with adaptive thinking. */
+const EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
+
 const STOP_REASON: Record<string, StopReason> = {
   end_turn: "end_turn",
   tool_use: "tool_use",
@@ -154,9 +167,16 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   if (request.temperature !== undefined) body.temperature = request.temperature;
 
   if (request.thinkingLevel && request.thinkingLevel !== "off") {
-    // The API takes a budget of 1024 or more that is less than max_tokens. Half of max_tokens leaves room for the answer.
-    const budget = Math.min(THINKING_BUDGET[request.thinkingLevel], Math.floor(request.maxTokens / 2));
-    if (budget >= 1024) body.thinking = { type: "enabled", budget_tokens: budget };
+    if (BUDGET_THINKING_MODEL.test(request.model)) {
+      // The API takes a budget of 1024 or more that is less than max_tokens. Half of max_tokens leaves room for the answer.
+      const budget = Math.min(THINKING_BUDGET[request.thinkingLevel], Math.floor(request.maxTokens / 2));
+      if (budget >= 1024) body.thinking = { type: "enabled", budget_tokens: budget };
+    } else {
+      // These models hide the thinking text unless the request asks for the summary. The 4.6 models have no xhigh.
+      const noXhigh = request.thinkingLevel === "xhigh" && /-4-6(?!\d)/.test(request.model);
+      body.thinking = { type: "adaptive", display: "summarized" };
+      body.output_config = { effort: noXhigh ? "high" : EFFORT[request.thinkingLevel] };
+    }
   }
 
   return body;

@@ -119,7 +119,35 @@ describe("anthropicAdapter", () => {
     ]);
   });
 
-  test("maps a unified thinking level to Anthropic's budget_tokens", async () => {
+  test("a model after the 4.5 family takes adaptive thinking with an effort level, not a budget", async () => {
+    // The API documentation: these models answer 400 to a thinking budget, and hide thinking text by default.
+    const bodyFor = async (model: string, thinkingLevel: ProviderRequest["thinkingLevel"]) => {
+      let captured = "";
+      const http: HttpClient = {
+        fetch: async (_url, init) => {
+          captured = init?.body as string;
+          return sseResponse("");
+        },
+      };
+      await collect(anthropicAdapter.stream({ ...baseRequest, model, maxTokens: 8192, thinkingLevel }, http));
+      const body = JSON.parse(captured);
+      return { thinking: body.thinking, effort: body.output_config?.effort };
+    };
+    const adaptive = { type: "adaptive", display: "summarized" };
+
+    expect(await bodyFor("claude-opus-5", "high")).toEqual({ thinking: adaptive, effort: "high" });
+    expect(await bodyFor("claude-opus-4-7", "minimal")).toEqual({ thinking: adaptive, effort: "low" });
+    expect(await bodyFor("claude-fable-5-1", "max")).toEqual({ thinking: adaptive, effort: "max" });
+    // The 4.6 models have no xhigh level.
+    expect(await bodyFor("claude-sonnet-4-6", "xhigh")).toEqual({ thinking: adaptive, effort: "high" });
+    expect(await bodyFor("claude-opus-5", "off")).toEqual({ thinking: undefined, effort: undefined });
+    // The 4.5 family and older models answer 400 to adaptive thinking: they keep the budget.
+    for (const model of ["claude-sonnet-4-5", "claude-opus-4-5-20251101", "claude-opus-4-20250514"]) {
+      expect((await bodyFor(model, "minimal")).thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    }
+  });
+
+  test("maps a unified thinking level to the budget_tokens of a budget model", async () => {
     let capturedBody: string | undefined;
     const http: HttpClient = {
       fetch: async (_url, init) => {
@@ -128,7 +156,12 @@ describe("anthropicAdapter", () => {
       },
     };
 
-    await collect(anthropicAdapter.stream({ ...baseRequest, maxTokens: 32000, thinkingLevel: "high" }, http));
+    await collect(
+      anthropicAdapter.stream(
+        { ...baseRequest, model: "claude-sonnet-4-5", maxTokens: 32000, thinkingLevel: "high" },
+        http,
+      ),
+    );
 
     const body = JSON.parse(capturedBody!);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
@@ -143,7 +176,12 @@ describe("anthropicAdapter", () => {
           return sseResponse("");
         },
       };
-      await collect(anthropicAdapter.stream({ ...baseRequest, maxTokens, thinkingLevel: "high" }, http));
+      await collect(
+        anthropicAdapter.stream(
+          { ...baseRequest, model: "claude-sonnet-4-5", maxTokens, thinkingLevel: "high" },
+          http,
+        ),
+      );
       return JSON.parse(captured).thinking;
     };
 
