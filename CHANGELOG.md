@@ -89,6 +89,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   and could print its notice into `--format json` output. `checkStale` now
   asks at most once a day, prints on stderr, and honours
   `AGENCY_NO_UPDATE_CHECK`.
+- **Provider endpoints**: a configured provider's `baseUrl` and `headers` now
+  apply to the `anthropic` and `google` families too. Before, a custom
+  provider with `family: "anthropic"` sent its key to the vendor host. A
+  builtin provider id with a key-only config entry no longer fails with
+  "needs a baseUrl".
 - **Test isolation**: the suite wrote into the real user data directory.
   `AGENCY_HOME` now roots config, data and cache on every platform, and a
   test preload sets it.
@@ -106,9 +111,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- `--permission-mode allow-all`: a headless run can allow every tool for one
+  run without a config edit. A `deny` entry, the `.env` read block and the
+  trust gate still refuse.
 - `scripts/e2e-cli.ts`: an offline end-to-end check that drives the real CLI
   (or the compiled binary) through a tool turn and a session resume against a
-  local OpenAI-compatible stand-in. CI builds the binary and runs it.
+  local stand-in, once per wire format (OpenAI-compatible, Anthropic, Google).
+  CI builds the binary and runs it.
 - `scripts/doc-claims.ts` now fails when a `Wired: Yes` row in
   `docs/status.md` names a symbol that the CLI entrypoint and the SDK cannot
   reach.
