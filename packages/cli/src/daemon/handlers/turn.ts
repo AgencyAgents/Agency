@@ -416,6 +416,7 @@ export async function executeTurn(
               budget: params.budget,
               pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
               maxTokensPerRequest: modelInfo?.maxOutputTokens,
+              contextWindow: modelInfo?.contextWindow,
               turnId: params.turnId,
               sessionId: params.sessionId,
               cwd: options.workspaceRoot,

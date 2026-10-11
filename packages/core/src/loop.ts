@@ -15,6 +15,7 @@ import {
   selectModel,
   type ThinkingLevel,
   type ToolDefinition,
+  tokenizerFor,
   type Usage,
   withCheapFallback,
   withMidStreamRecovery,
@@ -27,7 +28,8 @@ import {
   type Message,
   type StopReason,
 } from "@agency/schema";
-import { isContextOverflowError } from "./sessions/compaction.ts";
+import { compactMessages, isContextOverflowError } from "./sessions/compaction.ts";
+import { summarizeTranscript } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -135,11 +137,13 @@ export interface RunTurnOptions {
     emitAsync?: (event: string, payload: unknown) => Promise<void>;
     emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
   };
-  /** Overflow hook (U8): runs once per turn on context overflow, then the
-   *  provider call is retried exactly once. A returned message list replaces
+  /** Overflow hook (U8): runs once per request on context overflow, then that
+   *  request is retried exactly once. A returned message list replaces
    *  the history for the retry (reactive compact-and-retry). Absent means
-   *  overflow throws. */
+   *  the loop folds its own transcript in memory. */
   onContextOverflow?: () => Promise<Message[] | undefined>;
+  /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
+  contextWindow?: number;
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
   onMessage?: (message: Message) => void | Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
@@ -298,8 +302,16 @@ export async function runTurn(
     }
     return routed.value;
   };
-  let overflowRetried = false;
+  const foldInMemory = (): Promise<Message[] | undefined> =>
+    compactMessages(
+      messages,
+      tokenizerFor(options.provider ?? ""),
+      { contextWindow: options.contextWindow ?? 200_000 },
+      async (text) => summarizeTranscript(text),
+    );
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+    // One fold for each request: a long turn can fill the window more than once.
+    let overflowRetried = false;
     if (options.drainMailbox) {
       let injected: Message[] = [];
       try {
@@ -320,9 +332,11 @@ export async function runTurn(
       try {
         turn = await collectWithFallback();
       } catch (error) {
-        if (overflowRetried || !isContextOverflowError(error) || !options.onContextOverflow) throw error;
+        if (overflowRetried || !isContextOverflowError(error)) throw error;
         overflowRetried = true;
-        const replacement = await options.onContextOverflow();
+        const replacement = await (options.onContextOverflow ?? foldInMemory)();
+        // Nothing folded and no owner hook: a retry would send the same request.
+        if (replacement === undefined && !options.onContextOverflow) throw error;
         if (replacement !== undefined) {
           messages.length = 0;
           messages.push(...replacement);

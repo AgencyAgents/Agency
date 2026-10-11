@@ -470,7 +470,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function compactionSummaryMessage(entry: SessionEntry & CompactionSummaryEntry): Message {
+export function compactionSummaryMessage(entry: Pick<CompactionSummaryEntry, "summary">): Message {
   return {
     role: "user",
     content: [{ type: "text", text: `[earlier conversation compacted]\n${entry.summary}` }],

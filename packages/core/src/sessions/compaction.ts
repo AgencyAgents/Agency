@@ -1,13 +1,13 @@
 import type { AsyncTokenizer, Tokenizer } from "@agency/providers";
 import { isAsyncTokenizer } from "@agency/providers";
-import { ErrorCode } from "@agency/schema";
+import { ErrorCode, type Message } from "@agency/schema";
 import { compactionPrompt } from "../prompt/compaction.ts";
 import type { MessageEntry, SessionEntry } from "./entry.ts";
 import { isItemStateEntry, isMessageEntry, isTodoStateEntry } from "./entry.ts";
 
 type ConcreteMessageEntry = SessionEntry & MessageEntry;
 
-import type { SessionStore } from "./store.ts";
+import { compactionSummaryMessage, type SessionStore } from "./store.ts";
 
 /** Proactive trigger: compact once chain tokens reach this fraction of the window. */
 export const COMPACTION_TRIGGER_RATIO = 0.9;
@@ -399,32 +399,16 @@ export interface CompactionResult {
   tipId: string;
 }
 
-/**
- * Two-stage compaction for the branch ending at `tipId`: deterministic
- * collapse first, then an agentic summary via the compaction prompt. The
- * summarize window expands until the new chain fits the 70 percent target.
- */
-export async function compact(
-  store: SessionStore,
-  sessionId: string,
-  tipId: string,
+/** The store-free half of compact: which entries fold into the summary, its text, and what stays. */
+async function foldChain(
+  chain: SessionEntry[],
   tokenizer: Tokenizer | AsyncTokenizer,
   threshold: CompactionThreshold,
   summarize: (text: string) => Promise<string>,
-  keepLastN = 4,
-  opts: { force?: boolean } = {},
-): Promise<CompactionResult> {
-  const entries = store.load(sessionId);
-  const chain = store.chainFor(entries, tipId);
-  const tokenCount = await countChainTokensAsync(chain, tokenizer);
-  if (!opts.force && !shouldCompact(tokenCount, threshold)) {
-    return { compacted: false, tipId };
-  }
-
+  keepLastN: number,
+): Promise<{ summaryText: string; summarized: Set<string>; carryForward: SessionEntry[] } | undefined> {
   const plan = planCompaction(chain, keepLastN);
-  if (plan.summarize.length === 0) {
-    return { compacted: false, tipId };
-  }
+  if (plan.summarize.length === 0) return undefined;
 
   const cap = summaryCapTokens(threshold);
   const target = targetTokens(threshold);
@@ -473,6 +457,60 @@ export async function compact(
     for (const entry of movable.slice(0, take)) summarized.add(entry.id);
     carryForward = plan.carryForward.filter((e) => !summarized.has(e.id));
   }
+  return { summaryText, summarized, carryForward };
+}
+
+/** compact() for a transcript with no store behind it. Undefined when there is nothing to fold. */
+export async function compactMessages(
+  messages: Message[],
+  tokenizer: Tokenizer | AsyncTokenizer,
+  threshold: CompactionThreshold,
+  summarize: (text: string) => Promise<string>,
+  keepLastN = 4,
+): Promise<Message[] | undefined> {
+  const chain = messages.map(
+    (message, i): SessionEntry => ({
+      id: String(i),
+      parentId: i === 0 ? null : String(i - 1),
+      schemaVersion: 1,
+      createdAt: "",
+      type: "message",
+      message,
+    }),
+  );
+  const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
+  if (folded === undefined) return undefined;
+  return [
+    compactionSummaryMessage({ summary: folded.summaryText }),
+    ...folded.carryForward.filter(isMessageEntry).map((entry) => entry.message),
+  ];
+}
+
+/**
+ * Two-stage compaction for the branch ending at `tipId`: deterministic
+ * collapse first, then an agentic summary via the compaction prompt. The
+ * summarize window expands until the new chain fits the 70 percent target.
+ */
+export async function compact(
+  store: SessionStore,
+  sessionId: string,
+  tipId: string,
+  tokenizer: Tokenizer | AsyncTokenizer,
+  threshold: CompactionThreshold,
+  summarize: (text: string) => Promise<string>,
+  keepLastN = 4,
+  opts: { force?: boolean } = {},
+): Promise<CompactionResult> {
+  const entries = store.load(sessionId);
+  const chain = store.chainFor(entries, tipId);
+  const tokenCount = await countChainTokensAsync(chain, tokenizer);
+  if (!opts.force && !shouldCompact(tokenCount, threshold)) {
+    return { compacted: false, tipId };
+  }
+
+  const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
+  if (folded === undefined) return { compacted: false, tipId };
+  const { summaryText, summarized, carryForward } = folded;
 
   const summaryEntry = await store.append(sessionId, {
     type: "compaction_summary",

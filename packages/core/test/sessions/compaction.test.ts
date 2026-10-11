@@ -8,7 +8,7 @@ import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { runTurn } from "../../src/loop.ts";
+import { runTurn, type ToolSpec } from "../../src/loop.ts";
 import {
   COMPACTION_TARGET_RATIO,
   COMPACTION_TRIGGER_RATIO,
@@ -792,5 +792,71 @@ describe("U8 overflow compact and single retry", () => {
         session: [],
       }),
     ).rejects.toThrow("context full");
+  });
+
+  /** A turn of `steps` tool calls; the request that follows each step in `overflowAfter` fails once. */
+  function longTurn(steps: number, overflowAfter: number[]) {
+    const state = { runs: 0, requests: [] as Message[][] };
+    const pending = new Set(overflowAfter);
+    const tool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        state.runs += 1;
+        return { content: `run ${state.runs}` };
+      },
+    };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        state.requests.push([...request.messages]);
+        if (pending.delete(state.runs)) {
+          throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "context full", { source: "fake" });
+        }
+        if (state.runs < steps) {
+          const id = `c${state.runs + 1}`;
+          yield { type: "tool_call_start", id, name: "count" };
+          yield { type: "tool_call_delta", id, inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const run = () =>
+      runTurn(adapter, new Scheduler(), noopHttp, {
+        identity: overflowUser,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [tool],
+        model: "test-model",
+        apiKey: "key",
+        session: [userMsg("count")],
+      });
+    return { state, run };
+  }
+
+  test("overflow without a hook folds the transcript in memory: the turn keeps its last steps", async () => {
+    const { state, run } = longTurn(3, [3]);
+    const result = await run();
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(state.runs).toBe(3);
+    const retried = JSON.stringify(state.requests.at(-1));
+    expect(retried).toContain("[earlier conversation compacted]");
+    expect(retried).toContain("run 3");
+    expect(state.requests.at(-1)?.length).toBeLessThan(state.requests.at(-2)?.length ?? 0);
+  });
+
+  test("a long turn can fold more than once: the limit is one fold for each request", async () => {
+    const { state, run } = longTurn(6, [3, 6]);
+    const result = await run();
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(state.runs).toBe(6);
   });
 });
