@@ -88,7 +88,7 @@ export const en = {
   "tool.write.unread_overwrite":
     "[note: {path} existed but was never read this session — read it to confirm the overwrite matches your intent]",
   "tool.edit.not_found":
-    "edit rejected: the expected text was not found, the file has changed since it was last read",
+    "edit rejected: the expected text is not in the file. Read the file, then send the edit again with the exact text from the file.",
   "tool.edit.ambiguous":
     "edit rejected: the expected text appears {count} times, include more surrounding context to make it unique, or pass replaceAll",
   "tool.edit.missing_file": "cannot edit {path}: it doesn't exist yet, use write instead",
