@@ -96,6 +96,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Anthropic cost with prompt caching**: the Anthropic adapter reported only
+  the input tokens that were not cached. The cost formula takes the cached
+  part out of the input total, so the uncached part was priced at zero and
+  budgets counted too little. The adapter now reports the whole prompt.
 - **Unfinished workers**: a `spawn` worker or a `dispatch` peer that stopped
   early (a provider stream that died, or the step limit) returned its partial
   text as a normal result. The result now says "did not finish" with the
