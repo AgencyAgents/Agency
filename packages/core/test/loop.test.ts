@@ -3,6 +3,7 @@ import { FULL_CAPABILITIES, NO_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent, Usage } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
+import type { Message } from "@agency/schema";
 import { runTurn, type ToolSpec, validateToolInput } from "../src/loop.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -433,6 +434,67 @@ describe("runTurn", () => {
     expect(result.stopReason).toBe("end_turn");
     expect(result.error).toBeUndefined();
     expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
+  });
+
+  test("a reply that is cut at the output limit continues, and the turn ends when the model finishes", async () => {
+    const requests: Message[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push([...request.messages]);
+        const first = requests.length === 1;
+        yield { type: "text_delta", text: first ? "part one," : " part two." };
+        yield {
+          type: "message_stop",
+          stopReason: first ? "max_tokens" : "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write a long answer" }] }],
+    });
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+    // The second request holds the cut reply and then a user message that tells the model to go on.
+    expect(requests[1]?.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    const texts = result.messages
+      .filter((message) => message.role === "assistant")
+      .flatMap((message) => message.content)
+      .map((block) => (block.type === "text" ? block.text : ""));
+    expect(texts).toEqual(["part one,", " part two."]);
+  });
+
+  test("a reply that stays cut at the output limit ends as a turn error, not as a normal end", async () => {
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "text_delta", text: "more" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write a long answer" }] }],
+    });
+
+    expect(requests).toBe(4);
+    expect(result.stopReason).toBe("max_tokens");
+    expect(result.error?.code).toBe("max_tokens");
   });
 
   test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
@@ -927,7 +989,8 @@ describe("runTurn", () => {
       session: [],
     });
 
-    expect(result.messages.map((m) => m.role)).toEqual(["assistant", "user"]);
+    // After the output limit the model is asked to go on, so more messages can follow these two.
+    expect(result.messages.slice(0, 2).map((m) => m.role)).toEqual(["assistant", "user"]);
     expect(result.messages[1]?.content).toMatchObject([
       { type: "tool_result", toolCallId: "call_1", isError: true },
     ]);
