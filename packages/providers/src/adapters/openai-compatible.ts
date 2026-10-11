@@ -188,6 +188,7 @@ async function* streamRaw(
   } = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
   let finished = false;
+  let refused = false;
 
   for await (const frame of parseSse(res.body)) {
     if (frame.data === "[DONE]") continue;
@@ -195,6 +196,8 @@ async function* streamRaw(
       choices: Array<{
         delta: {
           content?: string;
+          /** A refusal comes in its own field, not in `content`. */
+          refusal?: string;
           /** The reasoning of a reasoning model on llama.cpp, DeepSeek and others. It is shown and never sent back. */
           reasoning_content?: string;
           tool_calls?: Array<{
@@ -233,6 +236,10 @@ async function* streamRaw(
     }
     if (choice.delta.content) {
       yield { type: "text_delta", text: choice.delta.content };
+    }
+    if (choice.delta.refusal) {
+      refused = true;
+      yield { type: "text_delta", text: choice.delta.refusal };
     }
 
     for (const call of choice.delta.tool_calls ?? []) {
@@ -282,6 +289,7 @@ async function* streamRaw(
 
   // Some servers send a tool call and then finish with "stop": the calls decide, or the loop would not run them.
   if (toolCallIdByIndex.size > 0 && stopReason === "end_turn") stopReason = "tool_use";
+  if (refused && stopReason === "end_turn") stopReason = "refusal";
   yield { type: "message_stop", stopReason, usage };
 }
 

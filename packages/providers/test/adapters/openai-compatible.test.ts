@@ -307,6 +307,19 @@ describe("createOpenAiCompatibleAdapter", () => {
     ]);
   });
 
+  test("a refusal in the delta's own field is shown as text and ends the turn as a refusal", async () => {
+    // The API description gives the stream delta a `refusal` field next to `content`.
+    const http = streamOf([{ refusal: "I can't help " }, { refusal: "with that." }], "stop");
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.slice(0, 2)).toEqual([
+      { type: "text_delta", text: "I can't help " },
+      { type: "text_delta", text: "with that." },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
+  });
+
   function fakeError(options: { status: number; body: unknown }): HttpClient {
     return {
       fetch: async () => new Response(JSON.stringify(options.body), { status: options.status }),
