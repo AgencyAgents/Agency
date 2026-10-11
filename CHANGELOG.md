@@ -113,6 +113,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Fallback restart**: a turn that moved to `fallback_model` started again
   from the prompt, so tools that the first provider had already run ran a
   second time. The fallback now continues from the steps that are complete.
+- **Fallback limits**: a fallback request used the output limit, the price
+  and the context window of the primary model. A fallback model with a
+  smaller output limit could reject the request. It now uses its own values.
 - **Fallback keys**: when `fallback_model` named a provider with no key, a
   fallback sent the primary provider's key to that provider. The fallback is
   now skipped and the original error is returned.
