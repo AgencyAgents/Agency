@@ -96,6 +96,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Unfinished workers**: a `spawn` worker or a `dispatch` peer that stopped
+  early (a provider stream that died, or the step limit) returned its partial
+  text as a normal result. The result now says "did not finish" with the
+  cause, and a `spawn` result is an error result.
 - **Step limit**: a headless run that reached the limit of 25 tool steps
   printed nothing and exited with code 0. It now prints `iteration_limit`
   and exits with code 1. The turn result carries the same error.
