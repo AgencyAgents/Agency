@@ -144,6 +144,8 @@ export interface RunTurnOptions {
   onContextOverflow?: () => Promise<Message[] | undefined>;
   /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
   contextWindow?: number;
+  /** The model takes image input: images that a tool returned go to it. Absent means no. */
+  vision?: boolean;
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
   onMessage?: (message: Message) => void | Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
@@ -283,6 +285,7 @@ export async function runTurn(
               tools: toolDefs,
               maxTokens: options.maxTokensPerRequest ?? 8192,
               thinkingLevel: options.thinkingLevel,
+              ...(options.vision === undefined ? {} : { vision: options.vision }),
               signal: options.signal,
             },
             options.onEvent,

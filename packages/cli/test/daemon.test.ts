@@ -306,6 +306,36 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("the model's vision capability reaches the provider request", async () => {
+    const seen: Array<boolean | undefined> = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.vision);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({
+        provider: { anthropic: { models: { "sees-images": { capabilities: { vision: true } } } } },
+      }),
+    });
+    for (const model of ["sees-images", "not-in-the-catalog"]) {
+      await client.call("run_turn", {
+        turnId: `t-vision-${model}`,
+        provider: "anthropic",
+        model,
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+    }
+
+    expect(seen).toEqual([true, undefined]);
+  });
+
   test("a context overflow that cannot be folded returns its cause, not a bare error", async () => {
     const { client } = await startFakeDaemon({
       adapterFor: () => ({
