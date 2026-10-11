@@ -145,6 +145,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   said that the file had changed since the last read. That was false when
   the model had not read the file. The message now tells the model to read
   the file and to send the exact text.
+  When the file has the text with other line breaks, the message shows
+  that exact file text. Measured with a real model: it sent two lines as
+  one line three times in a row, and the plain rejection did not stop that.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
