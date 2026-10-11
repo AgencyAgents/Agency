@@ -60,9 +60,9 @@ export function createWindowsKeychainBackend(
   const backend: KeychainBackend = {
     name: "windows-dpapi",
 
+    // A `$true` spawn cost 850 ms on every command and did not detect a blocked DPAPI call anyway.
     async isAvailable() {
-      const result = await spawn([powershellExecutable(), "-NoProfile", "-Command", "$true"]);
-      return result.exitCode === 0;
+      return existsSync(powershellExecutable());
     },
 
     async set(account, secret) {

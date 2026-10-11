@@ -74,15 +74,6 @@ describe.skipIf(process.platform !== "win32")("createWindowsKeychainBackend (rea
 });
 
 describe("createWindowsKeychainBackend (mocked)", () => {
-  test("isAvailable reflects the spawned process's exit code", async () => {
-    const backend = createWindowsKeychainBackend(tempDir(), async () => ({
-      stdout: "",
-      stderr: "powershell not found",
-      exitCode: 1,
-    }));
-    expect(await backend.isAvailable()).toBe(false);
-  });
-
   test("set throws when the PowerShell encryption step fails", async () => {
     const backend = createWindowsKeychainBackend(tempDir(), async () => ({
       stdout: "",
