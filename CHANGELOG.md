@@ -93,6 +93,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Request errors**: a request with a missing parameter, an unknown id or a
+  bad value now fails with the new `invalid_request` code, and the HTTP
+  gateway answers 400. Before, these read as `internal` and 500.
 - **Update on Windows**: `agency update` and its rollback renamed a file over
   the running executable, which Windows refuses (`EPERM`). The running binary
   now moves aside first. An idle daemon from the old binary exits after the
