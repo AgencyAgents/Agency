@@ -206,6 +206,26 @@ describe("PermissionsGate", () => {
     ).toBe("deny");
   });
 
+  test("allow-all answers every ask, but a config deny and an untrusted workspace still refuse", async () => {
+    const open = new PermissionsGate({ workspaceRoot: root }).withMode("allow-all");
+    expect(await open.check({ tool: "bash", riskTier: "dangerous" }, undefined)).toBe("allow");
+    expect(await open.check({ tool: "some-mcp-tool" }, undefined)).toBe("allow");
+    expect(await open.check({ tool: "read", path: ".env", riskTier: "safe" }, undefined)).toBe("deny");
+
+    const denied = new PermissionsGate({ permissions: { bash: "deny" }, workspaceRoot: root });
+    expect(await denied.withMode("allow-all").check({ tool: "bash", riskTier: "dangerous" }, undefined)).toBe(
+      "deny",
+    );
+
+    const untrusted = new PermissionsGate({
+      workspaceRoot: root,
+      trust: { store: createFileTrustStore(join(root, "trust.json")), root, required: true },
+    });
+    expect(
+      await untrusted.withMode("allow-all").check({ tool: "bash", riskTier: "dangerous" }, undefined),
+    ).toBe("deny");
+  });
+
   test("a missing riskTier fails safe to ask instead of silently allowing", () => {
     const gate = new PermissionsGate({ workspaceRoot: root });
     expect(gate.decisionFor({ tool: "some-plugin-tool" })).toBe("ask");

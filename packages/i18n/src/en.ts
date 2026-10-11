@@ -157,7 +157,8 @@ export const en = {
   "cli.error.unknown_option": 'Unknown option "{flag}". Run `agency --help`.',
   "cli.error.missing_value": "Option {flag} needs a value.",
   "cli.error.invalid_format": '--format must be "text" or "json".',
-  "cli.error.invalid_permission_mode": '--permission-mode must be "ask", "allow-edits", or "deny".',
+  "cli.error.invalid_permission_mode":
+    '--permission-mode must be "ask", "allow-edits", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
   "cli.error.print_with_command": "Choose either a command or -p/--print, not both.",
   "cli.error.continue_requires_print": "--continue and --session need -p/--print to run a turn.",

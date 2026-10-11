@@ -140,7 +140,7 @@ export interface RunTurnParams {
   promptVersion?: string;
   /**
    * Non-interactive permission mode for this turn (`ask` default).
-   * `allow-edits`/`deny` arrive only via the explicit client flag.
+   * Every other mode arrives only via the explicit client flag.
    */
   permissionMode?: PermissionMode;
   /** Headless turns have no approval surface: asks refuse at once with a

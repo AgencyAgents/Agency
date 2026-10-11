@@ -82,7 +82,7 @@ Options:
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
-  --permission-mode <mode> With -p: ask (default), allow-edits, or deny
+  --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
   --format <text|json>     Output format (default: text; json is for scripting)
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
@@ -106,7 +106,7 @@ export interface ParsedArgv {
   images: string[];
   continueLast: boolean;
   session: string | undefined;
-  permissionMode: "ask" | "allow-edits" | "deny";
+  permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -239,7 +239,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
       }
       case "--permission-mode": {
         const mode = value();
-        if (mode !== "ask" && mode !== "allow-edits" && mode !== "deny") {
+        if (mode !== "ask" && mode !== "allow-edits" && mode !== "allow-all" && mode !== "deny") {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
         parsed.permissionMode = mode;

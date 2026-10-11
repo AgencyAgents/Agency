@@ -136,7 +136,9 @@ The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/
 
 ## Permissions
 
-`permissions` maps a tool name (or `external_directory`) to a bare decision or a pattern map. Pattern maps use last-match-wins: e.g. `{"bash": {"*":"ask","git *":"allow","rm *":"deny"}}`. Path patterns match workspace-relative forward-slash paths. The daemon builds a `PermissionsGate`; the sandbox enforces `external_directory` and a deny-only `CommandPolicy` derived from `bash` deny patterns. Unknown/riskTier-less tools default to `allow` so that MCP/tool-injected tools are not spuriously gated — the trust and capability layers own those.
+`permissions` maps a tool name (or `external_directory`) to a bare decision or a pattern map. Pattern maps use last-match-wins: e.g. `{"bash": {"*":"ask","git *":"allow","rm *":"deny"}}`. Path patterns match workspace-relative forward-slash paths. The daemon builds a `PermissionsGate`; the sandbox enforces `external_directory` and a deny-only `CommandPolicy` derived from `bash` deny patterns. A tool with no entry runs when its risk tier is `safe` and asks otherwise; a tool with no risk tier (an MCP tool) asks.
+
+A headless run (`-p`) has no approval surface, so an ask refuses at once. `--permission-mode` sets how one run answers asks: `ask` (default) refuses, `allow-edits` allows `write` and `edit`, `allow-all` allows every tool, `deny` refuses every tool above `safe`. No mode overrides a `deny` entry, the `.env` read block or the trust gate.
 
 `permissions.git_write` (`allow|ask|deny`, default `deny`) gates real git writes: Todo 8 materialization calls `assertGitWriteAllowed` (packages/guard/src/git-write.ts) before creating commits. `allow` proceeds, `ask` routes through the existing `approval_requested` / `approval_respond` RPC surface (`once`/`always` proceed, `reject`/timeout deny), `deny` refuses with typed `PERMISSION_DENIED`. Non-interactive runs always deny regardless of setting. Only bare decisions are read; pattern maps and unknown values fail closed to `deny`.
 

@@ -626,6 +626,7 @@ describe("-p headless mode", () => {
   test("--permission-mode parses, defaults to ask, and reaches the headless call", async () => {
     expect(parseArgv(["-p", "hi"]).permissionMode).toBe("ask");
     expect(parseArgv(["-p", "hi", "--permission-mode", "allow-edits"]).permissionMode).toBe("allow-edits");
+    expect(parseArgv(["-p", "hi", "--permission-mode", "allow-all"]).permissionMode).toBe("allow-all");
     expect(() => parseArgv(["-p", "hi", "--permission-mode", "yes"])).toThrow("permission-mode");
     const fake = fakeRunHeadless();
     const { deps } = capture();
