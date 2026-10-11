@@ -93,6 +93,13 @@ describe("createBashTool", () => {
     expect(result.isError).toBe(true);
   }, 30_000);
 
+  test("a command that ends the shell itself still reports its exit code", async () => {
+    const { tool } = setup();
+    const result = await tool.handler({ command: "exit 3" }, { signal });
+    expect(result.content).toContain("exit code: 3");
+    expect(result.isError).toBe(true);
+  }, 30_000);
+
   test("a timeout kill is reported and sets isError with partial output retained", async () => {
     const { tool } = setup();
     const command =

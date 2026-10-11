@@ -190,11 +190,14 @@ export function createBashTool(
       // normalizeCwd maps container marker paths back to host paths; the
       // software path passes identity, so its behavior is untouched.
       const finish = (
-        outcome: { aborted: boolean; stdout: string; stderr: string },
+        outcome: { aborted: boolean; stdout: string; stderr: string; exitCode?: number },
         timedOut: boolean,
         normalizeCwd: (cwd: string) => string = (cwd) => cwd,
       ): ToolResult => {
-        const { output, cwd: markerCwd, exitCode } = parseShellOutput(outcome.stdout, state.cwd);
+        const parsed = parseShellOutput(outcome.stdout, state.cwd);
+        const { output, cwd: markerCwd } = parsed;
+        // `exit 3` or `set -e` ends the shell before the wrapper prints its marker; the process exit code is then the only signal.
+        const exitCode = outcome.stdout.includes(EXIT_MARKER) ? parsed.exitCode : (outcome.exitCode ?? 0);
         const cwd = normalizeCwd(markerCwd);
         // A cancelled command keeps no cwd side-effect: its wrapper may not
         // even have run to completion, so the marker cannot be trusted.
@@ -340,27 +343,29 @@ export function createBashTool(
         : undefined;
 
       try {
-        let outcome = await Promise.race([
-          Promise.all([stdoutText, stderrText, proc.exited]).then(([stdout, stderr]) => ({
-            aborted: false as const,
-            stdout,
-            stderr,
-          })),
-          abortSettled.then(async () => {
-            // onAbort already killed the process tree; the dying processes
-            // close the pipes and the in-flight reads settle with whatever
-            // was captured before the kill.
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const [stdout, stderr] = await Promise.race([
-              Promise.all([stdoutText, stderrText]),
-              new Promise<[string, string]>((resolve) => {
-                timer = setTimeout(() => resolve(["", ""]), ABORT_DRAIN_MS);
-              }),
-            ]);
-            clearTimeout(timer);
-            return { aborted: true as const, stdout, stderr };
-          }),
-        ]);
+        let outcome: { aborted: boolean; stdout: string; stderr: string; exitCode?: number } =
+          await Promise.race([
+            Promise.all([stdoutText, stderrText, proc.exited]).then(([stdout, stderr, exitCode]) => ({
+              aborted: false as const,
+              stdout,
+              stderr,
+              exitCode,
+            })),
+            abortSettled.then(async () => {
+              // onAbort already killed the process tree; the dying processes
+              // close the pipes and the in-flight reads settle with whatever
+              // was captured before the kill.
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              const [stdout, stderr] = await Promise.race([
+                Promise.all([stdoutText, stderrText]),
+                new Promise<[string, string]>((resolve) => {
+                  timer = setTimeout(() => resolve(["", ""]), ABORT_DRAIN_MS);
+                }),
+              ]);
+              clearTimeout(timer);
+              return { aborted: true as const, stdout, stderr };
+            }),
+          ]);
         // Abort intent wins over a simultaneous clean exit. On Linux the
         // killed shell's wrapper tail can beat SIGKILL to a marker-printed
         // exit 0 (or the abort signal can land just as the pipes close), so
