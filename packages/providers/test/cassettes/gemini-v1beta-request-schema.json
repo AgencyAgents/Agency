@@ -1,0 +1,547 @@
+{
+  "source": "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta",
+  "revision": "20261010",
+  "schemas": {
+    "GenerateContentRequest": {
+      "type": "object",
+      "properties": {
+        "serviceTier": {
+          "type": "string",
+          "enum": ["unspecified", "standard", "flex", "priority"]
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "generationConfig": {
+          "$ref": "GenerationConfig"
+        },
+        "cachedContent": {
+          "type": "string"
+        },
+        "safetySettings": {
+          "type": "array",
+          "items": {
+            "type": "any"
+          }
+        },
+        "model": {
+          "type": "string"
+        },
+        "systemInstruction": {
+          "$ref": "Content"
+        },
+        "continuationToken": {
+          "type": "string",
+          "format": "byte"
+        },
+        "store": {
+          "type": "boolean"
+        },
+        "toolConfig": {
+          "type": "any"
+        },
+        "contents": {
+          "type": "array",
+          "items": {
+            "$ref": "Content"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "Tool"
+          }
+        }
+      }
+    },
+    "CachedContent": {
+      "type": "object",
+      "properties": {
+        "expireTime": {
+          "type": "string",
+          "format": "google-datetime"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "Tool"
+          }
+        },
+        "updateTime": {
+          "type": "string",
+          "format": "google-datetime"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "contents": {
+          "type": "array",
+          "items": {
+            "$ref": "Content"
+          }
+        },
+        "systemInstruction": {
+          "$ref": "Content"
+        },
+        "name": {
+          "type": "string"
+        },
+        "toolConfig": {
+          "type": "any"
+        },
+        "createTime": {
+          "type": "string",
+          "format": "google-datetime"
+        },
+        "ttl": {
+          "type": "string",
+          "format": "google-duration"
+        },
+        "usageMetadata": {
+          "type": "any"
+        }
+      }
+    },
+    "Content": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "Part"
+          }
+        }
+      }
+    },
+    "Part": {
+      "type": "object",
+      "properties": {
+        "inlineData": {
+          "$ref": "Blob"
+        },
+        "thought": {
+          "type": "boolean"
+        },
+        "codeExecutionResult": {
+          "type": "any"
+        },
+        "mediaResolution": {
+          "type": "any"
+        },
+        "toolCall": {
+          "type": "any"
+        },
+        "audioTranscription": {
+          "type": "any"
+        },
+        "videoMetadata": {
+          "type": "any"
+        },
+        "executableCode": {
+          "type": "any"
+        },
+        "thoughtSignature": {
+          "type": "string",
+          "format": "byte"
+        },
+        "mediaProcessing": {
+          "type": "string",
+          "enum": ["MEDIA_PROCESSING_UNSPECIFIED", "STATIC", "AGENTIC"]
+        },
+        "toolResponse": {
+          "type": "any"
+        },
+        "partMetadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "any"
+          }
+        },
+        "fileData": {
+          "type": "any"
+        },
+        "text": {
+          "type": "string"
+        },
+        "functionCall": {
+          "$ref": "FunctionCall"
+        },
+        "functionResponse": {
+          "$ref": "FunctionResponse"
+        },
+        "speechMetadata": {
+          "type": "any"
+        }
+      }
+    },
+    "Blob": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "FunctionCall": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "any"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "FunctionResponse": {
+      "type": "object",
+      "properties": {
+        "scheduling": {
+          "type": "string",
+          "enum": ["SCHEDULING_UNSPECIFIED", "SILENT", "WHEN_IDLE", "INTERRUPT"]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "FunctionResponsePart"
+          }
+        },
+        "willContinue": {
+          "type": "boolean"
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "any"
+          }
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "FunctionResponsePart": {
+      "type": "object",
+      "properties": {
+        "inlineData": {
+          "$ref": "FunctionResponseBlob"
+        }
+      }
+    },
+    "FunctionResponseBlob": {
+      "type": "object",
+      "properties": {
+        "mimeType": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "Tool": {
+      "type": "object",
+      "properties": {
+        "googleMaps": {
+          "type": "any"
+        },
+        "codeExecution": {
+          "type": "any"
+        },
+        "functionDeclarations": {
+          "type": "array",
+          "items": {
+            "$ref": "FunctionDeclaration"
+          }
+        },
+        "googleSearch": {
+          "type": "any"
+        },
+        "fileSearch": {
+          "type": "any"
+        },
+        "googleSearchRetrieval": {
+          "type": "any"
+        },
+        "urlContext": {
+          "type": "any"
+        },
+        "mcpServers": {
+          "type": "array",
+          "items": {
+            "type": "any"
+          }
+        },
+        "computerUse": {
+          "type": "any"
+        }
+      }
+    },
+    "FunctionDeclaration": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "response": {
+          "$ref": "Schema"
+        },
+        "behavior": {
+          "type": "string",
+          "enum": ["UNSPECIFIED", "BLOCKING", "NON_BLOCKING"]
+        },
+        "parametersJsonSchema": {
+          "type": "any"
+        },
+        "responseJsonSchema": {
+          "type": "any"
+        },
+        "parameters": {
+          "$ref": "Schema"
+        }
+      }
+    },
+    "Schema": {
+      "type": "object",
+      "properties": {
+        "propertyOrdering": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "items": {
+          "$ref": "Schema"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "minItems": {
+          "type": "string",
+          "format": "int64"
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "Schema"
+          }
+        },
+        "minProperties": {
+          "type": "string",
+          "format": "int64"
+        },
+        "title": {
+          "type": "string"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "format": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "maxProperties": {
+          "type": "string",
+          "format": "int64"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "maxLength": {
+          "type": "string",
+          "format": "int64"
+        },
+        "maxItems": {
+          "type": "string",
+          "format": "int64"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["TYPE_UNSPECIFIED", "STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "OBJECT", "NULL"]
+        },
+        "minimum": {
+          "type": "number",
+          "format": "double"
+        },
+        "anyOf": {
+          "type": "array",
+          "items": {
+            "$ref": "Schema"
+          }
+        },
+        "example": {
+          "type": "any"
+        },
+        "minLength": {
+          "type": "string",
+          "format": "int64"
+        },
+        "maximum": {
+          "type": "number",
+          "format": "double"
+        },
+        "default": {
+          "type": "any"
+        }
+      }
+    },
+    "GenerationConfig": {
+      "type": "object",
+      "properties": {
+        "presencePenalty": {
+          "type": "number",
+          "format": "float"
+        },
+        "frequencyPenalty": {
+          "type": "number",
+          "format": "float"
+        },
+        "responseLogprobs": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "number",
+          "format": "float"
+        },
+        "logprobs": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "responseMimeType": {
+          "type": "string"
+        },
+        "responseModalities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["MODALITY_UNSPECIFIED", "TEXT", "IMAGE", "AUDIO"]
+          }
+        },
+        "topK": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "thinkingConfig": {
+          "$ref": "ThinkingConfig"
+        },
+        "responseJsonSchema": {
+          "type": "any"
+        },
+        "enableAffectiveDialog": {
+          "type": "boolean"
+        },
+        "topP": {
+          "type": "number",
+          "format": "float"
+        },
+        "responseFormat": {
+          "type": "any"
+        },
+        "_responseJsonSchema": {
+          "type": "any"
+        },
+        "candidateCount": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "imageConfig": {
+          "type": "any"
+        },
+        "speechConfig": {
+          "type": "any"
+        },
+        "translationConfig": {
+          "type": "any"
+        },
+        "audioTranscriptionConfig": {
+          "type": "any"
+        },
+        "stopSequences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "responseSchema": {
+          "$ref": "Schema"
+        },
+        "mediaResolution": {
+          "type": "string",
+          "enum": [
+            "MEDIA_RESOLUTION_UNSPECIFIED",
+            "MEDIA_RESOLUTION_LOW",
+            "MEDIA_RESOLUTION_MEDIUM",
+            "MEDIA_RESOLUTION_HIGH"
+          ]
+        }
+      }
+    },
+    "ThinkingConfig": {
+      "type": "object",
+      "properties": {
+        "includeThoughts": {
+          "type": "boolean"
+        },
+        "thinkingLevel": {
+          "type": "string",
+          "enum": ["THINKING_LEVEL_UNSPECIFIED", "MINIMAL", "LOW", "MEDIUM", "HIGH"]
+        },
+        "thinkingBudget": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    }
+  }
+}
