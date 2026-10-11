@@ -93,6 +93,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Stalled streams**: a provider stream that sent nothing kept the turn
+  waiting until a cancel. After 5 minutes of silence the request is now cut. A
+  turn with no content yet is tried again; a turn with content ends with a
+  network error that names the stall.
 - **Daemon lifetime on Windows**: the daemon stopped when the CLI that started
   it exited, so each command started a new daemon. It now outlives the CLI and
   serves later commands until its idle time ends.
