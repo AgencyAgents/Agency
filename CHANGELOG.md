@@ -96,6 +96,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Overflow in a long turn**: when the context filled in the middle of a
+  turn, compaction started from the prompt, so the model lost the steps of
+  that turn and ran its tools again. Compaction now starts from the last step.
+- **Compaction cut**: compaction could keep a tool result and summarize the
+  call that it answers. Providers reject such a request. A call and its
+  results now stay together.
 - **Fallback restart**: a turn that moved to `fallback_model` started again
   from the prompt, so tools that the first provider had already run ran a
   second time. The fallback now continues from the steps that are complete.
