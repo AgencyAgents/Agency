@@ -241,6 +241,22 @@ describe("createAgentDaemon", () => {
     void daemon;
   });
 
+  test("an idle daemon leaves when its config changes, so the next run loads the new config", async () => {
+    let shutdownCalled = false;
+    const { client, workspaceRoot } = await startFakeDaemon({
+      idleLingerMs: 60_000,
+      onIdleShutdown: () => (shutdownCalled = true),
+    });
+
+    await client.close();
+    clients.length = 0;
+    mkdirSync(join(workspaceRoot, ".agency"), { recursive: true });
+    writeFileSync(join(workspaceRoot, ".agency", "config.jsonc"), "{}");
+    await new Promise((r) => setTimeout(r, 1_500));
+
+    expect(shutdownCalled).toBe(true);
+  });
+
   test("onIdleShutdown does not fire while a client is still connected", async () => {
     let shutdownCalled = false;
     await startFakeDaemon({ idleLingerMs: 30, onIdleShutdown: () => (shutdownCalled = true) });

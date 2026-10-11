@@ -460,6 +460,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const activeControllers = new Map<string, AbortController>();
   const turnOwners = new Map<string, string>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let staleConfigTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
   let server!: DaemonServer;
   let httpGateway!: HttpGatewayServer;
@@ -555,18 +556,24 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     token: authToken,
     handlers,
     onClientCount(count) {
-      if (count > 0) {
-        clearTimeout(idleTimer);
-        idleTimer = undefined;
-        return;
-      }
-      idleTimer = setTimeout(() => {
+      clearTimeout(idleTimer);
+      clearInterval(staleConfigTimer);
+      idleTimer = undefined;
+      if (count > 0) return;
+      const leave = () => {
+        clearInterval(staleConfigTimer);
         try {
           eventBus.emit("session.idle", {});
           eventBus.emit("event", { event: "session.idle", payload: {} });
         } catch {}
         options.onIdleShutdown?.();
-      }, idleLingerMs);
+      };
+      idleTimer = setTimeout(leave, idleLingerMs);
+      // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
+      staleConfigTimer = setInterval(() => {
+        if (configFingerprint.check()) leave();
+      }, 1_000);
+      staleConfigTimer.unref?.();
     },
 
     onClientDisconnect(clientId) {
@@ -612,6 +619,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       if (stopped) return;
       stopped = true;
       clearTimeout(idleTimer);
+      clearInterval(staleConfigTimer);
       stopBoardSync();
       if (builtinsMode) {
         for (const scope of sessionScopes.values()) {

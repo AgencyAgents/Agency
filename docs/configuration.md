@@ -11,6 +11,8 @@ Agency loads one `Config` from stacked layers, lowest to highest:
 
 Layers merge with `deepMergeLayer`: plain objects recurse (e.g. `provider.<id>` extends rather than replaces), arrays and scalars replace.
 
+The daemon keeps the config it started with. An idle daemon exits within one second of a change to the global file or the project file, so the next command starts a daemon with the new config. A turn that is in progress finishes on the old config.
+
 Global `configDir` per OS: Windows `%APPDATA%/Agency`, other platforms `~/.config/agency` (Linux respects `XDG_CONFIG_HOME`). macOS note: only the *config* file lives under `~/.config/agency`; user data goes to `~/Library/Application Support/Agency` and the regenerable cache to `~/Library/Caches/Agency` (see `agency where`). Project config is always `.agency/config.jsonc` under the workspace root.
 
 Schema version is `2`; older files migrate via `configMigrations`. Validation is Zod (`ConfigSchema`); an invalid file throws.
