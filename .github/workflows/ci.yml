@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, dev]
-  pull_request:
-    branches: ['**']
+    branches: [master]
   workflow_dispatch:
 
 # Cancel stale runs on the same ref so only the latest commit's checks run.
