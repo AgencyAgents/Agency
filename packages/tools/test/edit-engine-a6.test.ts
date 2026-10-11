@@ -11,13 +11,26 @@ describe("applyEdit exact-match semantics (unchanged)", () => {
     expect(() => applyEdit("const x = 1;\n", { oldText: "const y = 1;", newText: "y" })).toThrow(AgencyError);
   });
 
-  test("a rejection shows the file text that differs from the anchor only in line breaks", () => {
-    // A real model wrote the two lines as one, three times in a row: the plain rejection gave it nothing to copy.
+  test("two file lines sent as one line: a same-shape edit applies, and the file keeps its layout", () => {
+    // A real model sent this anchor three times in a row. Its reasoning showed that it did not see the line break.
     const file = "def add(a, b):\n    return a - b\n\n\nprint(add(2, 3))\n";
-    const attempt = () =>
-      applyEdit(file, { oldText: "def add(a, b): return a - b", newText: "def add(a, b): return a + b" });
+    const edited = applyEdit(file, {
+      oldText: "def add(a, b): return a - b",
+      newText: "def add(a, b): return a + b",
+    });
 
-    expect(attempt).toThrow("def add(a, b):\n    return a - b");
+    expect(edited).toBe("def add(a, b):\n    return a + b\n\n\nprint(add(2, 3))\n");
+  });
+
+  test("an edit across line breaks is rejected with the file text when its shape differs or it is not unique", () => {
+    const file = "def add(a, b):\n    return a - b\n\n\nprint(add(2, 3))\n";
+    // More words in the new text: there is no layout to keep, so the model gets the exact text to copy.
+    expect(() =>
+      applyEdit(file, { oldText: "def add(a, b): return a - b", newText: "def add(a, b): return a + b + 0" }),
+    ).toThrow("def add(a, b):\n    return a - b");
+    // Two places match: the edit must not pick one.
+    const twice = "x = (\n  1)\nx = (\n  1)\n";
+    expect(() => applyEdit(twice, { oldText: "x = ( 1)", newText: "x = ( 2)" })).toThrow(AgencyError);
     // No such text in the file: the rejection has no hint.
     expect(() => applyEdit(file, { oldText: "def sub(a, b): return a - b", newText: "x" })).toThrow(
       /is not in the file\. Read the file/,

@@ -414,6 +414,8 @@ export function applyEdit(content: string, request: EditRequest): string {
     // Fall back to whitespace-tolerant fuzzy match
     const fuzzy = fuzzyReplace(content, { oldText, newText, replaceAll });
     if (fuzzy !== undefined) return fuzzy;
+    const relaid = replaceAcrossLineBreaks(content, oldText, newText);
+    if (relaid !== undefined) return relaid;
     const near = lineBreakVariant(content, oldText);
     throw editError(near ? t("tool.edit.not_found_near", { text: near }) : t("tool.edit.not_found"), {
       oldTextPreview: preview(oldText),
@@ -502,9 +504,22 @@ function whitespaceTolerantRegExp(oldText: string): RegExp | undefined {
 }
 
 /**
- * The file text that equals `oldText` when a line break counts as a space. It is only shown in the rejection:
- * an edit across a different line layout is not applied, because the new text would not fit that layout.
+ * An anchor that matches one place in the file when a line break counts as a space (two lines sent as one).
+ * Applies only when the new text has the same count of words: each word goes in and the file keeps its layout.
  */
+function replaceAcrossLineBreaks(content: string, oldText: string, newText: string): string | undefined {
+  const oldWords = oldText.trim().split(/\s+/);
+  const newWords = newText.trim().split(/\s+/);
+  if (oldWords.length < 2 || oldWords.length !== newWords.length) return undefined;
+  const pattern = new RegExp(oldWords.map((word) => escapeRegExpChar(word)).join("(\\s+)"), "g");
+  const [match, second] = [...content.matchAll(pattern)];
+  if (match?.index === undefined || second !== undefined) return undefined;
+  // Capture group i is the file's own whitespace after word i.
+  const relaid = newWords.map((word, i) => word + (match[i + 1] ?? "")).join("");
+  return content.slice(0, match.index) + relaid + content.slice(match.index + match[0].length);
+}
+
+/** The file text that equals `oldText` when a line break counts as a space. The rejection shows it for the model to copy. */
 function lineBreakVariant(content: string, oldText: string): string | undefined {
   const tokens = oldText.trim().split(/\s+/);
   if (tokens.length < 2) return undefined;
