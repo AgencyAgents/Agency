@@ -111,6 +111,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   report were wrong for that turn. The cost records now use the fallback
   model, and the result has `servedBy` with the provider and model that
   gave the answer.
+- **Spend of a failed turn**: the tokens of the model requests that
+  finished were not counted when the turn then failed or moved to the
+  fallback model, so the daily and monthly caps saw less than the real
+  spend. The spend ledger, the budgets and the cost meter now count them,
+  at the price of the model that used them.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
