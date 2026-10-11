@@ -479,6 +479,8 @@ export async function executeTurn(
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
             });
+            // The fallback model's own limits: the primary's output limit can be too large for it.
+            const fallbackInfo = catalogModel(fallbackRef.provider, fallbackRef.model);
             const fallbackPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: fallbackMcpFailures,
@@ -504,8 +506,9 @@ export async function executeTurn(
                   thinkingLevel: params.thinkingLevel,
                   session: [...params.session, ...carried],
                   budget: params.budget,
-                  pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
-                  maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                  pricePerMTok: fallbackInfo ? priceForModel(fallbackInfo.pricing) : undefined,
+                  maxTokensPerRequest: fallbackInfo?.maxOutputTokens,
+                  contextWindow: fallbackInfo?.contextWindow,
                   turnId: params.turnId,
                   sessionId: params.sessionId,
                   cwd: options.workspaceRoot,

@@ -265,6 +265,47 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a fallback request uses the fallback model's own output limit", async () => {
+    const limits: Record<string, number> = {};
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        limits[provider] = request.maxTokens;
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "from the fallback" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          fallback_model: "openai/gpt-x",
+          provider: {
+            anthropic: { models: { "test-model": { contextWindow: 9000, maxOutputTokens: 900 } } },
+            openai: { models: { "gpt-x": { contextWindow: 5000, maxOutputTokens: 123 } } },
+          },
+        }),
+      });
+      await client.call("run_turn", {
+        turnId: "t-fallback-limit",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+
+      expect(limits).toEqual({ anthropic: 900, openai: 123 });
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
   test("a context overflow that cannot be folded returns its cause, not a bare error", async () => {
     const { client } = await startFakeDaemon({
       adapterFor: () => ({
