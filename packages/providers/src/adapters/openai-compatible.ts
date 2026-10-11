@@ -143,7 +143,8 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
   if (
     res.status === 413 ||
     body?.error?.code === "context_length_exceeded" ||
-    /(context length|maximum context|too many (input )?tokens|input (is )?too long|request too large)/i.test(
+    body?.error?.type === "exceed_context_size_error" ||
+    /(context length|maximum context|context size|too many (input )?tokens|input (is )?too long|request too large)/i.test(
       message,
     )
   ) {

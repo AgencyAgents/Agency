@@ -142,6 +142,24 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect((byMessage as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
   });
 
+  test("maps the overflow error of a llama.cpp server to CONTEXT_OVERFLOW", async () => {
+    // The body is a capture from llama-server b11155: the code is a number and the message has its own wording.
+    const body = {
+      error: {
+        code: 400,
+        message:
+          "request (14030 tokens) exceeds the available context size (12288 tokens), try increasing it",
+        type: "exceed_context_size_error",
+        n_prompt_tokens: 14030,
+        n_ctx: 12288,
+      },
+    };
+    const adapter = createOpenAiCompatibleAdapter("local", "http://127.0.0.1:8080/v1");
+
+    const err = await collect(adapter.stream(baseRequest, fakeError({ status: 400, body }))).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
   test("maps content_filter finish reasons to refusal instead of end_turn", async () => {
     const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
     const encoder = new TextEncoder();
