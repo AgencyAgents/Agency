@@ -258,6 +258,11 @@ describe("googleAdapter", () => {
     expect(await stop({ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } })).toMatchObject({
       stopReason: "refusal",
     });
+    // CONTINUATION is the API's word for a reply cut at the per-request limit, so the loop continues it.
+    const cut = {
+      candidates: [{ content: { parts: [{ text: "half an ans" }] }, finishReason: "CONTINUATION" }],
+    };
+    expect(await stop(cut)).toMatchObject({ stopReason: "max_tokens" });
     for (const finishReason of [
       "MALFORMED_RESPONSE",
       "UNEXPECTED_TOOL_CALL",

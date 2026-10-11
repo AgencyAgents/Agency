@@ -215,6 +215,8 @@ async function explicitPrefixCache(
 const FINISH_REASON: Record<string, StopReason> = {
   STOP: "end_turn",
   MAX_TOKENS: "max_tokens",
+  // The reply reached the per-request limit and is not complete: the loop continues a cut reply.
+  CONTINUATION: "max_tokens",
   SAFETY: "refusal",
   RECITATION: "refusal",
   BLOCKLIST: "refusal",
