@@ -19,6 +19,7 @@ export interface RunSessionTurnOptions {
   /** Context window of the active model; feeds daemon-side compaction. */
   contextWindow?: number;
   permissionMode?: PermissionMode;
+  maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
   /** Caller-supplied for pre-subscribe streaming; generated when absent. */
@@ -58,6 +59,7 @@ export async function runSessionTurn(
       budget: options.budget,
       contextWindow: options.contextWindow,
       permissionMode: options.permissionMode,
+      maxToolIterations: options.maxToolIterations,
       nonInteractive: options.nonInteractive,
       ...(options.images?.length ? { images: options.images } : {}),
     })) as SessionSendResult;

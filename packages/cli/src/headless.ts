@@ -21,6 +21,7 @@ export interface RunHeadlessOptions {
   images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
   permissionMode?: PermissionMode;
+  maxToolIterations?: number;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
@@ -155,6 +156,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       thinkingLevel: options.thinkingLevel,
       session,
       permissionMode: options.permissionMode,
+      maxToolIterations: options.maxToolIterations,
       nonInteractive: true,
       ...(options.images?.length ? { images: options.images } : {}),
     };

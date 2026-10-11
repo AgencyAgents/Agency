@@ -169,6 +169,44 @@ describe("compact-and-retry branch", () => {
     expect(stored).toContain("done after compaction");
   }, 15000);
 
+  test("session_send takes the caller's step limit and reports when the turn reaches it", async () => {
+    const ws = tmp("agency-steps-ws-");
+    const sessionsDir = tmp("agency-steps-sess-");
+    let runs = 0;
+    const countTool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "tool_call_start", id: `c${runs}`, name: "count" };
+        yield { type: "tool_call_delta", id: `c${runs}`, inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: `c${runs}` };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const client = await daemon(ws, adapter, sessionsDir, [countTool]);
+
+    const result = (await client.call("session_send", {
+      sessionId: "steps",
+      provider: "anthropic",
+      model: "m",
+      systemPrompt: "sys",
+      userText: "count for ever",
+      maxToolIterations: 2,
+    })) as { error?: { code: string } };
+
+    expect(runs).toBe(2);
+    expect(result.error?.code).toBe("iteration_limit");
+  }, 20000);
+
   test("a send that waits behind another turn does not run after its client has left", async () => {
     const ws = tmp("agency-queue-ws-");
     const sessionsDir = tmp("agency-queue-sess-");

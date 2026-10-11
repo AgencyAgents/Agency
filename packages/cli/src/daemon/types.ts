@@ -204,6 +204,7 @@ export interface SessionSendParams {
   thinkingLevel?: ThinkingLevel;
   budget?: Budget;
   permissionMode?: PermissionMode;
+  maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
   contextWindow?: number;

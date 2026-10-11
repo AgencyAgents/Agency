@@ -696,6 +696,33 @@ describe("-p headless mode", () => {
     expect(fake.calls[0]?.permissionMode).toBe("deny");
   });
 
+  test("--max-steps parses, rejects a bad value, and reaches both kinds of turn", async () => {
+    expect(parseArgv(["-p", "hi"]).maxSteps).toBeUndefined();
+    expect(parseArgv(["-p", "hi", "--max-steps", "80"]).maxSteps).toBe(80);
+    for (const bad of ["0", "-3", "2.5", "many"]) {
+      expect(() => parseArgv(["-p", "hi", "--max-steps", bad])).toThrow("--max-steps");
+    }
+
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--max-steps", "80"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: headless.runHeadless,
+    });
+    expect(headless.calls[0]?.maxToolIterations).toBe(80);
+
+    const session = fakeClient();
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--session", "steps", "--max-steps", "80"], {
+      ...baseDeps(),
+      ...deps,
+      sessionsDir: tempDir("agency-ep-sessions-"),
+      ensureClient: async () => session.client,
+    });
+    const send = session.calls.find((call) => call.method === "session_send");
+    expect(send?.params).toMatchObject({ maxToolIterations: 80 });
+  });
+
   test("a session-backed turn compacts daemon-side; the client sends text only", async () => {
     const fake = fakeClient();
     const sessionsDir = tempDir("agency-ep-sessions-");

@@ -84,6 +84,7 @@ Options:
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
   --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
+  --max-steps <n>          With -p: tool steps one turn may take (default: 25)
   --format <text|json>     Output format (default: text; json is for scripting)
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
@@ -108,6 +109,8 @@ export interface ParsedArgv {
   continueLast: boolean;
   session: string | undefined;
   permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
+  /** Tool steps one turn may take; undefined keeps the loop's default. */
+  maxSteps: number | undefined;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -174,6 +177,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
+    maxSteps: undefined,
     format: "text",
     retention: undefined,
     help: false,
@@ -246,6 +250,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
         parsed.permissionMode = mode;
+        break;
+      }
+      case "--max-steps": {
+        const steps = Number(value());
+        if (!Number.isInteger(steps) || steps < 1) throw new Error(t("cli.error.invalid_max_steps"));
+        parsed.maxSteps = steps;
         break;
       }
       case "--max-age-days":
@@ -502,6 +512,7 @@ async function runPrintMode(
         images,
         onEvent,
         permissionMode: parsed.permissionMode,
+        maxToolIterations: parsed.maxSteps,
         nonInteractive: true,
       });
       return reportTurn(out, err, parsed.format, { sessionId, tipId, ...result });
@@ -521,6 +532,7 @@ async function runPrintMode(
     images,
     onEvent,
     permissionMode: parsed.permissionMode,
+    maxToolIterations: parsed.maxSteps,
   });
   return reportTurn(out, err, parsed.format, result);
 }

@@ -268,6 +268,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       session: history,
       budget: p.budget ?? sessionBudgets.get(p.sessionId),
       permissionMode: p.permissionMode,
+      maxToolIterations: p.maxToolIterations,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
     };
