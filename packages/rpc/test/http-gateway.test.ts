@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type HttpGatewayServer, type SessionStoreLike, startHttpGateway } from "../src/http-gateway.ts";
 
 const servers: HttpGatewayServer[] = [];
@@ -119,6 +120,22 @@ describe("POST /rpc", () => {
       id: "req-2",
       error: { message: "something broke", code: "E_TEST" },
     });
+  });
+
+  test("an AgencyError the caller can fix answers 4xx, not 500", async () => {
+    const server = startHttpGateway({
+      handlers: {
+        nokey: async () => {
+          throw new AgencyError(ErrorCode.AUTH, "no API key", { source: "test" });
+        },
+      },
+    });
+    servers.push(server);
+
+    const res = await rpc(server, { id: "req-3", method: "nokey" });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ id: "req-3", error: { message: "no API key", code: "auth" } });
   });
 
   test("calling an unregistered method answers with the TCP transport's message", async () => {

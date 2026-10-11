@@ -133,8 +133,10 @@ export async function executeTurn(
             });
           })());
         if (apiKey === undefined) {
-          throw new Error(
+          throw new AgencyError(
+            ErrorCode.AUTH,
             `no API key for provider "${params.provider}": set AGENCY_${params.provider.toUpperCase()}_API_KEY or run \`agency auth login ${params.provider}\``,
+            { source: "daemon" },
           );
         }
         redactor.registerSecret(apiKey);

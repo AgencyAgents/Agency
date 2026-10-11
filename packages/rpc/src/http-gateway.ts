@@ -1,3 +1,4 @@
+import { ErrorCode } from "@agency/schema";
 import { EVENT_RETRY_MS, EVENT_RING_SIZE } from "./catalog.ts";
 import { EventRing, sseFrame } from "./event-buffer.ts";
 import { buildGatewayDocument } from "./gateway-doc.ts";
@@ -91,6 +92,18 @@ interface SseClient {
   /** Idempotently tears the client down: unregisters, stops keepalive, closes. */
   close: () => void;
 }
+
+/** A handler failure the caller or an upstream caused must not read as a gateway fault; untyped throws stay 500. */
+const STATUS_BY_CODE: Record<string, number> = {
+  [ErrorCode.AUTH]: 401,
+  [ErrorCode.PERMISSION_DENIED]: 403,
+  [ErrorCode.CONTEXT_OVERFLOW]: 413,
+  [ErrorCode.RATE_LIMIT]: 429,
+  [ErrorCode.NETWORK]: 502,
+  [ErrorCode.PROXY]: 502,
+  [ErrorCode.OVERLOAD]: 503,
+  [ErrorCode.TRANSIENT]: 503,
+};
 
 function errorPayload(error: unknown): { message: string; code?: string } {
   const code =
@@ -266,7 +279,8 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
       const result = await handler(params, { clientId: "http" });
       return json(200, { id: id ?? null, result }, request);
     } catch (error: unknown) {
-      return json(500, { id: id ?? null, error: errorPayload(error) }, request);
+      const payload = errorPayload(error);
+      return json(STATUS_BY_CODE[payload.code ?? ""] ?? 500, { id: id ?? null, error: payload }, request);
     }
   }
 
