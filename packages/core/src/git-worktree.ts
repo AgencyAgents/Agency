@@ -42,14 +42,29 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
   return entries;
 }
 
+const repoQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * One worktree change at a time per repository. Two `git worktree add` runs race inside git: one reads
+ * the other's half-written `.git/worktrees/<name>` and fails with "failed to read ... commondir".
+ */
+function inRepoOrder<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+  const next = (repoQueues.get(cwd) ?? Promise.resolve()).then(run, run);
+  repoQueues.set(
+    cwd,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
 export async function createWorktree(cwd: string, path: string, branch?: string): Promise<void> {
   const args = branch ? ["worktree", "add", "-b", branch, path] : ["worktree", "add", path];
-  await execFileAsync("git", args, { cwd });
+  await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));
 }
 
 export async function removeWorktree(cwd: string, path: string, force = false): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), path];
-  await execFileAsync("git", args, { cwd });
+  await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));
 }
 
 /**
