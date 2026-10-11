@@ -96,6 +96,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Summary text**: a compacted session stored the summarizer's own
+  instructions at the top of the summary, and the model read "MUST NOT call
+  tools" there as a user message. The summary now holds only the transcript.
+- **Overflow without a session**: a plain `-p` run and a child agent had no
+  compaction, so a full context ended the run. The turn loop now folds its
+  own transcript and continues. The limit is one fold for each request, not
+  one for each turn. An overflow that cannot be folded now prints its cause;
+  before, the CLI exited with code 1 and no message.
 - **Overflow in a long turn**: when the context filled in the middle of a
   turn, compaction started from the prompt, so the model lost the steps of
   that turn and ran its tools again. Compaction now starts from the last step.
