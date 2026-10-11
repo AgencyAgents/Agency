@@ -244,6 +244,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const configFingerprint = createConfigFingerprint([
     join(options.configDir ?? configDir(), "config.jsonc"),
     join(options.workspaceRoot, ".agency", "config.jsonc"),
+    // The executable too: after an update, an idle daemon from the old binary leaves.
+    process.execPath,
   ]);
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });

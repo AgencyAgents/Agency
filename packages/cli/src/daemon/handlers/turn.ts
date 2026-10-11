@@ -111,7 +111,7 @@ export async function executeTurn(
     // R10 wiring: the whole turn (provider requests and tool calls) correlates under one trace ID.
     return withTrace(async () => {
       if (configFingerprint.check()) {
-        logger.warn("config changed, restart daemon to apply");
+        logger.warn("config or binary changed; this daemon leaves when it is idle");
       }
       // Turn heartbeats keep heartbeat-aware clients' deadlines alive
       // through silent stretches (a long tool call emits no deltas).
