@@ -4,7 +4,12 @@ import { collectAgentsFiles, collectRuleFiles, configDir, dataDir, loadConfig } 
 import type { PermissionMode } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
-import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
+import {
+  type DaemonClient,
+  DEFAULT_SPAWN_TIMEOUT_MS,
+  type EnsureDaemonOptions,
+  ensureDaemon,
+} from "@agency/rpc";
 import type { ImageBlock, Message } from "@agency/schema";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
@@ -122,7 +127,7 @@ export async function connectHeadlessClient(
       // Wrap timeout errors with actionable diagnostics.
       if (error instanceof Error && error.message.includes("did not become ready")) {
         const entry = options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY;
-        throw new Error(t("cli.daemon.timeout", { timeout: "5000", entry }));
+        throw new Error(t("cli.daemon.timeout", { timeout: String(DEFAULT_SPAWN_TIMEOUT_MS), entry }));
       }
       throw error;
     });

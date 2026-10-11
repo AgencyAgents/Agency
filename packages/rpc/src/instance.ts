@@ -36,8 +36,9 @@ export interface InstanceInfo {
  * spawn lock, deadline, instance file, token, heartbeat, and linger values
  * stay in sync between implementation and tests.
  */
-export const SPAWN_LOCK_STALE_MS = 10_000;
-export const DEFAULT_SPAWN_TIMEOUT_MS = 5_000;
+export const SPAWN_LOCK_STALE_MS = 60_000;
+// Measured: a daemon is ready in 1 to 2 s on a laptop and needed 13 s or more on a CPU five times slower.
+export const DEFAULT_SPAWN_TIMEOUT_MS = 30_000;
 export const INSTANCE_FILE_MODE = 0o600;
 
 /** Stable, filesystem-safe id for a workspace root: one daemon per root (R1). */
@@ -170,9 +171,9 @@ export interface EnsureDaemonOptions {
   spawnTimeoutMs?: number;
   /**
    * How old an O_EXCL spawn lock may be before it is treated as stale and
-   * stolen. Defaults to `SPAWN_LOCK_STALE_MS` (10s): a crashed spawner can't
+   * stolen. Defaults to `SPAWN_LOCK_STALE_MS` (60s): a crashed spawner can't
    * wedge the workspace, while a live spawner still finishing inside the
-   * 5s deadline keeps its lock.
+   * 30s deadline keeps its lock.
    */
   lockStaleMs?: number;
   /** Injectable for tests; production callers never need to pass this. */

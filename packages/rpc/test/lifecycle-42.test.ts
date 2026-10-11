@@ -50,9 +50,9 @@ function fakeSpawnDaemon(instanceFile: string) {
 }
 
 describe("daemon lifecycle constants (item 42)", () => {
-  test("spawn lock stale detection is 10s and default deadline is 5s", () => {
-    expect(SPAWN_LOCK_STALE_MS).toBe(10_000);
-    expect(DEFAULT_SPAWN_TIMEOUT_MS).toBe(5_000);
+  test("default deadline is 30s, and a spawn lock goes stale only after it", () => {
+    expect(DEFAULT_SPAWN_TIMEOUT_MS).toBe(30_000);
+    expect(SPAWN_LOCK_STALE_MS).toBeGreaterThan(DEFAULT_SPAWN_TIMEOUT_MS);
   });
 
   test("instance file mode is user-only 0600", () => {
@@ -153,7 +153,7 @@ describe("O_EXCL spawn lock with stale detection (item 42)", () => {
     await client.close();
   });
 
-  test("5s default deadline: a daemon that never appears rejects", async () => {
+  test("a daemon that never appears rejects at the deadline", async () => {
     const start = Date.now();
     await expect(
       ensureDaemon({

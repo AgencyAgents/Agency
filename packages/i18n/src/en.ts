@@ -199,7 +199,7 @@ export const en = {
   "cli.daemon.spawning": "Starting daemon for {workspace}...",
   "cli.daemon.connected": "Daemon connected on port {port}.",
   "cli.daemon.timeout":
-    "Daemon did not become ready within {timeout}ms. Check that `bun` is installed and the daemon entry exists at {entry}.",
+    "Daemon did not become ready within {timeout}ms. On a slow or busy machine it can still be starting: run the command again. Daemon entry: {entry}.",
   "cli.daemon.status_usage": "usage: agency daemon status",
 
   "cli.health.title": "Agency {version}",
