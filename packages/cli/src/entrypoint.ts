@@ -8,6 +8,7 @@ import {
   EventBus,
   getSessionTitle,
   loadConfig,
+  OUTPUT_CUT_NOTE,
   parseModelRef,
   type RetentionPolicy,
   reportStorage,
@@ -383,8 +384,12 @@ async function providerConnections(
 /** What `-p` prints in text mode: the reply to the prompt this run sent.
  *  A session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
+  // The note after a cut reply is not a prompt: the parts before it are output too. A real model drops the
+  // space at the cut ("22" then "23"), so the parts keep a line break between them and never merge.
   const prompt = messages.findLastIndex(
-    (message) => message.role === "user" && message.content.some((block) => block.type === "text"),
+    (message) =>
+      message.role === "user" &&
+      message.content.some((block) => block.type === "text" && block.text !== OUTPUT_CUT_NOTE),
   );
   const parts: string[] = [];
   for (const message of messages.slice(prompt + 1)) {

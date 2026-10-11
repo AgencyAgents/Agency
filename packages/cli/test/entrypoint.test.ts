@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
@@ -451,6 +451,28 @@ function baseDeps(overrides: Partial<EntrypointDeps> = {}): Partial<EntrypointDe
 }
 
 describe("-p headless mode", () => {
+  test("a reply that continued after the output limit prints all its parts, not only the last one", async () => {
+    const text = (value: string) => [{ type: "text" as const, text: value }];
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      messages: [
+        { role: "user", content: text("count") },
+        { role: "assistant", content: text("1 2 3 ") },
+        { role: "user", content: text(OUTPUT_CUT_NOTE) },
+        { role: "assistant", content: text("4 5 6") },
+      ],
+    });
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["-p", "count", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+
+    expect(code).toBe(0);
+    expect(out.join("").split(/\s+/)).toEqual(["1", "2", "3", "4", "5", "6"]);
+  });
+
   test("runs one turn through runHeadless and prints the assistant text", async () => {
     const fake = fakeRunHeadless();
     const { out, deps } = capture();
