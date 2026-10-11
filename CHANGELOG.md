@@ -93,6 +93,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Worker keys**: a `spawn` worker that named a model on a provider with no
+  key kept the parent's key and sent it to that other provider. The worker
+  now stays on the parent's provider and model.
+- **Compare without a key**: `dispatch_compare` sent a request with an empty
+  key to the pinned provider of an agent that had no key. Such an agent now
+  runs on the default model when that model's provider has a key, and the
+  result names the model that ran.
 - **Compaction window**: a session turn compacted against a fixed window of
   200,000 tokens. It now uses the context window of the model in use, so a
   model with a small window is compacted before the request overflows.
