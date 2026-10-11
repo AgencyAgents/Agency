@@ -96,6 +96,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Empty reply**: a model reply with no text gave exit code 0 and no
+  output, and left an empty assistant message in the session. The turn now
+  carries the error `empty_response` and the CLI exits with code 1. The
+  empty message is not stored, and the Anthropic adapter leaves out any
+  message that maps to no content, because the API rejects one.
 - **Tool calls on OpenAI-compatible servers**: a server that sent a tool call
   and then finish reason `stop` had its call dropped, and the turn ended
   with no output. A call with no id was dropped too. The adapter now treats
