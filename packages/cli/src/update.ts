@@ -76,6 +76,8 @@ export async function runUpdate(options: {
   const latestRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { accept: "application/vnd.github.v3+json" },
   });
+  // GitHub answers 404 for the latest release of a repository that has none.
+  if (latestRes.status === 404) throw new Error("No release is published yet: there is nothing to update to");
   if (!latestRes.ok) throw new Error(`Failed to fetch latest release: ${latestRes.status}`);
   const latest = (await latestRes.json()) as {
     tag_name: string;

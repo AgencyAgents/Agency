@@ -413,6 +413,14 @@ describe("runUpdate - signature verification", () => {
       cleanupTempBin(binPath);
     }
   });
+
+  test("a repository with no release says so, not a bare status code", async () => {
+    // GitHub answers 404 for the latest release of a repository that has none.
+    const httpFetch = (async () => new Response("{}", { status: 404 })) as unknown as typeof fetch;
+    await expect(runUpdate({ currentVersion: "0.1.0", httpFetch, binPath: "unused" })).rejects.toThrow(
+      "No release is published yet",
+    );
+  });
 });
 
 describe("sign-release script validation", () => {
