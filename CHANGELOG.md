@@ -96,6 +96,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Anthropic thinking budget**: the adapter sent a fixed budget for each
+  thinking level. The API takes a budget of 1024 or more that is less than
+  `max_tokens`, so level `high` with the default output limit of 8192 was an
+  invalid request. The budget is now at most half of `max_tokens`, and the
+  request goes out with no thinking when no valid budget fits.
 - **Images from tools**: the `read` tool returned an image and said "Attached
   image", but no adapter sent the image to the model. A model whose catalog
   or config entry has `capabilities.vision` now gets it: inside the tool
