@@ -96,6 +96,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Two runs on one session**: two sends that ran at the same time on one
+  session started from the same point. The history forked and one turn was
+  lost. A session now runs one turn at a time, and the second send waits.
 - **Summary text**: a compacted session stored the summarizer's own
   instructions at the top of the summary, and the model read "MUST NOT call
   tools" there as a user message. The summary now holds only the transcript.
