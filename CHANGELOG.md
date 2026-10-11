@@ -81,7 +81,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the API reject the whole request: such a schema now goes in
   `parametersJsonSchema`. Thinking level `off` sent budget 0 to Gemini 2.5
   Pro, which cannot turn thinking off: it now gets its lowest budget. A set
-  thinking level now asks for thought summaries (`includeThoughts`).
+  thinking level now asks for thought summaries (`includeThoughts`). A test
+  now checks real request bodies against the request part of Google's API
+  description (`packages/providers/test/adapters/google-wire.test.ts`).
 - **Gemini stop reasons**: a blocked prompt (`promptFeedback.blockReason`)
   ended as an empty reply and is now a refusal. A finish reason that is not a
   normal stop, also one that the API adds later, was read as a complete reply
