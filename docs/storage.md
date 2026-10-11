@@ -18,6 +18,8 @@ Every path is derived from the OS data/config/cache roots plus the workspace ide
 | Trust store | `dataDir()/trust.json` | overridable via daemon `trustStorePath` |
 | Telemetry | `dataDir()/telemetry/events.jsonl` | overridable via daemon `telemetryDir` |
 
+`AGENCY_HOME` overrides all three roots on every platform, macOS included: config is `AGENCY_HOME/config`, data is `AGENCY_HOME/data`, cache is `AGENCY_HOME/cache`. The test preload (`scripts/test-preload.ts`) sets it so tests never touch real user data.
+
 `agency where` prints the four primary roots for the current workspace. `agency where --format json` emits the full `StoragePaths` JSON.
 
 ## Sessions

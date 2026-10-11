@@ -5,8 +5,12 @@ import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import { configDir } from "./paths.ts";
 
-/** User data: sessions, snapshots. Never safe to delete casually. */
+/**
+ * User data: sessions, snapshots. Never safe to delete casually.
+ * AGENCY_HOME roots config, data and cache in one place: macOS has no other env override.
+ */
 export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.AGENCY_HOME) return join(env.AGENCY_HOME, "data");
   if (platform === "win32") {
     return join(env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Agency");
   }
@@ -18,6 +22,7 @@ export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: string =
 
 /** Regenerable: model catalogs, tokenizer tables. Always safe to delete. */
 export function cacheDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.AGENCY_HOME) return join(env.AGENCY_HOME, "cache");
   if (platform === "win32") {
     return join(env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Agency", "Cache");
   }

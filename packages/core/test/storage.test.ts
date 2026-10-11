@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../src/paths.ts";
 import {
   cacheDir,
   dataDir,
@@ -36,6 +37,15 @@ describe("per-OS directories", () => {
     const env = { XDG_DATA_HOME: "/data", XDG_CACHE_HOME: "/cache" } as NodeJS.ProcessEnv;
     expect(dataDir(env, "linux")).toBe(join("/data", "agency"));
     expect(cacheDir(env, "linux")).toBe(join("/cache", "agency"));
+  });
+
+  test("AGENCY_HOME roots config, data and cache on every platform", () => {
+    const env = { AGENCY_HOME: "/h", LOCALAPPDATA: "C:\\x", XDG_DATA_HOME: "/data" } as NodeJS.ProcessEnv;
+    for (const platform of ["win32", "darwin", "linux"]) {
+      expect(configDir(env, platform)).toBe(join("/h", "config"));
+      expect(dataDir(env, platform)).toBe(join("/h", "data"));
+      expect(cacheDir(env, platform)).toBe(join("/h", "cache"));
+    }
   });
 });
 
