@@ -31,7 +31,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **8-agent roster**: `DEFAULT_ROSTER` (`packages/core/src/config/schema.ts`)
   defines leader, planner, plan-reviewer, coder, executor, explorer,
   researcher, and code-reviewer, spread across anthropic, openai, and
-  google by role and remapped to credentialed providers at startup.
+  google by role. A dispatched peer without credentials for its provider
+  runs on the lead turn's provider and model (`routeAgent`).
   Dispatched peers do not receive per-role prompts: `resolveFamilyPrompt`
   (`packages/core/src/prompt/compose.ts`) has no runtime caller, and each
   peer turn uses a literal one-line prompt with its handle and role
@@ -62,6 +63,35 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **First run**: `agency -p` failed with `ENOENT` on a machine with no data
+  directory, because the daemon spawn lock was created before its directory
+  (`ensureDaemon` in `packages/rpc/src/instance.ts`).
+- **Release binary**: the compiled binary spawned its daemon as
+  `bun run daemon-entry.ts`, which needs Bun and the source tree. It now
+  re-runs itself through `DAEMON_COMMAND` (`packages/cli/src/headless.ts`).
+- **Team dispatch**: a dispatched peer whose pinned provider had no key sent
+  an unauthenticated request. `routeAgent` now runs it on the lead turn's
+  provider, model and key. The startup remap that never took effect is gone.
+- **Project instructions**: `loadInstructions` had no caller, so `AGENTS.md`,
+  `CLAUDE.md` and `.agency/rules` never reached the model. The daemon loads
+  them for a trusted workspace; `agency trust` trusts one without onboarding.
+- **Shell exit codes**: a command that ends the shell (`exit 3`, `set -e`)
+  was reported as an empty success. The bash tool now falls back to the
+  process exit code.
+- **HTTP status**: the gateway answers an `AgencyError` with a matching
+  status (a missing provider key is 401 with code `auth`) instead of 500.
+- **Bare `agency`**: the provider line counted known providers as connected.
+  It now counts providers with a resolvable key, as `auth list` does.
+- **Windows speed**: the keychain no longer spawns PowerShell on every
+  command (bare `agency` 1508 ms to 718 ms), and `makeWorktreeReadOnly` no
+  longer spawns `attrib` per file (200 files: 16.8 s to 0.12 s).
+- **Update check**: every command sent a request to the GitHub releases API
+  and could print its notice into `--format json` output. `checkStale` now
+  asks at most once a day, prints on stderr, and honours
+  `AGENCY_NO_UPDATE_CHECK`.
+- **Test isolation**: the suite wrote into the real user data directory.
+  `AGENCY_HOME` now roots config, data and cache on every platform, and a
+  test preload sets it.
 - **CI reliability**: `.github/workflows/ci.yml` hardened with cross-platform
   test isolation, deterministic barrier timing in parallel tests, macOS
   tmpdir canonicalization, and PowerShell DPAPI import fix for Windows
@@ -72,10 +102,16 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Removed
 
-- `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, team dispatch, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments now exits 1 with an honest notice; use `agency -p "prompt"` for headless or `agency --help` for commands.
+- `packages/tui` (16 modules: renderer, transcript, themes, error-states, connect, models-picker, session-browser, diff-viewer, command-palette, help, keybinds, status, empty, thinking, theme) removed. The repo is now a pure backend (daemon, RPC, HTTP+SSE gateway, tools, MCP/LSP, team dispatch, traces, permissions, plugins, headless CLI). The interactive frontend follows separately. `agency` without arguments prints a health summary (model, connected providers, sessions) and exits 0; use `agency -p "prompt"` for headless or `agency --help` for commands.
 
 ### Added
 
+- `scripts/e2e-cli.ts`: an offline end-to-end check that drives the real CLI
+  (or the compiled binary) through a tool turn and a session resume against a
+  local OpenAI-compatible stand-in. CI builds the binary and runs it.
+- `scripts/doc-claims.ts` now fails when a `Wired: Yes` row in
+  `docs/status.md` names a symbol that the CLI entrypoint and the SDK cannot
+  reach.
 - Release engineering: `bun build --compile` binary builds with a 100 MB size
   budget check (`scripts/build.ts`, 80 MB was the pre-Bun-1.4 target; 100 MB reflects the actual runtime floor, override with `--max-size-mb`), per-platform signing scripts
   (`scripts/sign.sh` for macOS/Linux, `scripts/sign.ps1` for Windows), a tag-triggered release workflow
