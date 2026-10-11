@@ -192,6 +192,13 @@ const env: Record<string, string | undefined> = { ...process.env, AGENCY_HOME: h
 for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
 env.PATH = process.platform === "win32" ? `${systemRoot}\\System32;${systemRoot}` : "/usr/bin:/bin";
 
+const instances = join(home, "data", "instances");
+const daemonPids = (): number[] =>
+  readdirSync(instances)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => (JSON.parse(readFileSync(join(instances, f), "utf8")) as { pid: number }).pid);
+const daemonsSeen = new Set<number>();
+
 async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([...cli, ...args, "--workspace", workspace], {
     env,
@@ -203,6 +210,7 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
+  for (const pid of daemonPids()) daemonsSeen.add(pid);
   return { code, stdout, stderr };
 }
 
@@ -233,14 +241,17 @@ try {
       `${family}: the resumed request carries the first turn`,
     );
   }
+  assert(
+    daemonsSeen.size === 1,
+    `one daemon outlives the CLI that started it and serves every run, saw ${daemonsSeen.size}`,
+  );
   console.log(
     `e2e-cli: ${binary ? "compiled binary" : "source"}: tool turn and session resume green on ${families.join(", ")}`,
   );
 } finally {
-  const instances = join(home, "data", "instances");
-  for (const file of readdirSync(instances).filter((f) => f.endsWith(".json"))) {
+  for (const pid of daemonPids()) {
     try {
-      process.kill((JSON.parse(readFileSync(join(instances, file), "utf8")) as { pid: number }).pid);
+      process.kill(pid);
     } catch {
       // The daemon already exited.
     }
