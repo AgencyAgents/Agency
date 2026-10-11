@@ -96,6 +96,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Exit with no output**: the CLI did not wait for its own main call. When
+  nothing else held the process open, it exited with code 0 and printed
+  nothing. The main call is now awaited.
 - **JSON output on failure**: with `--format json`, a run that failed printed
   nothing on stdout. It now prints `{"error": {"code", "message"}}` there,
   and the exit code stays 1. The RPC client now keeps the error code that
@@ -192,6 +195,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- `-p -` reads the prompt from stdin, so a long prompt can come from a pipe
+  or a file. An empty stdin is an error.
 - `--permission-mode allow-all`: a headless run can allow every tool for one
   run without a config edit. A `deny` entry, the `.env` read block and the
   trust gate still refuse.
