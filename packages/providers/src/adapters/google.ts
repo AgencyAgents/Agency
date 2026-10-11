@@ -1,5 +1,5 @@
 import type { HttpClient } from "@agency/net";
-import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import {
   isCacheable,
   MIN_CACHEABLE_TOKENS,
@@ -26,31 +26,51 @@ const THINKING_BUDGET: Record<ThinkingLevel, number> = {
   max: -1,
 };
 
-function toGeminiPart(block: ContentBlock): Record<string, unknown> | undefined {
-  switch (block.type) {
-    case "text":
-      return { text: block.text };
-    case "image":
-      return { inlineData: { mimeType: block.mimeType, data: block.data } };
-    case "tool_call":
-      return { functionCall: { name: block.name, args: block.input } };
-    case "tool_result":
-      return { functionResponse: { name: block.toolCallId, response: { content: block.content } } };
-    case "thinking":
-    case "redacted_thinking":
-      // Gemini rebuilds its own reasoning context; only the signed summary
-      // parts it emitted matter, and those ride on the function-call parts.
-      return undefined;
-  }
-}
-
+/**
+ * Gemini pairs a response with its call by id and by function name: a response under any other
+ * name makes the model return an empty reply. A signature goes back on the part that it arrived with.
+ */
 function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
+  const nameOfCall = new Map<string, string>();
   return messages
     .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: m.content.map(toGeminiPart).filter((p): p is Record<string, unknown> => p !== undefined),
-    }));
+    .map((m) => {
+      const parts: Record<string, unknown>[] = [];
+      for (const block of m.content) {
+        switch (block.type) {
+          case "text":
+            parts.push({ text: block.text });
+            break;
+          case "image":
+            parts.push({ inlineData: { mimeType: block.mimeType, data: block.data } });
+            break;
+          case "tool_call":
+            nameOfCall.set(block.id, block.name);
+            parts.push({ functionCall: { id: block.id, name: block.name, args: block.input } });
+            break;
+          case "tool_result":
+            parts.push({
+              functionResponse: {
+                id: block.toolCallId,
+                name: nameOfCall.get(block.toolCallId) ?? block.toolCallId,
+                response: { content: block.content },
+              },
+            });
+            break;
+          case "thinking": {
+            // The stream puts a signature right after its part, as a thinking block with no text.
+            const signed = parts.at(-1);
+            if (block.text === "" && block.signature !== undefined && signed && !signed.thoughtSignature) {
+              signed.thoughtSignature = block.signature;
+            }
+            break;
+          }
+          case "redacted_thinking":
+            break;
+        }
+      }
+      return { role: m.role === "assistant" ? "model" : "user", parts };
+    });
 }
 
 function toGeminiTools(request: ProviderRequest): Record<string, unknown>[] | undefined {
@@ -198,7 +218,7 @@ interface GeminiPart {
   text?: string;
   thought?: boolean;
   thoughtSignature?: string;
-  functionCall?: { name: string; args: Record<string, unknown> };
+  functionCall?: { id?: string; name: string; args: Record<string, unknown> };
 }
 
 interface GeminiChunk {
@@ -209,7 +229,8 @@ interface GeminiChunk {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
-    cachedTokenCount?: number;
+    cachedContentTokenCount?: number;
+    thoughtsTokenCount?: number;
   };
 }
 
@@ -244,7 +265,6 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
   } = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
   let sawFunctionCall = false;
-  let toolCallSeq = 0;
 
   for await (const frame of parseSse(res.body)) {
     const chunk = JSON.parse(frame.data) as GeminiChunk;
@@ -253,9 +273,11 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     if (chunk.usageMetadata) {
       usage = {
         inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
-        outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-        ...(chunk.usageMetadata.cachedTokenCount !== undefined
-          ? { cachedInputTokens: chunk.usageMetadata.cachedTokenCount }
+        // Thinking tokens are billed as output and are not in the candidates count.
+        outputTokens:
+          (chunk.usageMetadata.candidatesTokenCount ?? 0) + (chunk.usageMetadata.thoughtsTokenCount ?? 0),
+        ...(chunk.usageMetadata.cachedContentTokenCount !== undefined
+          ? { cachedInputTokens: chunk.usageMetadata.cachedContentTokenCount }
           : {}),
       };
     }
@@ -266,7 +288,8 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
         // Gemini sends the whole call in one shot: there's no incremental
         // arguments stream the way Anthropic/OpenAI have, so start/delta/end
         // collapse into one immediate sequence per call.
-        const id = `call_${toolCallSeq++}`;
+        // A made-up id is unique: ids that repeat across turns are rejected by other providers.
+        const id = part.functionCall.id ?? `call_${crypto.randomUUID()}`;
         yield { type: "tool_call_start", id, name: part.functionCall.name };
         yield { type: "tool_call_delta", id, inputJsonDelta: JSON.stringify(part.functionCall.args) };
         yield { type: "tool_call_end", id };

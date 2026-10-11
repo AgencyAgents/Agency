@@ -39,13 +39,71 @@ describe("googleAdapter", () => {
 
     const events = await collect(googleAdapter.stream(baseRequest, http));
 
+    const id = (events[1] as { id: string }).id;
     expect(events).toEqual([
       { type: "text_delta", text: "Let me check." },
-      { type: "tool_call_start", id: "call_0", name: "read" },
-      { type: "tool_call_delta", id: "call_0", inputJsonDelta: '{"path":"src/index.ts"}' },
-      { type: "tool_call_end", id: "call_0" },
+      { type: "tool_call_start", id, name: "read" },
+      { type: "tool_call_delta", id, inputJsonDelta: '{"path":"src/index.ts"}' },
+      { type: "tool_call_end", id },
       { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 300, outputTokens: 20 } },
     ]);
+  });
+
+  test("a call keeps the id the model gave it, and an id the adapter makes never repeats", async () => {
+    const callChunk = (call: Record<string, unknown>) =>
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: call }] } }] })}\n\n`;
+    const startId = async (call: Record<string, unknown>): Promise<string> => {
+      const events = await collect(googleAdapter.stream(baseRequest, fakeHttp(sseResponse(callChunk(call)))));
+      return (events.find((event) => event.type === "tool_call_start") as { id: string }).id;
+    };
+
+    expect(await startId({ id: "fc-9", name: "read", args: {} })).toBe("fc-9");
+    // Two turns of one session: equal ids would be rejected when the session moves to another provider.
+    expect(await startId({ name: "read", args: {} })).not.toBe(await startId({ name: "read", args: {} }));
+  });
+
+  test("a function response goes back with the call's id, its real name, and the call's signature", async () => {
+    let captured = "";
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        captured = init?.body as string;
+        return sseResponse("");
+      },
+    };
+    await collect(
+      googleAdapter.stream(
+        {
+          ...baseRequest,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "read it" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "tool_call", id: "fc-1", name: "read", input: { path: "a.ts" } },
+                { type: "thinking", text: "", signature: "gsig-1" },
+              ],
+            },
+            {
+              role: "user",
+              content: [{ type: "tool_result", toolCallId: "fc-1", content: "file text", isError: false }],
+            },
+          ],
+        },
+        http,
+      ),
+    );
+
+    const contents = JSON.parse(captured).contents as Array<{ role: string; parts: unknown[] }>;
+    expect(contents[1]).toEqual({
+      role: "model",
+      parts: [
+        { functionCall: { id: "fc-1", name: "read", args: { path: "a.ts" } }, thoughtSignature: "gsig-1" },
+      ],
+    });
+    expect(contents[2]).toEqual({
+      role: "user",
+      parts: [{ functionResponse: { id: "fc-1", name: "read", response: { content: "file text" } } }],
+    });
   });
 
   test("maps RESOURCE_EXHAUSTED to a retryable RATE_LIMIT error even on a non-429 status", async () => {
@@ -122,6 +180,26 @@ describe("googleAdapter", () => {
 
     const recitation = await collect(googleAdapter.stream(baseRequest, fakeHttp(chunkFor("RECITATION"))));
     expect(recitation.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
+  });
+
+  test("usage counts the cached prompt part and bills thinking tokens as output", async () => {
+    const sse = sseResponse(
+      `data: ${JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        usageMetadata: {
+          promptTokenCount: 300,
+          cachedContentTokenCount: 200,
+          candidatesTokenCount: 20,
+          thoughtsTokenCount: 80,
+        },
+      })}\n\n`,
+    );
+
+    const events = await collect(googleAdapter.stream(baseRequest, fakeHttp(sse)));
+    expect(events.at(-1)).toMatchObject({
+      type: "message_stop",
+      usage: { inputTokens: 300, outputTokens: 100, cachedInputTokens: 200 },
+    });
   });
 
   test("surfaces thought signatures as thinking_signature events", async () => {
