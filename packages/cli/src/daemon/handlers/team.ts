@@ -6,6 +6,7 @@ import {
   leanSummary,
   openCompareItem,
   type PluginAgentContribution,
+  parseModelRef,
   recordCompareVerdict,
   resolveFileRoster,
   spawnParallel,
@@ -23,7 +24,7 @@ import {
   latestChildSession,
 } from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor } from "../types.ts";
-import { type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
+import { type AgentRoute, type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
 
 type FileBackedAgent = AgentConfig & {
   systemPrompt?: string;
@@ -312,6 +313,27 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         }
       }
     } catch {}
+    // An agent whose pinned provider has no key runs on the default model's route, resolved once for the batch.
+    let houseRoute: AgentRoute | undefined;
+    const house = [...compareKeys.values()].includes("") ? parseModelRef(config.model ?? "") : undefined;
+    if (house) {
+      let houseKey = compareKeys.get(house.provider);
+      if (houseKey === undefined) {
+        try {
+          houseKey = await resolveApiKey({
+            provider: house.provider,
+            env: process.env,
+            keychain: (await getKeychain().catch(() => undefined)) ?? undefined,
+            config: providers[house.provider]?.apiKey,
+            ...oauthOverridesFor(house.provider, providers),
+          });
+        } catch {}
+      }
+      if (houseKey) {
+        redactor.registerSecret(houseKey);
+        houseRoute = { ...house, apiKey: houseKey };
+      }
+    }
     const okBy = new Map<string, boolean>();
     const { results } = await spawnParallel(
       handles,
@@ -351,6 +373,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         if (compareScope) compareScope.teamId = parentSessionId;
         let outcome: CompareChildResult;
         const preResolved = compareKeys.get(agent.provider);
+        const route = preResolved === "" ? houseRoute : undefined;
         try {
           outcome = await runCompareChildTurn(ctx, {
             team,
@@ -361,6 +384,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             leanPromptText,
             ...(effort === undefined ? {} : { effort }),
             ...(preResolved === undefined ? {} : { apiKey: preResolved }),
+            ...(route ? { route } : {}),
             itemId,
             key,
             childSessionId,
@@ -457,7 +481,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         okBy.set(handle, true);
         return {
           handle,
-          result: `${handle} (${agent.provider}/${agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
+          result: `${handle} (${route?.provider ?? agent.provider}/${route?.model ?? agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
         };
       },
       {

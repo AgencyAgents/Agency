@@ -270,6 +270,8 @@ export interface CompareChildSpec {
   leanPromptText: string;
   effort?: string;
   apiKey?: string;
+  /** Set by the batch when the pinned provider has no key and the default model's provider has one. */
+  route?: AgentRoute;
   itemId: string;
   key: string;
   childSessionId: string;
@@ -319,8 +321,8 @@ export async function runCompareChildTurn(
   compareClaim(boardStore, handle, itemId);
   const resolvedEffort =
     spec.effort ?? (agent.effort === "auto" ? classifyEffortFromText(prompt) : agent.effort);
-  const childProvider = agent.provider;
-  const childModel = agent.model ?? "";
+  const childProvider = spec.route?.provider ?? agent.provider;
+  const childModel = spec.route?.model ?? agent.model ?? "";
   const childModelInfo = catalogModel(childProvider, childModel);
   const clampedEffort = clampEffortForModel(resolvedEffort as EffortLevel, childModelInfo);
   team.agentStates.set(key, "working");
@@ -346,8 +348,8 @@ export async function runCompareChildTurn(
   }
   // Pre-resolved key (empty string=miss) skips per-child keychain fallback.
   // macOS securityd serializes concurrent CLI calls into a bottleneck.
-  let childApiKey = spec.apiKey ?? "";
-  if (spec.apiKey === undefined) {
+  let childApiKey = spec.route?.apiKey ?? spec.apiKey ?? "";
+  if (spec.route === undefined && spec.apiKey === undefined) {
     try {
       if (childApiKey.length === 0) {
         const kc = await getKeychain();
@@ -381,7 +383,7 @@ export async function runCompareChildTurn(
       .list()
       .map((m) => m.handle)
       .join(" "),
-    family: agent.provider,
+    family: childProvider,
     role: agent.role,
     handle,
     briefLine: "Compare and respond to the given prompt concisely.",
