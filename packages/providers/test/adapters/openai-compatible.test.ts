@@ -220,6 +220,46 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(stop.stopReason).toBe("tool_use");
   });
 
+  /** A stream of chat completion chunks, one per delta, the last one with the finish reason. */
+  function streamOf(deltas: unknown[], finishReason: string): HttpClient {
+    const frames = deltas.map((delta, i) => ({
+      choices: [{ delta, finish_reason: i === deltas.length - 1 ? finishReason : null }],
+    }));
+    const text = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`;
+    return { fetch: async () => new Response(text, { status: 200 }) };
+  }
+
+  test("a tool call that ends with finish reason stop is still a tool turn", async () => {
+    // Some servers send the call and then "stop". With end_turn the loop would not run the tool.
+    const http = streamOf(
+      [{ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: '{"path":"a"}' } }] }],
+      "stop",
+    );
+    const adapter = createOpenAiCompatibleAdapter("ollama", "http://localhost:11434/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "tool_use" });
+  });
+
+  test("a tool call with no id still runs: the adapter gives it one", async () => {
+    const http = streamOf(
+      [
+        { tool_calls: [{ index: 0, id: "", function: { name: "read", arguments: "" } }] },
+        { tool_calls: [{ index: 0, function: { arguments: '{"path":"a"}' } }] },
+        {},
+      ],
+      "tool_calls",
+    );
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    const id =
+      (events.find((event) => event.type === "tool_call_start") as { id: string } | undefined)?.id ?? "";
+    expect(id).toBeTruthy();
+    expect(events).toContainEqual({ type: "tool_call_delta", id, inputJsonDelta: '{"path":"a"}' });
+    expect(events).toContainEqual({ type: "tool_call_end", id });
+  });
+
   function fakeError(options: { status: number; body: unknown }): HttpClient {
     return {
       fetch: async () => new Response(JSON.stringify(options.body), { status: options.status }),

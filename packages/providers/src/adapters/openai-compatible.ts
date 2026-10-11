@@ -229,15 +229,17 @@ async function* streamRaw(
     }
 
     for (const call of choice.delta.tool_calls ?? []) {
-      if (call.id && call.function?.name) {
-        toolCallIdByIndex.set(call.index, call.id);
-        yield { type: "tool_call_start", id: call.id, name: call.function.name };
+      // The name opens a call. Some gateways send no id or an empty one: such a call gets an id here, not a silent drop.
+      if (call.function?.name && !toolCallIdByIndex.has(call.index)) {
+        const id = call.id || randomUUID();
+        toolCallIdByIndex.set(call.index, id);
+        yield { type: "tool_call_start", id, name: call.function.name };
       }
       // Independent check (not else-if): gateways may coalesce the start and
       // the first arguments chunk into a single delta carrying both id+name
       // and arguments. Dropping the args half would truncate the tool input.
       if (call.function?.arguments) {
-        const id = call.id && call.function?.name ? call.id : toolCallIdByIndex.get(call.index);
+        const id = toolCallIdByIndex.get(call.index);
         if (id) yield { type: "tool_call_delta", id, inputJsonDelta: call.function.arguments };
       }
     }
@@ -267,6 +269,8 @@ async function* streamRaw(
     }
   }
 
+  // Some servers send a tool call and then finish with "stop": the calls decide, or the loop would not run them.
+  if (toolCallIdByIndex.size > 0 && stopReason === "end_turn") stopReason = "tool_use";
   yield { type: "message_stop", stopReason, usage };
 }
 
