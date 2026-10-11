@@ -177,7 +177,96 @@ describe("googleAdapter", () => {
     expect(capturedUrl).toContain("gemini-3-pro:streamGenerateContent");
     expect(capturedUrl).toContain("alt=sse");
     const body = JSON.parse(capturedBody!);
-    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: -1 });
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true });
+  });
+
+  const sentBody = async (request: Partial<ProviderRequest>) => {
+    let sent: { url: string; headers: Record<string, string>; body: Record<string, unknown> } | undefined;
+    const http: HttpClient = {
+      fetch: async (url, init) => {
+        sent = {
+          url,
+          headers: init?.headers as Record<string, string>,
+          body: JSON.parse(init?.body as string),
+        };
+        return sseResponse("");
+      },
+    };
+    await collect(googleAdapter.stream({ ...baseRequest, ...request }, http));
+    if (!sent) throw new Error("no request was sent");
+    return sent;
+  };
+
+  test("the key goes in a header, never in the address that errors and logs show", async () => {
+    const sent = await sentBody({});
+    expect(sent.url).not.toContain("key-test");
+    expect(sent.headers["x-goog-api-key"]).toBe("key-test");
+  });
+
+  test("asks for thought summaries, and gives 2.5 Pro its lowest budget because it cannot turn thinking off", async () => {
+    const thinking = async (request: Partial<ProviderRequest>) =>
+      ((await sentBody(request)).body.generationConfig as { thinkingConfig?: unknown }).thinkingConfig;
+
+    expect(await thinking({ thinkingLevel: "high" })).toEqual({
+      thinkingBudget: 16384,
+      includeThoughts: true,
+    });
+    expect(await thinking({ thinkingLevel: "off", model: "gemini-2.5-flash" })).toEqual({
+      thinkingBudget: 0,
+    });
+    expect(await thinking({ thinkingLevel: "off", model: "gemini-2.5-pro" })).toEqual({
+      thinkingBudget: 128,
+    });
+    expect(await thinking({})).toBeUndefined();
+  });
+
+  test("a tool schema outside Gemini's schema subset goes in parametersJsonSchema, a plain one in parameters", async () => {
+    const plain = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
+    const fromMcp = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      properties: { note: { type: ["string", "null"] } },
+      additionalProperties: false,
+    };
+    const union = { type: "object", properties: { id: { anyOf: [{ type: "string" }], description: "x" } } };
+    const sent = await sentBody({
+      tools: [
+        { name: "read", description: "r", inputSchema: plain },
+        { name: "mcp_note", description: "n", inputSchema: fromMcp },
+        { name: "mcp_union", description: "u", inputSchema: union },
+      ],
+    });
+    expect(sent.body.tools).toEqual([
+      {
+        functionDeclarations: [
+          { name: "read", description: "r", parameters: plain },
+          { name: "mcp_note", description: "n", parametersJsonSchema: fromMcp },
+          { name: "mcp_union", description: "u", parametersJsonSchema: union },
+        ],
+      },
+    ]);
+  });
+
+  test("a blocked prompt is a refusal, and a finish reason that is not a normal stop is an error", async () => {
+    const stop = async (chunk: unknown) =>
+      (
+        await collect(
+          googleAdapter.stream(baseRequest, fakeHttp(sseResponse(`data: ${JSON.stringify(chunk)}\n\n`))),
+        )
+      ).at(-1);
+
+    expect(await stop({ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } })).toMatchObject({
+      stopReason: "refusal",
+    });
+    for (const finishReason of [
+      "MALFORMED_RESPONSE",
+      "UNEXPECTED_TOOL_CALL",
+      "OTHER",
+      "A_REASON_OF_NEXT_YEAR",
+    ]) {
+      const partial = { candidates: [{ content: { parts: [{ text: "half an ans" }] }, finishReason }] };
+      expect(await stop(partial)).toMatchObject({ stopReason: "error" });
+    }
   });
 
   test("maps an oversized-input 400 to CONTEXT_OVERFLOW", async () => {

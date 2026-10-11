@@ -311,5 +311,40 @@ describe("prompt cache policy (7.0.7)", () => {
     expect((create.body as { ttl: string }).ttl).toBe("3600s");
     expect((generate.body as { cachedContent: string }).cachedContent).toBe("cachedContents/abc");
     expect((generate.body as { tools: unknown }).tools).toBeUndefined();
+    // The API rejects a cached request that also sets a system instruction, so the dynamic part leads the contents.
+    const sent = generate.body as {
+      systemInstruction?: unknown;
+      contents: { role: string; parts: unknown[] }[];
+    };
+    expect(sent.systemInstruction).toBeUndefined();
+    expect(sent.contents).toEqual([{ role: "user", parts: [{ text: "env" }, { text: "hi" }] }]);
+  });
+
+  test("google sends no system instruction with a cache when the prompt has no dynamic part", async () => {
+    let generate: { systemInstruction?: unknown; contents: unknown } | undefined;
+    const http: HttpClient = {
+      fetch: async (url, init) => {
+        if (url.includes("/cachedContents")) return Response.json({ name: "cachedContents/abc" });
+        generate = JSON.parse(init?.body as string);
+        return new Response(
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })}\n\n`,
+        );
+      },
+    };
+    await collect(
+      googleAdapter.stream(
+        {
+          model: "gemini-3-flash",
+          apiKey: "k",
+          system: pad("team identity plus playbook"),
+          systemSegments: [{ stability: "shared", text: pad("team identity plus playbook") }],
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          maxTokens: 64,
+        },
+        http,
+      ),
+    );
+    expect(generate?.systemInstruction).toBeUndefined();
+    expect(generate?.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
   });
 });

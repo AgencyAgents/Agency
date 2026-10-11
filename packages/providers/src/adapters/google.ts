@@ -26,6 +26,17 @@ const THINKING_BUDGET: Record<ThinkingLevel, number> = {
   max: -1,
 };
 
+function thinkingConfig(model: string, level: ThinkingLevel): Record<string, unknown> {
+  if (level !== "off") return { thinkingBudget: THINKING_BUDGET[level], includeThoughts: true };
+  // 2.5 Pro cannot turn thinking off: 128 is its lowest budget and 0 is an error.
+  return { thinkingBudget: model.includes("gemini-2.5-pro") ? 128 : THINKING_BUDGET.off };
+}
+
+/** The key goes in a header: an address is shown in errors and logs. */
+function authHeaders(request: ProviderRequest): Record<string, string> {
+  return { "content-type": "application/json", "x-goog-api-key": request.apiKey, ...request.headers };
+}
+
 /**
  * Gemini pairs a response with its call by id and by function name: a response under any other
  * name makes the model return an empty reply. A signature goes back on the part that it arrived with.
@@ -75,14 +86,38 @@ function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
     .filter((content) => content.parts.length > 0);
 }
 
+/** The fields of the schema subset that `parameters` takes. */
+const SUBSET_FIELDS = new Set(
+  (
+    "type format title description nullable enum items properties required anyOf propertyOrdering default example " +
+    "minItems maxItems minProperties maxProperties minLength maxLength pattern minimum maximum"
+  ).split(" "),
+);
+
+/** `parameters` rejects a keyword outside its subset, a list of types, a node with no type and `anyOf` beside other fields. */
+function fitsSubset(node: unknown): boolean {
+  if (typeof node !== "object" || node === null || Array.isArray(node)) return false;
+  const schema = node as Record<string, unknown>;
+  const keys = Object.keys(schema);
+  if (!keys.every((key) => SUBSET_FIELDS.has(key))) return false;
+  if (Array.isArray(schema.anyOf)) return keys.length === 1 && schema.anyOf.every(fitsSubset);
+  if (typeof schema.type !== "string") return false;
+  if (schema.items !== undefined && !fitsSubset(schema.items)) return false;
+  return Object.values((schema.properties ?? {}) as Record<string, unknown>).every(fitsSubset);
+}
+
 function toGeminiTools(request: ProviderRequest): Record<string, unknown>[] | undefined {
   if (!request.tools?.length) return undefined;
   return [
     {
+      // One schema that `parameters` rejects fails the whole request, so such a schema (an MCP server's, a plugin's)
+      // goes in the field that takes full JSON Schema.
       functionDeclarations: request.tools.map((t) => ({
         name: t.name,
         description: t.description,
-        parameters: t.inputSchema,
+        ...(fitsSubset(t.inputSchema)
+          ? { parameters: t.inputSchema }
+          : { parametersJsonSchema: t.inputSchema }),
       })),
     },
   ];
@@ -92,26 +127,36 @@ function buildRequestBody(
   request: ProviderRequest,
   opts: { cachedContent?: string; systemText?: string } = {},
 ): Record<string, unknown> {
+  const contents = toGeminiContents(request.messages);
   const body: Record<string, unknown> = {
-    contents: toGeminiContents(request.messages),
+    contents,
     generationConfig: {
       maxOutputTokens: request.maxTokens,
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
       ...(request.thinkingLevel
-        ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET[request.thinkingLevel] } }
+        ? { thinkingConfig: thinkingConfig(request.model, request.thinkingLevel) }
         : {}),
     },
   };
 
-  if (opts.cachedContent) body.cachedContent = opts.cachedContent;
+  if (opts.cachedContent) {
+    // The API rejects systemInstruction or tools next to cachedContent: the cache holds them.
+    // The dynamic part of the prompt leads the contents.
+    body.cachedContent = opts.cachedContent;
+    if (opts.systemText) {
+      const first = contents[0];
+      if (first?.role === "user") (first.parts as unknown[]).unshift({ text: opts.systemText });
+      else contents.unshift({ role: "user", parts: [{ text: opts.systemText }] });
+    }
+    return body;
+  }
 
-  const system = opts.systemText ?? request.system;
-  if (system) {
-    body.systemInstruction = { parts: [{ text: system }] };
+  if (request.system) {
+    body.systemInstruction = { parts: [{ text: request.system }] };
   }
 
   const tools = toGeminiTools(request);
-  if (tools && !opts.cachedContent) body.tools = tools;
+  if (tools) body.tools = tools;
 
   return body;
 }
@@ -146,9 +191,9 @@ async function explicitPrefixCache(
     request.cachePolicy?.sharedPrefixTtlSeconds ??
     SHARED_PREFIX_TTL_SECONDS;
   try {
-    const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/cachedContents?key=${request.apiKey}`, {
+    const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/cachedContents`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...request.headers },
+      headers: authHeaders(request),
       body: JSON.stringify({
         model: `models/${request.model}`,
         systemInstruction: { parts: [{ text: stable }] },
@@ -175,7 +220,8 @@ const FINISH_REASON: Record<string, StopReason> = {
   BLOCKLIST: "refusal",
   PROHIBITED_CONTENT: "refusal",
   SPII: "refusal",
-  MALFORMED_FUNCTION_CALL: "error",
+  LANGUAGE: "refusal",
+  IMAGE_SAFETY: "refusal",
 };
 
 /** Gemini phrases oversized inputs as a 400 INVALID_ARGUMENT (or 413). */
@@ -228,6 +274,7 @@ interface GeminiChunk {
     content?: { parts?: GeminiPart[] };
     finishReason?: string;
   }>;
+  promptFeedback?: { blockReason?: string };
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
@@ -246,10 +293,10 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     if (cachedContent && dynamic) dynamicSystem = dynamic;
     else if (!cachedContent) dynamicSystem = [stable, dynamic].filter(Boolean).join("\n\n") || undefined;
   }
-  const url = `${request.baseUrl ?? BASE_URL}/models/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
+  const url = `${request.baseUrl ?? BASE_URL}/models/${request.model}:streamGenerateContent?alt=sse`;
   const res = await http.fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...request.headers },
+    headers: authHeaders(request),
     body: JSON.stringify(
       buildRequestBody(request, cachedContent ? { cachedContent, systemText: dynamicSystem } : {}),
     ),
@@ -271,6 +318,8 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
   for await (const frame of parseSse(res.body)) {
     const chunk = JSON.parse(frame.data) as GeminiChunk;
     const candidate = chunk.candidates?.[0];
+    // A blocked prompt comes back with no candidate.
+    if (chunk.promptFeedback?.blockReason) stopReason = "refusal";
 
     if (chunk.usageMetadata) {
       usage = {
@@ -306,7 +355,8 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     }
 
     if (candidate?.finishReason) {
-      stopReason = FINISH_REASON[candidate.finishReason] ?? "end_turn";
+      // Only STOP is a normal end: any other reason, also one that the API adds later, left the reply incomplete.
+      stopReason = FINISH_REASON[candidate.finishReason] ?? "error";
     }
   }
 

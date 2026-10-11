@@ -123,7 +123,7 @@ const wire = {
       const tools = (body.tools ?? []) as Array<{ functionDeclarations?: Array<{ name: string }> }>;
       const isResult = (m: Msg | undefined) => blocks(m).some((p) => "functionResponse" in p);
       return {
-        auth: new URL(req.url).searchParams.get("key"),
+        auth: req.headers.get("x-goog-api-key"),
         offersRead: tools.some((t) => t.functionDeclarations?.some((f) => f.name === "read") === true),
         lastIsToolResult: isResult(contents.at(-1)),
         hadToolResult: contents.some(isResult),
