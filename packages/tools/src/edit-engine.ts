@@ -414,7 +414,10 @@ export function applyEdit(content: string, request: EditRequest): string {
     // Fall back to whitespace-tolerant fuzzy match
     const fuzzy = fuzzyReplace(content, { oldText, newText, replaceAll });
     if (fuzzy !== undefined) return fuzzy;
-    throw editError(t("tool.edit.not_found"), { oldTextPreview: preview(oldText) });
+    const near = lineBreakVariant(content, oldText);
+    throw editError(near ? t("tool.edit.not_found_near", { text: near }) : t("tool.edit.not_found"), {
+      oldTextPreview: preview(oldText),
+    });
   }
 
   if (occurrences > 1 && !replaceAll) {
@@ -496,6 +499,17 @@ function whitespaceTolerantRegExp(oldText: string): RegExp | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The file text that equals `oldText` when a line break counts as a space. It is only shown in the rejection:
+ * an edit across a different line layout is not applied, because the new text would not fit that layout.
+ */
+function lineBreakVariant(content: string, oldText: string): string | undefined {
+  const tokens = oldText.trim().split(/\s+/);
+  if (tokens.length < 2) return undefined;
+  const found = new RegExp(tokens.map(escapeRegExpChar).join("\\s+")).exec(content)?.[0];
+  return found !== undefined && found.length <= 2000 ? found : undefined;
 }
 
 function escapeRegExpChar(ch: string): string {

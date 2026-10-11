@@ -11,6 +11,19 @@ describe("applyEdit exact-match semantics (unchanged)", () => {
     expect(() => applyEdit("const x = 1;\n", { oldText: "const y = 1;", newText: "y" })).toThrow(AgencyError);
   });
 
+  test("a rejection shows the file text that differs from the anchor only in line breaks", () => {
+    // A real model wrote the two lines as one, three times in a row: the plain rejection gave it nothing to copy.
+    const file = "def add(a, b):\n    return a - b\n\n\nprint(add(2, 3))\n";
+    const attempt = () =>
+      applyEdit(file, { oldText: "def add(a, b): return a - b", newText: "def add(a, b): return a + b" });
+
+    expect(attempt).toThrow("def add(a, b):\n    return a - b");
+    // No such text in the file: the rejection has no hint.
+    expect(() => applyEdit(file, { oldText: "def sub(a, b): return a - b", newText: "x" })).toThrow(
+      /is not in the file\. Read the file/,
+    );
+  });
+
   test("rejects ambiguous exact matches without replaceAll", () => {
     expect(() => applyEdit("x = 1;\nx = 1;\n", { oldText: "x = 1;", newText: "x = 2;" })).toThrow(
       /appears 2 times/,
