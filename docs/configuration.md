@@ -132,6 +132,28 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 `--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
 
+### Local model server
+
+A server that speaks the OpenAI chat completions format is a config-defined provider. This example was run against a llama.cpp `llama-server` (build b11155, started with `--jinja -c 12288`):
+
+```jsonc
+{
+  "provider": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "apiKey": "none",
+      "models": { "qwen": { "contextWindow": 12288, "maxOutputTokens": 1024 } }
+    }
+  }
+}
+```
+
+Run it with `--model local/qwen`. Notes:
+
+- `apiKey` is necessary. For a server with no key, set any text.
+- Set `contextWindow` to the context size of the server. Compaction uses this value. If the value is larger than the real size, the server rejects a request that is too long, and the conversation is then compacted and sent again.
+- A llama.cpp server sends nothing while it reads the prompt. If that takes more than 5 minutes, the request is cut and sent again. Set `streamIdleMs` on the provider to a larger value to prevent the cut.
+
 ## Project instructions
 
 The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/rules/*.md` to the system prompt through `loadInstructions`, but only for a trusted workspace: repo-provided text is an injection surface. Run `agency trust` in the workspace, or accept the trust question in `agency onboard`. In an untrusted workspace the files are skipped and the CLI prints a one-line notice. A client that sends `systemPromptParts.instructions` replaces the daemon-loaded list.
