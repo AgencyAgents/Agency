@@ -23,8 +23,9 @@ function parseArgs(argv: string[]): { workspaceRoot: string; instanceFile: strin
   return { workspaceRoot, instanceFile, idleLingerMs: idleLingerRaw ? Number(idleLingerRaw) : undefined };
 }
 
-if (import.meta.main) {
-  const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(process.argv.slice(2));
+/** Runs until a signal or idle shutdown; the compiled binary reaches it through the entrypoint's hidden command. */
+export async function runDaemonEntry(argv: string[]): Promise<never> {
+  const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(argv);
 
   const daemon = await createAgentDaemon({
     workspaceRoot,
@@ -62,5 +63,7 @@ if (import.meta.main) {
   // Keep the process alive; startDaemonServer's socket listener does that on
   // its own, but state this explicitly rather than relying on an implicit
   // side effect if the transport ever changes.
-  await new Promise(() => {});
+  return new Promise<never>(() => {});
 }
+
+if (import.meta.main) await runDaemonEntry(process.argv.slice(2));

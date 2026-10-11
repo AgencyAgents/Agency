@@ -28,6 +28,16 @@ export interface RunHeadlessOptions {
 
 const DEFAULT_DAEMON_ENTRY = join(import.meta.dir, "daemon-entry.ts");
 
+/** Hidden entrypoint command: a compiled binary re-runs itself as the daemon. */
+export const DAEMON_COMMAND = "__daemon";
+const STANDALONE = /^(B:[\\/]~BUN|\/\$bunfs)[\\/]/.test(Bun.main);
+
+/** A user machine has no `bun` on PATH and no source files, so never spawn either by name. */
+function daemonArgv(entry?: string): string[] {
+  if (entry === undefined && STANDALONE) return [process.execPath, DAEMON_COMMAND];
+  return [process.execPath, "run", entry ?? DEFAULT_DAEMON_ENTRY];
+}
+
 /** Where per-workspace daemon instance files live, alongside Agency's other data dirs. */
 export function defaultInstanceDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(dataDir(env), "instances");
@@ -84,9 +94,7 @@ export async function connectHeadlessClient(
       log(t("cli.daemon.spawning", { workspace: options.workspaceRoot }));
       Bun.spawn(
         [
-          "bun",
-          "run",
-          options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY,
+          ...daemonArgv(options.daemonEntryPath),
           "--workspace",
           options.workspaceRoot,
           "--instance-file",

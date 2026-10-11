@@ -29,7 +29,7 @@ import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInf
 import type { Message } from "@agency/schema";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
-import { connectHeadlessClient, type RunHeadlessOptions, runHeadless } from "./headless.ts";
+import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
@@ -1055,5 +1055,8 @@ export async function runEntrypoint(
 }
 
 if (import.meta.main) {
+  if (process.argv[2] === DAEMON_COMMAND) {
+    await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
+  }
   runEntrypoint().then((code) => process.exit(code));
 }
