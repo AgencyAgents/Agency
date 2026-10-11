@@ -488,15 +488,20 @@ describe("-p headless mode", () => {
     expect(payload.messages).toHaveLength(2);
   });
 
-  test("a failed turn exits non-zero", async () => {
-    const fake = fakeRunHeadless({ ...TURN_RESULT, stopReason: "error" });
-    const { deps } = capture();
+  test("a failed turn exits non-zero and names its cause on stderr", async () => {
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      stopReason: "error",
+      error: { code: "network", message: "connection reset" },
+    });
+    const { err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
       ...baseDeps(),
       ...deps,
       runHeadless: fake.runHeadless,
     });
     expect(code).toBe(1);
+    expect(err).toContain("network: connection reset");
   });
 
   test("--model overrides config.model through the flags layer", async () => {

@@ -19,7 +19,14 @@ import {
   withCheapFallback,
   withMidStreamRecovery,
 } from "@agency/providers";
-import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
+import {
+  AgencyError,
+  type ContentBlock,
+  ErrorCode,
+  type ImageBlock,
+  type Message,
+  type StopReason,
+} from "@agency/schema";
 import { isContextOverflowError } from "./sessions/compaction.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
@@ -163,7 +170,11 @@ export interface RunTurnResult {
   stopReason: StopReason;
   usage: Usage;
   budgetExceeded: boolean;
+  /** Why a salvaged turn stopped with `error`; a turn that fails before any content throws instead. */
+  error?: TurnError;
 }
+
+export type TurnError = { code: string; message: string };
 
 /**
  * The R4 seam: no globals, every dependency passed in, so a second concurrent
@@ -188,6 +199,7 @@ export async function runTurn(
   let cumulativeUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let spentCostUsd = 0;
   let stopReason: StopReason = "end_turn";
+  let salvageError: TurnError | undefined;
   const tracer = options.traceRecorder;
   const turnSpanId = tracer
     ? tracer.startTurnSpan({
@@ -318,6 +330,7 @@ export async function runTurn(
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
       stopReason = turn.stopReason;
+      salvageError = turn.error;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
       if (tracer && modelSpanId) {
         tracer.endSpan(modelSpanId, {
@@ -338,9 +351,15 @@ export async function runTurn(
       );
 
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
-        if (toolCalls.length > 0 && !options.signal?.aborted) {
-          const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
-          messages.push({ role: "user", content: results });
+        if (toolCalls.length > 0) {
+          messages.push(
+            options.signal?.aborted
+              ? unrunResults(toolCalls, "cancelled")
+              : {
+                  role: "user",
+                  content: await runTools(toolCalls, options, turn.malformedCalls, options.signal),
+                },
+          );
         }
         options.onEvent?.({
           type: "budget_exceeded",
@@ -351,7 +370,12 @@ export async function runTurn(
         return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
       }
 
-      if (stopReason !== "tool_use" || options.signal?.aborted) break;
+      if (stopReason !== "tool_use" || options.signal?.aborted) {
+        if (toolCalls.length > 0) {
+          messages.push(unrunResults(toolCalls, options.signal?.aborted ? "cancelled" : stopReason));
+        }
+        break;
+      }
 
       for (const tc of toolCalls) {
         if (!doomDetection) break;
@@ -398,17 +422,37 @@ export async function runTurn(
   }
 
   endTurnOk();
-  return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: false };
+  return {
+    messages,
+    stopReason,
+    usage: cumulativeUsage,
+    budgetExceeded: false,
+    ...(salvageError ? { error: salvageError } : {}),
+  };
+}
+
+/** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */
+function unrunResults(calls: ReadonlyArray<{ id: string }>, why: string): Message {
+  return {
+    role: "user",
+    content: calls.map((call) => ({
+      type: "tool_result",
+      toolCallId: call.id,
+      content: `not run: the turn ended (${why}) before this call started`,
+      isError: true,
+    })),
+  };
 }
 
 /** AgencyError-like errors carry a string `code`; anything else is reported as internal. */
+function describeError(error: unknown): TurnError {
+  if (!(error instanceof Error)) return { code: "internal", message: String(error) };
+  const code = "code" in error && typeof error.code === "string" ? error.code : "internal";
+  return { code, message: error.message };
+}
+
 function emitErrorEvent(error: unknown, onEvent?: (event: LoopEvent) => void): void {
-  if (error instanceof Error) {
-    const code = "code" in error && typeof error.code === "string" ? error.code : "internal";
-    onEvent?.({ type: "error", code, message: error.message });
-    return;
-  }
-  onEvent?.({ type: "error", code: "internal", message: String(error) });
+  onEvent?.({ type: "error", ...describeError(error) });
 }
 
 type ToolResultLike = { content: string; isError: boolean; images?: ImageBlock[] };
@@ -813,6 +857,7 @@ interface CollectedTurn {
   usage: Usage;
   /** Tool-call ids whose streamed arguments never parsed, mapped to the per-call error message. */
   malformedCalls: Map<string, string>;
+  error?: TurnError;
 }
 
 async function collectTurn(
@@ -828,7 +873,16 @@ async function collectTurn(
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
-  for await (const event of withMidStreamRecovery(adapter.stream(request, http))) {
+  const salvaged: { error?: TurnError } = {};
+  const stream = withMidStreamRecovery(adapter.stream(request, http), (error) => {
+    // A stream that dies after content is a network failure unless the adapter already typed it.
+    salvaged.error =
+      error instanceof AgencyError
+        ? describeError(error)
+        : { code: ErrorCode.NETWORK, message: describeError(error).message };
+    onEvent?.({ type: "error", ...salvaged.error });
+  });
+  for await (const event of stream) {
     switch (event.type) {
       case "text_delta":
         appendText(content, "text", event.text);
@@ -898,7 +952,7 @@ async function collectTurn(
     }
   }
 
-  return { content, stopReason, usage, malformedCalls };
+  return { content, stopReason, usage, malformedCalls, ...salvaged };
 }
 
 /**

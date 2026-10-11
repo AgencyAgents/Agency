@@ -678,6 +678,63 @@ describe("runTurn", () => {
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]).toEqual({ role: "assistant", content: [{ type: "text", text: "partial" }] });
   });
+
+  test("mid-stream failure reports its cause as an event and in the result", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "partial" };
+        throw new Error("connection reset");
+      },
+    };
+    const errors: string[] = [];
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      onEvent: (event) => {
+        if (event.type === "error") errors.push(event.message);
+      },
+    });
+
+    expect(errors).toEqual(["connection reset"]);
+    expect(result.error).toEqual({ code: "network", message: "connection reset" });
+  });
+
+  test.each([
+    ["the stream dies inside the call", undefined],
+    ["the output limit cuts the turn", "max_tokens" as const],
+  ])("a tool call gets an error result when %s", async (_name, stopReason) => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "tool_call_start", id: "call_1", name: "read" };
+        if (stopReason === undefined) throw new Error("connection reset");
+        yield { type: "tool_call_end", id: "call_1" };
+        yield { type: "message_stop", stopReason, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages.map((m) => m.role)).toEqual(["assistant", "user"]);
+    expect(result.messages[1]?.content).toMatchObject([
+      { type: "tool_result", toolCallId: "call_1", isError: true },
+    ]);
+  });
 });
 
 describe("U7: cheap-model routing", () => {

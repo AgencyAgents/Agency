@@ -12,7 +12,10 @@ import type { StreamEvent } from "./types.ts";
  * A failure BEFORE any content arrives is rethrown untouched: retrying from
  * scratch is then correct and costs nothing beyond the failed connection.
  */
-export async function* withMidStreamRecovery(events: AsyncIterable<StreamEvent>): AsyncIterable<StreamEvent> {
+export async function* withMidStreamRecovery(
+  events: AsyncIterable<StreamEvent>,
+  onRecover?: (error: unknown) => void,
+): AsyncIterable<StreamEvent> {
   const iterator = events[Symbol.asyncIterator]();
   let sawContent = false;
   let sawStop = false;
@@ -27,6 +30,7 @@ export async function* withMidStreamRecovery(events: AsyncIterable<StreamEvent>)
     } catch (error) {
       if (sawStop) return;
       if (!sawContent) throw error;
+      onRecover?.(error);
       // Close any dangling tool calls before synthesizing the stop.
       for (const id of openToolCalls) {
         yield { type: "tool_call_end", id };

@@ -54,6 +54,8 @@ export interface RunTurnResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Why a salvaged turn stopped with `error` (the provider stream died after content arrived). */
+  error?: { code: string; message: string };
 }
 
 export type TurnEvent =

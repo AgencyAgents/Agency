@@ -24,6 +24,7 @@ import {
   type SessionStore,
   type SystemReminder,
   type TraceRecorder,
+  type TurnError,
   type WakeRegistry,
   withPromptVersion,
   withSystemReminders,
@@ -180,6 +181,8 @@ export interface RunTurnRpcResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Why a salvaged turn stopped with `error` (the provider stream died after content arrived). */
+  error?: TurnError;
   /** Set when the turn failed with CONTEXT_OVERFLOW: the daemon produced no
    *  assistant messages, so the caller (which owns the SessionStore) can
    *  compact the session and retry the turn. */

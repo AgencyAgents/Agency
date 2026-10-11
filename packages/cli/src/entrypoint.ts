@@ -384,6 +384,18 @@ function printJsonOrText(out: LineSink, format: "text" | "json", payload: unknow
   else if (text.length > 0) out(text);
 }
 
+/** Prints a headless turn and returns its exit code; a salvaged turn names its cause on stderr. */
+function reportTurn<T extends RunTurnRpcResult>(
+  out: LineSink,
+  err: LineSink,
+  format: "text" | "json",
+  result: T,
+): number {
+  printJsonOrText(out, format, result, assistantText(result.messages));
+  if (result.error && format === "text") err(`${result.error.code}: ${result.error.message}`);
+  return result.stopReason === "error" ? 1 : 0;
+}
+
 /** Most recently appended session: the one `--continue` resumes. Ties break
  *  by readdir order; an empty session file sorts oldest. */
 function latestSessionId(store: SessionStore): string | undefined {
@@ -485,8 +497,7 @@ async function runPrintMode(
         permissionMode: parsed.permissionMode,
         nonInteractive: true,
       });
-      printJsonOrText(out, parsed.format, { sessionId, tipId, ...result }, assistantText(result.messages));
-      return result.stopReason === "error" ? 1 : 0;
+      return reportTurn(out, err, parsed.format, { sessionId, tipId, ...result });
     } finally {
       await client.close();
     }
@@ -504,8 +515,7 @@ async function runPrintMode(
     onEvent,
     permissionMode: parsed.permissionMode,
   });
-  printJsonOrText(out, parsed.format, result, assistantText(result.messages));
-  return result.stopReason === "error" ? 1 : 0;
+  return reportTurn(out, err, parsed.format, result);
 }
 
 function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {
