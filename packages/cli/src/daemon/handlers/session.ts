@@ -370,20 +370,24 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
 
       let childApiKey = parentApiKey;
       if (childProvider !== parentProvider) {
+        let own: string | undefined;
         try {
-          const kc = await getKeychain();
-          const k = await resolveApiKey({
+          own = await resolveApiKey({
             provider: childProvider,
             env: process.env,
-            keychain: kc,
+            keychain: await getKeychain(),
             config: providers[childProvider]?.apiKey,
             ...oauthOverridesFor(childProvider, providers),
           });
-          if (k) {
-            childApiKey = k;
-            redactor.registerSecret(k);
-          }
         } catch {}
+        if (own) {
+          childApiKey = own;
+          redactor.registerSecret(own);
+        } else {
+          // No key for the requested provider: the parent's key must not go to another vendor.
+          childProvider = parentProvider;
+          childModel = parentModel;
+        }
       }
 
       const childSessionId = newEntryId();
