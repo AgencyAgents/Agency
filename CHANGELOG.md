@@ -101,6 +101,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   size"). The adapter mapped this to `internal`, so compaction never
   started and the run failed. It now maps to `context_overflow`. Measured
   against llama-server b11155.
+- **Worker model facts**: a worker turn (`spawn`, `dispatch`, a team run)
+  did not get the context window or the vision flag of its model. A worker
+  on a vision model did not send tool images, and a worker that overflowed
+  folded to a 200k window, not to its own. The primary turn, the fallback
+  and every worker now take these values from one function.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
