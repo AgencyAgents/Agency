@@ -178,7 +178,8 @@ export interface RunTurnResult {
   stopReason: StopReason;
   usage: Usage;
   budgetExceeded: boolean;
-  /** Why a salvaged turn stopped with `error`; a turn that fails before any content throws instead. */
+  /** Why the turn did not finish: a salvaged stream (stop reason `error`) or the step limit (stop reason `tool_use`).
+   *  A turn that fails before any content throws instead. */
   error?: TurnError;
 }
 
@@ -449,8 +450,14 @@ export async function runTurn(
     }
   }
 
+  // The stop reason stays tool_use; the error tells a caller with no event listener that the work is not finished.
+  let turnError = salvageError;
   if (stopReason === "tool_use" && !options.signal?.aborted) {
     options.onEvent?.({ type: "iteration_limit", iterations: maxToolIterations });
+    turnError = {
+      code: "iteration_limit",
+      message: `stopped after ${maxToolIterations} tool steps: the task is not finished`,
+    };
   }
 
   endTurnOk();
@@ -459,7 +466,7 @@ export async function runTurn(
     stopReason,
     usage: cumulativeUsage,
     budgetExceeded: false,
-    ...(salvageError ? { error: salvageError } : {}),
+    ...(turnError ? { error: turnError } : {}),
   };
 }
 

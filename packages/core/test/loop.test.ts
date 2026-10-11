@@ -386,6 +386,8 @@ describe("runTurn", () => {
     // The cap is distinguishable from a natural finish: a dedicated event lets
     // the UI show "stopped after N steps, continue?".
     expect(events).toContainEqual({ type: "iteration_limit", iterations: 3 });
+    // A caller with no event listener still learns that the work is not finished.
+    expect(result.error?.code).toBe("iteration_limit");
   });
 
   test("a natural finish never emits the iteration_limit event", async () => {

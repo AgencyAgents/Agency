@@ -181,7 +181,7 @@ export interface RunTurnRpcResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
-  /** Why a salvaged turn stopped with `error` (the provider stream died after content arrived). */
+  /** Why the turn did not finish: the provider stream died after content arrived, or the step limit was reached. */
   error?: TurnError;
   /** Set when the turn failed with CONTEXT_OVERFLOW: the daemon produced no
    *  assistant messages, so the caller (which owns the SessionStore) can
