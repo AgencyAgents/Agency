@@ -29,6 +29,7 @@ import {
   truncateSummaryToCap,
 } from "../../src/sessions/compaction.ts";
 import { SessionStore } from "../../src/sessions/store.ts";
+import { summarizeTranscript } from "../../src/sessions/summarize.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -175,6 +176,36 @@ describe("compact", () => {
     }
     return lost;
   }
+
+  test("the summarizer's instructions stay out of the stored summary", async () => {
+    const store = setup();
+    const meta = store.create("s1");
+    let parentId: string | null = null;
+    for (const text of ["first request", "second", "third", "fourth", "fifth", "sixth"]) {
+      parentId = (await store.append(meta.id, { type: "message", parentId, message: userMsg(text) })).id;
+    }
+    const given: Array<{ transcript: string; instructions: string }> = [];
+    const outcome = await compact(
+      store,
+      meta.id,
+      parentId as unknown as string,
+      createApproximateTokenizer(1),
+      { contextWindow: 1_000_000 },
+      async (transcript, instructions) => {
+        given.push({ transcript, instructions });
+        return summarizeTranscript(transcript);
+      },
+      4,
+      { force: true },
+    );
+
+    // The model reads this summary as a user message: "MUST NOT call tools" there would stop the agent.
+    const summary = JSON.stringify(store.messagesFor(store.load(meta.id), outcome.tipId)[0]);
+    expect(summary).toContain("first request");
+    expect(summary).not.toContain("session summarizer");
+    expect(summary).not.toContain("MUST NOT");
+    expect(given[0]?.instructions).toContain("session summarizer");
+  });
 
   test("the cut does not fall between a tool call and its result", async () => {
     // A turn that ended without a closing reply: the last four messages start with a tool result.

@@ -399,12 +399,18 @@ export interface CompactionResult {
   tipId: string;
 }
 
+/**
+ * Turns one transcript chunk into summary text. The instructions come apart from the chunk:
+ * an extractive summarizer would copy them into the summary, and the model reads that as a user message.
+ */
+export type Summarizer = (transcript: string, instructions: string) => Promise<string>;
+
 /** The store-free half of compact: which entries fold into the summary, its text, and what stays. */
 async function foldChain(
   chain: SessionEntry[],
   tokenizer: Tokenizer | AsyncTokenizer,
   threshold: CompactionThreshold,
-  summarize: (text: string) => Promise<string>,
+  summarize: Summarizer,
   keepLastN: number,
 ): Promise<{ summaryText: string; summarized: Set<string>; carryForward: SessionEntry[] } | undefined> {
   const plan = planCompaction(chain, keepLastN);
@@ -427,7 +433,7 @@ async function foldChain(
     const chunks = await splitTranscriptToCapAsync(collapsed.text, countText, cap);
     const parts: string[] = [];
     for (const chunk of chunks) {
-      parts.push(await summarize(`${prompt}\n\n${chunk}`));
+      parts.push(await summarize(chunk, prompt));
     }
     const rawDigest = parts.join("\n");
     const digest = CONTRACT_RE.test(rawDigest) ? rawDigest.replace(CONTRACT_RE, "").trimEnd() : rawDigest;
@@ -465,7 +471,7 @@ export async function compactMessages(
   messages: Message[],
   tokenizer: Tokenizer | AsyncTokenizer,
   threshold: CompactionThreshold,
-  summarize: (text: string) => Promise<string>,
+  summarize: Summarizer,
   keepLastN = 4,
 ): Promise<Message[] | undefined> {
   const chain = messages.map(
@@ -497,7 +503,7 @@ export async function compact(
   tipId: string,
   tokenizer: Tokenizer | AsyncTokenizer,
   threshold: CompactionThreshold,
-  summarize: (text: string) => Promise<string>,
+  summarize: Summarizer,
   keepLastN = 4,
   opts: { force?: boolean } = {},
 ): Promise<CompactionResult> {
