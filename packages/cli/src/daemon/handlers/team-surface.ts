@@ -23,7 +23,7 @@ import type { DaemonContext } from "../types.ts";
 import { buildReportPayload, spansForHandle } from "./coords.ts";
 
 function fail(reason: string): never {
-  throw new AgencyError(ErrorCode.INTERNAL, reason, { source: "team-surface" });
+  throw new AgencyError(ErrorCode.INVALID_REQUEST, reason, { source: "team-surface" });
 }
 
 function str(value: unknown): string {

@@ -212,7 +212,7 @@ describe("Phase 10a surface contract", () => {
     };
     expect(afterRename.entries).toHaveLength(3);
     const oldGone = await rpcCall(base, token, "session_show", { sessionId: "c1" });
-    expect(oldGone.status).toBe(500);
+    expect(oldGone.status).toBe(400);
   });
 
   test("undo_run rolls one turn back to its checkpoint", async () => {
@@ -264,7 +264,7 @@ describe("Phase 10a surface contract", () => {
       sessionId: "t1",
       todos: [{ id: "b", content: "bad", status: "napping" }],
     });
-    expect(bad.status).toBe(500);
+    expect(bad.status).toBe(400);
   });
 
   test("config_get redacts secrets and config_set changes runtime keys only", async () => {
@@ -279,9 +279,9 @@ describe("Phase 10a surface contract", () => {
     expect(changed.value).toBe("warn");
 
     const rejected = await rpcCall(base, token, "config_set", { key: "provider", value: {} });
-    expect(rejected.status).toBe(500);
+    expect(rejected.status).toBe(400);
     const badValue = await rpcCall(base, token, "config_set", { key: "logLevel", value: "loud" });
-    expect(badValue.status).toBe(500);
+    expect(badValue.status).toBe(400);
   });
 
   test("models_list, permissions_list, prompt_inspect, cost_report", async () => {

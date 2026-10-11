@@ -76,7 +76,8 @@ export function registerCommandHandlers(handlers: Record<string, MethodHandler>,
   handlers.commands_expand = async (rawParams) => {
     const { name, args } = rawParams as { name: string; args?: string };
     const tmpl = commands.find((c) => c.name === name);
-    if (!tmpl) throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
+    if (!tmpl)
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown command: ${name}`, { source: "commands" });
     const expanded = expandCommand(tmpl.content, args ?? "", options.workspaceRoot);
     return { expanded, name };
   };

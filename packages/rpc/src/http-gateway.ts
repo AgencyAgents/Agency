@@ -95,6 +95,7 @@ interface SseClient {
 
 /** A handler failure the caller or an upstream caused must not read as a gateway fault; untyped throws stay 500. */
 const STATUS_BY_CODE: Record<string, number> = {
+  [ErrorCode.INVALID_REQUEST]: 400,
   [ErrorCode.AUTH]: 401,
   [ErrorCode.PERMISSION_DENIED]: 403,
   [ErrorCode.CONTEXT_OVERFLOW]: 413,

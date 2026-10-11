@@ -35,7 +35,7 @@ const RUNTIME_CONFIG_KEYS = [
 function requireSessionId(rawParams: unknown, method: string): string {
   const { sessionId } = rawParams as { sessionId?: string };
   if (!sessionId)
-    throw new AgencyError(ErrorCode.INTERNAL, `${method} requires sessionId`, { source: "surface" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `${method} requires sessionId`, { source: "surface" });
   return sessionId;
 }
 
@@ -92,11 +92,13 @@ async function restoreWithMode(
     tipId?: string | null;
   };
   if (mode !== "files-only" && mode !== "task-only" && mode !== "both") {
-    throw new AgencyError(ErrorCode.INTERNAL, `undo_run: unknown mode "${mode}"`, { source: "surface" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `undo_run: unknown mode "${mode}"`, {
+      source: "surface",
+    });
   }
   const needsFiles = mode === "files-only" || mode === "both";
   if (needsFiles && (typeof commitHash !== "string" || commitHash.trim().length === 0)) {
-    throw new AgencyError(ErrorCode.INTERNAL, `undo_run: mode "${mode}" requires commitHash`, {
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `undo_run: mode "${mode}" requires commitHash`, {
       source: "surface",
     });
   }
@@ -214,18 +216,24 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     const sessionId = requireSessionId(rawParams, "session_export");
     const entries = todoStore.export(sessionId);
     if (entries.length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, { source: "surface" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
+        source: "surface",
+      });
     return { sessionId, entries };
   };
 
   handlers.session_rename = async (rawParams) => {
     const sessionId = requireSessionId(rawParams, "session_rename");
     if (todoStore.load(sessionId).length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, { source: "surface" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
+        source: "surface",
+      });
     const { newSessionId } = (rawParams ?? {}) as { newSessionId?: string };
     const target = typeof newSessionId === "string" && newSessionId.length > 0 ? newSessionId : undefined;
     if (target !== undefined && todoStore.load(target).length > 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `session already exists: ${target}`, { source: "surface" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `session already exists: ${target}`, {
+        source: "surface",
+      });
     const meta = todoStore.clone(sessionId, target);
     todoStore.delete(sessionId);
     const stack = turnCheckpoints.get(sessionId);
@@ -258,7 +266,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     const { key } = (rawParams ?? {}) as { key?: string };
     if (key === undefined) return { config: redacted };
     if (!(key in redacted))
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown config key: ${key}`, { source: "surface" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown config key: ${key}`, { source: "surface" });
     return { key, value: redacted[key] };
   };
 
@@ -266,12 +274,12 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     const { key, value } = (rawParams ?? {}) as { key?: string; value?: unknown };
     if (typeof key !== "string" || !RUNTIME_CONFIG_KEYS.includes(key))
       throw new AgencyError(
-        ErrorCode.INTERNAL,
+        ErrorCode.INVALID_REQUEST,
         `config_set allows only ${RUNTIME_CONFIG_KEYS.join(", ")} (in-memory until restart)`,
         { source: "surface" },
       );
     if (value === undefined)
-      throw new AgencyError(ErrorCode.INTERNAL, "config_set requires value", { source: "surface" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "config_set requires value", { source: "surface" });
     checkRuntimeValue(key, value);
     (config as unknown as Record<string, unknown>)[key] = value;
     return { key, value };
@@ -414,7 +422,9 @@ function redactConfig(config: Record<string, unknown>): Record<string, unknown> 
 
 function checkRuntimeValue(key: string, value: unknown): void {
   const fail = (): never => {
-    throw new AgencyError(ErrorCode.INTERNAL, `config_set: invalid value for ${key}`, { source: "surface" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `config_set: invalid value for ${key}`, {
+      source: "surface",
+    });
   };
   if (key === "logLevel") {
     if (value !== "debug" && value !== "info" && value !== "warn" && value !== "error") fail();
@@ -427,15 +437,21 @@ const TODO_STATUSES = ["pending", "in_progress", "completed", "ready_for_review"
 
 function checkTodos(todos: unknown): { id: string; content: string; status: string }[] {
   if (!Array.isArray(todos))
-    throw new AgencyError(ErrorCode.INTERNAL, "todo_write requires todos array", { source: "surface" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, "todo_write requires todos array", {
+      source: "surface",
+    });
   return todos.map((t) => {
     const item = t as { id?: unknown; content?: unknown; status?: unknown };
     if (typeof item?.id !== "string" || typeof item?.content !== "string" || typeof item?.status !== "string")
-      throw new AgencyError(ErrorCode.INTERNAL, "todo_write: each todo needs string id, content, status", {
-        source: "surface",
-      });
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        "todo_write: each todo needs string id, content, status",
+        {
+          source: "surface",
+        },
+      );
     if (!TODO_STATUSES.includes(item.status))
-      throw new AgencyError(ErrorCode.INTERNAL, `todo_write: unknown status ${item.status}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `todo_write: unknown status ${item.status}`, {
         source: "surface",
       });
     return { id: item.id, content: item.content, status: item.status };

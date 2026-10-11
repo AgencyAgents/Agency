@@ -166,12 +166,12 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       sessionId?: string;
     };
     if (typeof requestId !== "string" || requestId.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "approval_respond requires requestId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "approval_respond requires requestId", {
         source: "approval",
       });
     }
     if (decision !== "once" && decision !== "always" && decision !== "reject") {
-      throw new AgencyError(ErrorCode.INTERNAL, `invalid approval decision: ${String(decision)}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `invalid approval decision: ${String(decision)}`, {
         source: "approval",
       });
     }
@@ -230,11 +230,11 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
   handlers.agent_history = async (rawParams) => {
     const { handle, sessionId } = rawParams as { handle: string; sessionId?: string };
     if (typeof handle !== "string" || handle.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "agent_history requires handle", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "agent_history requires handle", { source: "team" });
     }
     const agent = teamRegistry.get(handle);
     if (!agent) {
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown handle: ${handle}`, { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown handle: ${handle}`, { source: "team" });
     }
     const team = sessionId !== undefined ? teamContexts.get(sessionId) : undefined;
     const sid =
@@ -261,12 +261,12 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       sessionId?: string;
     };
     if (!Array.isArray(handles) || handles.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires handles", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "dispatch_compare requires handles", {
         source: "team",
       });
     }
     if (typeof prompt !== "string" || prompt.trim().length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires prompt", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "dispatch_compare requires prompt", {
         source: "team",
       });
     }

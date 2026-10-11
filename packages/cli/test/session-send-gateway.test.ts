@@ -257,4 +257,20 @@ describe("session_send over the HTTP gateway", () => {
     await sessionSend(base, token, { sessionId: "gw-route", userText: "plain question" });
     expect(models.at(-1)).toBe("test-model");
   });
+
+  test.each([
+    ["a missing parameter", "session_send", { userText: "hi" }],
+    ["an unknown session", "session_show", { sessionId: "no-such-session" }],
+    ["a bad value", "approval_respond", { requestId: "r1", decision: "maybe" }],
+  ])("%s answers 400 with code invalid_request, not 500", async (_name, method, params) => {
+    const { base, token } = await startDaemon(echoAdapter());
+    const res = await fetch(`${base}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: "bad-1", method, params }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
+  });
 });

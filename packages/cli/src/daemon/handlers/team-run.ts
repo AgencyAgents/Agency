@@ -495,10 +495,10 @@ export function registerTeamRunHandlers(handlers: Record<string, MethodHandler>,
     };
     const sid = typeof sessionId === "string" && sessionId.length > 0 ? sessionId : "default";
     if (typeof goal !== "string" || goal.trim().length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "team_open requires goal", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "team_open requires goal", { source: "team" });
     }
     if (!Array.isArray(items) || items.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "team_open requires items", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "team_open requires items", { source: "team" });
     }
     const decision = decideEscalation({
       itemCount: items.length,
@@ -582,7 +582,7 @@ export function registerTeamRunHandlers(handlers: Record<string, MethodHandler>,
   handlers.agent_stop = async (rawParams) => {
     const { sessionId, handle } = (rawParams ?? {}) as { sessionId?: string; handle?: string };
     if (typeof handle !== "string" || handle.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "agent_stop requires handle", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "agent_stop requires handle", { source: "team" });
     }
     const sid = sessionId ?? "default";
     const team: TeamContext | undefined = teamContexts.get(sid);

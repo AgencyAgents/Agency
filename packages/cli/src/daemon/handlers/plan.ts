@@ -94,7 +94,7 @@ export function registerPlanHandlers(handlers: Record<string, MethodHandler>, ct
   handlers.plan_approve = async (rawParams) => {
     const { path, approvedBy } = rawParams as { path: string; approvedBy?: string };
     if (typeof path !== "string" || path.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "plan_approve requires a plan path", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "plan_approve requires a plan path", {
         source: "plan",
       });
     }

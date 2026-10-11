@@ -32,7 +32,7 @@ type BuiltinFn = (
 ) => Promise<BuiltinResult>;
 
 function fail(message: string): never {
-  throw new AgencyError(ErrorCode.INTERNAL, message, { source: "command_run" });
+  throw new AgencyError(ErrorCode.INVALID_REQUEST, message, { source: "command_run" });
 }
 
 async function call<T>(
@@ -41,7 +41,11 @@ async function call<T>(
   params: Record<string, unknown>,
 ): Promise<T> {
   const fn = handlers[method];
-  if (!fn) fail(`command backing missing: ${method}`);
+  if (!fn) {
+    throw new AgencyError(ErrorCode.INTERNAL, `command backing missing: ${method}`, {
+      source: "command_run",
+    });
+  }
   return (await fn(params, { clientId: "command_run" })) as unknown as T;
 }
 
@@ -372,7 +376,7 @@ export async function runCommand(
   if (name.length === 0) fail("command_run requires a command name");
   const resolved = resolveCommand(name, { templates: ctx.commands, pluginCommands: ctx.pluginCommands });
   if (resolved.kind === "unknown") {
-    throw new AgencyError(ErrorCode.INTERNAL, unknownCommandMessage(name), { source: "command_run" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, unknownCommandMessage(name), { source: "command_run" });
   }
   if (resolved.kind === "builtin") {
     const fn = BUILTINS[resolved.name];

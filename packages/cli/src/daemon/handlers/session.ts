@@ -114,7 +114,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_delete = async (rawParams) => {
     const { sessionId } = rawParams as { sessionId: string };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_delete requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_delete requires sessionId", {
         source: "session",
       });
     const scope = sessionScopes.get(sessionId);
@@ -137,11 +137,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       label?: string;
     };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_fork requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_fork requires sessionId", {
         source: "session",
       });
     if (todoStore.load(sessionId).length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const entry = await todoStore.fork(sessionId, {
@@ -156,11 +156,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       newSessionId?: string;
     };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_clone requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_clone requires sessionId", {
         source: "session",
       });
     if (todoStore.load(sessionId).length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const meta = todoStore.clone(
@@ -172,12 +172,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_show = async (rawParams) => {
     const { sessionId, tipId } = rawParams as { sessionId: string; tipId?: string };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_show requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_show requires sessionId", {
         source: "session",
       });
     const view = projectSessionView(todoStore, sessionId, tipId);
     if (!view)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const budget = ctx.sessionBudgets.get(sessionId);
@@ -186,11 +186,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_send = async (rawParams, context) => {
     const p = rawParams as SessionSendParams;
     if (!p.sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires sessionId", {
         source: "session",
       });
     if (!p.userText)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires userText", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires userText", {
         source: "session",
       });
     const store = todoStore;
@@ -271,11 +271,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_message = async (rawParams) => {
     const { sessionId, text } = rawParams as SessionMessageParams;
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires sessionId", {
         source: "session",
       });
     if (!text)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires text", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires text", {
         source: "session",
       });
     const box = sessionInboxes.get(sessionId) ?? [];

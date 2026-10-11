@@ -267,11 +267,11 @@ describe("undo_run restore modes", () => {
     expect(unknownManifest.body.error?.message ?? "").toContain("unknown shadow commit");
 
     const unknownMode = await rpcCall(base, token, "undo_run", { sessionId, mode: "time-travel" });
-    expect(unknownMode.status).toBe(500);
+    expect(unknownMode.status).toBe(400);
     expect(unknownMode.body.error?.message ?? "").toContain("unknown mode");
 
     const missingHash = await rpcCall(base, token, "undo_run", { sessionId, mode: "both" });
-    expect(missingHash.status).toBe(500);
+    expect(missingHash.status).toBe(400);
     expect(missingHash.body.error?.message ?? "").toContain("requires commitHash");
 
     const unknownTip = await rpcCall(base, token, "undo_run", {

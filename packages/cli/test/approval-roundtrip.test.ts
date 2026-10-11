@@ -297,10 +297,10 @@ describe("approval round-trip over a real daemon", () => {
       requestId: ask.requestId,
       decision: "maybe",
     });
-    expect(badDecision.status).toBe(500);
+    expect(badDecision.status).toBe(400);
     expect(badDecision.body.error?.message ?? "").toContain("invalid approval decision");
     const missingId = await rpcCall(base, token, "approval_respond", { decision: "once" });
-    expect(missingId.status).toBe(500);
+    expect(missingId.status).toBe(400);
     expect(missingId.body.error?.message ?? "").toContain("requires requestId");
     console.log("approval-roundtrip malformed: unknown-unresolved double-answered garbage-typed=true");
   }, 30_000);

@@ -129,7 +129,7 @@ describe("Phase 10b team surface", () => {
     };
     expect(done.items.find((i) => i.id === countered.item.id)?.status).toBe("needs-user");
     const bad = await rpcCall(base, token, "board_claim", { id: "missing", move: "accept", handle: "coder" });
-    expect(bad.status).toBe(500);
+    expect(bad.status).toBe(400);
   });
 
   test("inbox_send plus channel_read plus decisions_read plus report_get", async () => {
@@ -141,7 +141,7 @@ describe("Phase 10b team surface", () => {
     })) as { message: { id: string } };
     expect(sent.message.id).toBe("m-1");
     const refused = await rpcCall(base, token, "inbox_send", { kind: "ask", from: "coder", text: "help" });
-    expect(refused.status).toBe(500);
+    expect(refused.status).toBe(400);
     const channel = (await rpcOk(base, token, "channel_read", { since: 0 })) as {
       posts: unknown[];
       cursor: number;
@@ -193,14 +193,14 @@ describe("Phase 10b team surface", () => {
       granularity: "step",
       step: 3,
     });
-    expect(missing.status).toBe(500);
+    expect(missing.status).toBe(400);
     const peer = await rpcCall(base, token, "agent_inspect", {
       handle: "coder",
       granularity: "timeline",
       requester: "reviewer",
       isLead: false,
     });
-    expect(peer.status).toBe(500);
+    expect(peer.status).toBe(400);
   });
 
   test("agents_upsert writes the file and refreshes the registry", async () => {
@@ -222,7 +222,7 @@ describe("Phase 10b team surface", () => {
     };
     expect(partial.registered).toBe(false);
     const bad = await rpcCall(base, token, "agents_upsert", { handle: "Bad Handle" });
-    expect(bad.status).toBe(500);
+    expect(bad.status).toBe(400);
   });
 
   test("team_status, agents_list, activity_graph agree on agents plus tasks plus zero-cost sums", async () => {
