@@ -52,24 +52,25 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
-   session list [query]     List sessions for this workspace (id, title, created, entries);
-                        optional query filters by title (id fallback), case-insensitive
+  session list [query]     List sessions for this workspace (id, title, created, entries);
+                           optional query filters by title (id fallback), case-insensitive
   session show <id>        Show session details
   session rename <id> <title>  Rename a session
   session fork <id>        Fork (clone) a session under a new id
   session clone <id> [newId]  Clone a session file under a new id (or the given one)
   session delete <id>      Delete a session by id
   daemon status            Show daemon status for this workspace
-   auth login <provider>    Store an API key for a provider in the OS keychain
-   auth login <provider> --oauth
-                        OAuth browser flow for anthropic, openai, google, github-copilot
-                        (needs provider.<id>.oauth.clientId in config)
-   auth login <provider> --device
-                        RFC 8628 device flow where supported (github-copilot)
+  auth login <provider>    Store an API key for a provider in the OS keychain
+  auth login <provider> --oauth
+                           OAuth browser flow for anthropic, openai, google, github-copilot
+                           (needs provider.<id>.oauth.clientId in config)
+  auth login <provider> --device
+                           RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
-   plugin install <dir> [--overwrite]  Install a Claude Code / Codex plugin
-   plugin list              Show installed skills and plugin modules
-   plugin remove <name>     Remove an installed plugin
+  plugin install <dir> [--overwrite]
+                           Install a Claude Code / Codex plugin
+  plugin list              Show installed skills and plugin modules
+  plugin remove <name>     Remove an installed plugin
   onboard                  First-run setup: connect, model, trust
   trust                    Trust this workspace: load its AGENTS.md, CLAUDE.md and rules
   debug                    Write a redacted debug bundle for issue reports
@@ -477,6 +478,13 @@ async function runPrintMode(
   await validateTurnKey(provider, config, deps);
 
   // Progress events: printed to stderr in text mode, silent in JSON mode.
+  // A model sends text in small parts: they collect into whole lines, and a part line ends before any other line.
+  let partLine = "";
+  const line = (text: string) => {
+    if (partLine) err(t("cli.progress.text", { text: partLine }));
+    partLine = "";
+    err(text);
+  };
   const onEvent =
     parsed.format === "json"
       ? undefined
@@ -484,16 +492,19 @@ async function runPrintMode(
           const ev = event as Record<string, unknown>;
           switch (ev.type) {
             case "tool_start":
-              err(t("cli.progress.tool", { name: String(ev.name ?? ev.id ?? "?") }));
+              line(t("cli.progress.tool", { name: String(ev.name ?? ev.id ?? "?") }));
               break;
-            case "text_delta":
-              err(t("cli.progress.text", { text: String(ev.text ?? "") }));
+            case "text_delta": {
+              const lines = (partLine + String(ev.text ?? "")).split("\n");
+              partLine = lines.pop() ?? "";
+              for (const whole of lines) err(t("cli.progress.text", { text: whole }));
               break;
+            }
             case "heartbeat":
-              err(t("cli.progress.heartbeat"));
+              line(t("cli.progress.heartbeat"));
               break;
             case "turn_complete":
-              err(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
+              line(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
               break;
           }
         };

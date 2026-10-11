@@ -478,6 +478,32 @@ describe("-p headless mode", () => {
     expect(out.join("").split(/\s+/)).toEqual(["1", "2", "3", "4", "5", "6"]);
   });
 
+  test("a reply that streams in small parts shows as whole lines of progress, not one part per line", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        for (const text of ["The", " note", " says", " hello", ".", "\n", "Second", " line"]) {
+          options.onEvent?.({ type: "text_delta", text });
+        }
+        options.onEvent?.({ type: "tool_start", name: "read" });
+        options.onEvent?.({ type: "text_delta", text: "Done" });
+        options.onEvent?.({ type: "turn_complete", stopReason: "end_turn" });
+        return TURN_RESULT;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toEqual([
+      "The note says hello.",
+      "Second line",
+      "Tool: read",
+      "Done",
+      "Turn complete (end_turn).",
+    ]);
+  });
+
   test("runs one turn through runHeadless and prints the assistant text", async () => {
     const fake = fakeRunHeadless();
     const { out, deps } = capture();
