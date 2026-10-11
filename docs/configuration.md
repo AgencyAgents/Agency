@@ -142,6 +142,8 @@ The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/
 
 A headless run (`-p`) has no approval surface, so an ask refuses at once. `--permission-mode` sets how one run answers asks: `ask` (default) refuses, `allow-edits` allows `write` and `edit`, `allow-all` allows every tool, `deny` refuses every tool above `safe`. No mode overrides a `deny` entry, the `.env` read block or the trust gate.
 
+One turn takes at most 25 tool steps. A run that reaches the limit prints `iteration_limit` and exits with code 1. `--max-steps <n>` sets the limit for one run.
+
 `permissions.git_write` (`allow|ask|deny`, default `deny`) gates real git writes: Todo 8 materialization calls `assertGitWriteAllowed` (packages/guard/src/git-write.ts) before creating commits. `allow` proceeds, `ask` routes through the existing `approval_requested` / `approval_respond` RPC surface (`once`/`always` proceed, `reject`/timeout deny), `deny` refuses with typed `PERMISSION_DENIED`. Non-interactive runs always deny regardless of setting. Only bare decisions are read; pattern maps and unknown values fail closed to `deny`.
 
 ## Sandbox

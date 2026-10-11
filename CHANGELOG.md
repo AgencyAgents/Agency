@@ -96,6 +96,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Step limit**: a headless run that reached the limit of 25 tool steps
+  printed nothing and exited with code 0. It now prints `iteration_limit`
+  and exits with code 1. The turn result carries the same error.
 - **Exit with no output**: the CLI did not wait for its own main call. When
   nothing else held the process open, it exited with code 0 and printed
   nothing. The main call is now awaited.
@@ -195,6 +198,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- `--max-steps <n>` sets the tool step limit for one headless run, and
+  `session_send` takes `maxToolIterations`. The default stays 25.
 - `-p -` reads the prompt from stdin, so a long prompt can come from a pipe
   or a file. An empty stdin is an error.
 - `--permission-mode allow-all`: a headless run can allow every tool for one
