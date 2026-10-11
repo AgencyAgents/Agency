@@ -706,6 +706,49 @@ describe("runTurn", () => {
     expect(result.error).toEqual({ code: "network", message: "connection reset" });
   });
 
+  test.each([
+    ["before any content", false],
+    ["after partial content", true],
+  ])(
+    "a provider stream that goes silent ends as a network error, %s",
+    async (_name, partial) => {
+      const adapter: ProviderAdapter = {
+        family: "fake",
+        async *stream(req: { signal?: AbortSignal }): AsyncIterable<StreamEvent> {
+          if (partial) yield { type: "text_delta", text: "partial" };
+          await new Promise((_resolve, reject) =>
+            req.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted.", "AbortError")),
+            ),
+          );
+        },
+      };
+
+      const turn = runTurn(adapter, new Scheduler({ maxAttempts: 1 }), noopHttp, {
+        identity: user,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [],
+        model: "test-model",
+        apiKey: "key",
+        session: [],
+        streamIdleMs: 50,
+      });
+
+      if (partial) {
+        const result = await turn;
+        expect(result.stopReason).toBe("error");
+        expect(result.error).toEqual({ code: "network", message: "the provider sent nothing for 0.05 s" });
+      } else {
+        await expect(turn).rejects.toMatchObject({
+          code: "network",
+          message: "the provider sent nothing for 0.05 s",
+        });
+      }
+    },
+    5_000,
+  );
+
   test("onMessage reports each message as the turn produces it, before the next model call", async () => {
     const seen: string[] = [];
     let seenAtSecondCall: string[] = [];

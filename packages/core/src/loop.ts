@@ -126,6 +126,8 @@ export interface RunTurnOptions {
   /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
+  /** Longest silence allowed on a provider stream before the request is cut. Default 5 minutes. */
+  streamIdleMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
   eventBus?: {
@@ -279,6 +281,7 @@ export async function runTurn(
               signal: options.signal,
             },
             options.onEvent,
+            options.streamIdleMs,
           ),
         {
           onRetry: (attempt, message, next) => {
@@ -451,6 +454,9 @@ function toolCallsOf(message: Message | undefined): Array<Extract<ContentBlock, 
     (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
   );
 }
+
+/** A provider that sends nothing for this long has stalled: without a limit the turn waits until a cancel. */
+const STREAM_IDLE_MS = 5 * 60_000;
 
 /** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */
 function unrunResults(calls: ReadonlyArray<{ id: string }>, why: string): Message {
@@ -886,6 +892,7 @@ async function collectTurn(
   http: HttpClient,
   request: Parameters<ProviderAdapter["stream"]>[0],
   onEvent: ((event: LoopEvent) => void) | undefined,
+  idleMs = STREAM_IDLE_MS,
 ): Promise<CollectedTurn> {
   const content: ContentBlock[] = [];
   const jsonByToolId = new Map<string, string>();
@@ -894,84 +901,102 @@ async function collectTurn(
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
+  const idle = new AbortController();
+  const stalled = () =>
+    new AgencyError(ErrorCode.NETWORK, `the provider sent nothing for ${idleMs / 1000} s`, {
+      source: "loop",
+    });
+  const watch = () => setTimeout(() => idle.abort(), idleMs);
+  let idleTimer = watch();
+  const signal = request.signal ? AbortSignal.any([request.signal, idle.signal]) : idle.signal;
+
   const salvaged: { error?: TurnError } = {};
-  const stream = withMidStreamRecovery(adapter.stream(request, http), (error) => {
+  const stream = withMidStreamRecovery(adapter.stream({ ...request, signal }, http), (error) => {
     if (request.signal?.aborted) return;
     // A stream that dies after content is a network failure unless the adapter already typed it.
     salvaged.error =
-      error instanceof AgencyError
-        ? describeError(error)
+      error instanceof AgencyError || idle.signal.aborted
+        ? describeError(idle.signal.aborted ? stalled() : error)
         : { code: ErrorCode.NETWORK, message: describeError(error).message };
     onEvent?.({ type: "error", ...salvaged.error });
   });
-  for await (const event of stream) {
-    switch (event.type) {
-      case "text_delta":
-        appendText(content, "text", event.text);
-        onEvent?.({ type: "text_delta", text: event.text });
-        break;
-      case "thinking_delta":
-        appendText(content, "thinking", event.text);
-        onEvent?.({ type: "thinking_delta", text: event.text });
-        break;
-      case "thinking_signature": {
-        const last = content[content.length - 1];
-        if (last?.type === "thinking" && last.signature === undefined) {
-          last.signature = event.signature;
-        } else if (last?.type !== "thinking") {
-          content.push({ type: "thinking", text: "", signature: event.signature });
-        } else {
-          // Trailing block already carries a signature: a second signature
-          // without intervening thinking text starts its own placeholder so
-          // no provider-issued signature is ever dropped.
-          content.push({ type: "thinking", text: "", signature: event.signature });
+  try {
+    for await (const event of stream) {
+      clearTimeout(idleTimer);
+      idleTimer = watch();
+      switch (event.type) {
+        case "text_delta":
+          appendText(content, "text", event.text);
+          onEvent?.({ type: "text_delta", text: event.text });
+          break;
+        case "thinking_delta":
+          appendText(content, "thinking", event.text);
+          onEvent?.({ type: "thinking_delta", text: event.text });
+          break;
+        case "thinking_signature": {
+          const last = content[content.length - 1];
+          if (last?.type === "thinking" && last.signature === undefined) {
+            last.signature = event.signature;
+          } else if (last?.type !== "thinking") {
+            content.push({ type: "thinking", text: "", signature: event.signature });
+          } else {
+            // Trailing block already carries a signature: a second signature
+            // without intervening thinking text starts its own placeholder so
+            // no provider-issued signature is ever dropped.
+            content.push({ type: "thinking", text: "", signature: event.signature });
+          }
+          break;
         }
-        break;
-      }
-      case "redacted_thinking":
-        content.push({ type: "redacted_thinking", data: event.data });
-        break;
-      case "tool_call_start":
-        nameByToolId.set(event.id, event.name);
-        jsonByToolId.set(event.id, "");
-        break;
-      case "tool_call_delta":
-        jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
-        break;
-      case "tool_call_end": {
-        const raw = jsonByToolId.get(event.id) ?? "";
-        let input: Record<string, unknown> = {};
-        if (raw.trim()) {
-          try {
-            input = JSON.parse(raw) as Record<string, unknown>;
-          } catch {
-            // One malformed delta must not kill the whole turn: attempt a
-            // repair pass, and if the arguments are beyond repair, record a
-            // per-call error (runTools turns it into an error tool_result)
-            // instead of throwing away the entire turn.
-            const repaired = repairToolJson(raw);
-            if (repaired) {
-              input = repaired;
-            } else {
-              malformedCalls.set(
-                event.id,
-                `tool arguments were not valid JSON (even after repair): ${raw.slice(0, 500)}`,
-              );
+        case "redacted_thinking":
+          content.push({ type: "redacted_thinking", data: event.data });
+          break;
+        case "tool_call_start":
+          nameByToolId.set(event.id, event.name);
+          jsonByToolId.set(event.id, "");
+          break;
+        case "tool_call_delta":
+          jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
+          break;
+        case "tool_call_end": {
+          const raw = jsonByToolId.get(event.id) ?? "";
+          let input: Record<string, unknown> = {};
+          if (raw.trim()) {
+            try {
+              input = JSON.parse(raw) as Record<string, unknown>;
+            } catch {
+              // One malformed delta must not kill the whole turn: attempt a
+              // repair pass, and if the arguments are beyond repair, record a
+              // per-call error (runTools turns it into an error tool_result)
+              // instead of throwing away the entire turn.
+              const repaired = repairToolJson(raw);
+              if (repaired) {
+                input = repaired;
+              } else {
+                malformedCalls.set(
+                  event.id,
+                  `tool arguments were not valid JSON (even after repair): ${raw.slice(0, 500)}`,
+                );
+              }
             }
           }
+          // The tool_start event fires once the streamed arguments are parsed
+          // (not at tool_call_start): the TUI's renderCall needs the input, and
+          // nothing else can run between here and the provider round-trip.
+          content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+          onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+          break;
         }
-        // The tool_start event fires once the streamed arguments are parsed
-        // (not at tool_call_start): the TUI's renderCall needs the input, and
-        // nothing else can run between here and the provider round-trip.
-        content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
-        onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
-        break;
+        case "message_stop":
+          usage = event.usage;
+          stopReason = event.stopReason;
+          break;
       }
-      case "message_stop":
-        usage = event.usage;
-        stopReason = event.stopReason;
-        break;
     }
+  } catch (error) {
+    if (idle.signal.aborted && !request.signal?.aborted) throw stalled();
+    throw error;
+  } finally {
+    clearTimeout(idleTimer);
   }
 
   return { content, stopReason, usage, malformedCalls, ...salvaged };
