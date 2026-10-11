@@ -346,9 +346,7 @@ export async function runTurn(
         modelSpanId = null;
       }
 
-      const toolCalls = turn.content.filter(
-        (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
-      );
+      const toolCalls = toolCallsOf({ role: "assistant", content: turn.content });
 
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
         if (toolCalls.length > 0) {
@@ -413,6 +411,9 @@ export async function runTurn(
       }
       endTurnError();
       emitErrorEvent(error, options.onEvent);
+      const calls = messages.at(-1)?.role === "assistant" ? toolCallsOf(messages.at(-1)) : [];
+      if (calls.length > 0) messages.push(unrunResults(calls, "error"));
+      if (typeof error === "object" && error !== null) failedTurns.set(error, messages);
       throw error;
     }
   }
@@ -429,6 +430,19 @@ export async function runTurn(
     budgetExceeded: false,
     ...(salvageError ? { error: salvageError } : {}),
   };
+}
+
+const failedTurns = new WeakMap<object, Message[]>();
+
+/** Session plus the steps a turn completed before it threw `error`: the session owner keeps them. */
+export function completedMessages(error: unknown): Message[] | undefined {
+  return typeof error === "object" && error !== null ? failedTurns.get(error) : undefined;
+}
+
+function toolCallsOf(message: Message | undefined): Array<Extract<ContentBlock, { type: "tool_call" }>> {
+  return (message?.content ?? []).filter(
+    (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
+  );
 }
 
 /** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */

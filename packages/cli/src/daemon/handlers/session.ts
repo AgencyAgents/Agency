@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   compact,
+  completedMessages,
   composeSystemPrompt,
   generateTitle,
   getSessionTitle,
@@ -29,6 +30,7 @@ import {
   type DaemonContext,
   oauthOverridesFor,
   type RunTurnParams,
+  type RunTurnRpcResult,
   type SessionMessageParams,
   type SessionSendParams,
   type SessionSendResult,
@@ -245,17 +247,27 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
     };
-    let result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
-    if (result.needsCompaction) {
-      history = await onContextOverflow();
-      runParams.session = history;
+    const appendTurn = async (messages: Message[]): Promise<string | null> => {
+      let tip = appendBase;
+      for (const message of messages.slice(sliceBase)) {
+        tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
+      }
+      return tip;
+    };
+    let result: RunTurnRpcResult;
+    try {
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+      if (result.needsCompaction) {
+        history = await onContextOverflow();
+        runParams.session = history;
+        result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+      }
+    } catch (error) {
+      // A failed turn keeps its finished steps: their effects are on disk, so the next turn must see them.
+      await appendTurn(completedMessages(error) ?? []);
+      throw error;
     }
-    let parentId: string | null = appendBase;
-    for (const message of result.messages.slice(sliceBase)) {
-      const appended = await store.append(p.sessionId, { type: "message", parentId, message });
-      parentId = appended.id;
-    }
+    let parentId = await appendTurn(result.messages);
     parentId = await appendUsageEntry(store, p.sessionId, parentId, {
       usage: result.usage,
       model: p.model,
