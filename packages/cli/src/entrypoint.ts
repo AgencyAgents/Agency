@@ -368,9 +368,13 @@ async function providerConnections(
 }
 
 /** Assistant text blocks joined by newlines: what `-p` prints in text mode. */
+/** The reply to the prompt this run sent: a session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
+  const prompt = messages.findLastIndex(
+    (message) => message.role === "user" && message.content.some((block) => block.type === "text"),
+  );
   const parts: string[] = [];
-  for (const message of messages) {
+  for (const message of messages.slice(prompt + 1)) {
     if (message.role !== "assistant") continue;
     for (const block of message.content) {
       if (block.type === "text") parts.push(block.text);

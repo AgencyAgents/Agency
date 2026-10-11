@@ -697,6 +697,40 @@ describe("-p headless mode", () => {
     expect((send!.params as { userText: string }).userText).toBe("follow-up");
   });
 
+  test("a resumed run prints this turn's reply only, not the earlier replies", async () => {
+    const text = (role: "user" | "assistant", value: string) => ({
+      role,
+      content: [{ type: "text" as const, text: value }],
+    });
+    const fake = fakeClient({
+      ...TURN_RESULT,
+      messages: [
+        text("user", "first question"),
+        text("assistant", "first reply"),
+        text("user", "follow-up"),
+        { role: "assistant", content: [{ type: "tool_call", id: "c1", name: "read", input: {} }] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolCallId: "c1", content: "data", isError: false }],
+        },
+        text("assistant", "second reply"),
+      ],
+    });
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "s", [entry("e1", null, "first question", "2026-01-01T00:00:00.000Z")]);
+
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["-p", "follow-up", "--model", "openai/fake-1", "--continue"], {
+      ...baseDeps(),
+      ...deps,
+      sessionsDir,
+      ensureClient: async () => fake.client,
+    });
+
+    expect(code).toBe(0);
+    expect(out).toEqual(["second reply"]);
+  });
+
   test("--continue with no sessions, conflicting session flags, and missing -p all fail clearly", async () => {
     const emptyDir = tempDir("agency-ep-sessions-");
     const none = capture();

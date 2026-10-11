@@ -232,8 +232,8 @@ try {
     const second = await run(["-p", "again", "--continue", ...target]);
     assert(second.code === 0, `${family}: resumed turn exits 0, got ${second.code}: ${second.stderr}`);
     assert(
-      second.stdout.includes("second turn"),
-      `${family}: resumed turn prints the reply: ${second.stdout}`,
+      second.stdout.trim() === "second turn",
+      `${family}: resumed turn prints its own reply and nothing from the first turn: ${second.stdout}`,
     );
     const resumed = seen[family].at(-1)?.history ?? "";
     assert(
