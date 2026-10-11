@@ -116,6 +116,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   fallback model, so the daily and monthly caps saw less than the real
   spend. The spend ledger, the budgets and the cost meter now count them,
   at the price of the model that used them.
+- **Edit rejection text**: when an edit did not find its text, the message
+  said that the file had changed since the last read. That was false when
+  the model had not read the file. The message now tells the model to read
+  the file and to send the exact text.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
