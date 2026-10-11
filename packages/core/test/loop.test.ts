@@ -497,6 +497,103 @@ describe("runTurn", () => {
     expect(result.error?.code).toBe("max_tokens");
   });
 
+  test("a complete tool call in a reply that the output limit cut still runs", async () => {
+    // Measured with a real server: a full bash call arrived with finish reason "length", four times in a row.
+    let runs = 0;
+    const count: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "count" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [count],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "count once" }] }],
+    });
+
+    expect(runs).toBe(1);
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("a tool call that the output limit cut in the middle gets a result that names the limit", async () => {
+    // Measured with a real model: with only "not valid JSON" as the result, it sent the same cut call about 20 times.
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "write" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: '{"path": "out.txt", "content": "1 2 3' };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write the file" }] }],
+    });
+
+    const toolResult = result.messages.flatMap((m) => m.content).find((b) => b.type === "tool_result");
+    expect(toolResult).toMatchObject({ isError: true, content: expect.stringContaining("output limit") });
+  });
+
+  test("a reply that is cut before any text is not continued: there is nothing to go on from", async () => {
+    // Measured with a reasoning model and a 40-token limit: each request used the limit for thinking only.
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "thinking_delta", text: "let me think" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    expect(requests).toBe(1);
+    expect(result.error?.code).toBe("max_tokens");
+  });
+
   test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
     const silent: ProviderAdapter = {
       family: "fake",
@@ -971,7 +1068,13 @@ describe("runTurn", () => {
   ])("a tool call gets an error result when %s", async (_name, stopReason) => {
     const adapter: ProviderAdapter = {
       family: "fake",
-      async *stream(): AsyncIterable<StreamEvent> {
+      async *stream(request): AsyncIterable<StreamEvent> {
+        // A call in a cut reply runs, so a second request comes with its result: the model ends the turn there.
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
         yield { type: "tool_call_start", id: "call_1", name: "read" };
         if (stopReason === undefined) throw new Error("connection reset");
         yield { type: "tool_call_end", id: "call_1" };
@@ -989,7 +1092,6 @@ describe("runTurn", () => {
       session: [],
     });
 
-    // After the output limit the model is asked to go on, so more messages can follow these two.
     expect(result.messages.slice(0, 2).map((m) => m.role)).toEqual(["assistant", "user"]);
     expect(result.messages[1]?.content).toMatchObject([
       { type: "tool_result", toolCallId: "call_1", isError: true },

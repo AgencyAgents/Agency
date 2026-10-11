@@ -367,6 +367,11 @@ export async function runTurn(
       stopReason = cut ? "cancelled" : turn.stopReason;
       // A tool stop reason with no call has nothing to run: the loop would ask again with an empty result.
       if (stopReason === "tool_use" && toolCalls.length === 0) stopReason = "end_turn";
+      // A reply cut at the output limit can hold complete calls. They run, and a call that the cut broke gets its parse error.
+      if (stopReason === "max_tokens" && toolCalls.length > 0) {
+        stopReason = "tool_use";
+        for (const id of turn.malformedCalls.keys()) turn.malformedCalls.set(id, CUT_CALL_NOTE);
+      }
       salvageError = cut ? undefined : turn.error;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
       if (tracer && modelSpanId) {
@@ -408,7 +413,8 @@ export async function runTurn(
           await append(unrunResults(toolCalls, options.signal?.aborted ? "cancelled" : stopReason));
         }
         // A reply cut at the output limit is not an end: the model goes on from the cut, a limited number of times.
-        const cutShort = stopReason === "max_tokens" && !options.signal?.aborted;
+        // With no text there is nothing to go on from: the limit is too small for the model's thinking.
+        const cutShort = stopReason === "max_tokens" && !options.signal?.aborted && spoke;
         if (cutShort && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
           outputContinuations += 1;
           await append({ role: "user", content: [{ type: "text", text: OUTPUT_CUT_NOTE }] });
@@ -476,7 +482,7 @@ export async function runTurn(
   } else if (!turnError && stopReason === "max_tokens") {
     turnError = {
       code: "max_tokens",
-      message: `the reply was cut at the output limit ${outputContinuations + 1} times in a row: the answer is not complete`,
+      message: `the reply was cut at the output limit (continued ${outputContinuations} times): the answer is not complete`,
     };
   } else if (!turnError && !spoke && stopReason !== "cancelled") {
     // No text is no answer: a headless caller must not read it as success.
@@ -507,8 +513,10 @@ const STREAM_IDLE_MS = 5 * 60_000;
 
 /** How many times in a row the model is asked to go on after a reply that was cut at the output limit. */
 const MAX_OUTPUT_CONTINUATIONS = 3;
-const OUTPUT_CUT_NOTE =
-  "Your reply was cut at the output limit. Continue from the exact point where it stopped. Do not repeat text. If a tool call was cut, send it again in smaller parts.";
+export const OUTPUT_CUT_NOTE =
+  "Your reply was cut at the output limit. Continue from the exact point where it stopped. Do not repeat text.";
+const CUT_CALL_NOTE =
+  "not run: the output limit cut this call before its arguments were complete. Send it again with shorter arguments, for example write a long file in smaller parts.";
 
 /** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */
 function unrunResults(calls: ReadonlyArray<{ id: string }>, why: string): Message {
