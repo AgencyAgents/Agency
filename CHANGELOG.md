@@ -104,6 +104,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   had several commands, and a Windows runner reports only the last command's
   exit code, so a failed shard passed. No shard ran `packages/eval`. Both
   workflows now run one command, `bun run test:ci`.
+- **Progress of a streamed reply**: in text mode `agency -p` printed each
+  small part of a streamed reply on its own stderr line, so a real model gave
+  a column of word fragments. The parts now collect into whole lines.
 - **Rollback**: `agency update --rollback` is in the help text and the docs,
   but the option parser rejected it with "Unknown option". The parser now
   knows the option (`parseArgv` in `packages/cli/src/entrypoint.ts`). With no
