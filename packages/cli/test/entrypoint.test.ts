@@ -504,6 +504,22 @@ describe("-p headless mode", () => {
     expect(err).toContain("network: connection reset");
   });
 
+  test("a run that stops at the step limit exits non-zero and says so", async () => {
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      stopReason: "tool_use",
+      error: { code: "iteration_limit", message: "stopped after 25 tool steps: the task is not finished" },
+    });
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(1);
+    expect(err).toContain("iteration_limit: stopped after 25 tool steps: the task is not finished");
+  });
+
   test("--format json prints a failed run as JSON on stdout: a script must not get empty output", async () => {
     const { out, err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "json"], {

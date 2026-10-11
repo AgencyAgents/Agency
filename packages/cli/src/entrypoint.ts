@@ -400,7 +400,7 @@ function reportTurn<T extends RunTurnRpcResult>(
 ): number {
   printJsonOrText(out, format, result, assistantText(result.messages));
   if (result.error && format === "text") err(`${result.error.code}: ${result.error.message}`);
-  return result.stopReason === "error" ? 1 : 0;
+  return result.stopReason === "error" || result.error ? 1 : 0;
 }
 
 /** Most recently appended session: the one `--continue` resumes. Ties break
