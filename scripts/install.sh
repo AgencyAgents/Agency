@@ -44,7 +44,13 @@ if [ -z "$expected" ]; then
   echo "install: FAIL - no checksum for $asset in checksums.txt; refusing to install" >&2
   exit 1
 fi
-if ! echo "$expected  $tmp/$asset" | sha256sum -c --strict >/dev/null 2>&1; then
+# macOS has no sha256sum; it has shasum.
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+else
+  actual="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+fi
+if [ "$actual" != "$expected" ]; then
   echo "install: FAIL - checksum mismatch for $asset; refusing to install" >&2
   exit 1
 fi
