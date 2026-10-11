@@ -104,6 +104,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   had several commands, and a Windows runner reports only the last command's
   exit code, so a failed shard passed. No shard ran `packages/eval`. Both
   workflows now run one command, `bun run test:ci`.
+- **Rollback**: `agency update --rollback` is in the help text and the docs,
+  but the option parser rejected it with "Unknown option". The parser now
+  knows the option (`parseArgv` in `packages/cli/src/entrypoint.ts`). With no
+  release on GitHub, `agency update` now says so in place of a bare 404.
 - **Install on Windows**: in Windows PowerShell 5.1 the download of the 86 MB
   binary took 129 s, because the shell draws a progress bar for each chunk.
   `scripts/install.ps1` now downloads without the bar (0.2 s from a local
