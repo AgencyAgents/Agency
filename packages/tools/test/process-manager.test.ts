@@ -18,7 +18,9 @@ describe("ProcessManager", () => {
   test("captures stdout into the log buffer", async () => {
     manager = new ProcessManager();
     const info = manager.spawn(["node", "-e", "console.log('hello from child')"]);
-    await new Promise((r) => setTimeout(r, 300));
+    // A fixed wait of 300 ms failed on a slow machine, where node needs seconds to start.
+    for (let i = 0; i < 300 && manager.getLogs(info.id) === ""; i++)
+      await new Promise((r) => setTimeout(r, 50));
     expect(manager.getLogs(info.id)).toContain("hello from child");
   });
 
