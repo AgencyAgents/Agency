@@ -105,8 +105,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   with an error result. A stream drop reports its cause: `error` in the turn
   result, one line on stderr in the CLI.
 - **Failed turns**: a session turn that failed after some tool steps dropped
-  those steps. `session_send` now keeps them, so the next turn sees work that
-  is already on disk.
+  those steps, and so did a daemon that stopped during a turn. `session_send`
+  now stores each message when the turn produces it, so the next turn sees
+  work that is already on disk.
 - **RPC on Windows**: a malformed frame destroyed the socket inside its own
   data callback, and Bun crashed with a segmentation fault some time later.
   The destroy now runs after the callback returns.
