@@ -30,10 +30,11 @@ const STOP_REASON: Record<string, StopReason> = {
   pause_turn: "end_turn",
 };
 
-/** Anthropic phrases oversized inputs as a 400 invalid_request_error (or 413). */
-function isInputTooLong(status: number, message: string): boolean {
+/** Anthropic phrases oversized inputs as a 400 invalid_request_error (or 413). A llama.cpp server has its own type. */
+function isInputTooLong(status: number, message: string, type?: string): boolean {
   return (
     status === 413 ||
+    type === "exceed_context_size_error" ||
     (status === 400 &&
       /(prompt is too long|input length[^\n]*exceeds|exceeds the context|context length|too many (input )?tokens|request too large)/i.test(
         message,
@@ -180,7 +181,7 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: "anthropic", context });
   }
-  if (isInputTooLong(res.status, message)) {
+  if (isInputTooLong(res.status, message, body?.error?.type)) {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "anthropic", context });
   }
   return new AgencyError(ErrorCode.INTERNAL, message, { source: "anthropic", context });

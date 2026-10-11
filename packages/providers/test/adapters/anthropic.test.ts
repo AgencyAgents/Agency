@@ -185,6 +185,24 @@ describe("anthropicAdapter", () => {
     expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
   });
 
+  test("maps the overflow error of a llama.cpp server on the messages endpoint to CONTEXT_OVERFLOW", async () => {
+    // The body is a capture from the /v1/messages endpoint of llama-server b11155.
+    const body = {
+      error: {
+        code: 400,
+        message:
+          "request (13630 tokens) exceeds the available context size (12288 tokens), try increasing it",
+        type: "exceed_context_size_error",
+        n_prompt_tokens: 13630,
+        n_ctx: 12288,
+      },
+    };
+    const http = fakeHttp(new Response(JSON.stringify(body), { status: 400 }));
+
+    const err = await collect(anthropicAdapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
   test("maps a 413 request-too-large response to CONTEXT_OVERFLOW", async () => {
     const http = fakeHttp(
       new Response(JSON.stringify({ error: { type: "request_too_large", message: "request too large" } }), {
