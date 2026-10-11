@@ -7,7 +7,7 @@ import {
   PROTOCOL_VERSION,
   type RpcMessage,
 } from "./protocol.ts";
-import { FrameWriter } from "./writer.ts";
+import { destroyAfterData, FrameWriter } from "./writer.ts";
 
 /** Per-call context: which connected client issued the request. */
 export interface MethodContext {
@@ -97,14 +97,14 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
         messages = conn.decoder.push(chunk.toString("utf8"));
       } catch {
         // Oversized or unparseable frame: fail closed for this connection.
-        socket.destroy();
+        destroyAfterData(socket);
         return;
       }
 
       for (const message of messages) {
         if (!conn.handshaked) {
           if (message.type !== "hello") {
-            socket.destroy();
+            destroyAfterData(socket);
             return;
           }
           const compatible = message.version === PROTOCOL_VERSION;

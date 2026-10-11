@@ -1,5 +1,14 @@
 import type { Socket } from "node:net";
 
+/**
+ * Fails a connection from inside its own `data` callback. Bun on Windows corrupts its TCP state when a
+ * socket is destroyed there and segfaults later, so the destroy runs one tick after the callback.
+ */
+export function destroyAfterData(socket: Socket): void {
+  socket.pause();
+  setImmediate(() => socket.destroy());
+}
+
 export interface FrameWriterOptions {
   /** Queue beyond this and the peer isn't consuming: the socket is destroyed
    *  rather than buffering without bound. Default 8 MiB. */
