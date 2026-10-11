@@ -233,34 +233,40 @@ export function resolveAdapter(
   providers: Record<string, ProviderConfig>,
   catalogBaseUrls: Record<string, string> = {},
 ): ProviderAdapter {
-  const config = providers[providerId];
-  if (config) {
-    const family = config.family ?? "openai-compatible";
-    if (family === "openai-compatible") {
-      const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
-      if (!baseUrl) {
-        throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
-      }
-      return createOpenAiCompatibleAdapter(providerId, baseUrl);
-    }
-    if (family === "openai") return openaiAdapter;
-    if (family === "anthropic") return anthropicAdapter;
-    return googleAdapter;
-  }
+  const config = providers[providerId] ?? {};
+  // A builtin id keeps its native family when its config entry only adds a key, headers or model overrides.
+  const native = NATIVE_ADAPTERS[config.family ?? providerId];
+  if (native && config.family !== "openai-compatible") return bindEndpoint(native, config);
 
-  switch (providerId) {
-    case "anthropic":
-      return anthropicAdapter;
-    case "openai":
-      return openaiAdapter;
-    case "google":
-      return googleAdapter;
-    default: {
-      const catalogBaseUrl = catalogBaseUrls[providerId];
-      if (catalogBaseUrl) return createOpenAiCompatibleAdapter(providerId, catalogBaseUrl);
-      throw new Error(`unknown provider: ${providerId}`);
-    }
+  const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
+  if (baseUrl) {
+    return bindEndpoint(createOpenAiCompatibleAdapter(providerId, baseUrl), { headers: config.headers });
   }
+  if (providers[providerId] === undefined) throw new Error(`unknown provider: ${providerId}`);
+  throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
+}
+
+const NATIVE_ADAPTERS: Record<string, ProviderAdapter | undefined> = {
+  anthropic: anthropicAdapter,
+  openai: openaiAdapter,
+  google: googleAdapter,
+};
+
+/** Binds a provider's configured endpoint and headers to each request: its key must not go to the family's public host. */
+function bindEndpoint(adapter: ProviderAdapter, config: ProviderConfig): ProviderAdapter {
+  if (!config.baseUrl && !config.headers) return adapter;
+  return {
+    ...adapter,
+    stream: (request, http) =>
+      adapter.stream(
+        {
+          ...request,
+          baseUrl: request.baseUrl ?? config.baseUrl,
+          headers: { ...config.headers, ...request.headers },
+        },
+        http,
+      ),
+  };
 }
 
 export function oauthOverridesFor(

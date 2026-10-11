@@ -1,6 +1,6 @@
 /**
- * Offline end to end through the real CLI: daemon spawn, RPC, agent loop, HTTP provider, a real tool, session resume.
- * Run: bun scripts/e2e-cli.ts [compiled-binary]   (no argument runs the source entrypoint)
+ * Offline end to end through the real CLI: daemon spawn, RPC, agent loop, a real tool and session resume,
+ * once per provider wire format. Run: bun scripts/e2e-cli.ts [compiled-binary]   (no argument runs the source entrypoint)
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,58 +15,172 @@ const cli = binary
   ? [binary]
   : [process.execPath, join(import.meta.dir, "..", "packages/cli/src/entrypoint.ts")];
 const secret = `note-${crypto.randomUUID()}`;
+const KEY = "e2e-key";
 
-type ChatRequest = {
-  messages: { role: string; content: unknown }[];
-  tools?: { function: { name: string } }[];
-};
-const requests: { auth: string | null; body: ChatRequest }[] = [];
-
-const chunk = (delta: unknown, finish: string | null = null) => ({
-  id: "c",
-  choices: [{ index: 0, delta, finish_reason: finish }],
-});
-const usage = { id: "c", choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
-
-function sse(chunks: unknown[]): Response {
-  const body = [...chunks, usage].map((c) => `data: ${JSON.stringify(c)}\n\n`).join("");
-  return new Response(`${body}data: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+/** What the model stand-in decides from, whatever the wire format. */
+interface Seen {
+  auth: string | null;
+  offersRead: boolean;
+  lastIsToolResult: boolean;
+  hadToolResult: boolean;
+  /** Every message of the request, serialized, to check that history and tool output arrive. */
+  history: string;
 }
-const say = (text: string) => sse([chunk({ role: "assistant", content: text }), chunk({}, "stop")]);
+type Reply = { text: string } | { readPath: string };
 
-// Model stand-in: asks for `read` once, then answers with whatever the tool returned.
+const sse = (events: Array<{ event?: string; data: unknown }>, tail = ""): Response =>
+  new Response(
+    events.map((e) => `${e.event ? `event: ${e.event}\n` : ""}data: ${JSON.stringify(e.data)}\n\n`).join("") +
+      tail,
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+
+type Body = Record<string, unknown>;
+type Msg = { role: string; content?: unknown; parts?: Array<Record<string, unknown>> };
+const blocks = (m: Msg | undefined): Array<Record<string, unknown>> =>
+  Array.isArray(m?.content) ? (m.content as Array<Record<string, unknown>>) : (m?.parts ?? []);
+
+const wire = {
+  openai: {
+    route: "/openai/v1/chat/completions",
+    seen(req: Request, body: Body): Seen {
+      const messages = (body.messages ?? []) as Msg[];
+      const tools = (body.tools ?? []) as Array<{ function: { name: string } }>;
+      return {
+        auth: req.headers.get("authorization")?.replace("Bearer ", "") ?? null,
+        offersRead: tools.some((t) => t.function.name === "read"),
+        lastIsToolResult: messages.at(-1)?.role === "tool",
+        hadToolResult: messages.some((m) => m.role === "tool"),
+        history: JSON.stringify(messages),
+      };
+    },
+    reply(reply: Reply): Response {
+      const chunk = (delta: unknown, finish: string | null = null) => ({
+        data: { id: "c", choices: [{ index: 0, delta, finish_reason: finish }] },
+      });
+      const call = (args: string, head: boolean) => ({
+        index: 0,
+        ...(head ? { id: "call_1", type: "function" } : {}),
+        function: { ...(head ? { name: "read" } : {}), arguments: args },
+      });
+      const body =
+        "text" in reply
+          ? [chunk({ role: "assistant", content: reply.text }), chunk({}, "stop")]
+          : [
+              chunk({ tool_calls: [call("", true)] }),
+              chunk({ tool_calls: [call(JSON.stringify({ path: reply.readPath }), false)] }),
+              chunk({}, "tool_calls"),
+            ];
+      const usage = { data: { id: "c", choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } } };
+      return sse([...body, usage], "data: [DONE]\n\n");
+    },
+  },
+  anthropic: {
+    route: "/anthropic/v1/messages",
+    seen(req: Request, body: Body): Seen {
+      const messages = (body.messages ?? []) as Msg[];
+      const isResult = (m: Msg | undefined) => blocks(m).some((b) => b.type === "tool_result");
+      return {
+        auth: req.headers.get("x-api-key"),
+        offersRead: ((body.tools ?? []) as Array<{ name: string }>).some((t) => t.name === "read"),
+        lastIsToolResult: isResult(messages.at(-1)),
+        hadToolResult: messages.some(isResult),
+        history: JSON.stringify(messages),
+      };
+    },
+    reply(reply: Reply): Response {
+      const block =
+        "text" in reply
+          ? { start: { type: "text", text: "" }, delta: { type: "text_delta", text: reply.text } }
+          : {
+              start: { type: "tool_use", id: "toolu_1", name: "read", input: {} },
+              delta: { type: "input_json_delta", partial_json: JSON.stringify({ path: reply.readPath }) },
+            };
+      const event = (type: string, rest: Record<string, unknown>) => ({
+        event: type,
+        data: { type, ...rest },
+      });
+      const usage = { input_tokens: 10, output_tokens: 1 };
+      return sse([
+        event("message_start", {
+          message: { id: "m", type: "message", role: "assistant", content: [], usage },
+        }),
+        event("content_block_start", { index: 0, content_block: block.start }),
+        event("content_block_delta", { index: 0, delta: block.delta }),
+        event("content_block_stop", { index: 0 }),
+        event("message_delta", {
+          delta: { stop_reason: "text" in reply ? "end_turn" : "tool_use", stop_sequence: null },
+          usage: { output_tokens: 5 },
+        }),
+        event("message_stop", {}),
+      ]);
+    },
+  },
+  google: {
+    route: "/google/v1beta/models/m:streamGenerateContent",
+    seen(req: Request, body: Body): Seen {
+      const contents = (body.contents ?? []) as Msg[];
+      const tools = (body.tools ?? []) as Array<{ functionDeclarations?: Array<{ name: string }> }>;
+      const isResult = (m: Msg | undefined) => blocks(m).some((p) => "functionResponse" in p);
+      return {
+        auth: new URL(req.url).searchParams.get("key"),
+        offersRead: tools.some((t) => t.functionDeclarations?.some((f) => f.name === "read") === true),
+        lastIsToolResult: isResult(contents.at(-1)),
+        hadToolResult: contents.some(isResult),
+        history: JSON.stringify(contents),
+      };
+    },
+    reply(reply: Reply): Response {
+      const part =
+        "text" in reply
+          ? { text: reply.text }
+          : { functionCall: { name: "read", args: { path: reply.readPath } } };
+      return sse([
+        {
+          data: {
+            candidates: [{ content: { parts: [part], role: "model" }, finishReason: "STOP", index: 0 }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+          },
+        },
+      ]);
+    },
+  },
+};
+type Family = keyof typeof wire;
+const families = Object.keys(wire) as Family[];
+const seen: Record<Family, Seen[]> = { openai: [], anthropic: [], google: [] };
+
+// Model stand-in: asks for `read` once, then repeats what the tool returned.
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   async fetch(request) {
-    const body = (await request.json()) as ChatRequest;
-    requests.push({ auth: request.headers.get("authorization"), body });
-    const last = body.messages.at(-1);
-    if (!body.tools?.length) return say("ok");
-    if (last?.role === "tool") return say(`saw: ${String(last.content)}`);
-    if (body.messages.some((m) => m.role === "tool")) return say("second turn");
-    const call = { index: 0, id: "call_1", type: "function", function: { name: "read", arguments: "" } };
-    return sse([
-      chunk({ role: "assistant", content: "" }),
-      chunk({ tool_calls: [call] }),
-      chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: "note.txt" }) } }] }),
-      chunk({}, "tool_calls"),
-    ]);
+    const path = new URL(request.url).pathname;
+    const family = families.find((f) => wire[f].route === path);
+    if (!family) return new Response(`no such route: ${path}`, { status: 404 });
+    const view = wire[family].seen(request, (await request.json()) as Body);
+    seen[family].push(view);
+    if (!view.offersRead) return wire[family].reply({ text: "ok" });
+    if (view.lastIsToolResult) {
+      return wire[family].reply({ text: `saw: ${view.history.includes(secret) ? secret : "nothing"}` });
+    }
+    if (view.hadToolResult) return wire[family].reply({ text: "second turn" });
+    return wire[family].reply({ readPath: "note.txt" });
   },
 });
 
 const home = mkdtempSync(join(tmpdir(), "agency-e2e-home-"));
 const workspace = mkdtempSync(join(tmpdir(), "agency-e2e-ws-"));
+const origin = `http://127.0.0.1:${server.port}`;
+const models = { m: { contextWindow: 32_000, maxOutputTokens: 1_000 } };
 mkdirSync(join(home, "config"), { recursive: true });
 writeFileSync(
   join(home, "config", "config.jsonc"),
   JSON.stringify({
     provider: {
-      fake: {
-        baseUrl: `http://127.0.0.1:${server.port}/v1`,
-        apiKey: "e2e-key",
-        models: { m: { contextWindow: 32_000, maxOutputTokens: 1_000 } },
-      },
+      "fake-openai": { baseUrl: `${origin}/openai/v1`, apiKey: KEY, models },
+      "fake-anthropic": { family: "anthropic", baseUrl: `${origin}/anthropic/v1`, apiKey: KEY, models },
+      "fake-google": { family: "google", baseUrl: `${origin}/google/v1beta`, apiKey: KEY, models },
     },
   }),
 );
@@ -79,7 +193,7 @@ for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env
 env.PATH = process.platform === "win32" ? `${systemRoot}\\System32;${systemRoot}` : "/usr/bin:/bin";
 
 async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([...cli, ...args, "--model", "fake/m", "--workspace", workspace], {
+  const proc = Bun.spawn([...cli, ...args, "--workspace", workspace], {
     env,
     stdout: "pipe",
     stderr: "pipe",
@@ -93,26 +207,35 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
 }
 
 try {
-  const first = await run(["-p", "read note.txt", "--session", "e2e"]);
-  assert(first.code === 0, `first turn exits 0, got ${first.code}: ${first.stderr}`);
-  assert(
-    first.stdout.includes(secret),
-    `stdout carries the file content the read tool returned: ${first.stdout}`,
-  );
-  const withTools = requests.find((r) => r.body.tools?.length);
-  assert(withTools?.auth === "Bearer e2e-key", "the configured key reaches the provider");
-  assert(withTools?.body.tools?.some((t) => t.function.name === "read") === true, "the read tool is offered");
+  for (const family of families) {
+    const target = ["--model", `fake-${family}/m`];
+    const first = await run(["-p", "read note.txt", "--session", `e2e-${family}`, ...target]);
+    assert(first.code === 0, `${family}: first turn exits 0, got ${first.code}: ${first.stderr}`);
+    assert(
+      first.stdout.includes(secret),
+      `${family}: stdout carries what the read tool returned: ${first.stdout}`,
+    );
+    assert(seen[family].length > 0, `${family}: the request reached the configured baseUrl`);
+    assert(
+      seen[family].every((r) => r.auth === KEY),
+      `${family}: the configured key reaches the provider`,
+    );
 
-  const second = await run(["-p", "again", "--continue"]);
-  assert(second.code === 0, `resumed turn exits 0, got ${second.code}: ${second.stderr}`);
-  assert(second.stdout.includes("second turn"), `resumed turn prints the reply: ${second.stdout}`);
-  const resumed = JSON.stringify(requests.at(-1)?.body.messages);
-  assert(
-    resumed.includes("read note.txt") && resumed.includes(secret),
-    "the resumed request carries the first turn",
+    const second = await run(["-p", "again", "--continue", ...target]);
+    assert(second.code === 0, `${family}: resumed turn exits 0, got ${second.code}: ${second.stderr}`);
+    assert(
+      second.stdout.includes("second turn"),
+      `${family}: resumed turn prints the reply: ${second.stdout}`,
+    );
+    const resumed = seen[family].at(-1)?.history ?? "";
+    assert(
+      resumed.includes("read note.txt") && resumed.includes(secret),
+      `${family}: the resumed request carries the first turn`,
+    );
+  }
+  console.log(
+    `e2e-cli: ${binary ? "compiled binary" : "source"}: tool turn and session resume green on ${families.join(", ")}`,
   );
-
-  console.log(`e2e-cli: ${binary ? "compiled binary" : "source"}: tool turn and session resume green`);
 } finally {
   const instances = join(home, "data", "instances");
   for (const file of readdirSync(instances).filter((f) => f.endsWith(".json"))) {

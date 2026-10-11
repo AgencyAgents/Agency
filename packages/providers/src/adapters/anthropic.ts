@@ -6,7 +6,7 @@ import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
 const API_VERSION = "2023-06-01";
-const BASE_URL = "https://api.anthropic.com/v1/messages";
+const BASE_URL = "https://api.anthropic.com/v1";
 
 /** Anthropic's `thinking.budget_tokens` per unified level. `off` omits the block entirely. */
 const THINKING_BUDGET: Record<Exclude<ThinkingLevel, "off">, number> = {
@@ -174,12 +174,13 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
 }
 
 async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
-  const res = await http.fetch(BASE_URL, {
+  const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/messages`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-api-key": request.apiKey,
       "anthropic-version": API_VERSION,
+      ...request.headers,
     },
     body: JSON.stringify(buildRequestBody(request)),
     signal: request.signal,

@@ -10,7 +10,7 @@ import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
-const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 /**
  * Gemini's thinkingBudget is a raw token count, with -1 meaning "let the model
@@ -124,9 +124,9 @@ async function explicitPrefixCache(
     request.cachePolicy?.sharedPrefixTtlSeconds ??
     SHARED_PREFIX_TTL_SECONDS;
   try {
-    const res = await http.fetch(`${BASE_URL.replace("/models", "")}/cachedContents?key=${request.apiKey}`, {
+    const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/cachedContents?key=${request.apiKey}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...request.headers },
       body: JSON.stringify({
         model: `models/${request.model}`,
         systemInstruction: { parts: [{ text: stable }] },
@@ -223,10 +223,10 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     if (cachedContent && dynamic) dynamicSystem = dynamic;
     else if (!cachedContent) dynamicSystem = [stable, dynamic].filter(Boolean).join("\n\n") || undefined;
   }
-  const url = `${BASE_URL}/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
+  const url = `${request.baseUrl ?? BASE_URL}/models/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
   const res = await http.fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...request.headers },
     body: JSON.stringify(
       buildRequestBody(request, cachedContent ? { cachedContent, systemText: dynamicSystem } : {}),
     ),

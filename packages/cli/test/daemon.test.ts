@@ -957,6 +957,37 @@ describe("resolveAdapter", () => {
     expect(resolveAdapter("anthropic", { anthropic: { family: "anthropic" } }).family).toBe("anthropic");
   });
 
+  test("a native-family provider sends its key to its configured baseUrl, with its headers", async () => {
+    const sent: Array<{ url: string; headers: Record<string, string> }> = [];
+    const http: HttpClient = {
+      fetch: async (url, init) => {
+        sent.push({ url: String(url), headers: init?.headers as Record<string, string> });
+        return new Response("refused", { status: 400 });
+      },
+    };
+    for (const family of ["anthropic", "openai", "google"] as const) {
+      const adapter = resolveAdapter("gateway", {
+        gateway: { family, baseUrl: "http://gateway.test/base", headers: { "x-team": "core" } },
+      });
+      const stream = adapter.stream({ model: "m", apiKey: "gateway-key", messages: [], maxTokens: 16 }, http);
+      await (async () => {
+        for await (const _ of stream) break;
+      })().catch(() => {});
+    }
+    expect(sent.map((call) => call.url.split("?")[0])).toEqual([
+      "http://gateway.test/base/messages",
+      "http://gateway.test/base/chat/completions",
+      "http://gateway.test/base/models/m:streamGenerateContent",
+    ]);
+    expect(sent.every((call) => call.headers["x-team"] === "core")).toBe(true);
+  });
+
+  test("a builtin id keeps its native adapter when its config entry only holds a key", () => {
+    for (const id of ["anthropic", "openai", "google"]) {
+      expect(resolveAdapter(id, { [id]: { apiKey: "k" } }).family).toBe(id);
+    }
+  });
+
   test("a config openai-compatible provider without any baseUrl throws", () => {
     expect(() => resolveAdapter("my-gateway", { "my-gateway": {} })).toThrow(/baseUrl/);
   });

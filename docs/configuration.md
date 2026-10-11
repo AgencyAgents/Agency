@@ -76,7 +76,7 @@ Worktree isolation: agents with write capabilities get `.agency/worktrees/<handl
 
 ### ProviderConfig (`provider.<id>`)
 
-`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default `openai-compatible` for config-defined providers), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
+`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default: the native family for the ids `anthropic`, `openai` and `google`, otherwise `openai-compatible`; with a native family, `baseUrl` replaces the public endpoint up to the version segment, for example `https://gateway.example/v1` for Anthropic and OpenAI or `https://gateway.example/v1beta` for Google, and `headers` are sent with each request), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
 
 ### OAuth (`provider.<id>.oauth`)
 
