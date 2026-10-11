@@ -89,6 +89,17 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   and could print its notice into `--format json` output. `checkStale` now
   asks at most once a day, prints on stderr, and honours
   `AGENCY_NO_UPDATE_CHECK`.
+- **Interrupted turns**: a turn that stopped before its tool calls ran (stream
+  drop, output limit, cancel) left those calls with no result, and a provider
+  rejects every later request on such a session. The loop now answers them
+  with an error result. A stream drop reports its cause: `error` in the turn
+  result, one line on stderr in the CLI.
+- **Failed turns**: a session turn that failed after some tool steps dropped
+  those steps. `session_send` now keeps them, so the next turn sees work that
+  is already on disk.
+- **RPC on Windows**: a malformed frame destroyed the socket inside its own
+  data callback, and Bun crashed with a segmentation fault some time later.
+  The destroy now runs after the callback returns.
 - **Provider endpoints**: a configured provider's `baseUrl` and `headers` now
   apply to the `anthropic` and `google` families too. Before, a custom
   provider with `family: "anthropic"` sent its key to the vendor host. A
@@ -97,6 +108,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Test isolation**: the suite wrote into the real user data directory.
   `AGENCY_HOME` now roots config, data and cache on every platform, and a
   test preload sets it.
+- **CI triggers**: CI runs on a push to `master` and on manual dispatch only.
 - **CI reliability**: `.github/workflows/ci.yml` hardened with cross-platform
   test isolation, deterministic barrier timing in parallel tests, macOS
   tmpdir canonicalization, and PowerShell DPAPI import fix for Windows
