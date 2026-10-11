@@ -106,6 +106,7 @@ export interface ParsedArgv {
   oauth: boolean;
   device: boolean;
   overwrite: boolean;
+  rollback: boolean;
   images: string[];
   continueLast: boolean;
   session: string | undefined;
@@ -175,6 +176,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     device: false,
     images: [],
     overwrite: false,
+    rollback: false,
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
@@ -272,6 +274,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--overwrite":
         parsed.overwrite = true;
+        break;
+      case "--rollback":
+        parsed.rollback = true;
         break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
@@ -1028,9 +1033,8 @@ Subcommands:
       }
       throw new Error(t("cli.error.unknown_command", { command: `daemon ${parsed.subcommand ?? "(none)"}` }));
     case "update": {
-      const rollback = parsed.args.includes("--rollback");
       const { runUpdate } = await import("./update.ts");
-      const msg = await runUpdate({ currentVersion: VERSION, rollback });
+      const msg = await runUpdate({ currentVersion: VERSION, rollback: parsed.rollback });
       out(msg);
       return 0;
     }

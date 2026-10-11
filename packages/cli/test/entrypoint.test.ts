@@ -123,6 +123,11 @@ describe("parseArgv", () => {
     expect(parsed.retention).toEqual({ maxAgeDays: 30, maxTotalBytes: 500 * 1024 * 1024 });
   });
 
+  test("update takes --rollback, as the help text and the docs say", () => {
+    expect(parseArgv(["update", "--rollback"])).toMatchObject({ command: "update", rollback: true });
+    expect(parseArgv(["update"]).rollback).toBe(false);
+  });
+
   test("-- terminates flag parsing", () => {
     const parsed = parseArgv(["auth", "login", "--", "--weird-provider"]);
     expect(parsed.args).toEqual(["--weird-provider"]);
