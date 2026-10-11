@@ -96,6 +96,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Thought signatures across providers**: a session that moved from one
+  provider to another (a fallback, or a new `--model`) replayed thought
+  signatures to a provider that did not issue them. Each signature now
+  records its provider, and an adapter replays only its own.
 - **Anthropic thinking budget**: the adapter sent a fixed budget for each
   thinking level. The API takes a budget of 1024 or more that is less than
   `max_tokens`, so level `high` with the default output limit of 8192 was an
