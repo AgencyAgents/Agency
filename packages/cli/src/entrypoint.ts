@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Config,
+  cacheDir,
   dataDir,
   EventBus,
   getSessionTitle,
@@ -1039,21 +1040,6 @@ export async function runEntrypoint(
 ): Promise<number> {
   const out = deps.out ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.err ?? ((line: string) => process.stderr.write(`${line}\n`));
-  if (!argv.includes("--help") && !argv.includes("-h") && !argv.includes("--version")) {
-    try {
-      const mod = await import("./update.ts");
-      mod
-        .checkStale(VERSION)
-        .then((latest) => {
-          if (latest) out(`Update available: ${VERSION} -> ${latest} (run agency update)`);
-        })
-        .catch(() => {
-          /* best-effort update check: network failures are non-fatal */
-        });
-    } catch {
-      /* best-effort: update module may not be available */
-    }
-  }
   try {
     return await dispatch(parseArgv(argv), deps, out, err);
   } catch (error) {
@@ -1062,9 +1048,26 @@ export async function runEntrypoint(
   }
 }
 
+/** Real CLI process only: tests call runEntrypoint and must reach neither the network nor the user's cache. */
+async function noteAvailableUpdate(argv: string[]): Promise<void> {
+  if (
+    process.env.AGENCY_NO_UPDATE_CHECK ||
+    argv.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))
+  ) {
+    return;
+  }
+  const { checkStale } = await import("./update.ts");
+  const latest = checkStale(VERSION, join(cacheDir(), "update-check.json"));
+  // stderr: a notice on stdout would corrupt `--format json` output.
+  if (latest)
+    process.stderr.write(`Update available: ${VERSION} -> ${latest} (run agency update)
+`);
+}
+
 if (import.meta.main) {
   if (process.argv[2] === DAEMON_COMMAND) {
     await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
   }
+  await noteAvailableUpdate(process.argv.slice(2));
   runEntrypoint().then((code) => process.exit(code));
 }

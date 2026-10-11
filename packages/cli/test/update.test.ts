@@ -21,7 +21,7 @@ import { join } from "node:path";
 
 // We test the exported functions by importing them. verifySignature is private,
 // so we test it indirectly through the full flow with mocked HTTP responses.
-import { runUpdate, verifySignature } from "../src/update.ts";
+import { checkStale, runUpdate, verifySignature } from "../src/update.ts";
 import { getUpdatePublicKey, UPDATE_SPKI_DER_LEN } from "../src/update-public-key.ts";
 
 /**
@@ -485,3 +485,52 @@ function dirname(p: string): string {
   const idx = p.lastIndexOf(sep);
   return idx === -1 ? "." : p.slice(0, idx);
 }
+
+describe("checkStale", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const release = (tag: string) => {
+    let calls = 0;
+    const fetcher = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ tag_name: tag }));
+    }) as unknown as typeof fetch;
+    return { fetcher, calls: () => calls };
+  };
+
+  test("asks GitHub once a day and answers from the stamp in between", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-update-stamp-"));
+    const stamp = join(dir, "cache", "update-check.json");
+    const { fetcher, calls } = release("v0.2.0");
+    try {
+      expect(checkStale("0.1.0", stamp, fetcher, 1_000_000)).toBeUndefined();
+      await Bun.sleep(20);
+      expect(calls()).toBe(1);
+
+      expect(checkStale("0.1.0", stamp, fetcher, 1_000_000 + DAY - 1)).toBe("0.2.0");
+      expect(checkStale("0.2.0", stamp, fetcher, 1_000_000 + DAY - 1)).toBeUndefined();
+      expect(calls()).toBe(1);
+
+      checkStale("0.1.0", stamp, fetcher, 1_000_000 + DAY);
+      expect(calls()).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a command that exits before the answer still spends the day's one request", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-update-stamp-"));
+    const stamp = join(dir, "update-check.json");
+    let calls = 0;
+    const never = (() => {
+      calls += 1;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    try {
+      checkStale("0.1.0", stamp, never, 5_000_000);
+      checkStale("0.1.0", stamp, never, 5_000_001);
+      expect(calls).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

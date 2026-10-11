@@ -48,7 +48,7 @@ One `Redactor` owns every secret. `registerSecret` is called for config `apiKey`
 
 ### Network
 
-Provider requests go through a single `HttpClient` (`@agency/net`) with proxy, custom CA (`resolveCa` with a module-level file-content cache), timeouts, and offline-failure handling. No other network call is made during a turn except the provider request and optional `mcpServers` HTTP transports.
+Provider requests go through a single `HttpClient` (`@agency/net`) with proxy, custom CA (`resolveCa` with a module-level file-content cache), timeouts, and offline-failure handling. No other network call is made during a turn except the provider request and optional `mcpServers` HTTP transports. Outside a turn there are two more calls. `providers_list` and `agency onboard` fetch the model catalog from `MODELS_DEV_URL`. The CLI asks the GitHub releases API for a newer version at most once a day (`checkStale`, stamp in `cacheDir()/update-check.json`) and prints the notice on stderr; set `AGENCY_NO_UPDATE_CHECK` to turn it off.
 
 ### What is never collected
 
