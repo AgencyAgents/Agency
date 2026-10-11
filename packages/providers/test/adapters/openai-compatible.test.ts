@@ -221,7 +221,7 @@ describe("createOpenAiCompatibleAdapter", () => {
   });
 
   /** A stream of chat completion chunks, one per delta, the last one with the finish reason. */
-  function streamOf(deltas: unknown[], finishReason: string): HttpClient {
+  function streamOf(deltas: unknown[], finishReason: string | null): HttpClient {
     const frames = deltas.map((delta, i) => ({
       choices: [{ delta, finish_reason: i === deltas.length - 1 ? finishReason : null }],
     }));
@@ -239,6 +239,23 @@ describe("createOpenAiCompatibleAdapter", () => {
 
     const events = await collect(adapter.stream(baseRequest, http));
     expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "tool_use" });
+  });
+
+  test("a stream that ends with no finish reason still closes its open tool call", async () => {
+    const http = streamOf(
+      [{ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: '{"path":"a"}' } }] }],
+      null,
+    );
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_call_start",
+      "tool_call_delta",
+      "tool_call_end",
+      "message_stop",
+    ]);
+    expect(events.at(-1)).toMatchObject({ stopReason: "tool_use" });
   });
 
   test("a tool call with no id still runs: the adapter gives it one", async () => {

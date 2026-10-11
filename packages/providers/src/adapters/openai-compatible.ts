@@ -186,6 +186,7 @@ async function* streamRaw(
     cachedInputTokens?: number;
   } = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
+  let finished = false;
 
   for await (const frame of parseSse(res.body)) {
     if (frame.data === "[DONE]") continue;
@@ -265,9 +266,13 @@ async function* streamRaw(
 
     if (choice.finish_reason) {
       stopReason = FINISH_REASON[choice.finish_reason] ?? "end_turn";
+      finished = true;
       for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
     }
   }
+
+  // No finish reason arrived: the open calls still close, so their arguments are checked and answered.
+  if (!finished) for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
 
   // Some servers send a tool call and then finish with "stop": the calls decide, or the loop would not run them.
   if (toolCallIdByIndex.size > 0 && stopReason === "end_turn") stopReason = "tool_use";
