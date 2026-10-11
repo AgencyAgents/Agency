@@ -128,10 +128,29 @@ describe("anthropicAdapter", () => {
       },
     };
 
-    await collect(anthropicAdapter.stream({ ...baseRequest, thinkingLevel: "high" }, http));
+    await collect(anthropicAdapter.stream({ ...baseRequest, maxTokens: 32000, thinkingLevel: "high" }, http));
 
     const body = JSON.parse(capturedBody!);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
+  });
+
+  test("the thinking budget stays inside the limits of the API: at least 1024 and less than max_tokens", async () => {
+    const thinkingFor = async (maxTokens: number): Promise<unknown> => {
+      let captured = "";
+      const http: HttpClient = {
+        fetch: async (_url, init) => {
+          captured = init?.body as string;
+          return sseResponse("");
+        },
+      };
+      await collect(anthropicAdapter.stream({ ...baseRequest, maxTokens, thinkingLevel: "high" }, http));
+      return JSON.parse(captured).thinking;
+    };
+
+    // 8192 is the default output limit of a model that is not in the catalog, and the budget of "high".
+    expect(await thinkingFor(8192)).toEqual({ type: "enabled", budget_tokens: 4096 });
+    // No budget of 1024 or more fits: the request goes out with no thinking, not as a sure 400.
+    expect(await thinkingFor(1024)).toBeUndefined();
   });
 
   test("omits the thinking block entirely when the level is off", async () => {

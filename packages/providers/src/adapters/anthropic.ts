@@ -146,7 +146,9 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   if (request.temperature !== undefined) body.temperature = request.temperature;
 
   if (request.thinkingLevel && request.thinkingLevel !== "off") {
-    body.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET[request.thinkingLevel] };
+    // The API takes a budget of 1024 or more that is less than max_tokens. Half of max_tokens leaves room for the answer.
+    const budget = Math.min(THINKING_BUDGET[request.thinkingLevel], Math.floor(request.maxTokens / 2));
+    if (budget >= 1024) body.thinking = { type: "enabled", budget_tokens: budget };
   }
 
   return body;
