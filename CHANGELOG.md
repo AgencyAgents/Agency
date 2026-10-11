@@ -63,6 +63,40 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Key in error text**: a failed request's error showed the full address.
+  For Gemini the address held the API key, so the key went to stderr, logs
+  and the session. The error now shows the address without its query and
+  login (`packages/net/src/http.ts`), and the Gemini adapter sends the key in
+  the `x-goog-api-key` header.
+- **Gemini request format**, from Google's API documentation and not
+  confirmed against the live API. A request that used a cache also sent a
+  system instruction, which the API rejects: the dynamic part of the prompt
+  now leads the contents. A tool schema outside the `parameters` subset (an
+  MCP server's schema with more JSON Schema keywords or a list of types) made
+  the API reject the whole request: such a schema now goes in
+  `parametersJsonSchema`. Thinking level `off` sent budget 0 to Gemini 2.5
+  Pro, which cannot turn thinking off: it now gets its lowest budget. A set
+  thinking level now asks for thought summaries (`includeThoughts`).
+- **Gemini stop reasons**: a blocked prompt (`promptFeedback.blockReason`)
+  ended as an empty reply and is now a refusal. A finish reason that is not a
+  normal stop, also one that the API adds later, was read as a complete reply
+  and is now an error.
+- **Reply that the provider ended with an error**: a turn with text and stop
+  reason `error` made the CLI exit with code 1 and no message. The turn now
+  carries the error `provider_stop`.
+- **Release without the update key**: the release job stopped at the merge of
+  the signed checksum fragments when `AGENCY_UPDATE_PRIVATE_KEY` was not set,
+  so no release came out. It now publishes with a warning, and
+  `agency update` refuses that release as before.
+- **CI and release test step**: the release workflow ran `bun test`, one
+  process for all tests, which does not finish on Windows. The CI test step
+  had several commands, and a Windows runner reports only the last command's
+  exit code, so a failed shard passed. No shard ran `packages/eval`. Both
+  workflows now run one command, `bun run test:ci`.
+- **Install on macOS**: `scripts/install.sh` verified the download with
+  the sha256sum tool, which macOS does not have, so the install stopped with
+  "checksum mismatch". It now uses shasum when sha256sum is absent
+  (`scripts/install.test.ts`).
 - **First run**: `agency -p` failed with `ENOENT` on a machine with no data
   directory, because the daemon spawn lock was created before its directory
   (`ensureDaemon` in `packages/rpc/src/instance.ts`).

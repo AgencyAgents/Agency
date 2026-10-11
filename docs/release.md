@@ -13,7 +13,7 @@ bun install --frozen-lockfile
 bun run lint
 bun run typecheck
 bun run typecheck:test
-bun test
+bun run test:ci                           # the CI shards; one `bun test` process for all tests does not finish on Windows
 
 bun scripts/build.ts --targets bun-linux-x64,bun-darwin-arm64 --version 0.1.0 --outdir dist
 bun scripts/build.ts --max-size-mb 100        # default budget: 100 MB (Bun ~90 MB runtime floor on Windows + ~1 MB app)
@@ -60,17 +60,17 @@ Release artifacts carry detached ed25519 signatures so `agency update` can verif
 
 ## CI
 
-- `CI` (`.github/workflows/ci.yml`): matrix `ubuntu/macos/windows`, Bun 1.4.0, steps `lint` / `typecheck` / `typecheck:test` / `test` (20 min timeout). Runs on a push to `master` and on manual dispatch only; stale-run cancellation.
+- `CI` (`.github/workflows/ci.yml`): matrix `ubuntu/macos/windows`, Bun 1.4.0, steps `lint` / `typecheck` / `typecheck:test` / `test:ci` (20 min timeout), then the end to end run through the compiled binary. Runs on a push to `master` and on manual dispatch only; stale-run cancellation.
 - `Perf` budgets: blocking CI job runs `scripts/perf-check.ts` (cold start, idle RSS, zero-CPU-at-idle; single sample, generous thresholds; skips when the binary is absent).
-- `Release` (`.github/workflows/release.yml`): triggered on `v*` tags and `workflow_dispatch` (`dry_run` flag). Matrix builds on three runners for the five targets, then lint/typecheck/test, derives `VERSION` from the tag or `package.json`, `bun scripts/build.ts`, per-platform signing (conditional on secrets), ed25519 signing via `scripts/sign-release.ts` (conditional on `AGENCY_UPDATE_PRIVATE_KEY`), and upload of `dist/agency-*` plus `dist/checksums-signed-*.txt` artifacts. A `sbom` job builds `dist/agency.cdx.json` in parallel. The `release` job (only on tag push) downloads and merges artifacts, merges the signed-checksum fragments into `checksums-signed.txt`, runs `sha256sum` over install payloads into `checksums.txt`, and publishes `gh release create` with binaries, `.sig` files, both checksum manifests, and `agency.cdx.json`.
+- `Release` (`.github/workflows/release.yml`): triggered on `v*` tags and `workflow_dispatch` (`dry_run` flag). Matrix builds on three runners for the five targets, then lint/typecheck/`test:ci`, derives `VERSION` from the tag or `package.json`, `bun scripts/build.ts`, per-platform signing (conditional on secrets), ed25519 signing via `scripts/sign-release.ts` (conditional on `AGENCY_UPDATE_PRIVATE_KEY`), and upload of `dist/agency-*` plus `dist/checksums-signed-*.txt` artifacts. A `sbom` job builds `dist/agency.cdx.json` in parallel. The `release` job (only on tag push) downloads and merges artifacts, merges the signed-checksum fragments into `checksums-signed.txt`, runs `sha256sum` over install payloads into `checksums.txt`, and publishes `gh release create` with binaries, `.sig` files, both checksum manifests, and `agency.cdx.json`.
 
 ## Install verification
 
-Both `scripts/install.sh` (macOS/Linux, `sha256sum -c --strict`) and `scripts/install.ps1` (Windows, `Get-FileHash`) download `checksums.txt` alongside the asset and fail closed on a missing or mismatched entry. `AGENCY_VERSION` and `AGENCY_INSTALL_DIR` override the version and destination.
+Both `scripts/install.sh` (macOS/Linux, `sha256sum`, or `shasum -a 256` where that is absent) and `scripts/install.ps1` (Windows, `Get-FileHash`) download `checksums.txt` alongside the asset and fail closed on a missing or mismatched entry. `AGENCY_VERSION` and `AGENCY_INSTALL_DIR` override the version and destination.
 
 ## What to check before tagging
 
 1. `CHANGELOG.md` updated under `[Unreleased]` and the new version section.
-2. `bun run lint && bun run typecheck && bun test` green on all platforms (allowlisted catalog/grep flakes are documented in `learnings.md`).
+2. `bun run lint && bun run typecheck && bun run test:ci` green on all platforms (allowlisted catalog/grep flakes are documented in `learnings.md`).
 3. `bun scripts/build.ts` within budget and `bun scripts/sbom.ts --reproducible` byte-stable.
 4. `scripts/perf-check.ts` within budget locally (or noted as non-blocking in CI).
