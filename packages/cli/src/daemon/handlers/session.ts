@@ -195,10 +195,20 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires userText", {
         source: "session",
       });
-    const turn = (sendQueues.get(p.sessionId) ?? Promise.resolve()).then(() => sendTurn(p, context));
+    // Owned while it waits: a disconnect removes the owner, and a turn with no owner does not start.
+    const turnId = p.turnId ?? randomUUID();
+    ctx.turnOwners.set(turnId, context.clientId);
+    const turn = (sendQueues.get(p.sessionId) ?? Promise.resolve()).then(() => {
+      if (!ctx.turnOwners.has(turnId))
+        throw new AgencyError(ErrorCode.INTERNAL, "the client left before its turn started", {
+          source: "session",
+        });
+      return sendTurn({ ...p, turnId }, context);
+    });
     const settled = turn.catch(() => {});
     sendQueues.set(p.sessionId, settled);
     void settled.then(() => {
+      ctx.turnOwners.delete(turnId);
       if (sendQueues.get(p.sessionId) === settled) sendQueues.delete(p.sessionId);
     });
     return turn;

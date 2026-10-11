@@ -169,6 +169,51 @@ describe("compact-and-retry branch", () => {
     expect(stored).toContain("done after compaction");
   }, 15000);
 
+  test("a send that waits behind another turn does not run after its client has left", async () => {
+    const ws = tmp("agency-queue-ws-");
+    const sessionsDir = tmp("agency-queue-sess-");
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prompts: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        prompts.push(JSON.stringify(request.messages.at(-1)?.content));
+        if (prompts.length === 1) await held;
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const first = await daemon(ws, adapter, sessionsDir);
+    const port = daemons.at(-1)?.server.port as number;
+    const second = await connectToDaemon(port, "127.0.0.1", { token: daemons.at(-1)?.server.token });
+    const send = (client: DaemonClient, userText: string) =>
+      client.call("session_send", {
+        sessionId: "q1",
+        provider: "anthropic",
+        model: "m",
+        systemPrompt: "sys",
+        userText,
+      });
+
+    const running = send(first, "first");
+    const deadline = Date.now() + 10_000;
+    while (prompts.length < 1 && Date.now() < deadline) await Bun.sleep(10);
+    const waiting = send(second, "second").catch(() => "rejected");
+    await Bun.sleep(100);
+    await second.close();
+    await Bun.sleep(100);
+    release();
+    await running;
+    await waiting;
+    await Bun.sleep(300);
+
+    expect(prompts).toHaveLength(1);
+    expect(JSON.stringify(new SessionStore(sessionsDir).load("q1"))).not.toContain("second");
+  }, 20000);
+
   test("retry events: scheduler onRetry flows to LoopEvent retry event via runSessionTurn", async () => {
     const ws = tmp("agency-retry-ws-");
     const sessionsDir = tmp("agency-retry-sess-");
