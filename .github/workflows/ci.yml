@@ -57,6 +57,11 @@ jobs:
       # revisit when the Bun pin moves past the upstream fix.
       - name: Test (rpc shard, per-file)
         run: bun scripts/run-test-file.ts --timeout-ms 60000 --retries 2 packages/rpc/test scripts
+      - name: End to end through the compiled binary
+        shell: bash
+        run: |
+          bun run build:bin
+          bun scripts/e2e-cli.ts dist/agency-*
       - name: Tests left the real user dirs untouched
         run: bun scripts/assert-clean-user-dirs.ts
 
