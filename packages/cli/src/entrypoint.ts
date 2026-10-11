@@ -339,6 +339,32 @@ async function validateTurnKey(provider: string, config: Config, deps: Entrypoin
   if (key === undefined) throw new Error(t("cli.error.no_key", { provider }));
 }
 
+/** One row per known provider. `auth list` and the bare-run summary share it so they cannot disagree. */
+async function providerConnections(
+  config: Config,
+  env: NodeJS.ProcessEnv,
+  keychain: KeychainBackend,
+): Promise<Array<{ provider: string; connected: boolean }>> {
+  const ids = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])].sort();
+  const rows: Array<{ provider: string; connected: boolean }> = [];
+  for (const id of ids) {
+    const providerConfig = config.provider[id];
+    const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
+    const key =
+      fromDeclaredEnv ??
+      (await resolveApiKey({
+        provider: id,
+        env,
+        keychain,
+        config: providerConfig?.apiKey,
+        oauthClientId: providerConfig?.oauth?.clientId,
+        oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+      }));
+    rows.push({ provider: id, connected: key !== undefined });
+  }
+  return rows;
+}
+
 /** Assistant text blocks joined by newlines: what `-p` prints in text mode. */
 function assistantText(messages: Message[]): string {
   const parts: string[] = [];
@@ -752,24 +778,7 @@ async function authCmd(
   }
 
   if (parsed.subcommand === "list") {
-    const config = loadConfig({ globalDir: deps.configDir, env });
-    const ids = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])].sort();
-    const rows: Array<{ provider: string; connected: boolean }> = [];
-    for (const id of ids) {
-      const providerConfig = config.provider[id];
-      const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-      const key =
-        fromDeclaredEnv ??
-        (await resolveApiKey({
-          provider: id,
-          env,
-          keychain,
-          config: providerConfig?.apiKey,
-          oauthClientId: providerConfig?.oauth?.clientId,
-          oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-        }));
-      rows.push({ provider: id, connected: key !== undefined });
-    }
+    const rows = await providerConnections(loadConfig({ globalDir: deps.configDir, env }), env, keychain);
     if (parsed.format === "json") {
       out(JSON.stringify(Object.fromEntries(rows.map((r) => [r.provider, r.connected])), null, 2));
     } else {
@@ -923,8 +932,10 @@ async function dispatch(
       const ref = parseModelRef(config.model ?? "");
       const modelStr = ref ? `${ref.provider}/${ref.model}` : t("cli.error.no_model");
       const providerCount = Object.keys(config.provider).length;
-      const connectedCount = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])]
-        .length;
+      const keychain = deps.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
+      const connectedCount = (await providerConnections(config, env, keychain)).filter(
+        (row) => row.connected,
+      ).length;
       const store = new SessionStore(
         deps.sessionsDir ?? storagePaths(workspaceRootOf(parsed, deps), env).sessionsDir,
       );

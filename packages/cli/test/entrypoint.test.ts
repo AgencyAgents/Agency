@@ -736,9 +736,20 @@ describe("bare agency", () => {
     const text = out.join("\n");
     expect(text).toContain("Agency");
     expect(text).toContain("Model");
-    expect(text).toContain("Providers");
+    expect(text).toContain("Providers: 1 connected");
     expect(text).toContain("Sessions");
     expect(text).toContain("agency -p");
+  });
+
+  test("bare `agency` counts only providers with a resolvable key, as `auth list` does", async () => {
+    const shared = baseDeps({ env: {} });
+    const bare = capture();
+    await runEntrypoint([], { ...shared, ...bare.deps });
+    expect(bare.out.join("\n")).toContain("Providers: 0 connected");
+
+    const list = capture();
+    await runEntrypoint(["auth", "list", "--format", "json"], { ...shared, ...list.deps });
+    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual([false, false, false]);
   });
 });
 
