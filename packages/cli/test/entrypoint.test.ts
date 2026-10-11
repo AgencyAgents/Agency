@@ -521,6 +521,25 @@ describe("-p headless mode", () => {
     expect(err).toEqual(["Internal Server Error"]);
   });
 
+  test("-p - takes the prompt from stdin, and an empty stdin is an error", async () => {
+    const fake = fakeRunHeadless();
+    const { err, deps } = capture();
+    const run = (stdin: string) =>
+      runEntrypoint(["-p", "-", "--model", "openai/fake-1"], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+        stdin: async () => stdin,
+      });
+
+    expect(await run("a long prompt\nfrom a pipe\n")).toBe(0);
+    expect(fake.calls.map((call) => call.prompt)).toEqual(["a long prompt\nfrom a pipe"]);
+
+    expect(await run("  \n")).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+    expect(err.join(" ")).toContain("stdin");
+  });
+
   test("--model overrides config.model through the flags layer", async () => {
     const fake = fakeRunHeadless();
     const configDir = tempDir("agency-ep-config-");

@@ -162,6 +162,7 @@ export const en = {
     '--permission-mode must be "ask", "allow-edits", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
   "cli.error.print_with_command": "Choose either a command or -p/--print, not both.",
+  "cli.error.empty_stdin_prompt": "No prompt on stdin. -p - reads the prompt from a pipe or a file.",
   "cli.error.continue_requires_print": "--continue and --session need -p/--print to run a turn.",
   "cli.error.session_conflict": "Use either --continue or --session, not both.",
   "cli.error.no_model": "No model configured. Run `agency onboard` or pass --model provider/model.",

@@ -77,6 +77,7 @@ Commands:
 
 Options:
   -p, --print <prompt>     Run a single turn headlessly and print the result
+                           (use - to read the prompt from stdin)
   --workspace <path>       Workspace root (default: current directory)
   --model <provider/model> Model to use; overrides config.model
   --provider <id>          Provider for the model; overrides config.model's provider
@@ -125,6 +126,8 @@ export interface EntrypointDeps {
   keychain?: KeychainBackend;
   /** Reads the API key for `auth login`; default reads a hidden TTY line or piped stdin. */
   keyReader?: (prompt: string) => Promise<string>;
+  /** Overrides the stdin that `-p -` reads the prompt from (tests). */
+  stdin?: () => Promise<string>;
   /** Overrides runHeadless for one-shot -p turns (tests). */
   runHeadless?: (options: RunHeadlessOptions) => Promise<RunTurnRpcResult>;
   /** Overrides the daemon connection for session-backed -p turns (tests). */
@@ -934,7 +937,11 @@ async function dispatch(
 
   if (parsed.print !== undefined) {
     if (parsed.command !== undefined) throw new Error(t("cli.error.print_with_command"));
-    return runPrintMode(parsed, parsed.print, deps, out, err);
+    if (parsed.print !== "-") return runPrintMode(parsed, parsed.print, deps, out, err);
+    // `-p -`: a long prompt does not fit the command-line length limit, and a pipe needs no quoting.
+    const prompt = (await (deps.stdin ?? (() => Bun.stdin.text()))()).trim();
+    if (prompt.length === 0) throw new Error(t("cli.error.empty_stdin_prompt"));
+    return runPrintMode(parsed, prompt, deps, out, err);
   }
   if (parsed.continueLast || parsed.session !== undefined) {
     throw new Error(t("cli.error.continue_requires_print"));
@@ -1092,5 +1099,6 @@ if (import.meta.main) {
     await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
   }
   await noteAvailableUpdate(process.argv.slice(2));
-  runEntrypoint().then((code) => process.exit(code));
+  // Awaited: a bare promise does not hold the process open, and an empty stdin read then exits 0 with no output.
+  process.exit(await runEntrypoint());
 }
