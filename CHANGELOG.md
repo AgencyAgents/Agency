@@ -93,6 +93,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Fallback keys**: when `fallback_model` named a provider with no key, a
+  fallback sent the primary provider's key to that provider. The fallback is
+  now skipped and the original error is returned.
 - **Worker keys**: a `spawn` worker that named a model on a provider with no
   key kept the parent's key and sent it to that other provider. The worker
   now stays on the parent's provider and model.
