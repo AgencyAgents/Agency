@@ -96,6 +96,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Images from tools**: the `read` tool returned an image and said "Attached
+  image", but no adapter sent the image to the model. A model whose catalog
+  or config entry has `capabilities.vision` now gets it: inside the tool
+  result on Anthropic, and in a user message after the tool messages on
+  OpenAI-compatible providers. Other models get the text only, as before.
+  The Google adapter does not send these images yet.
 - **Gemini tool calls**: the Google adapter sent a function response under a
   made-up id as its name, with no call id and no thought signature. The
   Gemini docs say that a response must carry the call's id and its real
