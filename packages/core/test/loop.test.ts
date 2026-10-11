@@ -707,6 +707,44 @@ describe("runTurn", () => {
   });
 
   test.each([
+    ["before any content", false],
+    ["after partial content", true],
+  ])("a cancel during the model call ends the turn as cancelled, %s", async (_name, partial) => {
+    const caller = new AbortController();
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (partial) yield { type: "text_delta", text: "partial" };
+        caller.abort();
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    };
+    const errors: string[] = [];
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      signal: caller.signal,
+      onEvent: (event) => {
+        if (event.type === "error") errors.push(event.message);
+      },
+    });
+
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.error).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(calls).toBe(1);
+    expect(result.messages.map((m) => m.role)).toEqual(partial ? ["assistant"] : []);
+  });
+
+  test.each([
     ["the stream dies inside the call", undefined],
     ["the output limit cuts the turn", "max_tokens" as const],
   ])("a tool call gets an error result when %s", async (_name, stopReason) => {

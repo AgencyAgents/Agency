@@ -329,8 +329,10 @@ export async function runTurn(
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
-      stopReason = turn.stopReason;
-      salvageError = turn.error;
+      // A stream the caller cut is a cancel, not a provider failure.
+      const cut = turn.stopReason === "error" && options.signal?.aborted;
+      stopReason = cut ? "cancelled" : turn.stopReason;
+      salvageError = cut ? undefined : turn.error;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
       if (tracer && modelSpanId) {
         tracer.endSpan(modelSpanId, {
@@ -409,9 +411,15 @@ export async function runTurn(
           tracer.endSpan(modelSpanId, { status: "error" });
         } catch {}
       }
+      const calls = messages.at(-1)?.role === "assistant" ? toolCallsOf(messages.at(-1)) : [];
+      if (options.signal?.aborted) {
+        if (calls.length > 0) messages.push(unrunResults(calls, "cancelled"));
+        stopReason = "cancelled";
+        options.onEvent?.({ type: "turn_complete", stopReason, usage: { inputTokens: 0, outputTokens: 0 } });
+        break;
+      }
       endTurnError();
       emitErrorEvent(error, options.onEvent);
-      const calls = messages.at(-1)?.role === "assistant" ? toolCallsOf(messages.at(-1)) : [];
       if (calls.length > 0) messages.push(unrunResults(calls, "error"));
       if (typeof error === "object" && error !== null) failedTurns.set(error, messages);
       throw error;
@@ -889,6 +897,7 @@ async function collectTurn(
 
   const salvaged: { error?: TurnError } = {};
   const stream = withMidStreamRecovery(adapter.stream(request, http), (error) => {
+    if (request.signal?.aborted) return;
     // A stream that dies after content is a network failure unless the adapter already typed it.
     salvaged.error =
       error instanceof AgencyError

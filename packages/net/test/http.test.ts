@@ -42,6 +42,54 @@ describe("createHttpClient", () => {
     });
   });
 
+  test("a caller abort before the headers rejects as an abort, so nothing retries it as a timeout", async () => {
+    server = Bun.serve({
+      port: 0,
+      async fetch() {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        return new Response("too slow");
+      },
+    });
+    const caller = new AbortController();
+    const pending = createHttpClient({}).fetch(`http://localhost:${server.port}/`, { signal: caller.signal });
+    caller.abort();
+
+    const err = await pending.catch((e) => e);
+    expect(err).not.toBeInstanceOf(AgencyError);
+    expect((err as Error).name).toBe("AbortError");
+  });
+
+  test("a caller abort after the headers stops a body that is still streaming", async () => {
+    server = Bun.serve({
+      port: 0,
+      idleTimeout: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("first chunk"));
+            },
+          }),
+        ),
+    });
+    const caller = new AbortController();
+    const res = await createHttpClient({}).fetch(`http://localhost:${server.port}/`, {
+      signal: caller.signal,
+    });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read();
+    caller.abort();
+
+    const next = await Promise.race([
+      reader.read().then(
+        () => "more data",
+        () => "aborted",
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still open"), 2_000)),
+    ]);
+    expect(next).toBe("aborted");
+  });
+
   test("an unreachable host surfaces as a NETWORK error, not a hang", async () => {
     const client = createHttpClient({ timeoutMs: 2_000 });
 
