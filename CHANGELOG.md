@@ -80,7 +80,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Gemini stop reasons**: a blocked prompt (`promptFeedback.blockReason`)
   ended as an empty reply and is now a refusal. A finish reason that is not a
   normal stop, also one that the API adds later, was read as a complete reply
-  and is now an error.
+  and is now an error. The reason `CONTINUATION` (the reply reached the
+  per-request limit) takes the path of a reply cut at the output limit.
 - **Reply that the provider ended with an error**: a turn with text and stop
   reason `error` made the CLI exit with code 1 and no message. The turn now
   carries the error `provider_stop`.
