@@ -71,7 +71,8 @@ function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
         }
       }
       return { role: m.role === "assistant" ? "model" : "user", parts };
-    });
+    })
+    .filter((content) => content.parts.length > 0);
 }
 
 function toGeminiTools(request: ProviderRequest): Record<string, unknown>[] | undefined {

@@ -116,6 +116,32 @@ describe("googleAdapter", () => {
     });
   });
 
+  test("a message that maps to no part is left out of the request", async () => {
+    let captured = "";
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        captured = init?.body as string;
+        return sseResponse("");
+      },
+    };
+    await collect(
+      googleAdapter.stream(
+        {
+          ...baseRequest,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "first" }] },
+            { role: "assistant", content: [{ type: "thinking", text: "reasoning from another model" }] },
+            { role: "user", content: [{ type: "text", text: "second" }] },
+          ],
+        },
+        http,
+      ),
+    );
+
+    const contents = JSON.parse(captured).contents as Array<{ role: string; parts: unknown[] }>;
+    expect(contents.map((content) => content.role)).toEqual(["user", "user"]);
+  });
+
   test("maps RESOURCE_EXHAUSTED to a retryable RATE_LIMIT error even on a non-429 status", async () => {
     const http = fakeHttp(
       new Response(JSON.stringify({ error: { message: "quota exceeded", status: "RESOURCE_EXHAUSTED" } }), {
