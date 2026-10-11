@@ -106,6 +106,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   on a vision model did not send tool images, and a worker that overflowed
   folded to a 200k window, not to its own. The primary turn, the fallback
   and every worker now take these values from one function.
+- **Fallback price**: a turn that ran on `fallback_model` was recorded with
+  the name and the price of the primary model, so budgets and the cost
+  report were wrong for that turn. The cost records now use the fallback
+  model, and the result has `servedBy` with the provider and model that
+  gave the answer.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
@@ -253,6 +258,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- `provider.<id>.streamIdleMs`: the longest silence on a response stream
+  before the request is cut, for one provider. The default stays 5 minutes.
+  A llama.cpp server sends nothing while it reads the prompt. Measured
+  against llama-server b11155 on a CPU: with the default, a cold 8.7k-token
+  prompt was cut at 300 s and the retry finished from the server's cache;
+  with `streamIdleMs: 900000`, a 9.9k-token prompt that took 406 s was not
+  cut.
 - `--max-steps <n>` sets the tool step limit for one headless run, and
   `session_send` takes `maxToolIterations`. The default stays 25.
 - `-p -` reads the prompt from stdin, so a long prompt can come from a pipe
