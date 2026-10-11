@@ -48,6 +48,26 @@ describe("startDaemonServer + connectToDaemon", () => {
     await expect(client.call("boom", {})).rejects.toThrow("something broke");
   });
 
+  test("a rejected call keeps the error code the handler threw", async () => {
+    server = await startDaemonServer({
+      handlers: {
+        boom: async () => {
+          throw Object.assign(new Error("try again later"), { code: "overload" });
+        },
+      },
+    });
+    const client = await connectToDaemon(server.port);
+    clients.push(client);
+
+    let rejection: unknown;
+    try {
+      await client.call("boom", {});
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ message: "try again later", code: "overload" });
+  });
+
   test("calling an unregistered method rejects with a clear message", async () => {
     server = await startDaemonServer({ handlers: {} });
     const client = await connectToDaemon(server.port);

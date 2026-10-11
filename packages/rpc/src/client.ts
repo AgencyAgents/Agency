@@ -104,7 +104,7 @@ export async function connectToDaemon(
     lastInbound = Date.now();
     if (message.type === "response" || message.type === "response_error") {
       if (message.type === "response") pending.resolve(message.id, message.result);
-      else pending.reject(message.id, new Error(message.error.message));
+      else pending.reject(message.id, Object.assign(new Error(message.error.message), message.error));
     } else if (message.type === "event") {
       for (const listener of listeners.get(message.event) ?? []) listener(message.payload);
     }
