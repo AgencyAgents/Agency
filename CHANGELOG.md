@@ -96,6 +96,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **JSON output on failure**: with `--format json`, a run that failed printed
+  nothing on stdout. It now prints `{"error": {"code", "message"}}` there,
+  and the exit code stays 1. The RPC client now keeps the error code that
+  the daemon sends.
 - **Two runs on one session**: two sends that ran at the same time on one
   session started from the same point. The history forked and one turn was
   lost. A session now runs one turn at a time, and the second send waits.
