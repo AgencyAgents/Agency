@@ -96,6 +96,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Gemini tool calls**: the Google adapter sent a function response under a
+  made-up id as its name, with no call id and no thought signature. The
+  Gemini docs say that a response must carry the call's id and its real
+  function name, or the model returns an empty reply. The adapter now sends
+  all three and keeps the id that the model gives a call. Ids that the
+  adapter makes no longer repeat across turns.
+- **Gemini usage**: the adapter read the cached token count from a field
+  that does not exist and left thinking tokens out of the output count.
 - **Anthropic cost with prompt caching**: the Anthropic adapter reported only
   the input tokens that were not cached. The cost formula takes the cached
   part out of the input total, so the uncached part was priced at zero and
