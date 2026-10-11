@@ -1,12 +1,9 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
-/** True when running on Windows — controls whether we use attrib for read-only. */
-const isWin = process.platform === "win32";
 
 export interface WorktreeInfo {
   path: string;
@@ -83,22 +80,12 @@ export function restoreWorktreeWritable(worktreePath: string): void {
         } else {
           chmodSync(full, st.mode | 0o200);
         }
-        if (isWin) {
-          execFileSync("attrib", ["-r", full], { windowsHide: true });
-        }
       } catch {
         // Stale symlink, race, or permission — skip.
       }
     }
   };
   restoreRecursive(root);
-  if (isWin) {
-    try {
-      execFileSync("attrib", ["-r", root], { windowsHide: true });
-    } catch {
-      // best-effort: root attr is advisory, removal proceeds regardless
-    }
-  }
 }
 
 /**
@@ -146,11 +133,6 @@ export function makeWorktreeReadOnly(worktreePath: string, scratchDir: string): 
 
   // Ensure the scratch dir itself and its future contents stay writable.
   chmodSync(scratchAbs, 0o755);
-  if (isWin) {
-    // Windows: attrib -r clears the read-only attribute so the scratch dir
-    // stays writable even if a parent directory was set read-only.
-    execFileSync("attrib", ["-r", scratchAbs], { windowsHide: true });
-  }
 
   return scratchAbs;
 }
@@ -177,12 +159,7 @@ function setReadOnlyRecursive(root: string, skipPath: string): void {
         // Files: remove write bits.
         chmodSync(full, st.mode & 0o444);
       }
-      // On Windows, also set the read-only attribute explicitly via attrib +r.
-      // chmodSync on Windows translates mode bits to the read-only attribute,
-      // but attrib is more reliable for directories and nested paths.
-      if (isWin) {
-        execFileSync("attrib", ["+r", full], { windowsHide: true });
-      }
+      // chmodSync alone sets the Windows read-only attribute; an `attrib` spawn per entry cost 75 ms each.
     } catch {
       // Stale symlink, race, or permission — skip.
     }
