@@ -490,6 +490,11 @@ export async function runTurn(
       code: "empty_response",
       message: `the model returned no text (stop reason: ${stopReason})`,
     };
+  } else if (!turnError && stopReason === "error") {
+    turnError = {
+      code: "provider_stop",
+      message: "the provider ended the reply with an error: the answer is not complete",
+    };
   }
 
   endTurnOk();

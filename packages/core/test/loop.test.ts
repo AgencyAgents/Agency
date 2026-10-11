@@ -617,6 +617,28 @@ describe("runTurn", () => {
     expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
   });
 
+  test("a reply that the provider ended with an error is a turn error, also when it has text", async () => {
+    const broken: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "half an ans" };
+        yield { type: "message_stop", stopReason: "error", usage: { inputTokens: 1, outputTokens: 3 } };
+      },
+    };
+    const result = await runTurn(broken, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    expect(result.stopReason).toBe("error");
+    expect(result.error?.code).toBe("provider_stop");
+  });
+
   test("a tool result carrying images lands on the tool_result block and the event", async () => {
     const image = { type: "image" as const, mimeType: "image/png", data: "aGk=" };
     const events: unknown[] = [];
