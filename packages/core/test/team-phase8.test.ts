@@ -441,6 +441,56 @@ describe("phase 8 cheap routing on the child-turn assembly plus titles", () => {
     expect(routed?.model).toBe("cheap/m");
   });
 
+  it("a child turn that overflows folds to the context window of its own model", async () => {
+    const { Scheduler } = await import("@agency/providers");
+    const { AgencyError, ErrorCode } = await import("@agency/schema");
+    const sizes: number[] = [];
+    const outcome = await runChildTurn(
+      { http: noFetchHttp(), createTraceRecorder: () => undefined },
+      {
+        adapter: {
+          family: "fake",
+          async *stream(request) {
+            sizes.push(request.messages.length);
+            if (sizes.length === 1) {
+              throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "context full", { source: "fake" });
+            }
+            yield { type: "text_delta", text: "done" };
+            yield {
+              type: "message_stop",
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        },
+        scheduler: new Scheduler({ maxAttempts: 1 }),
+        // Eight messages of about 400 tokens each: the last four alone are above a 1000-token window.
+        session: Array.from({ length: 8 }, (_, i) => ({
+          role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+          content: [{ type: "text" as const, text: `message ${i} ${"word ".repeat(320)}` }],
+        })),
+        systemPrompt: "sys",
+        tools: [],
+        model: "small/m",
+        apiKey: "k",
+        provider: "small",
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        toolPolicy: { check: async () => "allow" as const },
+        contextWindow: 1000,
+        turnId: "t-fold",
+        sessionId: "s-fold",
+        cwd: ".",
+        taskDepth: 1,
+      },
+    );
+
+    expect(outcome.error).toBeUndefined();
+    // With the 200k default the fold keeps the last four messages plus the summary: five, still too large.
+    expect(sizes[0]).toBe(8);
+    expect(sizes[1]).toBeLessThan(5);
+  });
+
   it("title generation routes through the cheap model when offered", async () => {
     let usedModel = "";
     const title = await generateTitle("please add login", {

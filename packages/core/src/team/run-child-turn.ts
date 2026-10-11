@@ -37,6 +37,8 @@ export interface ChildTurnSpec {
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
+  contextWindow?: number;
+  vision?: boolean;
   turnId: string;
   sessionId: string;
   cwd: string;
@@ -86,6 +88,8 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       ...(spec.budget !== undefined ? { budget: spec.budget } : {}),
       ...(spec.pricePerMTok !== undefined ? { pricePerMTok: spec.pricePerMTok } : {}),
       ...(spec.maxTokensPerRequest !== undefined ? { maxTokensPerRequest: spec.maxTokensPerRequest } : {}),
+      ...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
+      ...(spec.vision !== undefined ? { vision: spec.vision } : {}),
       turnId: spec.turnId,
       sessionId: spec.sessionId,
       cwd: spec.cwd,

@@ -19,7 +19,7 @@ import { checkCostForecast } from "@agency/guard";
 import { classifyEffortFromText } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
-import { preflightDispatchEstimate, priceForModel, recordTurnCompletion } from "../costing.ts";
+import { modelRunOptions, preflightDispatchEstimate, recordTurnCompletion } from "../costing.ts";
 import {
   childKey,
   childSessionIdFor,
@@ -405,8 +405,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 identity: { type: "agent", name: a.handle },
                 capabilities: agentCaps,
                 toolPolicy: agentGate,
-                pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-                maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+                ...modelRunOptions(childModelInfo),
                 turnId: childTurnId,
                 sessionId: childSessionId,
                 cwd: options.workspaceRoot,

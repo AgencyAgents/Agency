@@ -336,6 +336,44 @@ describe("createAgentDaemon", () => {
     expect(seen).toEqual([true, undefined]);
   });
 
+  test("a spawned worker gets the vision capability of its model", async () => {
+    const seenByWorker: Array<boolean | undefined> = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const worker = (request.system ?? "").includes("ephemeral worker");
+        if (worker) seenByWorker.push(request.vision);
+        const spawned = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if (!worker && !spawned) {
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "look" }) };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({
+        provider: { anthropic: { models: { "sees-images": { capabilities: { vision: true } } } } },
+      }),
+    });
+    await client.call("run_turn", {
+      turnId: "t-worker-vision",
+      provider: "anthropic",
+      model: "sees-images",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+      sessionId: "s-worker-vision",
+    });
+
+    expect(seenByWorker).toEqual([true]);
+  }, 60_000);
+
   test("a context overflow that cannot be folded returns its cause, not a bare error", async () => {
     const { client } = await startFakeDaemon({
       adapterFor: () => ({

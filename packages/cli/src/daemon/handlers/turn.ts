@@ -14,7 +14,7 @@ import type { SessionScope } from "@agency/tools";
 import {
   assertPreflightCaps,
   estimatePreflightTurnCostUsd,
-  priceForModel,
+  modelRunOptions,
   recordTurnCompletion,
 } from "../costing.ts";
 import { assertTaskPreflightCaps } from "../task-ledger.ts";
@@ -414,10 +414,7 @@ export async function executeTurn(
                 params.thinkingLevel,
               session: params.session,
               budget: params.budget,
-              pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
-              maxTokensPerRequest: modelInfo?.maxOutputTokens,
-              contextWindow: modelInfo?.contextWindow,
-              vision: modelInfo?.capabilities.vision,
+              ...modelRunOptions(modelInfo),
               turnId: params.turnId,
               sessionId: params.sessionId,
               cwd: options.workspaceRoot,
@@ -507,10 +504,7 @@ export async function executeTurn(
                   thinkingLevel: params.thinkingLevel,
                   session: [...params.session, ...carried],
                   budget: params.budget,
-                  pricePerMTok: fallbackInfo ? priceForModel(fallbackInfo.pricing) : undefined,
-                  maxTokensPerRequest: fallbackInfo?.maxOutputTokens,
-                  contextWindow: fallbackInfo?.contextWindow,
-                  vision: fallbackInfo?.capabilities.vision,
+                  ...modelRunOptions(fallbackInfo),
                   turnId: params.turnId,
                   sessionId: params.sessionId,
                   cwd: options.workspaceRoot,

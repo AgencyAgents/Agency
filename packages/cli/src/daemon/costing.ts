@@ -5,7 +5,7 @@ import {
   estimateDispatchCost,
   estimateTurnCostUsd,
 } from "@agency/guard";
-import type { ModelPricing, Usage } from "@agency/providers";
+import type { ModelInfo, ModelPricing, Usage } from "@agency/providers";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { isUsageEntry, type SpendCaps, type SpendLedger, turnCostUsd } from "@agency/telemetry";
 import { resolveTaskId } from "./task-ledger.ts";
@@ -229,6 +229,16 @@ export function preflightDispatchEstimate(args: {
     return { refusal: gate.reason };
   }
   return { estimate };
+}
+
+/** The run options that a model's catalog entry decides. One place, so that no call site drops one. */
+export function modelRunOptions(info: ModelInfo | undefined) {
+  return {
+    pricePerMTok: info ? priceForModel(info.pricing) : undefined,
+    maxTokensPerRequest: info?.maxOutputTokens,
+    contextWindow: info?.contextWindow,
+    vision: info?.capabilities.vision,
+  };
 }
 
 export function priceForModel(pricing: ModelPricing): {

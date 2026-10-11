@@ -23,7 +23,7 @@ import {
   type SessionScope,
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
-import { priceForModel } from "../costing.ts";
+import { modelRunOptions } from "../costing.ts";
 import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
@@ -473,8 +473,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           capabilities: childCaps,
           toolPolicy: gate,
           budget: meta?.budget,
-          pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-          maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+          ...modelRunOptions(childModelInfo),
           turnId: childTurnId,
           sessionId: childSessionId,
           cwd: options.workspaceRoot,

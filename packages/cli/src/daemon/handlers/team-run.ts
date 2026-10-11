@@ -30,7 +30,7 @@ import {
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { extractFinalText, type SessionScope, TeamMcpPool } from "@agency/tools";
-import { priceForModel, teamRunUsage } from "../costing.ts";
+import { modelRunOptions, teamRunUsage } from "../costing.ts";
 import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
 import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
@@ -411,8 +411,7 @@ export async function runCompareChildTurn(
         identity: { type: "agent", name: handle },
         capabilities: agentCaps,
         toolPolicy: agentGate,
-        pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-        maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+        ...modelRunOptions(childModelInfo),
         turnId: childTurnId,
         sessionId: childSessionId,
         cwd: options.workspaceRoot,
