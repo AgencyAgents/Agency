@@ -197,7 +197,9 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     if (!store.list().includes(p.sessionId)) store.create(p.sessionId);
     const family = providers[p.provider]?.family ?? p.provider;
     const tokenizer = tokenizerFor(family);
-    const threshold = { contextWindow: p.contextWindow ?? DEFAULT_SESSION_CONTEXT_WINDOW };
+    // The model's own window, not a fixed guess: a small-window model overflows long before 200k tokens.
+    const window = p.contextWindow ?? ctx.catalogModel(p.provider, p.model)?.contextWindow;
+    const threshold = { contextWindow: window ?? DEFAULT_SESSION_CONTEXT_WINDOW };
     const summarize = (text: string): Promise<string> => Promise.resolve(summarizeTranscript(text));
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;

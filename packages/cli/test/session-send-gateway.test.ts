@@ -179,6 +179,20 @@ describe("session_send over the HTTP gateway", () => {
     );
   }, 60000);
 
+  test("auto-compaction uses the model's own context window when the caller sends none", async () => {
+    const configDir = writeConfigDir({
+      provider: { anthropic: { models: { "test-model": { contextWindow: 3000, maxOutputTokens: 500 } } } },
+    });
+    const { base, token } = await startDaemon(echoAdapter("n"), { configDir });
+    for (let i = 0; i < 12; i++) {
+      await sessionSend(base, token, { sessionId: "gw-window", userText: `fill ${i} ${"x".repeat(1200)}` });
+    }
+    const shown = await rpcCall(base, token, "session_show", { sessionId: "gw-window" });
+    expect((shown.entries as Array<{ type: string }>).some((e) => e.type === "compaction_summary")).toBe(
+      true,
+    );
+  }, 60000);
+
   test("reactive compact-and-retry recovers from provider overflow", async () => {
     let armed = false;
     let calls = 0;
