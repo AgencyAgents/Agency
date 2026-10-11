@@ -63,6 +63,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Daemon start limit**: the CLI waited 5 s for a new daemon. On a slow
+  machine the daemon needs longer (13 s or more on an emulated CPU about five
+  times slower than a laptop), so the first run failed and left a daemon
+  behind. The limit is now 30 s (`DEFAULT_SPAWN_TIMEOUT_MS`), and the message
+  says that a second run can connect.
 - **Key in error text**: a failed request's error showed the full address.
   For Gemini the address held the API key, so the key went to stderr, logs
   and the session. The error now shows the address without its query and
