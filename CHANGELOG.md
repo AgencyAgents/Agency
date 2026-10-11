@@ -110,6 +110,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   on the tools. The API documentation requires a 1-hour entry before any
   5-minute entry. The tools now take the 1-hour mark in that case. The
   request shape is tested. The live API result is not confirmed.
+- **Thinking on current Claude models**: a thinking level always sent a
+  thinking budget. The API documentation says that Claude Opus 4.7 and
+  all later models answer 400 to a budget, and that includes the default
+  models `claude-opus-5` and `claude-sonnet-5`. These models now get
+  adaptive thinking with `output_config.effort` and a thinking summary.
+  The 4.5 family and older models keep the budget. The request shape is
+  tested. The live API result is not confirmed.
 - **Worker model facts**: a worker turn (`spawn`, `dispatch`, a team run)
   did not get the context window or the vision flag of its model. A worker
   on a vision model did not send tool images, and a worker that overflowed
