@@ -195,6 +195,8 @@ async function* streamRaw(
       choices: Array<{
         delta: {
           content?: string;
+          /** The reasoning of a reasoning model on llama.cpp, DeepSeek and others. It is shown and never sent back. */
+          reasoning_content?: string;
           tool_calls?: Array<{
             index: number;
             id?: string;
@@ -226,6 +228,9 @@ async function* streamRaw(
     const choice = payload.choices[0];
     if (!choice) continue;
 
+    if (choice.delta.reasoning_content) {
+      yield { type: "thinking_delta", text: choice.delta.reasoning_content };
+    }
     if (choice.delta.content) {
       yield { type: "text_delta", text: choice.delta.content };
     }

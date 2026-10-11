@@ -295,6 +295,18 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(events).toContainEqual({ type: "tool_call_end", id });
   });
 
+  test("reasoning_content of a reasoning model becomes thinking, not a silent drop", async () => {
+    // llama-server b11155 with Qwen3 streams its reasoning in this delta field before the answer.
+    const http = streamOf([{ reasoning_content: "17 plus 25" }, { content: "42" }], "stop");
+    const adapter = createOpenAiCompatibleAdapter("local", "http://127.0.0.1:8080/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.slice(0, 2)).toEqual([
+      { type: "thinking_delta", text: "17 plus 25" },
+      { type: "text_delta", text: "42" },
+    ]);
+  });
+
   function fakeError(options: { status: number; body: unknown }): HttpClient {
     return {
       fetch: async () => new Response(JSON.stringify(options.body), { status: options.status }),
