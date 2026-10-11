@@ -115,7 +115,7 @@ try {
   console.log(`e2e-cli: ${binary ? "compiled binary" : "source"}: tool turn and session resume green`);
 } finally {
   const instances = join(home, "data", "instances");
-  for (const file of readdirSync(instances, { withFileTypes: false }).filter((f) => f.endsWith(".json"))) {
+  for (const file of readdirSync(instances).filter((f) => f.endsWith(".json"))) {
     try {
       process.kill((JSON.parse(readFileSync(join(instances, file), "utf8")) as { pid: number }).pid);
     } catch {
