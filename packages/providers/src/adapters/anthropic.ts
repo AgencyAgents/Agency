@@ -218,7 +218,12 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
             };
           }
         )?.usage;
-        usage.inputTokens = msgUsage?.input_tokens ?? 0;
+        // The wire counts are additive. `inputTokens` is the whole prompt, as for the other
+        // providers: the cost formula takes the cached and written parts out of it.
+        usage.inputTokens =
+          (msgUsage?.input_tokens ?? 0) +
+          (msgUsage?.cache_read_input_tokens ?? 0) +
+          (msgUsage?.cache_creation_input_tokens ?? 0);
         if (msgUsage?.cache_read_input_tokens !== undefined) {
           usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
         }

@@ -61,7 +61,8 @@ describe("prompt cache policy (7.0.7)", () => {
   test("the second turn reports a cache read instead of a full write", async () => {
     const sse = sseResponse(
       [
-        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":1100}}}\n\n',
+        // The wire counts are additive: input_tokens holds only the tokens that are not cached.
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":1100}}}\n\n',
         'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n',
         'event: message_stop\ndata: {"type":"message_stop"}\n\n',
       ].join(""),
@@ -80,6 +81,31 @@ describe("prompt cache policy (7.0.7)", () => {
     expect(events.at(-1)).toMatchObject({
       type: "message_stop",
       usage: { inputTokens: 1200, outputTokens: 7, cachedInputTokens: 1100 },
+    });
+  });
+
+  test("a cache write counts in the input total too", async () => {
+    const sse = sseResponse(
+      [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":50,"cache_creation_input_tokens":900}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join(""),
+    );
+    const events = await collect(
+      anthropicAdapter.stream(
+        {
+          model: "m",
+          apiKey: "k",
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          maxTokens: 64,
+        },
+        { fetch: async () => sse },
+      ),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "message_stop",
+      usage: { inputTokens: 950, outputTokens: 7, cacheWriteInputTokens: 900 },
     });
   });
 
