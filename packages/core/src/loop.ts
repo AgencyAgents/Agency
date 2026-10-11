@@ -138,6 +138,8 @@ export interface RunTurnOptions {
    *  the history for the retry (reactive compact-and-retry). Absent means
    *  overflow throws. */
   onContextOverflow?: () => Promise<Message[] | undefined>;
+  /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
+  onMessage?: (message: Message) => void | Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -189,6 +191,10 @@ export async function runTurn(
   options: RunTurnOptions,
 ): Promise<RunTurnResult> {
   const messages = [...options.session];
+  const append = async (message: Message): Promise<void> => {
+    messages.push(message);
+    await options.onMessage?.(message);
+  };
   const maxToolIterations = options.maxToolIterations ?? 25;
   const toolDefs: ToolDefinition[] = options.tools.map((t) => ({
     name: t.name,
@@ -292,10 +298,11 @@ export async function runTurn(
   let overflowRetried = false;
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     if (options.drainMailbox) {
+      let injected: Message[] = [];
       try {
-        const injected = options.drainMailbox();
-        if (injected.length > 0) messages.push(...injected);
+        injected = options.drainMailbox();
       } catch {}
+      for (const message of injected) await append(message);
     }
     let modelSpanId: string | null = null;
     if (tracer && turnSpanId) {
@@ -325,7 +332,7 @@ export async function runTurn(
         turn = await collectWithFallback();
       }
 
-      messages.push({ role: "assistant", content: turn.content });
+      await append({ role: "assistant", content: turn.content });
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
@@ -352,7 +359,7 @@ export async function runTurn(
 
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
         if (toolCalls.length > 0) {
-          messages.push(
+          await append(
             options.signal?.aborted
               ? unrunResults(toolCalls, "cancelled")
               : {
@@ -372,7 +379,7 @@ export async function runTurn(
 
       if (stopReason !== "tool_use" || options.signal?.aborted) {
         if (toolCalls.length > 0) {
-          messages.push(unrunResults(toolCalls, options.signal?.aborted ? "cancelled" : stopReason));
+          await append(unrunResults(toolCalls, options.signal?.aborted ? "cancelled" : stopReason));
         }
         break;
       }
@@ -404,7 +411,7 @@ export async function runTurn(
         }
       }
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
-      messages.push({ role: "user", content: results });
+      await append({ role: "user", content: results });
     } catch (error) {
       if (tracer && modelSpanId) {
         try {
@@ -413,15 +420,14 @@ export async function runTurn(
       }
       const calls = messages.at(-1)?.role === "assistant" ? toolCallsOf(messages.at(-1)) : [];
       if (options.signal?.aborted) {
-        if (calls.length > 0) messages.push(unrunResults(calls, "cancelled"));
+        if (calls.length > 0) await append(unrunResults(calls, "cancelled"));
         stopReason = "cancelled";
         options.onEvent?.({ type: "turn_complete", stopReason, usage: { inputTokens: 0, outputTokens: 0 } });
         break;
       }
       endTurnError();
       emitErrorEvent(error, options.onEvent);
-      if (calls.length > 0) messages.push(unrunResults(calls, "error"));
-      if (typeof error === "object" && error !== null) failedTurns.set(error, messages);
+      if (calls.length > 0) await append(unrunResults(calls, "error"));
       throw error;
     }
   }
@@ -438,13 +444,6 @@ export async function runTurn(
     budgetExceeded: false,
     ...(salvageError ? { error: salvageError } : {}),
   };
-}
-
-const failedTurns = new WeakMap<object, Message[]>();
-
-/** Session plus the steps a turn completed before it threw `error`: the session owner keeps them. */
-export function completedMessages(error: unknown): Message[] | undefined {
-  return typeof error === "object" && error !== null ? failedTurns.get(error) : undefined;
 }
 
 function toolCallsOf(message: Message | undefined): Array<Extract<ContentBlock, { type: "tool_call" }>> {

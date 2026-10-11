@@ -59,7 +59,10 @@ export async function executeTurn(
   ctx: DaemonContext,
   params: RunTurnParams,
   rpc: { clientId: string },
-  hooks?: { onContextOverflow?: () => Promise<import("@agency/schema").Message[] | undefined> },
+  hooks?: {
+    onContextOverflow?: () => Promise<import("@agency/schema").Message[] | undefined>;
+    onMessage?: (message: import("@agency/schema").Message) => Promise<void>;
+  },
 ): Promise<RunTurnRpcResult> {
   const {
     activeControllers,
@@ -415,6 +418,7 @@ export async function executeTurn(
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
               ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
+              ...(hooks?.onMessage ? { onMessage: hooks.onMessage } : {}),
             });
           } finally {
             activeTurnMeta.delete(params.turnId);
@@ -508,6 +512,7 @@ export async function executeTurn(
                   traceRecorder,
                   onEvent: wrappedOnEvent,
                   ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
+                  ...(hooks?.onMessage ? { onMessage: hooks.onMessage } : {}),
                 },
               );
             } finally {

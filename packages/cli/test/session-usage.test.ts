@@ -144,6 +144,51 @@ describe("session usage persistence", () => {
     expect(usage.cacheHitRate).toBeCloseTo(0.8);
   });
 
+  test("a finished tool step is in the session before the next model call, so a daemon crash keeps it", async () => {
+    const workspaceRoot = tempDir("agency-usage-ws-");
+    const sessionsDir = tempDir("agency-usage-store-");
+    let onDiskAtSecondCall: string[] = [];
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "read" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 5, outputTokens: 5 } };
+          return;
+        }
+        const store = new SessionStore(sessionsDir);
+        const entries = store.load("s1");
+        onDiskAtSecondCall = store
+          .messagesFor(entries, store.latestTip(entries) as string)
+          .map((message) => `${message.role}:${message.content.map((block) => block.type).join("+")}`);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const client = await connectedDaemon(workspaceRoot, sessionsDir, adapter);
+
+    await runSessionTurn(client, {
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "read the note",
+    });
+
+    expect(onDiskAtSecondCall).toEqual(["user:text", "assistant:tool_call", "user:tool_result"]);
+    const store = new SessionStore(sessionsDir);
+    const entries = store.load("s1");
+    expect(store.messagesFor(entries, store.latestTip(entries) as string).map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+  });
+
   test("a turn that fails after a tool step keeps that step in the session", async () => {
     const workspaceRoot = tempDir("agency-usage-ws-");
     const sessionsDir = tempDir("agency-usage-store-");

@@ -706,6 +706,44 @@ describe("runTurn", () => {
     expect(result.error).toEqual({ code: "network", message: "connection reset" });
   });
 
+  test("onMessage reports each message as the turn produces it, before the next model call", async () => {
+    const seen: string[] = [];
+    let seenAtSecondCall: string[] = [];
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call_start", id: "call_1", name: "missing" };
+          yield { type: "tool_call_end", id: "call_1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        seenAtSecondCall = [...seen];
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      onMessage: async (message) => {
+        await Promise.resolve();
+        seen.push(`${message.role}:${message.content.map((block) => block.type).join("+")}`);
+      },
+    });
+
+    expect(seenAtSecondCall).toEqual(["assistant:tool_call", "user:tool_result"]);
+    expect(seen).toEqual(["assistant:tool_call", "user:tool_result", "assistant:text"]);
+  });
+
   test.each([
     ["before any content", false],
     ["after partial content", true],

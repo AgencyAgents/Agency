@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   compact,
-  completedMessages,
   composeSystemPrompt,
   generateTitle,
   getSessionTitle,
@@ -30,7 +29,6 @@ import {
   type DaemonContext,
   oauthOverridesFor,
   type RunTurnParams,
-  type RunTurnRpcResult,
   type SessionMessageParams,
   type SessionSendParams,
   type SessionSendResult,
@@ -218,17 +216,15 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
     });
     let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
-    let sliceBase = history.length;
     // Reactive compaction forks the branch, so new appends rebase onto
     // the compacted tip instead of the orphaned pre-compaction entry.
-    let appendBase: string | null = userEntry.id;
+    let tip: string | null = userEntry.id;
     const onContextOverflow = async (): Promise<Message[]> => {
       const outcome = await compact(store, p.sessionId, userEntry.id, tokenizer, threshold, summarize, 4, {
         force: true,
       });
       history = store.messagesFor(store.load(p.sessionId), outcome.tipId);
-      sliceBase = history.length;
-      appendBase = outcome.tipId;
+      tip = outcome.tipId;
       compacted = true;
       return history;
     };
@@ -247,28 +243,18 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
     };
-    const appendTurn = async (messages: Message[]): Promise<string | null> => {
-      let tip = appendBase;
-      for (const message of messages.slice(sliceBase)) {
-        tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
-      }
-      return tip;
+    // Each message is stored as the turn produces it: a failed turn or a dead daemon keeps the finished steps.
+    const onMessage = async (message: Message): Promise<void> => {
+      tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
     };
-    let result: RunTurnRpcResult;
-    try {
-      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
-      if (result.needsCompaction) {
-        history = await onContextOverflow();
-        runParams.session = history;
-        result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
-      }
-    } catch (error) {
-      // A failed turn keeps its finished steps: their effects are on disk, so the next turn must see them.
-      await appendTurn(completedMessages(error) ?? []);
-      throw error;
+    const hooks = { onContextOverflow, onMessage };
+    let result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
+    if (result.needsCompaction) {
+      history = await onContextOverflow();
+      runParams.session = history;
+      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
     }
-    let parentId = await appendTurn(result.messages);
-    parentId = await appendUsageEntry(store, p.sessionId, parentId, {
+    const parentId = await appendUsageEntry(store, p.sessionId, tip, {
       usage: result.usage,
       model: p.model,
       pricing: ctx.catalogModel(p.provider, p.model)?.pricing,
