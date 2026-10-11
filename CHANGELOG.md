@@ -93,6 +93,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Update on Windows**: `agency update` and its rollback renamed a file over
+  the running executable, which Windows refuses (`EPERM`). The running binary
+  now moves aside first. An idle daemon from the old binary exits after the
+  swap.
 - **Stalled streams**: a provider stream that sent nothing kept the turn
   waiting until a cancel. After 5 minutes of silence the request is now cut. A
   turn with no content yet is tried again; a turn with content ends with a
