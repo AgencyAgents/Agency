@@ -27,8 +27,9 @@ Both scripts:
 Environment overrides:
 - `AGENCY_VERSION` — `v0.1.0` or `0.1.0` (default: latest).
 - `AGENCY_INSTALL_DIR` — default `~/.local/bin` (macOS/Linux) or `%LOCALAPPDATA%\Programs\agency` (Windows).
+- `AGENCY_NO_MODIFY_PATH` — Windows only. Set to `1` to leave the user `PATH` as it is.
 
-After install, ensure the install directory is on `PATH`. The Linux/macOS script prints a hint if it is not; the Windows script appends it to the user `PATH`.
+After install, ensure the install directory is on `PATH`. The Linux/macOS script prints a hint if it is not; the Windows script appends it to the user `PATH`, unless `AGENCY_NO_MODIFY_PATH` is `1`.
 
 ## Manual install
 
