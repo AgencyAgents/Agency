@@ -265,6 +265,29 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a context overflow that cannot be folded returns its cause, not a bare error", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => ({
+        family: "fake",
+        stream(): AsyncIterable<StreamEvent> {
+          throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "prompt is too long", { source: "fake" });
+        },
+      }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "t-overflow-cause",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) as RunTurnRpcResult;
+
+    expect(result.stopReason).toBe("error");
+    expect(result.error).toEqual({ code: "context_overflow", message: "prompt is too long" });
+  });
+
   test("a fallback model continues the turn: tools the primary already ran do not run again", async () => {
     let runs = 0;
     const countTool: ToolSpec = {

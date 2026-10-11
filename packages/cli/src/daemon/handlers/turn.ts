@@ -610,6 +610,7 @@ export async function executeTurn(
             usage: { inputTokens: 0, outputTokens: 0 },
             budgetExceeded: false,
             cancelled: controller.signal.aborted,
+            error: { code: error.code, message: error.message },
             needsCompaction: true,
           };
           return response;
