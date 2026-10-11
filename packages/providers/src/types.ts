@@ -25,6 +25,9 @@ export interface ProviderRequest {
   maxTokens: number;
   temperature?: number;
   thinkingLevel?: ThinkingLevel;
+  /** The model takes image input, so images that a tool returned go with the request.
+   *  Absent means no: an image sent to a model with no vision fails that request and every later one. */
+  vision?: boolean;
   /** Overrides the adapter's native endpoint: gateways, proxies, self-hosted. */
   baseUrl?: string;
   /** Extra headers merged over the adapter's own (auth headers stay). */

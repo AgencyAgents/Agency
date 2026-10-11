@@ -51,7 +51,7 @@ function textOf(content: ContentBlock[]): string {
     .join("");
 }
 
-function toOpenAiMessages(messages: Message[], system?: string): Record<string, unknown>[] {
+function toOpenAiMessages(messages: Message[], system?: string, vision = false): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   if (system) out.push({ role: "system", content: system });
 
@@ -75,6 +75,14 @@ function toOpenAiMessages(messages: Message[], system?: string): Record<string, 
     for (const tr of toolResults) {
       out.push({ role: "tool", tool_call_id: tr.toolCallId, content: tr.content });
     }
+    // A tool message holds text only, so images that a tool returned follow in a user message.
+    const images = vision ? toolResults.flatMap((tr) => tr.images ?? []) : [];
+    if (images.length > 0) {
+      out.push({
+        role: "user",
+        content: toOpenAiContent([{ type: "text", text: "Images from the tool results above." }, ...images]),
+      });
+    }
     if (toolResults.length > 0) continue;
 
     out.push({ role: m.role, content: toOpenAiContent(m.content) });
@@ -91,7 +99,7 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   // marks explicitly.
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: toOpenAiMessages(request.messages, request.system),
+    messages: toOpenAiMessages(request.messages, request.system, request.vision),
     max_completion_tokens: request.maxTokens,
     stream: true,
     stream_options: { include_usage: true },

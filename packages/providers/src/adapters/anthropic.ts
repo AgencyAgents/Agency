@@ -41,7 +41,7 @@ function isInputTooLong(status: number, message: string): boolean {
   );
 }
 
-function toAnthropicContent(block: ContentBlock): Record<string, unknown> | undefined {
+function toAnthropicContent(block: ContentBlock, vision = false): Record<string, unknown> | undefined {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
@@ -53,7 +53,13 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
       return {
         type: "tool_result",
         tool_use_id: block.toolCallId,
-        content: block.content,
+        content:
+          vision && block.images?.length
+            ? [
+                { type: "text", text: block.content },
+                ...block.images.map((image) => toAnthropicContent(image)),
+              ]
+            : block.content,
         is_error: block.isError || undefined,
       };
     case "thinking":
@@ -72,7 +78,9 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   const messages: { role: string; content: Record<string, unknown>[]; cache_control?: unknown }[] =
     request.messages.map((m) => ({
       role: m.role === "system" ? "user" : m.role,
-      content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
+      content: m.content
+        .map((block) => toAnthropicContent(block, request.vision))
+        .filter((c): c is Record<string, unknown> => c !== undefined),
     }));
 
   // Breakpoints 3 and 4 roll forward: the settled turn-back tail and the
