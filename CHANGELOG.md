@@ -105,6 +105,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the `/v1/messages` endpoint was mapped to `internal` by the Anthropic
   adapter. Measured: each later turn of the session then failed. It now
   maps to `context_overflow`, and the same session compacts and continues.
+- **Anthropic cache TTL order**: with a long stable system prompt, the
+  request had a 1-hour cache mark on the system text after a 5-minute mark
+  on the tools. The API documentation requires a 1-hour entry before any
+  5-minute entry. The tools now take the 1-hour mark in that case. The
+  request shape is tested. The live API result is not confirmed.
 - **Worker model facts**: a worker turn (`spawn`, `dispatch`, a team run)
   did not get the context window or the vision flag of its model. A worker
   on a vision model did not send tool images, and a worker that overflowed
