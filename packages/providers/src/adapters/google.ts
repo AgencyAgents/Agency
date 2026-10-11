@@ -60,7 +60,8 @@ function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
           case "thinking": {
             // The stream puts a signature right after its part, as a thinking block with no text.
             const signed = parts.at(-1);
-            if (block.text === "" && block.signature !== undefined && signed && !signed.thoughtSignature) {
+            const own = block.signature !== undefined && (block.family ?? "google") === "google";
+            if (block.text === "" && own && signed && !signed.thoughtSignature) {
               signed.thoughtSignature = block.signature;
             }
             break;

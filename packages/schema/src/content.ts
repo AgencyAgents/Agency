@@ -11,6 +11,8 @@ export const ThinkingBlock = z.object({
   text: z.string(),
   /** Some providers return a signature that must be replayed verbatim on the next turn. */
   signature: z.string().optional(),
+  /** Adapter family that issued the signature: no other provider accepts it. Absent in older sessions. */
+  family: z.string().optional(),
 });
 
 /**

@@ -36,8 +36,8 @@ describe("item 60: thinking_signature never dropped", () => {
       session: [],
     });
     expect(result.messages[0]?.content).toEqual([
-      { type: "thinking", text: "r1", signature: "sig-1" },
-      { type: "thinking", text: "", signature: "sig-2" },
+      { type: "thinking", text: "r1", signature: "sig-1", family: "fake" },
+      { type: "thinking", text: "", signature: "sig-2", family: "fake" },
       { type: "text", text: "answer" },
     ]);
   });

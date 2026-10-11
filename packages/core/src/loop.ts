@@ -961,13 +961,14 @@ async function collectTurn(
           const last = content[content.length - 1];
           if (last?.type === "thinking" && last.signature === undefined) {
             last.signature = event.signature;
+            last.family = adapter.family;
           } else if (last?.type !== "thinking") {
-            content.push({ type: "thinking", text: "", signature: event.signature });
+            content.push({ type: "thinking", text: "", signature: event.signature, family: adapter.family });
           } else {
             // Trailing block already carries a signature: a second signature
             // without intervening thinking text starts its own placeholder so
             // no provider-issued signature is ever dropped.
-            content.push({ type: "thinking", text: "", signature: event.signature });
+            content.push({ type: "thinking", text: "", signature: event.signature, family: adapter.family });
           }
           break;
         }

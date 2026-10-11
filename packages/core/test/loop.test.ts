@@ -568,7 +568,7 @@ describe("runTurn", () => {
     });
 
     expect(result.messages[0]?.content).toEqual([
-      { type: "thinking", text: "reasoning here", signature: "sig-1" },
+      { type: "thinking", text: "reasoning here", signature: "sig-1", family: "fake" },
       { type: "text", text: "answer" },
     ]);
   });
@@ -596,7 +596,7 @@ describe("runTurn", () => {
 
     expect(result.messages[0]?.content).toEqual([
       { type: "redacted_thinking", data: "enc-1" },
-      { type: "thinking", text: "", signature: "orphan-sig" },
+      { type: "thinking", text: "", signature: "orphan-sig", family: "fake" },
       { type: "text", text: "ok" },
     ]);
   });
@@ -625,8 +625,8 @@ describe("runTurn", () => {
     });
 
     expect(result.messages[0]?.content).toEqual([
-      { type: "thinking", text: "first reasoning", signature: "sig-1" },
-      { type: "thinking", text: "second reasoning", signature: "sig-2" },
+      { type: "thinking", text: "first reasoning", signature: "sig-1", family: "fake" },
+      { type: "thinking", text: "second reasoning", signature: "sig-2", family: "fake" },
       { type: "text", text: "answer" },
     ]);
   });

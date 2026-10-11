@@ -63,9 +63,9 @@ function toAnthropicContent(block: ContentBlock, vision = false): Record<string,
         is_error: block.isError || undefined,
       };
     case "thinking":
-      // Unsigned thinking can't be replayed (the API rejects it), so it only
-      // goes back when the signature the provider issued for it is present.
-      return block.signature === undefined
+      // Unsigned thinking can't be replayed (the API rejects it), and neither can
+      // a signature that another provider issued.
+      return block.signature === undefined || (block.family ?? "anthropic") !== "anthropic"
         ? undefined
         : { type: "thinking", thinking: block.text, signature: block.signature };
     case "redacted_thinking":

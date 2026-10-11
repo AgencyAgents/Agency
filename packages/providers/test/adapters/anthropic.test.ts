@@ -257,6 +257,8 @@ describe("anthropicAdapter", () => {
               content: [
                 { type: "thinking", text: "unsigned history" },
                 { type: "thinking", text: "signed history", signature: "sig-123" },
+                { type: "thinking", text: "", signature: "from-gemini", family: "google" },
+                { type: "thinking", text: "own model", signature: "sig-789", family: "anthropic" },
                 { type: "redacted_thinking", data: "enc-456" },
                 { type: "text", text: "answer" },
               ],
@@ -272,6 +274,8 @@ describe("anthropicAdapter", () => {
     const assistant = body.messages[0].content;
     expect(assistant).toEqual([
       { type: "thinking", thinking: "signed history", signature: "sig-123" },
+      // The block signed by another provider is gone: this API rejects a signature that it did not issue.
+      { type: "thinking", thinking: "own model", signature: "sig-789" },
       { type: "redacted_thinking", data: "enc-456" },
       { type: "text", text: "answer" },
     ]);

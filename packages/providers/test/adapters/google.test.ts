@@ -80,12 +80,17 @@ describe("googleAdapter", () => {
               role: "assistant",
               content: [
                 { type: "tool_call", id: "fc-1", name: "read", input: { path: "a.ts" } },
-                { type: "thinking", text: "", signature: "gsig-1" },
+                { type: "thinking", text: "", signature: "gsig-1", family: "google" },
+                { type: "tool_call", id: "fc-2", name: "read", input: { path: "b.ts" } },
+                { type: "thinking", text: "", signature: "from-claude", family: "anthropic" },
               ],
             },
             {
               role: "user",
-              content: [{ type: "tool_result", toolCallId: "fc-1", content: "file text", isError: false }],
+              content: [
+                { type: "tool_result", toolCallId: "fc-1", content: "file text", isError: false },
+                { type: "tool_result", toolCallId: "fc-2", content: "other text", isError: false },
+              ],
             },
           ],
         },
@@ -98,11 +103,16 @@ describe("googleAdapter", () => {
       role: "model",
       parts: [
         { functionCall: { id: "fc-1", name: "read", args: { path: "a.ts" } }, thoughtSignature: "gsig-1" },
+        // A signature from another provider does not go to Gemini.
+        { functionCall: { id: "fc-2", name: "read", args: { path: "b.ts" } } },
       ],
     });
     expect(contents[2]).toEqual({
       role: "user",
-      parts: [{ functionResponse: { id: "fc-1", name: "read", response: { content: "file text" } } }],
+      parts: [
+        { functionResponse: { id: "fc-1", name: "read", response: { content: "file text" } } },
+        { functionResponse: { id: "fc-2", name: "read", response: { content: "other text" } } },
+      ],
     });
   });
 
