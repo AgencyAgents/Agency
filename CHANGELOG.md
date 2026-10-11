@@ -119,9 +119,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   tested. The live API result is not confirmed.
 - **Reply cut at the output limit**: a reply that stopped at the output
   limit ended the turn as a normal end, with exit code 0 and a cut answer.
-  The model is now told to go on from the cut, at most 3 times in a row.
-  A reply that is still cut ends with the turn error `max_tokens` and
-  exit code 1.
+  Now a cut text reply continues: the model is told to go on from the cut,
+  at most 3 times in a row, and `-p` prints all the parts. A complete tool
+  call in a cut reply runs. A call that the limit cut in the middle gets a
+  result that names the limit. A reply that is still cut, or that was cut
+  before any text, ends with the turn error `max_tokens` and exit code 1.
+  Measured against llama-server with a 40-token and a 60-token limit.
 - **Full context window during a reply**: Claude 4.5 and later stop a
   reply with `model_context_window_exceeded` when the window becomes
   full. The adapter read this as a normal end. It is now a
