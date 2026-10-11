@@ -96,6 +96,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Fallback restart**: a turn that moved to `fallback_model` started again
+  from the prompt, so tools that the first provider had already run ran a
+  second time. The fallback now continues from the steps that are complete.
 - **Fallback keys**: when `fallback_model` named a provider with no key, a
   fallback sent the primary provider's key to that provider. The fallback is
   now skipped and the original error is returned.
