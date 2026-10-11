@@ -96,6 +96,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Tool calls on OpenAI-compatible servers**: a server that sent a tool call
+  and then finish reason `stop` had its call dropped, and the turn ended
+  with no output. A call with no id was dropped too. The adapter now treats
+  a response with tool calls as a tool turn and gives an id to a call that
+  has none.
 - **Thought signatures across providers**: a session that moved from one
   provider to another (a fallback, or a new `--model`) replayed thought
   signatures to a provider that did not issue them. Each signature now
