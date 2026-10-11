@@ -105,7 +105,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   and then finish reason `stop` had its call dropped, and the turn ended
   with no output. A call with no id was dropped too. The adapter now treats
   a response with tool calls as a tool turn and gives an id to a call that
-  has none.
+  has none. A call that is still open when the stream ends with no finish
+  reason is closed, so its arguments are checked and answered.
+- **Tool turn with no call**: a provider that reported a tool stop reason
+  with no tool call made the loop send the same request again, up to the
+  step limit. Such a reply now ends the turn.
 - **Thought signatures across providers**: a session that moved from one
   provider to another (a fallback, or a new `--model`) replayed thought
   signatures to a provider that did not issue them. Each signature now
