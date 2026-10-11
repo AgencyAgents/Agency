@@ -215,6 +215,7 @@ export async function runTurn(
   let spentCostUsd = 0;
   let stopReason: StopReason = "end_turn";
   let salvageError: TurnError | undefined;
+  let spoke = false;
   const tracer = options.traceRecorder;
   const turnSpanId = tracer
     ? tracer.startTurnSpan({
@@ -353,7 +354,9 @@ export async function runTurn(
         turn = await collectWithFallback();
       }
 
-      await append({ role: "assistant", content: turn.content });
+      // A reply with no content is not stored: strict providers reject an empty message.
+      if (turn.content.length > 0) await append({ role: "assistant", content: turn.content });
+      spoke = turn.content.some((block) => block.type === "text" && block.text.trim() !== "");
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
@@ -460,6 +463,12 @@ export async function runTurn(
     turnError = {
       code: "iteration_limit",
       message: `stopped after ${maxToolIterations} tool steps: the task is not finished`,
+    };
+  } else if (!turnError && !spoke && stopReason !== "cancelled") {
+    // No text is no answer: a headless caller must not read it as success.
+    turnError = {
+      code: "empty_response",
+      message: `the model returned no text (stop reason: ${stopReason})`,
     };
   }
 

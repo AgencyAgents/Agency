@@ -408,6 +408,29 @@ describe("runTurn", () => {
     expect(events).not.toContainEqual(expect.objectContaining({ type: "iteration_limit" }));
   });
 
+  test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
+    const silent: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 0 } };
+      },
+    };
+    const result = await runTurn(silent, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error?.code).toBe("empty_response");
+    // Strict providers reject a message with no content, so one such message would break the session.
+    expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
+  });
+
   test("a tool result carrying images lands on the tool_result block and the event", async () => {
     const image = { type: "image" as const, mimeType: "image/png", data: "aGk=" };
     const events: unknown[] = [];
