@@ -117,6 +117,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   adaptive thinking with `output_config.effort` and a thinking summary.
   The 4.5 family and older models keep the budget. The request shape is
   tested. The live API result is not confirmed.
+- **Reply cut at the output limit**: a reply that stopped at the output
+  limit ended the turn as a normal end, with exit code 0 and a cut answer.
+  The model is now told to go on from the cut, at most 3 times in a row.
+  A reply that is still cut ends with the turn error `max_tokens` and
+  exit code 1.
+- **Full context window during a reply**: Claude 4.5 and later stop a
+  reply with `model_context_window_exceeded` when the window becomes
+  full. The adapter read this as a normal end. It is now a
+  `context_overflow`. The live API result is not confirmed.
 - **Worker model facts**: a worker turn (`spawn`, `dispatch`, a team run)
   did not get the context window or the vision flag of its model. A worker
   on a vision model did not send tool images, and a worker that overflowed
