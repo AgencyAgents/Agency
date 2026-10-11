@@ -93,6 +93,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   at once, in every phase. Before, a response that was already streaming ran
   to its end, and a cancel before the response headers caused a retry. A
   cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Worktree race**: two peers started at the same time could fail with
+  "worktree creation failed", because two `git worktree add` runs race inside
+  git. Worktree changes now run one at a time for each repository.
 - **Fallback keys**: when `fallback_model` named a provider with no key, a
   fallback sent the primary provider's key to that provider. The fallback is
   now skipped and the original error is returned.
