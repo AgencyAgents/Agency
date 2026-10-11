@@ -148,6 +148,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   When the file has the text with other line breaks, the message shows
   that exact file text. Measured with a real model: it sent two lines as
   one line three times in a row, and the plain rejection did not stop that.
+- **Edit across line breaks**: an edit whose old text matches one place in
+  the file when a line break counts as a space now applies, if the new
+  text has the same number of words. Each word goes in and the file keeps
+  its own layout. Other such edits get the rejection with the file text.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
