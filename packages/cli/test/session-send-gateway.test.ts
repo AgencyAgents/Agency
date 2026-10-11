@@ -237,6 +237,39 @@ describe("session_send over the HTTP gateway", () => {
     }
   });
 
+  test("two sends on one session at the same time make one history, not a fork", async () => {
+    let release: () => void = () => {};
+    const firstHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: string[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.messages.map((message) => message.role));
+        const call = seen.length;
+        if (call === 1) await firstHeld;
+        yield { type: "text_delta", text: `reply ${call}` };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const { base, token } = await startDaemon(adapter);
+
+    const first = sessionSend(base, token, { sessionId: "gw-fork", userText: "first" });
+    const deadline = Date.now() + 10_000;
+    while (seen.length < 1 && Date.now() < deadline) await Bun.sleep(10);
+    const second = sessionSend(base, token, { sessionId: "gw-fork", userText: "second" });
+    // Time for the second send to reach the model if nothing holds it back.
+    await Bun.sleep(300);
+    release();
+    await Promise.all([first, second]);
+
+    expect(seen).toEqual([["user"], ["user", "assistant", "user"]]);
+    const shown = await rpcCall(base, token, "session_show", { sessionId: "gw-fork" });
+    const parents = (shown.entries as Array<{ parentId: string | null }>).map((entry) => entry.parentId);
+    expect(new Set(parents).size).toBe(parents.length);
+  }, 30_000);
+
   test("@handle text routes provider, model, and effort through session_send", async () => {
     const models: string[] = [];
     const adapter: ProviderAdapter = {

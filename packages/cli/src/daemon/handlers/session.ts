@@ -183,6 +183,8 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     const budget = ctx.sessionBudgets.get(sessionId);
     return { ...view, ...(budget === undefined ? {} : { budget }) };
   };
+  // One turn at a time for each session: two sends that start from the same tip fork the history, and one turn is lost.
+  const sendQueues = new Map<string, Promise<unknown>>();
   handlers.session_send = async (rawParams, context) => {
     const p = rawParams as SessionSendParams;
     if (!p.sessionId)
@@ -193,6 +195,18 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires userText", {
         source: "session",
       });
+    const turn = (sendQueues.get(p.sessionId) ?? Promise.resolve()).then(() => sendTurn(p, context));
+    const settled = turn.catch(() => {});
+    sendQueues.set(p.sessionId, settled);
+    void settled.then(() => {
+      if (sendQueues.get(p.sessionId) === settled) sendQueues.delete(p.sessionId);
+    });
+    return turn;
+  };
+  const sendTurn = async (
+    p: SessionSendParams,
+    context: { clientId: string },
+  ): Promise<SessionSendResult> => {
     const store = todoStore;
     if (!store.list().includes(p.sessionId)) store.create(p.sessionId);
     const family = providers[p.provider]?.family ?? p.provider;
