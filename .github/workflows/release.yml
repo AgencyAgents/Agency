@@ -55,8 +55,9 @@ jobs:
         run: bun run lint
       - name: Typecheck
         run: bun run typecheck
+      # Not `bun test`: one process for all tests does not finish on Windows.
       - name: Test
-        run: bun test
+        run: bun run test:ci
       - name: Derive version
         shell: bash
         run: |
