@@ -504,6 +504,23 @@ describe("-p headless mode", () => {
     expect(err).toContain("network: connection reset");
   });
 
+  test("--format json prints a failed run as JSON on stdout: a script must not get empty output", async () => {
+    const { out, err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "json"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async () => {
+        throw Object.assign(new Error("Internal Server Error"), { code: "transient" });
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(out.join(""))).toEqual({
+      error: { code: "transient", message: "Internal Server Error" },
+    });
+    expect(err).toEqual(["Internal Server Error"]);
+  });
+
   test("--model overrides config.model through the flags layer", async () => {
     const fake = fakeRunHeadless();
     const configDir = tempDir("agency-ep-config-");

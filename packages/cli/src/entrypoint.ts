@@ -367,8 +367,8 @@ async function providerConnections(
   return rows;
 }
 
-/** Assistant text blocks joined by newlines: what `-p` prints in text mode. */
-/** The reply to the prompt this run sent: a session turn returns the earlier turns too, and those are not output. */
+/** What `-p` prints in text mode: the reply to the prompt this run sent.
+ *  A session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
   const prompt = messages.findLastIndex(
     (message) => message.role === "user" && message.content.some((block) => block.type === "text"),
@@ -1057,7 +1057,16 @@ export async function runEntrypoint(
   try {
     return await dispatch(parseArgv(argv), deps, out, err);
   } catch (error) {
-    err(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    err(message);
+    // A script that parses stdout gets the failure there too, in the `error` shape of a turn result.
+    const flag = argv.indexOf("--format");
+    if (flag >= 0 && argv[flag + 1] === "json") {
+      const code = (error as { code?: unknown } | null)?.code;
+      out(
+        JSON.stringify({ error: { code: typeof code === "string" ? code : "internal", message } }, null, 2),
+      );
+    }
     return 1;
   }
 }
