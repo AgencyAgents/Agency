@@ -82,6 +82,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   normal stop, also one that the API adds later, was read as a complete reply
   and is now an error. The reason `CONTINUATION` (the reply reached the
   per-request limit) takes the path of a reply cut at the output limit.
+- **OpenAI refusal**: a refusal comes in the stream's `refusal` field, which
+  the adapter did not read, so the turn ended as an empty reply. The refusal
+  text is now shown and the turn ends as a refusal.
 - **Reply that the provider ended with an error**: a turn with text and stop
   reason `error` made the CLI exit with code 1 and no message. The turn now
   carries the error `provider_stop`.
