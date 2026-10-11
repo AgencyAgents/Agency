@@ -271,6 +271,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Reasoning on OpenAI-compatible servers**: `reasoning_content` in a
+  stream (llama.cpp with a reasoning model, DeepSeek) is now reported as
+  thinking. Before, it was dropped. It is never sent back to the server.
 - `provider.<id>.streamIdleMs`: the longest silence on a response stream
   before the request is cut, for one provider. The default stays 5 minutes.
   A llama.cpp server sends nothing while it reads the prompt. Measured
