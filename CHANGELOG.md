@@ -89,6 +89,16 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   and could print its notice into `--format json` output. `checkStale` now
   asks at most once a day, prints on stderr, and honours
   `AGENCY_NO_UPDATE_CHECK`.
+- **Cancel**: `cancel_turn` and a client disconnect now stop the model request
+  at once, in every phase. Before, a response that was already streaming ran
+  to its end, and a cancel before the response headers caused a retry. A
+  cancelled turn returns `stopReason: "cancelled"` and keeps its finished steps.
+- **Daemon lifetime on Windows**: the daemon stopped when the CLI that started
+  it exited, so each command started a new daemon. It now outlives the CLI and
+  serves later commands until its idle time ends.
+- **Config changes**: an idle daemon exits within one second of a change to a
+  config file, so the next command loads the new config. Before, a daemon
+  that stayed in use never loaded it.
 - **Interrupted turns**: a turn that stopped before its tool calls ran (stream
   drop, output limit, cancel) left those calls with no result, and a provider
   rejects every later request on such a session. The loop now answers them
