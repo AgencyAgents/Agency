@@ -123,8 +123,12 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
         input_schema: t.inputSchema,
       }));
     if (estimateTokens(JSON.stringify(tools)) >= minTokens) {
+      // The API wants a 1-hour entry before any 5-minute one, and tools come before the system text.
+      const hour =
+        request.systemSegments !== undefined &&
+        estimateTokens(splitStableDynamic(request.systemSegments).stable) >= minTokens;
       const lastTool = tools.at(-1);
-      if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+      if (lastTool) lastTool.cache_control = hour ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
     }
     body.tools = tools;
   }

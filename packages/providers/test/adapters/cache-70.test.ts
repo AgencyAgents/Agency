@@ -161,6 +161,43 @@ describe("prompt cache policy (7.0.7)", () => {
     expect(turn3.messages[4]?.content.at(-1)).toMatchObject({ cache_control: { type: "ephemeral" } });
   });
 
+  test("no one-hour cache mark comes after a five-minute mark", async () => {
+    // The API rule: a 1-hour entry must appear before any 5-minute entry, in the order tools, system, messages.
+    let body: {
+      tools: { cache_control?: { ttl?: string } }[];
+      system: { cache_control?: { ttl?: string } }[];
+      messages: { content: { cache_control?: { ttl?: string } }[] }[];
+    } = { tools: [], system: [], messages: [] };
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        body = JSON.parse(init?.body as string);
+        return sseResponse("");
+      },
+    };
+    await collect(
+      anthropicAdapter.stream(
+        {
+          model: "m",
+          apiKey: "k",
+          systemSegments: [
+            { stability: "shared", text: pad("shared prefix") },
+            { stability: "dynamic", text: "env" },
+          ],
+          tools: [{ name: "read", description: pad("reads"), inputSchema: {} }],
+          messages: [{ role: "user", content: [{ type: "text", text: pad("one") }] }],
+          maxTokens: 64,
+        },
+        http,
+      ),
+    );
+
+    const ttls = [...body.tools, ...body.system, ...body.messages.flatMap((m) => m.content)]
+      .filter((block) => block.cache_control)
+      .map((block) => block.cache_control?.ttl ?? "5m");
+    expect(ttls).toContain("1h");
+    expect(ttls.slice(ttls.indexOf("5m") === -1 ? ttls.length : ttls.indexOf("5m"))).not.toContain("1h");
+  });
+
   test("two agents share the cached prefix and diverge only in role and tools", async () => {
     const bodies: unknown[] = [];
     const http: HttpClient = {
