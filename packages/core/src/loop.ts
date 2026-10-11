@@ -360,9 +360,12 @@ export async function runTurn(
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
+      const toolCalls = toolCallsOf({ role: "assistant", content: turn.content });
       // A stream the caller cut is a cancel, not a provider failure.
       const cut = turn.stopReason === "error" && options.signal?.aborted;
       stopReason = cut ? "cancelled" : turn.stopReason;
+      // A tool stop reason with no call has nothing to run: the loop would ask again with an empty result.
+      if (stopReason === "tool_use" && toolCalls.length === 0) stopReason = "end_turn";
       salvageError = cut ? undefined : turn.error;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
       if (tracer && modelSpanId) {
@@ -378,8 +381,6 @@ export async function runTurn(
         });
         modelSpanId = null;
       }
-
-      const toolCalls = toolCallsOf({ role: "assistant", content: turn.content });
 
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
         if (toolCalls.length > 0) {

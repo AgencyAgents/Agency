@@ -408,6 +408,33 @@ describe("runTurn", () => {
     expect(events).not.toContainEqual(expect.objectContaining({ type: "iteration_limit" }));
   });
 
+  test("a tool stop reason with no tool call ends the turn: the loop does not spin", async () => {
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "text_delta", text: "nothing to call" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      maxToolIterations: 4,
+    });
+
+    expect(requests).toBe(1);
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+    expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
+  });
+
   test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
     const silent: ProviderAdapter = {
       family: "fake",
