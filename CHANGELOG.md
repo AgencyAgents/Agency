@@ -96,6 +96,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Worktree race**: two peers started at the same time could fail with
   "worktree creation failed", because two `git worktree add` runs race inside
   git. Worktree changes now run one at a time for each repository.
+- **Overflow on llama.cpp servers**: a llama.cpp server reports a full
+  context as `exceed_context_size_error` ("exceeds the available context
+  size"). The adapter mapped this to `internal`, so compaction never
+  started and the run failed. It now maps to `context_overflow`. Measured
+  against llama-server b11155.
 - **Empty reply**: a model reply with no text gave exit code 0 and no
   output, and left an empty assistant message in the session. The turn now
   carries the error `empty_response` and the CLI exits with code 1. The
