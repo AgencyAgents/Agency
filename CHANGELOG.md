@@ -104,6 +104,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   had several commands, and a Windows runner reports only the last command's
   exit code, so a failed shard passed. No shard ran `packages/eval`. Both
   workflows now run one command, `bun run test:ci`.
+- **Install on Windows**: in Windows PowerShell 5.1 the download of the 86 MB
+  binary took 129 s, because the shell draws a progress bar for each chunk.
+  `scripts/install.ps1` now downloads without the bar (0.2 s from a local
+  server). On ARM64 the script asked for a binary that no release has, and
+  now says that there is no ARM64 build. `AGENCY_NO_MODIFY_PATH=1` leaves
+  the user PATH as it is (`scripts/install-ps1.test.ts`).
 - **Install on macOS**: `scripts/install.sh` verified the download with
   the sha256sum tool, which macOS does not have, so the install stopped with
   "checksum mismatch". It now uses shasum when sha256sum is absent
