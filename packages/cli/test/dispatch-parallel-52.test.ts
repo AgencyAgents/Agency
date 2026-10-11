@@ -60,6 +60,12 @@ function teamCfg(): Record<string, unknown> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Holds a child until all five are in stream(): a fixed delay lost the bet on setup time under load. A serial spawn times out here. */
+async function allEntered(state: { maxActive: number }): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (state.maxActive < HANDLES.length && Date.now() < deadline) await sleep(10);
+}
+
 /** Tracks concurrent stream entries so tests can prove parallel (not serial) spawn. */
 function parallelAdapter(state: {
   active: number;
@@ -99,16 +105,16 @@ function parallelAdapter(state: {
         if (txt.startsWith("brief for ")) {
           state.childBriefs.push(txt);
           // Stagger so completion order differs from input order; the barrier
-          // must still report results in input order. Base delay dwarfs the
-          // pre-stream setup stagger so all five overlap in stream().
+          // must still report results in input order.
           const idx = HANDLES.findIndex((h) => txt === `brief for ${h}`);
-          await sleep(500 + (HANDLES.length - idx) * 80);
+          await allEntered(state);
+          await sleep((HANDLES.length - idx) * 80);
           yield { type: "text_delta", text: `child output for ${txt}` };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
         }
         if (txt.includes("compare prompt")) {
-          await sleep(300);
+          await allEntered(state);
           yield { type: "text_delta", text: "compare output" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
