@@ -265,6 +265,61 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a fallback model continues the turn: tools the primary already ran do not run again", async () => {
+    let runs = 0;
+    const countTool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    const hasResult = (request: { messages: Array<{ content: Array<{ type: string }> }> }): boolean =>
+      request.messages.some((message) => message.content.some((block) => block.type === "tool_result"));
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (!hasResult(request)) {
+          yield { type: "tool_call_start", id: "c1", name: "count" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "finished on the fallback" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        tools: [countTool],
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      const result = (await client.call("run_turn", {
+        turnId: "t-fallback-continue",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "count once" }] }],
+      })) as RunTurnRpcResult;
+
+      expect(result.stopReason).toBe("end_turn");
+      expect(runs).toBe(1);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
   test("onIdleShutdown fires after the last client disconnects and the linger elapses", async () => {
     let shutdownCalled = false;
     const { daemon, client } = await startFakeDaemon({

@@ -309,6 +309,12 @@ export async function executeTurn(
           return { provider: fm.slice(0, slash), model: fm.slice(slash + 1) };
         })();
 
+        // A fallback continues from these: a restart would run the primary's tools a second time.
+        const carried: import("@agency/schema").Message[] = [];
+        const onPrimaryMessage = async (message: import("@agency/schema").Message): Promise<void> => {
+          carried.push(message);
+          await hooks?.onMessage?.(message);
+        };
         let result: Awaited<ReturnType<typeof runTurn>>;
         try {
           const effectiveCapabilities =
@@ -418,7 +424,7 @@ export async function executeTurn(
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
               ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
-              ...(hooks?.onMessage ? { onMessage: hooks.onMessage } : {}),
+              onMessage: onPrimaryMessage,
             });
           } finally {
             activeTurnMeta.delete(params.turnId);
@@ -495,7 +501,7 @@ export async function executeTurn(
                   model: fallbackRef.model,
                   apiKey: fbApiKey,
                   thinkingLevel: params.thinkingLevel,
-                  session: params.session,
+                  session: [...params.session, ...carried],
                   budget: params.budget,
                   pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
                   maxTokensPerRequest: modelInfo?.maxOutputTokens,
