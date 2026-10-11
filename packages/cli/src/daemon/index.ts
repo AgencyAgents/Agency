@@ -74,7 +74,7 @@ import {
 } from "./handlers/session.ts";
 import { registerSurfaceHandlers } from "./handlers/surface.ts";
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
-import { initTeamRunState, registerTeamRunHandlers, remapRosterToCredentials } from "./handlers/team-run.ts";
+import { initTeamRunState, registerTeamRunHandlers } from "./handlers/team-run.ts";
 import { registerTeamSurfaceHandlers } from "./handlers/team-surface.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
@@ -528,9 +528,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   try {
     initTeamFromConfig(ctx);
-  } catch {}
-  try {
-    remapRosterToCredentials(ctx);
   } catch {}
   initTeamRunState(ctx);
   installDetachHook(ctx);

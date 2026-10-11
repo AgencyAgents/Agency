@@ -13,11 +13,9 @@ import {
   leanSummary,
   NoProgressTracker,
   newEntryId,
-  providersWithCredentials,
   type ReviewDiagnostic,
   type RunTurnResult,
   recordIntegrationCheckpoint,
-  resolveRosterProviders,
   resolveScopeFiles,
   runChildTurn,
 } from "@agency/core";
@@ -45,22 +43,43 @@ export function initTeamRunState(ctx: DaemonContext): void {
   installCompletionHook(ctx);
 }
 
-// Credential-first provider resolution at team scope: roles pinned
-// to a provider with no key remap to a credentialed one with a warn.
-export function remapRosterToCredentials(ctx: DaemonContext): string[] {
-  const { config, logger, providers } = ctx;
-  const cfg = config as unknown as { agents?: Record<string, { provider?: string; model?: string }> };
-  if (!cfg.agents) return [];
-  const available = providersWithCredentials({ configProviders: providers, env: process.env });
-  if (available.length === 0) return [];
-  const { agents, remapped } = resolveRosterProviders(cfg.agents, available);
-  cfg.agents = agents;
-  for (const handle of remapped) {
+export interface AgentRoute {
+  provider: string;
+  model: string;
+  apiKey: string;
+}
+
+/**
+ * A peer runs on its pinned provider when that provider has a key. Without one it takes the lead
+ * turn's provider, model and key: a pinned model id means nothing on another provider.
+ */
+export async function routeAgent(
+  ctx: DaemonContext,
+  handle: string,
+  agent: { provider: string; model?: string },
+  leadTurnId: string | undefined,
+): Promise<AgentRoute> {
+  const { activeTurnMeta, getKeychain, logger, providers, redactor } = ctx;
+  let apiKey = "";
+  try {
+    apiKey =
+      (await resolveApiKey({
+        provider: agent.provider,
+        env: process.env,
+        keychain: await getKeychain(),
+        config: providers[agent.provider]?.apiKey,
+        ...oauthOverridesFor(agent.provider, providers),
+      })) ?? "";
+  } catch {}
+  const lead = leadTurnId === undefined ? undefined : activeTurnMeta.get(leadTurnId);
+  if (apiKey.length === 0 && lead !== undefined && lead.apiKey.length > 0) {
     logger.warn(
-      `agent "${handle}" remapped to provider "${agents[handle]?.provider}": no credentials for its pinned provider`,
+      `agent "${handle}" runs on ${lead.provider}/${lead.model}: no credentials for its pinned provider "${agent.provider}"`,
     );
+    return { provider: lead.provider, model: lead.model, apiKey: lead.apiKey };
   }
-  return remapped;
+  if (apiKey.length > 0) redactor.registerSecret(apiKey);
+  return { provider: agent.provider, model: agent.model ?? "", apiKey };
 }
 
 function diagnosticsForItem(ctx: DaemonContext, item: BoardItem): ReviewDiagnostic[] {

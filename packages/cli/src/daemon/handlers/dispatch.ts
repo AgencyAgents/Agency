@@ -16,7 +16,7 @@ import {
   type ToolSpec,
 } from "@agency/core";
 import { checkCostForecast } from "@agency/guard";
-import { classifyEffortFromText, resolveApiKey } from "@agency/providers";
+import { classifyEffortFromText } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
 import { preflightDispatchEstimate, priceForModel, recordTurnCompletion } from "../costing.ts";
@@ -29,9 +29,10 @@ import {
   worktreeBranchFor,
   worktreePathFor,
 } from "../team-context.ts";
-import { checkTeamBudgets, type DaemonContext, oauthOverridesFor, type TeamBudgets } from "../types.ts";
+import { checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { abortWorktreePeer, isOwnWorktree } from "./dispatch-worktrees.ts";
+import { routeAgent } from "./team-run.ts";
 
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
@@ -47,13 +48,10 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
     dispatchLog,
     eventBus,
     gateForAgent,
-    getKeychain,
     getOrCreateScope,
     http,
     isReadOnlyAgent,
     options,
-    providers,
-    redactor,
     resolveAgentModel,
     sessionScopes,
     teamFor,
@@ -340,24 +338,11 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           }
 
           // --- Real turn execution (following task tool pattern at line 628) ---
-          const childProvider = agent.provider;
-          const childModel = agent.model ?? "";
-
-          let childApiKey = "";
-          try {
-            const kc = await getKeychain();
-            const k = await resolveApiKey({
-              provider: childProvider,
-              env: process.env,
-              keychain: kc,
-              config: providers[childProvider]?.apiKey,
-              ...oauthOverridesFor(childProvider, providers),
-            });
-            if (k) {
-              childApiKey = k;
-              redactor.registerSecret(k);
-            }
-          } catch {}
+          const {
+            provider: childProvider,
+            model: childModel,
+            apiKey: childApiKey,
+          } = await routeAgent(daemon, a.handle, agent, ctx.turnId);
 
           const childModelInfo = catalogModel(childProvider, childModel);
           const childTurnId = newEntryId();
@@ -388,7 +373,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               .list()
               .map((m) => m.handle)
               .join(" "),
-            family: agent.provider,
+            family: childProvider,
             role: agent.role,
             handle: a.handle,
             briefLine: "Complete the given brief concisely.",

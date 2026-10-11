@@ -107,6 +107,8 @@ async function startDaemon(opts: {
   adapter?: ProviderAdapter;
   onCall?: () => void;
   gitRepo?: boolean;
+  agents?: Record<string, unknown>;
+  onStream?: (provider: string, request: { model: string; apiKey: string }) => void;
 }) {
   const root = tempDir("agency-dh35-root-");
   if (opts.gitRepo) {
@@ -120,20 +122,24 @@ async function startDaemon(opts: {
   const sessionsDir = tempDir("agency-dh35-sess-");
   let calls = 0;
   const inner = opts.adapter ?? dispatchAdapter();
-  const counting: ProviderAdapter = {
+  const counting = (provider: string): ProviderAdapter => ({
     family: "fake",
     stream: (req, http) => {
       calls++;
       opts.onCall?.();
+      opts.onStream?.(provider, req);
       return inner.stream(req, http);
     },
-  };
+  });
   const daemon = await createAgentDaemon({
     workspaceRoot: root,
     instanceFile: join(tempDir("agency-dh35-inst-"), "instance.json"),
-    adapterFor: () => counting,
+    adapterFor: counting,
     http: noopHttp,
-    configDir: writeConfigDir(teamCfg(opts.budgets ? { budgets: opts.budgets } : undefined)),
+    configDir: writeConfigDir({
+      ...teamCfg(opts.budgets ? { budgets: opts.budgets } : undefined),
+      ...(opts.agents ? { agents: { ...teamCfg().agents, ...opts.agents } } : {}),
+    }),
     sessionsDir,
   });
   daemons.push(daemon);
@@ -176,6 +182,30 @@ describe("dispatch hardening (item 35)", () => {
     // traceRecorder per child: one trace file per dispatched session.
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w1-b0.trace.jsonl"))).toBe(true);
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w2-b0.trace.jsonl"))).toBe(true);
+  });
+
+  it("a peer whose pinned provider has no key runs on the lead turn's provider, model and key", async () => {
+    const seen: string[] = [];
+    const keyless = { role: "Worker", provider: "keyless", model: "keyless-1", effort: "low", enabled: true };
+    const { client } = await startDaemon({
+      gitRepo: true,
+      agents: { w1: keyless, w2: keyless },
+      onStream: (provider, req) => seen.push(`${provider}/${req.model}/${req.apiKey}`),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "dh35-route",
+      provider: "anthropic",
+      model: PRICED_MODEL,
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "please dispatch" }] }],
+      sessionId: "dh35-route-session",
+    })) as RunTurnRpcResult;
+
+    expect(toolResultText(result)).toContain("child output for brief one");
+    expect(seen.length).toBe(4);
+    expect(new Set(seen)).toEqual(new Set([`anthropic/${PRICED_MODEL}/key`]));
   });
 
   it("dispatch_compare refuses once the team budget is hit (no spawn, no model call)", async () => {

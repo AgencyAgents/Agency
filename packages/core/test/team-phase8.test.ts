@@ -24,13 +24,7 @@ import { areScopesDisjoint, decideEscalation, formatTeamAnnouncement } from "../
 import { integrateSequentially } from "../src/team/integration.ts";
 import { climbLadder, ladderHopFor, resolveLadderChain, retryTarget } from "../src/team/ladder.ts";
 import { diffDiagnostics, gateReadyForReview } from "../src/team/review-gate.ts";
-import {
-  defaultTeamComposition,
-  providersWithCredentials,
-  ROLE_PROVIDERS,
-  resolveRosterProviders,
-  TEAM_ROSTER_MAX,
-} from "../src/team/roster.ts";
+import { defaultTeamComposition, ROLE_PROVIDERS, TEAM_ROSTER_MAX } from "../src/team/roster.ts";
 import { runChildTurn } from "../src/team/run-child-turn.ts";
 import { BoardStore } from "../src/team/todo.ts";
 
@@ -115,25 +109,6 @@ describe("phase 8 reviewer-first composition plus multi-provider roster", () => 
   it("role providers span more than one vendor", () => {
     const vendors = new Set(Object.values(ROLE_PROVIDERS).map((r) => r.provider));
     expect(vendors.size).toBeGreaterThan(1);
-  });
-
-  it("resolves each role from available credentials, recording remaps", () => {
-    const agents = {
-      coder: { provider: "anthropic", model: "claude-sonnet-5" },
-      reviewer: { provider: "openai", model: "gpt-5.2" },
-    };
-    const { agents: resolved, remapped } = resolveRosterProviders(agents, ["openai"]);
-    expect(resolved.coder?.provider).toBe("openai");
-    expect(resolved.reviewer?.provider).toBe("openai");
-    expect(remapped).toEqual(["coder"]);
-  });
-
-  it("detects credentials from config keys and AGENCY env names", () => {
-    const found = providersWithCredentials({
-      configProviders: { anthropic: { apiKey: "k" } },
-      env: { AGENCY_OPENAI_API_KEY: "k" } as NodeJS.ProcessEnv,
-    });
-    expect(found).toEqual(["anthropic", "openai"]);
   });
 });
 
