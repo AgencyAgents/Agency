@@ -801,6 +801,32 @@ describe("runTurn", () => {
     5_000,
   );
 
+  test("the idle limit of the adapter applies when the turn sets none", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      streamIdleMs: 50,
+      async *stream(req: { signal?: AbortSignal }): AsyncIterable<StreamEvent> {
+        await new Promise((_resolve, reject) =>
+          req.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          ),
+        );
+      },
+    };
+
+    const turn = runTurn(adapter, new Scheduler({ maxAttempts: 1 }), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    await expect(turn).rejects.toMatchObject({ message: "the provider sent nothing for 0.05 s" });
+  }, 5_000);
+
   test("onMessage reports each message as the turn produces it, before the next model call", async () => {
     const seen: string[] = [];
     let seenAtSecondCall: string[] = [];

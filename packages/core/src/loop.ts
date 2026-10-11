@@ -290,7 +290,7 @@ export async function runTurn(
               signal: options.signal,
             },
             options.onEvent,
-            options.streamIdleMs,
+            options.streamIdleMs ?? adapter.streamIdleMs,
           ),
         {
           onRetry: (attempt, message, next) => {

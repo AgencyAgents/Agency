@@ -1236,6 +1236,13 @@ describe("resolveAdapter", () => {
     expect(() => resolveAdapter("my-gateway", { "my-gateway": {} })).toThrow(/baseUrl/);
   });
 
+  test("a provider's streamIdleMs goes on its adapter, for a native and for a compatible family", () => {
+    const local = { baseUrl: "http://127.0.0.1:8080/v1", streamIdleMs: 900_000 };
+    expect(resolveAdapter("local", { local }).streamIdleMs).toBe(900_000);
+    expect(resolveAdapter("anthropic", { anthropic: { streamIdleMs: 60_000 } }).streamIdleMs).toBe(60_000);
+    expect(resolveAdapter("anthropic", {}).streamIdleMs).toBeUndefined();
+  });
+
   test("an unknown provider with a catalog base URL gets the compatible adapter", () => {
     const adapter = resolveAdapter("together", {}, { together: "https://api.together.xyz/v1" });
     expect(adapter.family).toBe("together");

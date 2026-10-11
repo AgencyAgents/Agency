@@ -244,7 +244,10 @@ export function resolveAdapter(
 
   const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
   if (baseUrl) {
-    return bindEndpoint(createOpenAiCompatibleAdapter(providerId, baseUrl), { headers: config.headers });
+    return bindEndpoint(createOpenAiCompatibleAdapter(providerId, baseUrl), {
+      headers: config.headers,
+      streamIdleMs: config.streamIdleMs,
+    });
   }
   if (providers[providerId] === undefined) throw new Error(`unknown provider: ${providerId}`);
   throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
@@ -256,11 +259,12 @@ const NATIVE_ADAPTERS: Record<string, ProviderAdapter | undefined> = {
   google: googleAdapter,
 };
 
-/** Binds a provider's configured endpoint and headers to each request: its key must not go to the family's public host. */
+/** Binds a provider's configured endpoint, headers and idle limit: its key must not go to the family's public host. */
 function bindEndpoint(adapter: ProviderAdapter, config: ProviderConfig): ProviderAdapter {
-  if (!config.baseUrl && !config.headers) return adapter;
+  if (!config.baseUrl && !config.headers && config.streamIdleMs === undefined) return adapter;
   return {
     ...adapter,
+    ...(config.streamIdleMs === undefined ? {} : { streamIdleMs: config.streamIdleMs }),
     stream: (request, http) =>
       adapter.stream(
         {

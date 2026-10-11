@@ -60,5 +60,7 @@ export type StreamEvent =
 
 export interface ProviderAdapter {
   readonly family: string;
+  /** Longest silence this endpoint may take on a stream, in ms. A slow local server needs more than the loop default. */
+  readonly streamIdleMs?: number;
   stream(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent>;
 }

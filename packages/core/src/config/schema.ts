@@ -62,6 +62,8 @@ const ProviderConfigSchema = z.object({
   env: z.array(z.string()).optional(),
   /** A key set directly in config; lowest-precedence, mainly for local dev. */
   apiKey: z.string().optional(),
+  /** Longest silence on a response stream before the request is cut, in ms. Default 5 minutes. */
+  streamIdleMs: z.number().int().positive().optional(),
   models: z.record(z.string(), ModelOverrideSchema).optional(),
   whitelist: z.array(z.string()).optional(),
   blacklist: z.array(z.string()).optional(),
