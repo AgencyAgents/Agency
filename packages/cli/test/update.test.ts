@@ -15,7 +15,7 @@ import {
   sign,
   verify,
 } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -213,6 +213,46 @@ describe("runUpdate - signature verification", () => {
       }
     }
   });
+
+  // Windows refuses to overwrite a running executable, and the CLI that runs the update is one.
+  test.skipIf(process.platform !== "win32")(
+    "update and rollback replace a binary that is running",
+    async () => {
+      const kp = testKeypair();
+      const assetContent = Buffer.from("new build");
+      const prevKey = process.env.AGENCY_UPDATE_PUBLIC_KEY;
+      process.env.AGENCY_UPDATE_PUBLIC_KEY = kp.publicKey.toString("base64");
+
+      const binPath = setupTempBin();
+      const ping = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "PING.EXE");
+      copyFileSync(ping, binPath);
+      const running = Bun.spawn([binPath, "-n", "20", "127.0.0.1"], { stdout: "ignore", stderr: "ignore" });
+      try {
+        await Bun.sleep(500);
+        const { httpFetch } = mockRelease({
+          assetName: platformAssetName(),
+          assetContent,
+          signature: signBuffer(assetContent, kp.privateKey),
+        });
+
+        expect(await runUpdate({ currentVersion: "1.0.0", httpFetch, binPath })).toBe("Updated to 2.0.0");
+        expect(readFileSync(binPath).equals(assetContent)).toBe(true);
+        expect(readFileSync(`${binPath}.previous`).equals(readFileSync(ping))).toBe(true);
+
+        expect(await runUpdate({ currentVersion: "2.0.0", rollback: true, binPath })).toBe(
+          "Rolled back to previous version",
+        );
+        expect(readFileSync(binPath).equals(readFileSync(ping))).toBe(true);
+      } finally {
+        running.kill();
+        await running.exited;
+        cleanupTempBin(binPath);
+        if (prevKey === undefined) delete process.env.AGENCY_UPDATE_PUBLIC_KEY;
+        else process.env.AGENCY_UPDATE_PUBLIC_KEY = prevKey;
+      }
+    },
+    20_000,
+  );
 
   test("tampered signature is rejected even with valid checksum", async () => {
     const kp = testKeypair();

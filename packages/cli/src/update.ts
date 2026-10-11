@@ -69,7 +69,7 @@ export async function runUpdate(options: {
   if (options.rollback) {
     const backup = `${binPath}.previous`;
     if (!existsSync(backup)) throw new Error("No previous version to rollback to");
-    renameSync(backup, binPath);
+    swapBinary(backup, binPath, `${binPath}.rolled-back`);
     return "Rolled back to previous version";
   }
 
@@ -144,11 +144,17 @@ export async function runUpdate(options: {
 
   const tmpPath = `${binPath}.new`;
   writeFileSync(tmpPath, assetBuf, { mode: 0o755 });
-  const backup = `${binPath}.previous`;
-  if (existsSync(binPath)) {
-    const current = readFileSync(binPath);
-    writeFileSync(backup, current, { mode: 0o755 });
-  }
-  renameSync(tmpPath, binPath);
+  swapBinary(tmpPath, binPath, `${binPath}.previous`);
   return `Updated to ${latestVersion}`;
+}
+
+/** Puts `source` at `binPath`. Windows cannot overwrite a running executable but can rename it, so the old one moves aside first. */
+function swapBinary(source: string, binPath: string, aside: string): void {
+  if (existsSync(binPath)) renameSync(binPath, aside);
+  try {
+    renameSync(source, binPath);
+  } catch (error) {
+    if (existsSync(aside)) renameSync(aside, binPath);
+    throw error;
+  }
 }

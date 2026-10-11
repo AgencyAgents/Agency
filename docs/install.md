@@ -38,7 +38,9 @@ After install, ensure the install directory is on `PATH`. The Linux/macOS script
 
 ## Updating and rollback
 
-Re-run the install script with `AGENCY_VERSION` pinned to the desired tag. There is no in-place updater; every install is a fresh download verified against `checksums.txt`.
+`agency update` downloads the latest release and verifies its signature and checksum. It then moves the running binary to `<binary>.previous` and puts the new binary in its place. `agency update --rollback` puts the previous binary back. An idle daemon from the old binary exits within one second; a daemon in a turn finishes that turn first.
+
+To install a specific version, re-run the install script with `AGENCY_VERSION` pinned to the desired tag.
 
 ## Building from source
 
