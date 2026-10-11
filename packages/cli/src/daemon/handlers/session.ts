@@ -283,10 +283,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       runParams.session = history;
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
     }
+    const served = result.servedBy ?? p;
     const parentId = await appendUsageEntry(store, p.sessionId, tip, {
       usage: result.usage,
-      model: p.model,
-      pricing: ctx.catalogModel(p.provider, p.model)?.pricing,
+      model: served.model,
+      pricing: ctx.catalogModel(served.provider, served.model)?.pricing,
     });
     const response: SessionSendResult = {
       ...result,

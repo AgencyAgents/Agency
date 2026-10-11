@@ -183,6 +183,8 @@ export interface RunTurnRpcResult {
   cancelled: boolean;
   /** Why the turn did not finish: the provider stream died after content arrived, or the step limit was reached. */
   error?: TurnError;
+  /** Set when the fallback model produced the result: usage is priced as this model, not as the one requested. */
+  servedBy?: { provider: string; model: string };
   /** Set when the turn failed with CONTEXT_OVERFLOW: the daemon produced no
    *  assistant messages, so the caller (which owns the SessionStore) can
    *  compact the session and retry the turn. */

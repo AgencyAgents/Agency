@@ -306,6 +306,67 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a turn that ran on the fallback is priced as the fallback model", async () => {
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "from the fallback" };
+        yield {
+          type: "message_stop",
+          stopReason: "end_turn",
+          usage: { inputTokens: 1_000_000, outputTokens: 0 },
+        };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          fallback_model: "openai/gpt-x",
+          provider: {
+            anthropic: {
+              apiKey: "primary-key",
+              models: { "test-model": { pricing: { inputPerMTok: 100, outputPerMTok: 100 } } },
+            },
+            openai: { models: { "gpt-x": { pricing: { inputPerMTok: 1, outputPerMTok: 1 } } } },
+          },
+        }),
+      });
+      const meters: Array<{ type: string; turnCostUsd?: number }> = [];
+      client.on("turn.t-fallback-cost", (payload) => meters.push(payload as { type: string }));
+      await client.call("run_turn", {
+        turnId: "t-fallback-cost",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+
+      expect(meters.find((event) => event.type === "cost_meter")?.turnCostUsd).toBe(1);
+
+      const sent = (await client.call("session_send", {
+        sessionId: "s-fallback-cost",
+        provider: "anthropic",
+        model: "test-model",
+        systemPrompt: "sys",
+        userText: "hi",
+      })) as { servedBy?: unknown };
+      expect(sent.servedBy).toEqual({ provider: "openai", model: "gpt-x" });
+      const report = (await client.call("cost_report", { sessionId: "s-fallback-cost" })) as {
+        sessions: Array<{ costUsd: number }>;
+      };
+      expect(report.sessions[0]?.costUsd).toBe(1);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
   test("the model's vision capability reaches the provider request", async () => {
     const seen: Array<boolean | undefined> = [];
     const adapter: ProviderAdapter = {

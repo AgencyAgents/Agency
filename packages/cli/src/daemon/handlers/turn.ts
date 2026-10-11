@@ -316,6 +316,8 @@ export async function executeTurn(
           await hooks?.onMessage?.(message);
         };
         let result: Awaited<ReturnType<typeof runTurn>>;
+        // The model that produced the result: a fallback has its own name and price in the cost records.
+        let served = { provider: resolvedProvider, model: resolvedModel, info: modelInfo };
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -519,6 +521,7 @@ export async function executeTurn(
                   ...(hooks?.onMessage ? { onMessage: hooks.onMessage } : {}),
                 },
               );
+              served = { provider: fallbackRef.provider, model: fallbackRef.model, info: fallbackInfo };
             } finally {
               activeTurnMeta.delete(params.turnId);
             }
@@ -545,7 +548,7 @@ export async function executeTurn(
           eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
         } catch {}
 
-        const modelPricing = modelInfo?.pricing;
+        const modelPricing = served.info?.pricing;
         const sidKey = sessionId;
         const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
         const turnHandle =
@@ -554,7 +557,7 @@ export async function executeTurn(
           team: turnTeam,
           sessionId: sidKey,
           handle: turnHandle,
-          model: resolvedModel,
+          model: served.model,
           usage: result.usage,
           ...(modelPricing === undefined ? {} : { pricing: modelPricing }),
           turnId: params.turnId,
@@ -578,7 +581,7 @@ export async function executeTurn(
           costUsd: turnCost,
         });
         telemetry.record("turn_complete", {
-          provider: resolvedProvider,
+          provider: served.provider,
           stopReason: result.stopReason,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
@@ -590,7 +593,13 @@ export async function executeTurn(
         // Generate session title after first turn if none exists yet
         void generateSessionTitle(ctx, params, sessionId);
 
-        const response: RunTurnRpcResult = { ...result, cancelled: controller.signal.aborted };
+        const response: RunTurnRpcResult = {
+          ...result,
+          cancelled: controller.signal.aborted,
+          ...(served.provider === resolvedProvider
+            ? {}
+            : { servedBy: { provider: served.provider, model: served.model } }),
+        };
         return response;
       } catch (error) {
         if (error instanceof AgencyError && error.code === ErrorCode.CONTEXT_OVERFLOW) {
