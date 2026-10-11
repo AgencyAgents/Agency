@@ -15,6 +15,7 @@ import {
   gatherEnvironmentInfo,
   type InboxStore,
   type Logger,
+  loadInstructions,
   mcpServerDownReminder,
   type PluginAgentContribution,
   type PluginCommandContribution,
@@ -53,7 +54,7 @@ import {
   type Usage,
 } from "@agency/providers";
 import type { DaemonServer } from "@agency/rpc";
-import type { Message, StopReason } from "@agency/schema";
+import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import type { Telemetry } from "@agency/telemetry";
 import type { SessionScope, ToolSpec as ToolsToolSpec } from "@agency/tools";
 import type { TeamContext } from "./team-context.ts";
@@ -158,6 +159,19 @@ export interface ResolveSystemPromptOptions {
   /** Shell label for the environment block (resolveShell(...).label), so the
    *  model writes commands in the session shell's dialect. */
   shellLabel?: string;
+  /** Gate for AGENTS.md, CLAUDE.md and .agency/rules: the daemon loads them unless the client sent its own. */
+  trustStore?: import("@agency/guard").TrustStore;
+}
+
+/** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
+function projectInstructions(options: ResolveSystemPromptOptions): string[] {
+  if (options.trustStore === undefined) return [];
+  try {
+    return loadInstructions(options.trustStore, options.workspaceRoot, options.workspaceRoot);
+  } catch (error) {
+    if (error instanceof AgencyError && error.code === ErrorCode.PERMISSION_DENIED) return [];
+    throw error;
+  }
 }
 
 export interface RunTurnRpcResult {
@@ -566,7 +580,7 @@ export function resolvePrompt(
   const composed = composeSystemPrompt({
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
     familyPresetOverlay: composeFromParts ? role : undefined,
-    instructions: composeFromParts ? (instructions ?? []) : [],
+    instructions: instructions ?? projectInstructions(options),
     toolDescriptions: [],
     context,
   });

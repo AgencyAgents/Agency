@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { configDir, dataDir, loadConfig } from "@agency/core";
+import { collectAgentsFiles, collectRuleFiles, configDir, dataDir, loadConfig } from "@agency/core";
 import type { PermissionMode } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
@@ -84,6 +84,14 @@ export async function connectHeadlessClient(
       log(t("cli.trust.denied", { path: options.workspaceRoot }));
       throw new Error(t("trust.denied"));
     }
+  } else if (
+    !trusted &&
+    collectAgentsFiles(options.workspaceRoot, options.workspaceRoot).length +
+      collectRuleFiles(options.workspaceRoot).length >
+      0
+  ) {
+    // Silence here would hide that the model runs without the project's own rules.
+    log(t("cli.trust.instructions_skipped"));
   }
 
   return ensureDaemon({

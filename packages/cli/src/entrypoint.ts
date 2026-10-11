@@ -69,6 +69,7 @@ Commands:
    plugin list              Show installed skills and plugin modules
    plugin remove <name>     Remove an installed plugin
   onboard                  First-run setup: connect, model, trust
+  trust                    Trust this workspace: load its AGENTS.md, CLAUDE.md and rules
   debug                    Write a redacted debug bundle for issue reports
   update [--rollback]      Update binary from GitHub Releases (ed25519 + SHA-256 verified)
   serve                    Run daemon in foreground (logging to stdout)
@@ -1003,6 +1004,13 @@ Subcommands:
       const { workspaceId } = await import("@agency/core");
       const instanceFile = join(instanceDir, `${workspaceId(workspaceRoot)}.json`);
       await runServe({ workspaceRoot, instanceFile });
+      return 0;
+    }
+    case "trust": {
+      const root = workspaceRootOf(parsed, deps);
+      const { createFileTrustStore } = await import("@agency/guard");
+      createFileTrustStore(join(dataDir(envOf(deps)), "trust.json")).trust(root);
+      out(t("cli.trust.accepted", { path: root }));
       return 0;
     }
     case "onboard": {

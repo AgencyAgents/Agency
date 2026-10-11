@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, type ToolSpec, TraceRecorder } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
@@ -459,6 +460,33 @@ describe("createAgentDaemon", () => {
 });
 
 describe("system prompt composition", () => {
+  test("project instructions load from a trusted workspace and stay out of an untrusted one", async () => {
+    const run = async (trusted: boolean): Promise<string> => {
+      const capture = { systems: [] as string[] };
+      const workspaceRoot = tempRoot();
+      writeFileSync(join(workspaceRoot, "AGENTS.md"), "Project rule: answer in French.");
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        trustStorePath,
+        adapterFor: () => textAdapter("ok", capture),
+      });
+      await client.call("run_turn", {
+        turnId: `instr-${trusted}`,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [],
+      });
+      return capture.systems[0] ?? "";
+    };
+
+    expect(await run(true)).toContain("Project rule: answer in French.");
+    expect(await run(false)).not.toContain("Project rule");
+  });
+
   test("a plain systemPrompt string is used as the base, with the environment block appended", async () => {
     const capture = { systems: [] as string[] };
     const { client, workspaceRoot } = await startFakeDaemon({

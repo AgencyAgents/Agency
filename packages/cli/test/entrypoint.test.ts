@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cacheDir, dataDir, SessionStore } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { RunTurnRpcResult } from "../src/daemon.ts";
@@ -722,6 +723,18 @@ describe("-p headless mode", () => {
     const code = await runEntrypoint(["where", "-p", "hi"], { ...baseDeps(), ...deps });
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("not both");
+  });
+});
+
+describe("trust", () => {
+  test("`agency trust` records the workspace so its instructions load", async () => {
+    const home = tempDir("agency-ep-home-");
+    const cwd = tempDir("agency-ep-ws-");
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["trust"], { env: { AGENCY_HOME: home }, cwd, ...deps });
+    expect(code).toBe(0);
+    expect(out.join(" ")).toContain(cwd);
+    expect(createFileTrustStore(join(home, "data", "trust.json")).isTrusted(cwd)).toBe(true);
   });
 });
 

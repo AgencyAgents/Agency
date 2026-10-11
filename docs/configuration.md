@@ -130,6 +130,10 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 `--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
 
+## Project instructions
+
+The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/rules/*.md` to the system prompt through `loadInstructions`, but only for a trusted workspace: repo-provided text is an injection surface. Run `agency trust` in the workspace, or accept the trust question in `agency onboard`. In an untrusted workspace the files are skipped and the CLI prints a one-line notice. A client that sends `systemPromptParts.instructions` replaces the daemon-loaded list.
+
 ## Permissions
 
 `permissions` maps a tool name (or `external_directory`) to a bare decision or a pattern map. Pattern maps use last-match-wins: e.g. `{"bash": {"*":"ask","git *":"allow","rm *":"deny"}}`. Path patterns match workspace-relative forward-slash paths. The daemon builds a `PermissionsGate`; the sandbox enforces `external_directory` and a deny-only `CommandPolicy` derived from `bash` deny patterns. Unknown/riskTier-less tools default to `allow` so that MCP/tool-injected tools are not spuriously gated — the trust and capability layers own those.

@@ -212,6 +212,8 @@ export const en = {
   "cli.trust.prompt": "Trust {path}? (y/N): ",
   "cli.trust.accepted": "Trusted {path}.",
   "cli.trust.denied": "Trust denied for {path}.",
+  "cli.trust.instructions_skipped":
+    "Project instructions were not loaded: this workspace is not trusted. Run `agency trust` to load them.",
 
   "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;

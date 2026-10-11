@@ -390,7 +390,10 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       session: p.session ?? [],
       ...(p.systemPromptParts === undefined ? {} : { systemPromptParts: p.systemPromptParts }),
     };
-    const resolved = resolvePrompt(params, { workspaceRoot: ctx.options.workspaceRoot });
+    const resolved = resolvePrompt(params, {
+      workspaceRoot: ctx.options.workspaceRoot,
+      trustStore: ctx.trustStore,
+    });
     return { prompt: resolved.text, segments: resolved.segments };
   };
 }

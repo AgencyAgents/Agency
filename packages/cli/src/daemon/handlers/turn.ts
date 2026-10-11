@@ -94,6 +94,7 @@ export async function executeTurn(
     telemetry,
     todoSessionsDir,
     todoStore,
+    trustStore,
     tools,
     turnOwners,
     warnPersistence,
@@ -382,6 +383,7 @@ export async function executeTurn(
               workspaceRoot: options.workspaceRoot,
               mcpFailures: effectiveMcpFailures,
               shellLabel,
+              trustStore,
             });
             result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
               identity,
@@ -472,6 +474,7 @@ export async function executeTurn(
               workspaceRoot: options.workspaceRoot,
               mcpFailures: fallbackMcpFailures,
               shellLabel,
+              trustStore,
             });
             try {
               result = await runTurn(
@@ -521,6 +524,7 @@ export async function executeTurn(
               workspaceRoot: options.workspaceRoot,
               mcpFailures: cassetteMcpFailures,
               shellLabel,
+              trustStore,
             });
             writeTurnCassette(traceRecorder, params, sysPrompt, collectedTraceEvents, result);
           }
