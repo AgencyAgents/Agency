@@ -281,6 +281,34 @@ describe("anthropicAdapter", () => {
     ]);
   });
 
+  test("a message that maps to no content is left out: the API rejects an empty message", async () => {
+    let capturedBody = "";
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        capturedBody = init?.body as string;
+        return sseResponse("");
+      },
+    };
+
+    await collect(
+      anthropicAdapter.stream(
+        {
+          ...baseRequest,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "first" }] },
+            { role: "assistant", content: [] },
+            { role: "assistant", content: [{ type: "thinking", text: "unsigned only" }] },
+            { role: "user", content: [{ type: "text", text: "second" }] },
+          ],
+        },
+        http,
+      ),
+    );
+
+    const messages = JSON.parse(capturedBody).messages as Array<{ role: string; content: unknown[] }>;
+    expect(messages.map((message) => message.role)).toEqual(["user", "user"]);
+  });
+
   test("marks tool definitions and the conversation tail as cache breakpoints", async () => {
     let capturedBody: string | undefined;
     const http: HttpClient = {

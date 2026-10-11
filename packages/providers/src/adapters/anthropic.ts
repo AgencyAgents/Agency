@@ -75,13 +75,16 @@ function toAnthropicContent(block: ContentBlock, vision = false): Record<string,
 
 function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   const minTokens = request.cachePolicy?.minTokens ?? MIN_CACHEABLE_TOKENS;
+  // A message that maps to no content is left out: the API rejects an empty message.
   const messages: { role: string; content: Record<string, unknown>[]; cache_control?: unknown }[] =
-    request.messages.map((m) => ({
-      role: m.role === "system" ? "user" : m.role,
-      content: m.content
-        .map((block) => toAnthropicContent(block, request.vision))
-        .filter((c): c is Record<string, unknown> => c !== undefined),
-    }));
+    request.messages
+      .map((m) => ({
+        role: m.role === "system" ? "user" : m.role,
+        content: m.content
+          .map((block) => toAnthropicContent(block, request.vision))
+          .filter((c): c is Record<string, unknown> => c !== undefined),
+      }))
+      .filter((m) => m.content.length > 0);
 
   // Breakpoints 3 and 4 roll forward: the settled turn-back tail and the
   // current tail. Each is skipped when the conversation is too short to pay.
