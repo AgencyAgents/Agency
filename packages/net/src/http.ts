@@ -83,8 +83,19 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
   };
 }
 
-function translateFetchError(cause: unknown, url: string, throughExplicitProxy: boolean): AgencyError {
+/** The query and the login of an address can hold a key, and an error's text goes to logs and to the model. */
+function withoutSecrets(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
+function translateFetchError(cause: unknown, rawUrl: string, throughExplicitProxy: boolean): AgencyError {
   const message = cause instanceof Error ? cause.message : String(cause);
+  const url = withoutSecrets(rawUrl);
 
   if (cause instanceof DOMException && cause.name === "AbortError") {
     return new AgencyError(ErrorCode.NETWORK, `request to ${url} timed out`, {

@@ -98,6 +98,18 @@ describe("createHttpClient", () => {
     expect((err as AgencyError).code).toBe(ErrorCode.NETWORK);
   });
 
+  test("a failed request's error names the address without its query or login, which can hold a key", async () => {
+    const client = createHttpClient({ timeoutMs: 2_000 });
+
+    const err = await client
+      .fetch("http://user:hunter2@127.0.0.1:1/v1/models?key=sk-secret&alt=sse")
+      .catch((e) => e);
+    const told = JSON.stringify([(err as AgencyError).message, (err as AgencyError).context]);
+    expect(told).toContain("http://127.0.0.1:1/v1/models");
+    expect(told).not.toContain("sk-secret");
+    expect(told).not.toContain("hunter2");
+  });
+
   test("an explicit proxy override is used instead of going direct", async () => {
     const client = createHttpClient({ proxy: "http://127.0.0.1:1", timeoutMs: 2_000 });
 
