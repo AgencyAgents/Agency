@@ -222,7 +222,9 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     // the compacted tip instead of the orphaned pre-compaction entry.
     let tip: string | null = userEntry.id;
     const onContextOverflow = async (): Promise<Message[]> => {
-      const outcome = await compact(store, p.sessionId, userEntry.id, tokenizer, threshold, summarize, 4, {
+      // From the current tip, not the prompt: the steps this turn has done stay in the model's view.
+      const from = tip ?? userEntry.id;
+      const outcome = await compact(store, p.sessionId, from, tokenizer, threshold, summarize, 4, {
         force: true,
       });
       history = store.messagesFor(store.load(p.sessionId), outcome.tipId);

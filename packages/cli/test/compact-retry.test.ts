@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionStore } from "@agency/core";
+import { SessionStore, type ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
@@ -48,14 +48,14 @@ function compactingAdapter(): ProviderAdapter {
   };
 }
 
-async function daemon(ws: string, adapter: ProviderAdapter, sessionsDir: string) {
+async function daemon(ws: string, adapter: ProviderAdapter, sessionsDir: string, tools: ToolSpec[] = []) {
   const d = await createAgentDaemon({
     workspaceRoot: ws,
     instanceFile: join(ws, ".agency", "instance.json"),
     sessionsDir,
     adapterFor: () => adapter,
     http: noopHttp,
-    tools: [],
+    tools,
   });
   daemons.push(d);
   const c = await connectToDaemon(d.server.port, "127.0.0.1", { token: d.server.token });
@@ -103,6 +103,70 @@ describe("compact-and-retry branch", () => {
     expect(
       chain.some((e) => e.type === "message" && JSON.stringify(e).includes("continue after overflow")),
     ).toBe(true);
+  }, 15000);
+
+  test("an overflow in the middle of a turn keeps the steps of that turn", async () => {
+    const ws = tmp("agency-compact-ws-");
+    const sessionsDir = tmp("agency-compact-sess-");
+    const seed = new SessionStore(sessionsDir);
+    seed.create("s1");
+    let parent: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const e = await seed.append("s1", {
+        type: "message",
+        parentId: parent,
+        message: { role: "user", content: [{ type: "text", text: `history ${i} ${"x".repeat(800)}` }] },
+      });
+      parent = e.id;
+    }
+
+    let runs = 0;
+    const countTool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    let overflowed = false;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const stepDone = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if (!stepDone) {
+          yield { type: "tool_call_start", id: "c1", name: "count" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 5, outputTokens: 5 } };
+          return;
+        }
+        if (!overflowed) {
+          overflowed = true;
+          throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "prompt is too long", { source: "fake" });
+        }
+        yield { type: "text_delta", text: "done after compaction" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const client = await daemon(ws, adapter, sessionsDir, [countTool]);
+
+    const { result, tipId } = await runSessionTurn(client, {
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "count once",
+    });
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(runs).toBe(1);
+    const store = new SessionStore(sessionsDir);
+    const stored = JSON.stringify(store.messagesFor(store.load("s1"), tipId));
+    expect(stored).toContain("run 1");
+    expect(stored).toContain("done after compaction");
   }, 15000);
 
   test("retry events: scheduler onRetry flows to LoopEvent retry event via runSessionTurn", async () => {
