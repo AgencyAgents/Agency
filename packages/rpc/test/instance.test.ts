@@ -68,6 +68,16 @@ describe("ensureDaemon", () => {
     expect(await client.call("ping", {})).toBe("pong");
   });
 
+  test("spawns on a first run, when the instance dir does not exist yet", async () => {
+    const { client } = await ensureDaemon({
+      workspaceRoot: "/repo/first-run",
+      instanceDir: join(tempDir(), "data", "instances"),
+      spawnDaemon: fakeSpawnDaemon,
+    });
+    clients.push(client);
+    expect(await client.call("ping", {})).toBe("pong");
+  });
+
   test("reuses an existing daemon whose instance file points to a live server", async () => {
     const instanceDir = tempDir();
     const server = await startDaemonServer({ handlers: { ping: async () => "already-running" } });

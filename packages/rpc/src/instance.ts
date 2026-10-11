@@ -215,6 +215,8 @@ export async function ensureDaemon(
   const existing = await tryConnect();
   if (existing) return existing;
 
+  // First run: the lock is taken before any daemon has created the instance dir.
+  mkdirSync(options.instanceDir, { recursive: true });
   let locked = false;
   try {
     locked = acquireSpawnLock(lockFile, lockStaleMs);
