@@ -424,7 +424,9 @@ export class SessionStore {
         closeSync(fd);
         return;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        // Windows gives EPERM for a lock that another process removes at this moment: it is free on the next try.
+        if (code !== "EEXIST" && !(process.platform === "win32" && code === "EPERM")) throw error;
         try {
           if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) rmSync(lockPath, { force: true });
         } catch {
