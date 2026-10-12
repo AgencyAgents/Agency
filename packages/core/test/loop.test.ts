@@ -1400,6 +1400,8 @@ describe("A5: input validation and permissions gating", () => {
     const toolResult = result.messages[1]?.content[0];
     if (toolResult?.type === "tool_result") {
       expect(toolResult.content).toContain("permission denied");
+      // Without this sentence a weaker model sent the refused call again, 15 times on average in live runs.
+      expect(toolResult.content).toContain("Do not call it again");
       expect(toolResult.isError).toBe(true);
     }
   });

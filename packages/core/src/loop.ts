@@ -763,7 +763,8 @@ async function executeOne(
       }
       if (verdict === "deny") {
         return {
-          content: `permission denied: ${resolved.name} is not permitted by the current permissions policy`,
+          // Measured: with the bare first sentence a weaker model sent the same refused call 15 times on average.
+          content: `permission denied: ${resolved.name} is not permitted by the current permissions policy. Do not call it again: the answer will be the same. Continue without it, or tell the user that the task needs this permission.`,
           isError: true,
         };
       }
