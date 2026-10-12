@@ -7,7 +7,7 @@ import { AgencyError, ErrorCode } from "@agency/schema";
 import { type BashState, createBashTool } from "../../src/builtins/bash.ts";
 import type { ToolDeps } from "../../src/contract.ts";
 import { ProcessManager } from "../../src/process-manager.ts";
-import { resolveShell } from "../../src/shell.ts";
+import { resolveConfiguredShell, resolveShell } from "../../src/shell.ts";
 
 const dirs: string[] = [];
 const managers: ProcessManager[] = [];
@@ -305,6 +305,37 @@ describe.skipIf(process.platform !== "win32" || Bun.which("bash") === null)(
       expect(moved.content).not.toContain("cwd kept");
       const where = await tool.handler({ command: 'basename "$(pwd)"' }, { signal });
       expect(where.content.trim()).toBe("sub");
+    }, 60_000);
+
+    test("aborting stops the command's own child process, through the launcher that Git for Windows installs", async () => {
+      const root = mkdtempSync(join(tmpdir(), "agency-bash-test-"));
+      dirs.push(root);
+      const deps: ToolDeps = {
+        identity: { type: "user" },
+        capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },
+        sandbox: new SandboxBoundary(root),
+      };
+      const manager = new ProcessManager();
+      managers.push(manager);
+      // The shell that a real run uses: bin/bash.exe starts usr/bin/bash.exe, one more level in the tree.
+      const tool = createBashTool(deps, resolveConfiguredShell("win32", "gitbash"), { cwd: root }, manager);
+      const controller = new AbortController();
+      const beat = join(root, "beat").split(String.fromCharCode(92)).join("/");
+      const command = `node -e "setInterval(()=>require('fs').writeFileSync('${beat}', String(Date.now())), 50)"`;
+
+      const resultPromise = tool.handler({ command }, { signal: controller.signal });
+      const deadline = Date.now() + 20_000;
+      while (!existsSync(beat)) {
+        if (Date.now() > deadline) throw new Error("the child never started");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      controller.abort();
+      await resultPromise;
+
+      await new Promise((r) => setTimeout(r, 500));
+      const after = readFileSync(beat, "utf8");
+      await new Promise((r) => setTimeout(r, 500));
+      expect(readFileSync(beat, "utf8")).toBe(after);
     }, 60_000);
   },
 );
