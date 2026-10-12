@@ -11,7 +11,7 @@ import {
 import { type KeychainBackend, resolveApiKey, type ThinkingLevel } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
 
 export function writeTurnCassette(
   traceRecorder: TraceRecorder,
@@ -115,7 +115,7 @@ export function registerTraceHandlers(handlers: Record<string, MethodHandler>, c
             env: process.env,
             keychain: kc,
             config: providers[targetProvider]?.apiKey,
-            ...oauthOverridesFor(targetProvider, providers),
+            ...keySourcesFor(targetProvider, providers),
           });
         })();
         return k ?? "replay-key";

@@ -7,6 +7,8 @@ export interface ResolveApiKeyOptions {
   flag?: string;
   env?: NodeJS.ProcessEnv;
   keychain?: KeychainBackend;
+  /** Variable names from `provider.<id>.env`; they win over the built-in names. */
+  declaredEnv?: readonly string[];
   /** A key set directly in a config file, lowest precedence, mainly for local dev. */
   config?: string;
   httpFetch?: typeof fetch;
@@ -15,8 +17,12 @@ export interface ResolveApiKeyOptions {
   oauthBaseUrl?: string;
 }
 
-function envKey(provider: string): string {
-  return `AGENCY_${provider.toUpperCase()}_API_KEY`;
+/** Variable names that a provider's own tools read; each other id uses <ID>_API_KEY. */
+const OWN_ENV: Record<string, readonly string[]> = { google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] };
+
+function envNames(provider: string, declared: readonly string[] = []): string[] {
+  const id = provider.toUpperCase();
+  return [...declared, `AGENCY_${id}_API_KEY`, ...(OWN_ENV[provider] ?? [`${id}_API_KEY`])];
 }
 
 /**
@@ -27,7 +33,9 @@ export async function resolveApiKey(options: ResolveApiKeyOptions): Promise<stri
   if (options.flag) return options.flag;
 
   const env = options.env ?? process.env;
-  const fromEnv = env[envKey(options.provider)];
+  const fromEnv = envNames(options.provider, options.declaredEnv)
+    .map((name) => env[name])
+    .find(Boolean);
   if (fromEnv) return fromEnv;
 
   if (options.keychain) {

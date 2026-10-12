@@ -27,7 +27,7 @@ import { modelRunOptions } from "../costing.ts";
 import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
-  oauthOverridesFor,
+  keySourcesFor,
   type RunTurnParams,
   type SessionMessageParams,
   type SessionSendParams,
@@ -65,7 +65,7 @@ export async function generateSessionTitle(
               env: process.env,
               keychain: kc,
               config: providers[smallModelRef.provider]?.apiKey,
-              ...oauthOverridesFor(smallModelRef.provider, providers),
+              ...keySourcesFor(smallModelRef.provider, providers),
             });
             if (smallApiKey) {
               // Background-turn cheap routing: titles run on the cheapest
@@ -405,7 +405,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
             env: process.env,
             keychain: await getKeychain(),
             config: providers[childProvider]?.apiKey,
-            ...oauthOverridesFor(childProvider, providers),
+            ...keySourcesFor(childProvider, providers),
           });
         } catch {}
         if (own) {

@@ -347,17 +347,15 @@ async function validateTurnKey(provider: string, config: Config, deps: Entrypoin
   const env = envOf(deps);
   const keychain = deps.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
   const providerConfig = config.provider[provider];
-  const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-  const key =
-    fromDeclaredEnv ??
-    (await resolveApiKey({
-      provider,
-      env,
-      keychain,
-      config: providerConfig?.apiKey,
-      oauthClientId: providerConfig?.oauth?.clientId,
-      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-    }));
+  const key = await resolveApiKey({
+    provider,
+    env,
+    keychain,
+    declaredEnv: providerConfig?.env,
+    config: providerConfig?.apiKey,
+    oauthClientId: providerConfig?.oauth?.clientId,
+    oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+  });
   if (key === undefined) throw new Error(t("cli.error.no_key", { provider }));
 }
 
@@ -371,17 +369,15 @@ async function providerConnections(
   const rows: Array<{ provider: string; connected: boolean }> = [];
   for (const id of ids) {
     const providerConfig = config.provider[id];
-    const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-    const key =
-      fromDeclaredEnv ??
-      (await resolveApiKey({
-        provider: id,
-        env,
-        keychain,
-        config: providerConfig?.apiKey,
-        oauthClientId: providerConfig?.oauth?.clientId,
-        oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-      }));
+    const key = await resolveApiKey({
+      provider: id,
+      env,
+      keychain,
+      declaredEnv: providerConfig?.env,
+      config: providerConfig?.apiKey,
+      oauthClientId: providerConfig?.oauth?.clientId,
+      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+    });
     rows.push({ provider: id, connected: key !== undefined });
   }
   return rows;

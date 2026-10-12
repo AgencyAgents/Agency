@@ -265,6 +265,39 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a turn reads its key from a variable name that the provider config declares", async () => {
+    const seen: string[] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.apiKey);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.MY_GATEWAY_KEY;
+    process.env.MY_GATEWAY_KEY = "declared-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          provider: { "my-gateway": { baseUrl: "http://gateway.test/v1", env: ["MY_GATEWAY_KEY"] } },
+        }),
+      });
+      await client.call("run_turn", {
+        turnId: "t-declared-env",
+        provider: "my-gateway",
+        model: "m",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+      expect(seen).toEqual(["declared-key"]);
+    } finally {
+      if (saved === undefined) delete process.env.MY_GATEWAY_KEY;
+      else process.env.MY_GATEWAY_KEY = saved;
+    }
+  }, 60_000);
+
   test("a fallback request uses the fallback model's own output limit", async () => {
     const limits: Record<string, number> = {};
     const adapterFor = (provider: string): ProviderAdapter => ({

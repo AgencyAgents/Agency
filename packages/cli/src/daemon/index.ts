@@ -127,11 +127,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const redactor = new Redactor();
   for (const providerConfig of Object.values(providers)) {
     if (providerConfig.apiKey) redactor.registerSecret(providerConfig.apiKey);
+    for (const name of providerConfig.env ?? []) {
+      const value = process.env[name];
+      if (value) redactor.registerSecret(value);
+    }
   }
   for (const [envKey, value] of Object.entries(process.env)) {
-    if (envKey.startsWith("AGENCY_") && envKey.endsWith("_API_KEY") && value) {
-      redactor.registerSecret(value);
-    }
+    if (envKey.endsWith("_API_KEY") && value) redactor.registerSecret(value);
   }
 
   const eventBus = new EventBus();

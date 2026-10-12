@@ -279,12 +279,21 @@ function bindEndpoint(adapter: ProviderAdapter, config: ProviderConfig): Provide
   };
 }
 
-export function oauthOverridesFor(
+/** A provider config's inputs to the key lookup. Each daemon lookup spreads them, so none can miss one. */
+export function keySourcesFor(
   providerId: string,
   providers: Record<string, ProviderConfig>,
-): { oauthClientId: string | undefined; oauthBaseUrl: string | undefined } {
-  const oauth = providers[providerId]?.oauth;
-  return { oauthClientId: oauth?.clientId, oauthBaseUrl: oauth?.baseUrl };
+): {
+  declaredEnv: string[] | undefined;
+  oauthClientId: string | undefined;
+  oauthBaseUrl: string | undefined;
+} {
+  const config = providers[providerId];
+  return {
+    declaredEnv: config?.env,
+    oauthClientId: config?.oauth?.clientId,
+    oauthBaseUrl: config?.oauth?.baseUrl,
+  };
 }
 
 export interface AgentDaemonOptions {

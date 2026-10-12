@@ -24,7 +24,7 @@ import {
   classifyEffortWithSmallModel,
   type DaemonContext,
   HEARTBEAT_INTERVAL_MS,
-  oauthOverridesFor,
+  keySourcesFor,
   type RunTurnParams,
   type RunTurnRpcResult,
   resolvePrompt,
@@ -134,7 +134,7 @@ export async function executeTurn(
               env: process.env,
               keychain,
               config: providers[params.provider]?.apiKey,
-              ...oauthOverridesFor(params.provider, providers),
+              ...keySourcesFor(params.provider, providers),
             });
           })());
         if (apiKey === undefined) {
@@ -469,7 +469,7 @@ export async function executeTurn(
                 env: process.env,
                 keychain: await getKeychain().catch(() => undefined),
                 config: providers[fallbackRef.provider]?.apiKey,
-                ...oauthOverridesFor(fallbackRef.provider, providers),
+                ...keySourcesFor(fallbackRef.provider, providers),
               });
             } catch {}
             // No key for the fallback provider: the primary key must not go to another vendor.

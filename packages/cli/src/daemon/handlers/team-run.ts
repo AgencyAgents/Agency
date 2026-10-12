@@ -32,7 +32,7 @@ import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { extractFinalText, type SessionScope, TeamMcpPool } from "@agency/tools";
 import { modelRunOptions, teamRunUsage } from "../costing.ts";
 import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
-import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { createTurnApproval } from "./plan.ts";
 
@@ -68,7 +68,7 @@ export async function routeAgent(
         env: process.env,
         keychain: await getKeychain(),
         config: providers[agent.provider]?.apiKey,
-        ...oauthOverridesFor(agent.provider, providers),
+        ...keySourcesFor(agent.provider, providers),
       })) ?? "";
   } catch {}
   const lead = leadTurnId === undefined ? undefined : activeTurnMeta.get(leadTurnId);
@@ -358,7 +358,7 @@ export async function runCompareChildTurn(
           env: process.env,
           keychain: kc,
           config: providers[childProvider]?.apiKey,
-          ...oauthOverridesFor(childProvider, providers),
+          ...keySourcesFor(childProvider, providers),
         });
         if (k) {
           childApiKey = k;

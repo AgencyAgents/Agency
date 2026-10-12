@@ -126,7 +126,7 @@ Mapped via `envOverrides`:
 - `AGENCY_MODELS_URL` -> model catalog source URL (default `https://models.opencode.ai/api.json`; `OPENCODE_MODELS_URL` still honored as a one-release fallback)
 - `AGENCY_DISABLE_MODELS_FETCH` (set to anything) -> serve the catalog from disk cache or the builtin snapshot without fetching (`OPENCODE_DISABLE_MODELS_FETCH` still honored as a one-release fallback)
 
-Provider keys are resolved per turn as: declared `provider.<id>.env` entries, then `AGENCY_<PROVIDER>_API_KEY`, then keychain, then `provider.<id>.apiKey`.
+Provider keys are resolved per turn as: declared `provider.<id>.env` entries, then `AGENCY_<PROVIDER>_API_KEY`, then the provider's own name `<PROVIDER>_API_KEY` (for `google`: `GEMINI_API_KEY`, then `GOOGLE_API_KEY`), then keychain, then `provider.<id>.apiKey`.
 
 ## Providers and models
 

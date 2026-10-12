@@ -23,7 +23,7 @@ import {
   latestChildAnywhere,
   latestChildSession,
 } from "../team-context.ts";
-import { type DaemonContext, oauthOverridesFor } from "../types.ts";
+import { type DaemonContext, keySourcesFor } from "../types.ts";
 import { type AgentRoute, type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
 
 type FileBackedAgent = AgentConfig & {
@@ -303,7 +303,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
           env: process.env,
           keychain: kc ?? undefined,
           config: providers[provider]?.apiKey,
-          ...oauthOverridesFor(provider, providers),
+          ...keySourcesFor(provider, providers),
         });
         if (found) {
           compareKeys.set(provider, found);
@@ -325,7 +325,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             env: process.env,
             keychain: (await getKeychain().catch(() => undefined)) ?? undefined,
             config: providers[house.provider]?.apiKey,
-            ...oauthOverridesFor(house.provider, providers),
+            ...keySourcesFor(house.provider, providers),
           });
         } catch {}
       }

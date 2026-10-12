@@ -5,6 +5,8 @@ import { join } from "node:path";
 // Tests must never touch the real user config or data; spawned children inherit this.
 const home = mkdtempSync(join(tmpdir(), "agency-test-home-"));
 process.env.AGENCY_HOME = home;
+// A developer's own provider keys must not change what a test sees.
+for (const name of Object.keys(process.env)) if (name.endsWith("_API_KEY")) delete process.env[name];
 process.on("exit", () => {
   try {
     rmSync(home, { recursive: true, force: true });

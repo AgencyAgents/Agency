@@ -61,4 +61,34 @@ describe("resolveApiKey", () => {
     });
     expect(key).toBe("sk-openai");
   });
+
+  test("a variable name that the config declares wins over the built-in names", async () => {
+    const key = await resolveApiKey({
+      provider: "openrouter",
+      declaredEnv: ["MY_ROUTER_KEY"],
+      env: {
+        MY_ROUTER_KEY: "sk-declared",
+        AGENCY_OPENROUTER_API_KEY: "sk-agency",
+        OPENROUTER_API_KEY: "sk-own",
+      },
+    });
+    expect(key).toBe("sk-declared");
+  });
+
+  test("the provider's own variable name is read after the AGENCY name", async () => {
+    const own = { OPENROUTER_API_KEY: "sk-own" };
+    expect(await resolveApiKey({ provider: "openrouter", env: own })).toBe("sk-own");
+    expect(
+      await resolveApiKey({
+        provider: "openrouter",
+        env: { ...own, AGENCY_OPENROUTER_API_KEY: "sk-agency" },
+      }),
+    ).toBe("sk-agency");
+    expect(
+      await resolveApiKey({ provider: "openrouter", env: own, keychain: fakeKeychain("sk-stored") }),
+    ).toBe("sk-own");
+    expect(await resolveApiKey({ provider: "google", env: { GEMINI_API_KEY: "sk-gemini" } })).toBe(
+      "sk-gemini",
+    );
+  });
 });

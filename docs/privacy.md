@@ -28,8 +28,9 @@
 
 1. Declared `provider.<id>.env` entries (first present env var wins)
 2. `AGENCY_<PROVIDER>_API_KEY` (e.g. `AGENCY_ANTHROPIC_API_KEY`)
-3. OS keychain (`agency auth login <provider>` stores via `keychain.set`)
-4. `provider.<id>.apiKey` from config (lowest precedence, local dev only)
+3. The provider's own name `<PROVIDER>_API_KEY` (e.g. `OPENROUTER_API_KEY`; for `google`: `GEMINI_API_KEY`, then `GOOGLE_API_KEY`)
+4. OS keychain (`agency auth login <provider>` stores via `keychain.set`)
+5. `provider.<id>.apiKey` from config (lowest precedence, local dev only)
 
 Keychain backends: DPAPI on Windows, Keychain on macOS, libsecret where available on Linux, and an encrypted file fallback elsewhere. Legacy Windows DPAPI format (hex `76492d11...` prefix) is detected and migrated to the current format. The daemon resolves keys itself via `getKeychain()` — headless `-p` validates locally for a fast failure but does not send the key over RPC. Keys are registered with `Redactor` so every log line scrubs them.
 
@@ -44,7 +45,7 @@ Legacy DPAPI detection: a stale hex-format key that fails to decrypt throws an a
 
 ### Redaction chokepoint
 
-One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values and for `AGENCY_*_API_KEY` env entries; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
+One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values, for each env entry whose name ends in `_API_KEY`, and for each env entry that a `provider.<id>.env` list names; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
 
 ### Network
 
