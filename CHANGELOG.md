@@ -459,6 +459,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Test isolation**: the suite wrote into the real user data directory.
   `AGENCY_HOME` now roots config, data and cache on every platform, and a
   test preload sets it.
+  A `bunfig.toml` in each package loads the same preload, so a run from
+  inside a package folder is isolated too. Before, `bun test` in
+  `packages/cli` wrote 400 session files into the real data directory.
 - **CI triggers**: CI runs on a push to the master branch and on manual
   dispatch only.
 - **CI reliability**: `.github/workflows/ci.yml` hardened with cross-platform
