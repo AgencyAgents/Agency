@@ -157,6 +157,7 @@ export const en = {
 
   "cli.tui.hint": "Agency TUI: run in a terminal with a TTY. Use --help for commands.",
   "cli.error.unknown_command": 'Unknown command "{command}". Run `agency --help`.',
+  "cli.error.missing_subcommand": '"{command}" needs a subcommand. Run `agency --help`.',
   "cli.error.unknown_option": 'Unknown option "{flag}". Run `agency --help`.',
   "cli.error.missing_value": "Option {flag} needs a value.",
   "cli.error.image_unreadable": "Cannot read the image file {path}.",

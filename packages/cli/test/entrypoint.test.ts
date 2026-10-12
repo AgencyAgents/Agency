@@ -897,6 +897,17 @@ describe("-p headless mode", () => {
     expect(out).toEqual(["second reply"]);
   });
 
+  test("a command group with no subcommand says that it needs one", async () => {
+    // `daemon` is not here: with no subcommand it shows the status.
+    for (const group of ["session", "auth", "plugin"]) {
+      const { err, deps } = capture();
+      const code = await runEntrypoint([group], { ...baseDeps(), ...deps });
+      expect(code).toBe(1);
+      expect(err.join("\n")).toContain(`"${group}" needs a subcommand`);
+      expect(err.join("\n")).not.toContain("(none)");
+    }
+  });
+
   test("--continue with no sessions, conflicting session flags, and missing -p all fail clearly", async () => {
     const emptyDir = tempDir("agency-ep-sessions-");
     const none = capture();

@@ -386,6 +386,15 @@ async function providerConnections(
   return rows;
 }
 
+/** The error of a command group for a subcommand that is wrong or missing. */
+function subcommandError(group: string, subcommand: string | undefined): Error {
+  return new Error(
+    subcommand === undefined
+      ? t("cli.error.missing_subcommand", { command: group })
+      : t("cli.error.unknown_command", { command: `${group} ${subcommand}` }),
+  );
+}
+
 /** What `-p` prints in text mode: the reply to the prompt this run sent.
  *  A session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
@@ -759,7 +768,7 @@ Subcommands:
     return 0;
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `session ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("session", parsed.subcommand);
 }
 
 function defaultKeyReader(prompt: string): Promise<string> {
@@ -856,7 +865,7 @@ async function authCmd(
     return 0;
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `auth ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("auth", parsed.subcommand);
 }
 
 async function daemonStatusCmd(
@@ -961,7 +970,7 @@ Subcommands:
     }
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `plugin ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("plugin", parsed.subcommand);
 }
 
 async function dispatch(
@@ -1053,7 +1062,7 @@ Subcommands:
   status               Show daemon status for this workspace`);
         return 0;
       }
-      throw new Error(t("cli.error.unknown_command", { command: `daemon ${parsed.subcommand ?? "(none)"}` }));
+      throw subcommandError("daemon", parsed.subcommand);
     case "update": {
       const { runUpdate } = await import("./update.ts");
       const msg = await runUpdate({ currentVersion: VERSION, rollback: parsed.rollback });
