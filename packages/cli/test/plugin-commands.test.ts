@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dataDir } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import { runEntrypoint } from "../src/entrypoint.ts";
 import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
 
@@ -118,6 +120,21 @@ describe("plugin install", () => {
     const code = await runEntrypoint(["plugin", "install"], c.deps);
     expect(code).toBe(1);
     expect(c.err.join("\n")).toContain("needs a value");
+  });
+
+  test("says that the installed files do not load when the workspace is not trusted", async () => {
+    const install = async (trusted: boolean) => {
+      const ws = tempDir("agency-plugin-trust-note-");
+      if (trusted) createFileTrustStore(join(dataDir(), "trust.json")).trust(ws);
+      const c = capture();
+      c.deps.cwd = ws;
+      const code = await runEntrypoint(["plugin", "install", FIXTURE_DIR], c.deps);
+      return { code, note: c.err.join("\n").includes("agency trust") };
+    };
+    expect({ untrusted: await install(false), trusted: await install(true) }).toEqual({
+      untrusted: { code: 0, note: true },
+      trusted: { code: 0, note: false },
+    });
   });
 });
 

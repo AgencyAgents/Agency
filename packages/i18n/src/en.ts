@@ -222,6 +222,8 @@ export const en = {
   "cli.trust.prompt": "Trust {path}? (y/N): ",
   "cli.trust.accepted": "Trusted {path}.",
   "cli.trust.denied": "Trust denied for {path}.",
+  "cli.plugin.untrusted":
+    "This workspace is not trusted, so the installed files do not load. Run `agency trust` to load them.",
   "cli.trust.instructions_skipped":
     "Project instructions, plugins, skills, agent files and command files were not loaded: this workspace is not trusted. Run `agency trust` to load them.",
 

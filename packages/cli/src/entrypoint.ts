@@ -942,6 +942,9 @@ Subcommands:
     try {
       const report = pluginInstallCmd(sourceDir, workspaceRoot, parsed.overwrite, err);
       out(report);
+      const { createFileTrustStore } = await import("@agency/guard");
+      const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));
+      if (!trustStore.isTrusted(workspaceRoot)) err(t("cli.plugin.untrusted"));
       return 0;
     } catch (error) {
       err(error instanceof Error ? error.message : String(error));
