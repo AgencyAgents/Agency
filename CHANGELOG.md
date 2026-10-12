@@ -224,6 +224,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   global `permissions` gives it more. Measured on DeepSeek V4 Flash: a
   dispatched `coder` ran a shell command in the default mode before, and is
   refused after. With `allow-all` the command runs.
+- **Output of `agency -p` in text mode**: stdout held every text of the
+  turn, so a sentence that the model wrote before a tool call came before the
+  answer. Stdout now holds the answer only: the last assistant message and
+  the parts that an output-limit cut joins to it. The earlier text stays on
+  stderr as progress, and `--format json` still holds every message. A turn
+  that stops before an answer prints the text that it has. Measured on
+  DeepSeek V4 Flash: in 2 of 6 runs the model wrote such a sentence and
+  called the shell although the prompt said no tools.
 - **File tools of a dispatched agent**: the shell of a dispatched agent ran in
   its git worktree, but its `read`, `write`, `edit`, `glob` and `grep` tools
   used the main workspace. An agent that changed a file and then ran the
