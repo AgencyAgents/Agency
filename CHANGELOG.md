@@ -148,6 +148,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Key variable for an id with a hyphen**: the id `my-gateway` gave a
   variable name that a POSIX shell cannot set. A character that is not a
   letter or a digit is now an underscore.
+- **Shell on Windows**: with no `windowsShell` value the shell tool now uses
+  Git Bash when Git for Windows is installed, and PowerShell otherwise.
+  Models write bash by habit, and Windows PowerShell 5.1 rejects it.
+  Measured on a free model with one coding task: about 24 tool calls and 13
+  tool errors a run in PowerShell (3 of 6 runs finished), about 10 calls and
+  1.5 errors in Git Bash (6 of 6 finished). Git Bash mode also lost each
+  directory change, because it read the directory in the MSYS form. It now
+  reads the Windows form.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
