@@ -17,13 +17,13 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-/** Asserts a typed Zod rejection naming the sandbox section. */
+/** Asserts a rejection that names the sandbox section and keeps the typed Zod error as its cause. */
 function expectZodSandboxError(fn: () => unknown): void {
   try {
     fn();
   } catch (err) {
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).name).toBe("ZodError");
+    expect(((err as Error).cause as Error).name).toBe("ZodError");
     expect(String((err as Error).message)).toMatch(/sandbox/);
     return;
   }

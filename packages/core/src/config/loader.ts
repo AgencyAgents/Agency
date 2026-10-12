@@ -180,7 +180,9 @@ export function loadConfig(sources: ConfigSources = {}): Config {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
     const projectPath = sources.projectRoot && join(sources.projectRoot, ".agency", "config.jsonc");
     const files = [globalPath, projectPath, sources.managedPath].filter((path) => path && existsSync(path));
-    throw new Error(`config is not valid: ${issues.join("; ")} (files: ${files.join(", ") || "none"})`);
+    throw new Error(`config is not valid: ${issues.join("; ")} (files: ${files.join(", ") || "none"})`, {
+      cause: parsed.error,
+    });
   }
   const config = parsed.data;
 
