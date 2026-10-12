@@ -192,6 +192,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Output limit used by thinking**: when a model used the whole output
   limit before any answer text, the error said only that the reply was cut.
   It now gives the limit in tokens and names the setting to raise.
+- **Limits of an OpenRouter model**: a model with no config entry ran with
+  an assumed window of 200000 tokens and an output limit of 8192. The daemon
+  now reads OpenRouter's public model list one time, with no key, and uses
+  the real window, the prices, and an output limit of at most 32000 tokens.
+  A failed read keeps the defaults. Measured on DeepSeek V4 Flash with a
+  reply of about 16000 tokens: 2 cuts and a list that ran past its end
+  before, one exact reply after.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.

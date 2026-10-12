@@ -130,13 +130,15 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 ## Providers and models
 
-`--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
+`--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides. The turn path fetches in one case only, the OpenRouter model list below.
 
 The ids `openrouter`, `deepseek`, `groq` and `xai` need no config entry. Each uses its public OpenAI-compatible endpoint, and `provider.<id>.baseUrl` replaces it. This run was made against OpenRouter with the key in `OPENROUTER_API_KEY`:
 
 ```sh
 agency -p "Reply with the one word: ok" --model openrouter/deepseek/deepseek-v4-flash
 ```
+
+An OpenRouter model that has no catalog entry and no config entry gets its limits from OpenRouter's public model list. The daemon reads the list one time, with no key, at the first turn on such a model. It takes the context window, the prices, and an output limit of at most 32000 tokens and at most a quarter of the window. If the read fails, the defaults stay: a window of 200000 tokens and an output limit of 8192. A config entry for the model stops the read for that model.
 
 ### Local model server
 
