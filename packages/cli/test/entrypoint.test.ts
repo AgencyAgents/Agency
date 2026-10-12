@@ -512,6 +512,21 @@ describe("-p headless mode", () => {
     ]);
   });
 
+  test("a retry shows as a line of progress, so a wait for a rate limit is not silent", async () => {
+    const { err, deps } = capture();
+    await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        options.onEvent?.({ type: "retry", attempt: 2, message: "Rate limit exceeded" });
+        options.onEvent?.({ type: "turn_complete", stopReason: "end_turn" });
+        return TURN_RESULT;
+      },
+    });
+
+    expect(err).toEqual(["Retry 2: Rate limit exceeded", "Turn complete (end_turn)."]);
+  });
+
   test("runs one turn through runHeadless and prints the assistant text", async () => {
     const fake = fakeRunHeadless();
     const { out, deps } = capture();

@@ -501,6 +501,14 @@ async function runPrintMode(
             case "heartbeat":
               line(t("cli.progress.heartbeat"));
               break;
+            case "retry":
+              line(
+                t("cli.progress.retry", {
+                  attempt: String(ev.attempt ?? "?"),
+                  message: String(ev.message ?? ""),
+                }),
+              );
+              break;
             case "turn_complete":
               line(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
               break;

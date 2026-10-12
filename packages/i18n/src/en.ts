@@ -212,6 +212,7 @@ export const en = {
   "cli.progress.tool": "Tool: {name}",
   "cli.progress.text": "{text}",
   "cli.progress.heartbeat": ".",
+  "cli.progress.retry": "Retry {attempt}: {message}",
   "cli.progress.turn_complete": "Turn complete ({reason}).",
 
   "cli.trust.checking": "Checking trust for {path}...",
