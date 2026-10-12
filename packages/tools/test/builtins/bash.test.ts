@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES, SandboxBoundary } from "@agency/guard";
@@ -151,6 +151,28 @@ describe("createBashTool", () => {
     // The handler should settle (process killed) rather than hang forever.
     await resultPromise;
     // macOS CI can be slow to deliver the kill signal to the child.
+  }, 60_000);
+
+  test("aborting stops the command's own child process, not only the shell", async () => {
+    const { tool, root } = setup();
+    const controller = new AbortController();
+    const beat = join(root, "beat").split(String.fromCharCode(92)).join("/");
+    const command = `node -e "setInterval(()=>require('fs').writeFileSync('${beat}', String(Date.now())), 50)"`;
+
+    const resultPromise = tool.handler({ command }, { signal: controller.signal });
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(beat)) {
+      if (Date.now() > deadline) throw new Error("the child never started");
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    controller.abort();
+    await resultPromise;
+
+    // A child that still runs writes a new time each 50 ms.
+    await new Promise((r) => setTimeout(r, 500));
+    const after = readFileSync(beat, "utf8");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(readFileSync(beat, "utf8")).toBe(after);
   }, 60_000);
 
   test("aborting preserves partial output and labels the result cancelled", async () => {

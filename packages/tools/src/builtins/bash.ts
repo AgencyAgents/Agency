@@ -265,11 +265,7 @@ export function createBashTool(
 
       const killProc = async (): Promise<void> => {
         if (process.platform === "win32") {
-          try {
-            proc.kill(9);
-          } catch {
-            // already exited — nothing to reap
-          }
+          // The tree goes first: taskkill /T cannot find the children of a shell that is already dead.
           killTree();
           try {
             proc.kill(9);
