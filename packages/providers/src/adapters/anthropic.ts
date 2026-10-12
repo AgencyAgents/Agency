@@ -3,7 +3,7 @@ import { AgencyError, type ContentBlock, ErrorCode, type StopReason } from "@age
 import { estimateTokens, MIN_CACHEABLE_TOKENS, splitStableDynamic } from "../cache-policy.ts";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
-import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
+import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usage } from "../types.ts";
 
 const API_VERSION = "2023-06-01";
 const BASE_URL = "https://api.anthropic.com/v1";
@@ -216,6 +216,31 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   return new AgencyError(code, message, { source: "anthropic", context });
 }
 
+interface WireUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  /** The charge in USD. A gateway (OpenRouter) sends it. */
+  cost?: number | null;
+}
+
+/**
+ * message_delta repeats the counts as totals, and a gateway sends zero in message_start and the real counts there.
+ * The wire counts are additive: `inputTokens` is the whole prompt, and the cost formula takes the cached parts out.
+ */
+function readUsage(usage: Usage, wire: WireUsage | undefined): void {
+  if (typeof wire?.output_tokens === "number") usage.outputTokens = wire.output_tokens;
+  if (typeof wire?.cost === "number") usage.costUsd = wire.cost;
+  const cached = wire?.cache_read_input_tokens;
+  const written = wire?.cache_creation_input_tokens;
+  const total = (wire?.input_tokens ?? 0) + (cached ?? 0) + (written ?? 0);
+  if (total === 0) return;
+  usage.inputTokens = total;
+  if (typeof cached === "number") usage.cachedInputTokens = cached;
+  if (typeof written === "number") usage.cacheWriteInputTokens = written;
+}
+
 async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
   const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/messages`, {
     method: "POST",
@@ -235,15 +260,7 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
 
   // index -> tool_call id, so content_block_delta/stop can address the right call
   const toolCallIndex = new Map<number, string>();
-  const usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-    cacheWriteInputTokens?: number;
-  } = {
-    inputTokens: 0,
-    outputTokens: 0,
-  };
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
   for await (const frame of parseSse(res.body)) {
@@ -252,27 +269,7 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
 
     switch (payload.type) {
       case "message_start": {
-        const msgUsage = (
-          payload.message as {
-            usage?: {
-              input_tokens?: number;
-              cache_read_input_tokens?: number;
-              cache_creation_input_tokens?: number;
-            };
-          }
-        )?.usage;
-        // The wire counts are additive. `inputTokens` is the whole prompt, as for the other
-        // providers: the cost formula takes the cached and written parts out of it.
-        usage.inputTokens =
-          (msgUsage?.input_tokens ?? 0) +
-          (msgUsage?.cache_read_input_tokens ?? 0) +
-          (msgUsage?.cache_creation_input_tokens ?? 0);
-        if (msgUsage?.cache_read_input_tokens !== undefined) {
-          usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
-        }
-        if (msgUsage?.cache_creation_input_tokens !== undefined) {
-          usage.cacheWriteInputTokens = msgUsage.cache_creation_input_tokens;
-        }
+        readUsage(usage, (payload.message as { usage?: WireUsage })?.usage);
         break;
       }
       case "content_block_start": {
@@ -320,7 +317,6 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
       }
       case "message_delta": {
         const delta = payload.delta as { stop_reason?: string };
-        const deltaUsage = payload.usage as { output_tokens?: number } | undefined;
         if (delta.stop_reason === "model_context_window_exceeded") {
           // Claude 4.5 and later accept a request that cannot fit, and stop the reply when the window is full.
           throw new AgencyError(
@@ -332,7 +328,7 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
           );
         }
         if (delta.stop_reason) stopReason = STOP_REASON[delta.stop_reason] ?? "end_turn";
-        if (deltaUsage?.output_tokens !== undefined) usage.outputTokens = deltaUsage.output_tokens;
+        readUsage(usage, payload.usage as WireUsage | undefined);
         break;
       }
       case "message_stop": {

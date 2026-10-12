@@ -54,6 +54,18 @@ describe("anthropicAdapter", () => {
     ]);
   });
 
+  test("takes the counts and the charge that a gateway reports at the end of the stream", async () => {
+    // Recorded from the Messages endpoint of OpenRouter: message_start has zero counts, message_delta has the real ones.
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-messages-stream.sse`).text();
+    const events = await collect(anthropicAdapter.stream(baseRequest, fakeHttp(sseResponse(cassette))));
+
+    expect(events.at(-1)).toEqual({
+      type: "message_stop",
+      stopReason: "end_turn",
+      usage: { inputTokens: 21, outputTokens: 33, cachedInputTokens: 0, costUsd: 0.00001218 },
+    });
+  });
+
   test("reassembles a streamed tool call's JSON input into a valid object", async () => {
     const cassette = await Bun.file(`${import.meta.dir}/../cassettes/anthropic-stream-tool-call.sse`).text();
     const http = fakeHttp(sseResponse(cassette));
