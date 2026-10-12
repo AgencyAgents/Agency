@@ -116,7 +116,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   - **`unknown provider: openrouter`**: only `anthropic`, `openai` and `google`
     worked without a `provider.<id>.baseUrl` entry. `openrouter`, `deepseek`,
     `groq` and `xai` now use their public endpoints, and `auth list` shows them.
-  - **Key names**: a key in `OPENROUTER_API_KEY` was not read, and a name from
+  - **Key names**: a key under the provider's own variable name (for example
+    OPENROUTER_API_KEY) was not read, and a name from
     `provider.<id>.env` passed the CLI check but gave the daemon no key. Each
     lookup now reads the declared names, `AGENCY_<ID>_API_KEY`, then the
     provider's own name.
