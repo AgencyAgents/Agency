@@ -160,6 +160,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   model copied that form into the read, edit and write tools, and each call
   failed with "resolves outside the sandbox root". The file tools and the
   permission rules now read that form as the same Windows path.
+- **Half line at a cut**: the output limit cuts a reply in the middle of a
+  line, and the model writes that line again when it continues, so the
+  half line stayed in the reply as a stray line. The reply now continues
+  from its last complete line. Measured on DeepSeek V4 Flash with a
+  1500-token limit: 1 of 7 continued replies was clean before, 6 of 6 after.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
