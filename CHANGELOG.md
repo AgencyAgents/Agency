@@ -174,6 +174,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   longer stops a client. Measured with 12 clients at one time over 100
   rounds: 41 rounds with two starts and 7 with an error before, 0 and 0
   after.
+- **Session entry lost on Windows**: when two processes wrote to one session
+  at one time, for example a session rename during a turn, an append could
+  stop with `EPERM` on the session lock, and its entry was lost. The append
+  now waits for the lock. Measured with two processes and 3000 appends:
+  8 to 11 lost before, 0 after.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
