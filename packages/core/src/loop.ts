@@ -485,7 +485,9 @@ export async function runTurn(
   } else if (!turnError && stopReason === "max_tokens") {
     turnError = {
       code: "max_tokens",
-      message: `the reply was cut at the output limit (continued ${outputContinuations} times): the answer is not complete`,
+      message: spoke
+        ? `the reply was cut at the output limit (continued ${outputContinuations} times): the answer is not complete`
+        : `the output limit of ${options.maxTokensPerRequest ?? 8192} tokens was used before any answer text, most likely by the model's thinking: set a higher maxOutputTokens for this model in the config`,
     };
   } else if (!turnError && !spoke && stopReason !== "cancelled") {
     // No text is no answer: a headless caller must not read it as success.

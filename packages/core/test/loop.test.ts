@@ -675,10 +675,14 @@ describe("runTurn", () => {
       model: "test-model",
       apiKey: "key",
       session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      maxTokensPerRequest: 40,
     });
 
     expect(requests).toBe(1);
     expect(result.error?.code).toBe("max_tokens");
+    // The message names the limit and the setting, because a second run with the same limit ends the same way.
+    expect(result.error?.message).toContain("40 tokens");
+    expect(result.error?.message).toContain("maxOutputTokens");
   });
 
   test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
