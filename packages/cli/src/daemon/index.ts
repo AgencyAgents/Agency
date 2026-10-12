@@ -556,6 +556,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerCommandRunHandler(handlers, ctx);
   registerDetachHandlers(handlers, ctx);
 
+  /** A client that is gone cannot use its turn's result: the turn stops, on the TCP and the HTTP transport. */
+  const cancelTurnsOf = (clientId: string): void => {
+    for (const [turnId, owner] of turnOwners) {
+      if (owner !== clientId) continue;
+      turnOwners.delete(turnId);
+      activeControllers.get(turnId)?.abort();
+    }
+  };
+
   server = await startDaemonServer({
     token: authToken,
     handlers,
@@ -580,13 +589,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       staleConfigTimer.unref?.();
     },
 
-    onClientDisconnect(clientId) {
-      for (const [turnId, owner] of turnOwners) {
-        if (owner !== clientId) continue;
-        turnOwners.delete(turnId);
-        activeControllers.get(turnId)?.abort();
-      }
-    },
+    onClientDisconnect: cancelTurnsOf,
   });
 
   // Mount the HTTP+SSE gateway on the same handler table and auth token as
@@ -594,6 +597,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const corsOrigins = (config as unknown as { http?: { corsOrigins?: string[] } }).http?.corsOrigins;
   httpGateway = startHttpGateway({
     handlers,
+    onClientDisconnect: cancelTurnsOf,
     token: authToken,
     store: todoStore,
     sessionForEvent: (event) => sessionKeyForEvent(ctx, event),

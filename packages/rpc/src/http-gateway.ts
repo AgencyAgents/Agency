@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ErrorCode } from "@agency/schema";
 import { EVENT_RETRY_MS, EVENT_RING_SIZE } from "./catalog.ts";
 import { EventRing, sseFrame } from "./event-buffer.ts";
@@ -42,6 +43,8 @@ export interface HttpGatewayOptions {
    * When unset the gateway accepts anonymous callers.
    */
   token?: string;
+  /** A client dropped its request before the call ended. The daemon cancels that client's turns. */
+  onClientDisconnect?: (clientId: string) => void;
   /** Interval between SSE keepalive comments; 0 disables. Default 15s. */
   keepAliveMs?: number;
   /** Emit CORS headers; the allowlist decides which origins get them. */
@@ -276,12 +279,18 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
       return json(404, { id: id ?? null, error: { message: `unknown method: ${method}` } }, request);
     }
 
+    // Each call is its own client: a dropped request must cancel the turn of that call and no other.
+    const clientId = `http-${randomUUID()}`;
+    const onGone = (): void => options.onClientDisconnect?.(clientId);
+    request.signal.addEventListener("abort", onGone);
     try {
-      const result = await handler(params, { clientId: "http" });
+      const result = await handler(params, { clientId });
       return json(200, { id: id ?? null, result }, request);
     } catch (error: unknown) {
       const payload = errorPayload(error);
       return json(STATUS_BY_CODE[payload.code ?? ""] ?? 500, { id: id ?? null, error: payload }, request);
+    } finally {
+      request.signal.removeEventListener("abort", onGone);
     }
   }
 
