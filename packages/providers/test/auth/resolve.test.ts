@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveApiKey } from "../../src/auth/resolve.ts";
+import { keyEnvName, resolveApiKey } from "../../src/auth/resolve.ts";
 import type { KeychainBackend } from "../../src/auth/types.ts";
 
 function fakeKeychain(stored?: string): KeychainBackend {
@@ -73,6 +73,13 @@ describe("resolveApiKey", () => {
       },
     });
     expect(key).toBe("sk-declared");
+  });
+
+  test("a provider id with a hyphen has a variable name that a POSIX shell can set", async () => {
+    // `export AGENCY_MY-GATEWAY_API_KEY=...` is not a valid identifier in sh.
+    const env = { AGENCY_MY_GATEWAY_API_KEY: "sk-gateway" };
+    expect(await resolveApiKey({ provider: "my-gateway", env })).toBe("sk-gateway");
+    expect(keyEnvName("my-gateway")).toBe("AGENCY_MY_GATEWAY_API_KEY");
   });
 
   test("the provider's own variable name is read after the AGENCY name", async () => {

@@ -20,9 +20,17 @@ export interface ResolveApiKeyOptions {
 /** Variable names that a provider's own tools read; each other id uses <ID>_API_KEY. */
 const OWN_ENV: Record<string, readonly string[]> = { google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] };
 
+/** A POSIX shell cannot set a name with a hyphen, so an id like `my-gateway` gives MY_GATEWAY. */
+function envId(provider: string): string {
+  return provider.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
+export function keyEnvName(provider: string): string {
+  return `AGENCY_${envId(provider)}_API_KEY`;
+}
+
 function envNames(provider: string, declared: readonly string[] = []): string[] {
-  const id = provider.toUpperCase();
-  return [...declared, `AGENCY_${id}_API_KEY`, ...(OWN_ENV[provider] ?? [`${id}_API_KEY`])];
+  return [...declared, keyEnvName(provider), ...(OWN_ENV[provider] ?? [`${envId(provider)}_API_KEY`])];
 }
 
 /**

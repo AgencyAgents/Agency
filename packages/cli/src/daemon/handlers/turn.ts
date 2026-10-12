@@ -8,7 +8,7 @@ import {
   TraceRecorder,
   withTrace,
 } from "@agency/core";
-import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agency/providers";
+import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { SessionScope } from "@agency/tools";
@@ -140,7 +140,7 @@ export async function executeTurn(
         if (apiKey === undefined) {
           throw new AgencyError(
             ErrorCode.AUTH,
-            `no API key for provider "${params.provider}": set AGENCY_${params.provider.toUpperCase()}_API_KEY or run \`agency auth login ${params.provider}\``,
+            `no API key for provider "${params.provider}": set ${keyEnvName(params.provider)} or run \`agency auth login ${params.provider}\``,
             { source: "daemon" },
           );
         }
