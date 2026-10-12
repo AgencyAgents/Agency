@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
@@ -260,6 +260,53 @@ describe("per-agent permissions", () => {
       expect(c.tools).not.toContain("bash");
       expect(c.tools).toContain("read");
     }
+  });
+
+  it("a dispatched agent writes only when the run that dispatched it may write", async () => {
+    const dispatchCoder = async (permissionMode?: "allow-all") => {
+      const root = gitRoot();
+      let childToolResult = "";
+      const adapter = spyAdapter({ calls: [] }, (text, toolResult) => {
+        if (toolResult.includes("CHILD:")) return { kind: "text", text: "parent done" };
+        if (toolResult.length > 0) {
+          childToolResult = toolResult;
+          return { kind: "text", text: `CHILD:${toolResult}` };
+        }
+        if (text.includes("coder brief")) {
+          return { kind: "tool", name: "write", input: { path: "cap-marker.txt", content: "x" } };
+        }
+        return {
+          kind: "tool",
+          name: "dispatch",
+          input: { agents: [{ handle: "coder", brief: "coder brief" }] },
+        };
+      });
+      // No global permissions: the run asks for write, and a run with no approval surface refuses an ask.
+      const client = await startDaemon(
+        { agents: { leader: agentEntry("Leader"), coder: agentEntry("Coder", CODER_PERMS) } },
+        root,
+        adapter,
+      );
+      await client.call("run_turn", {
+        turnId: `t-cap-${permissionMode ?? "default"}`,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        sessionId: `test-cap-${permissionMode ?? "default"}`,
+        ...(permissionMode ? { permissionMode } : {}),
+      });
+      const wrote = (readdirSync(root, { recursive: true }) as string[]).some((f) =>
+        f.endsWith("cap-marker.txt"),
+      );
+      return { wrote, refused: childToolResult.includes("permission denied") };
+    };
+
+    expect({ defaultMode: await dispatchCoder(), allowAll: await dispatchCoder("allow-all") }).toEqual({
+      defaultMode: { wrote: false, refused: true },
+      allowAll: { wrote: true, refused: false },
+    });
   });
 
   it("agent-owned session turn enforces the per-agent gate, not the global one", async () => {

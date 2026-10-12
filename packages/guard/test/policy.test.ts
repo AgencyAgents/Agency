@@ -240,6 +240,53 @@ describe("PermissionsGate", () => {
     ).toBe("deny");
   });
 
+  test("a ceiling caps an agent gate: above safe, the stricter verdict of the two gates wins", async () => {
+    const agentMap = { bash: "allow", write: "allow", read: "allow" } as const;
+    const agent = new PermissionsGate({
+      permissions: agentMap,
+      workspaceRoot: root,
+      absentToolsDenied: true,
+    });
+    const verdicts = async (run: PermissionsGate) => {
+      const capped = agent.withCeiling(run);
+      return {
+        bash: await capped.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+        write: await capped.check({ tool: "write", path: "a.txt", riskTier: "moderate" }, undefined),
+        read: await capped.check({ tool: "read", path: "a.txt", riskTier: "safe" }, undefined),
+        edit: await capped.check({ tool: "edit", path: "a.txt", riskTier: "moderate" }, undefined),
+      };
+    };
+    const run = (permissions: Record<string, "allow" | "deny"> = {}) =>
+      new PermissionsGate({ permissions, workspaceRoot: root });
+
+    expect({
+      uncapped: await agent.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+      defaultMode: await verdicts(run()),
+      allowEdits: await verdicts(run().withMode("allow-edits")),
+      allowAll: await verdicts(run().withMode("allow-all")),
+      configAllowsBash: await verdicts(run({ bash: "allow" })),
+      configDeniesBash: await verdicts(run({ bash: "deny" }).withMode("allow-all")),
+    }).toEqual({
+      uncapped: "allow",
+      defaultMode: { bash: "deny", write: "deny", read: "allow", edit: "deny" },
+      allowEdits: { bash: "deny", write: "allow", read: "allow", edit: "deny" },
+      allowAll: { bash: "allow", write: "allow", read: "allow", edit: "deny" },
+      configAllowsBash: { bash: "allow", write: "deny", read: "allow", edit: "deny" },
+      configDeniesBash: { bash: "deny", write: "allow", read: "allow", edit: "deny" },
+    });
+  });
+
+  test("a ceiling stays on the gate through withMode and withItemScope", async () => {
+    const agent = new PermissionsGate({ permissions: { write: "allow" }, workspaceRoot: root });
+    const capped = agent.withCeiling(new PermissionsGate({ workspaceRoot: root }));
+    const request = { tool: "write", path: "src/a.txt", riskTier: "moderate" } as const;
+    expect({
+      mode: await capped.withMode("ask").check(request, undefined),
+      scope: await capped.withItemScope(["src/**"]).check(request, undefined),
+      modeLifts: await capped.withMode("allow-all").check(request, undefined),
+    }).toEqual({ mode: "deny", scope: "deny", modeLifts: "allow" });
+  });
+
   test("a missing riskTier fails safe to ask instead of silently allowing", () => {
     const gate = new PermissionsGate({ workspaceRoot: root });
     expect(gate.decisionFor({ tool: "some-plugin-tool" })).toBe("ask");

@@ -104,6 +104,8 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
  */
 const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
 
+const DECISION_RANK: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
+
 export function isPathPatternTool(tool: string): boolean {
   return PATH_PATTERN_TOOLS.has(tool);
 }
@@ -355,6 +357,7 @@ export class PermissionsGate implements ToolPolicy {
   private readonly engine: PolicyEngine;
   private readonly permissions: Record<string, ToolPermissionValue>;
   private itemScopes: readonly string[] | undefined;
+  private ceiling: PermissionsGate | undefined;
 
   constructor(
     private readonly options: {
@@ -376,6 +379,7 @@ export class PermissionsGate implements ToolPolicy {
   withMode(mode: PermissionMode): PermissionsGate {
     const next = new PermissionsGate({ ...this.options, permissionMode: mode });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
+    next.ceiling = this.ceiling;
     return next;
   }
 
@@ -384,6 +388,17 @@ export class PermissionsGate implements ToolPolicy {
     const next = new PermissionsGate({ ...this.options });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes, ...scopes];
     else next.itemScopes = [...scopes];
+    next.ceiling = this.ceiling;
+    return next;
+  }
+
+  /**
+   * Caps an agent's own map by the gate of the run that started the agent: the stricter verdict wins, and
+   * the run's mode answers the asks. Without it a roster entry could give an agent more than its run has.
+   */
+  withCeiling(run: PermissionsGate): PermissionsGate {
+    const next = this.withMode(run.options.permissionMode ?? this.options.permissionMode ?? "ask");
+    next.ceiling = run;
     return next;
   }
 
@@ -406,6 +421,13 @@ export class PermissionsGate implements ToolPolicy {
 
   /** The verdict without consulting approvals (the engine + defaults only). */
   decisionFor(request: ToolCallPolicyRequest): Decision {
+    const own = this.ownDecisionFor(request);
+    if (this.ceiling === undefined) return own;
+    const cap = this.ceiling.decisionFor(request);
+    return DECISION_RANK[cap] > DECISION_RANK[own] ? cap : own;
+  }
+
+  private ownDecisionFor(request: ToolCallPolicyRequest): Decision {
     if (this.outsideItemScope(request)) return "deny";
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
@@ -459,6 +481,9 @@ export class PermissionsGate implements ToolPolicy {
 
   /** Names the rule that produced an ask: explicit entry, pattern, or default. */
   askSource(request: ToolCallPolicyRequest): string {
+    if (this.ceiling !== undefined && this.ownDecisionFor(request) !== "ask") {
+      return this.ceiling.askSource(request);
+    }
     const entry = this.permissions[request.tool];
     if (entry === undefined) return `default:risk-tier=${request.riskTier ?? "missing"}`;
     if (typeof entry === "string") return `explicit:${request.tool}=${entry}`;

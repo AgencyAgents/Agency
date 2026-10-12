@@ -368,6 +368,7 @@ export async function executeTurn(
             apiKey,
             budget: params.budget,
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+            permissionMode: params.permissionMode,
           });
           try {
             // Root turns drain the session inbox (fed by session_message);
@@ -505,6 +506,7 @@ export async function executeTurn(
               apiKey: fbApiKey,
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+              permissionMode: params.permissionMode,
             });
             // The fallback model's own limits: the primary's output limit can be too large for it.
             const fallbackInfo = catalogModel(fallbackRef.provider, fallbackRef.model);

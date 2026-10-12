@@ -498,6 +498,8 @@ export interface ActiveTurnMeta {
   apiKey: string;
   budget?: Budget;
   taskDepth?: number;
+  /** The mode of the run: an agent that this turn dispatches answers its asks with it. */
+  permissionMode?: PermissionMode;
 }
 
 export interface ChildTraceSpec {

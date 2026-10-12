@@ -34,6 +34,7 @@ import {
   DockerSandboxBackend,
   type ExternalDirectoryDecision,
   ensureSandboxAvailable,
+  type PermissionMode,
   PermissionsGate,
   Redactor,
   type SandboxBackend,
@@ -207,7 +208,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         workspaceRoot: options.workspaceRoot,
         absentToolsDenied: true,
         trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
-      });
+      }).withCeiling(gate);
     }
     return gate;
   }
@@ -363,6 +364,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       apiKey: string;
       budget?: Budget;
       taskDepth?: number;
+      permissionMode?: PermissionMode;
     }
   >();
 

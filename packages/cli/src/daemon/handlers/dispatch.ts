@@ -36,6 +36,7 @@ import { routeAgent } from "./team-run.ts";
 
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
+    activeTurnMeta,
     adapterFor,
     boardStore,
     broadcast,
@@ -356,10 +357,11 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           const childTools = childScope?.tools ?? [];
           const claimedItem = boardStore.list().find((item) => item.claimedBy === a.handle);
           const claimedScope = claimedItem?.pathScope;
+          const runMode =
+            ctx.turnId === undefined ? undefined : activeTurnMeta.get(ctx.turnId)?.permissionMode;
+          const runGate = gateForAgent(a.handle).withMode(runMode ?? "ask");
           const agentGate =
-            claimedScope && claimedScope.length > 0
-              ? gateForAgent(a.handle).withItemScope(claimedScope)
-              : gateForAgent(a.handle);
+            claimedScope && claimedScope.length > 0 ? runGate.withItemScope(claimedScope) : runGate;
           const offeredTools = childTools
             .filter((t) => agentGate.toolOffered(t.name, t.riskTier))
             // Depth-0 child isolation: subagents cannot dispatch or spawn.
