@@ -224,6 +224,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   global `permissions` gives it more. Measured on DeepSeek V4 Flash: a
   dispatched `coder` ran a shell command in the default mode before, and is
   refused after. With `allow-all` the command runs.
+- **Plugin commands**: `agency plugin list` showed the receipt folder of a
+  plugin as a skill. It now shows `(plugin)`. `agency plugin remove` with
+  the name of one skill of a plugin removed that skill and left the receipt.
+  It now refuses and names the plugin. A second `agency plugin install`
+  printed a JSON log line. It now prints the text and names `--overwrite`.
 - **Skill and plugin text**: the body of a skill and the `agentsMd` text of a
   plugin never reached the system prompt. They are now added after the
   project instructions.
