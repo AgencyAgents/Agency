@@ -217,6 +217,8 @@ export interface ResolveFileRosterOptions {
   configDirOverride?: string;
   configAgents?: Record<string, AgentConfig>;
   seed?: boolean;
+  /** False for a workspace that the user did not trust: an agent file can grant itself tools, so none loads. */
+  projectTrusted?: boolean;
 }
 
 export interface FileRoster {
@@ -230,12 +232,14 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const merged = new Map<string, FileAgentDef>();
   for (const [handle, agent] of Object.entries(base)) merged.set(handle, toFileDef(handle, agent, "config"));
   let seeded = false;
-  if (opts.seed !== false) {
+  // No seed in an untrusted workspace: the files would not load, and their folder would look like project content.
+  if (opts.seed !== false && opts.projectTrusted !== false) {
     const written = ensureSeedAgents(opts.workspaceRoot, base);
     seeded = written.length > 0;
   }
   const userDir = join(opts.configDirOverride ?? configDir(), "agents");
   for (const [handle, def] of loadAgentDir(userDir, "user")) merged.set(handle, def);
+  if (opts.projectTrusted === false) return { agents: merged, seeded };
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
   for (const [handle, def] of loadAgentDir(projectDir, "project")) merged.set(handle, def);
   return { agents: merged, seeded };

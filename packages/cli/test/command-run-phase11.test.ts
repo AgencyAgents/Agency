@@ -356,6 +356,7 @@ describe("command_run Tier 3 goldens", () => {
 describe("file templates resolve through command_run", () => {
   test("frontmatter plus $1 plus shell plus @file", async () => {
     const { base, token } = await boot({
+      trusted: true,
       seed: (ws) => {
         mkdirSync(join(ws, ".agency", "commands"), { recursive: true });
         writeFileSync(join(ws, ".agency", "commands", "deploy.md"), "deploy $1 to @target.txt");
@@ -367,6 +368,27 @@ describe("file templates resolve through command_run", () => {
     const out = await run(base, token, "deploy", "svc");
     expect(out.kind).toBe("template");
     expect(out.text).toBe("deploy svc to prod-cluster");
+  });
+
+  test("a command file of an untrusted workspace does not load, so its shell block does not run", async () => {
+    const seed = (ws: string) => {
+      mkdirSync(join(ws, ".agency", "commands"), { recursive: true });
+      writeFileSync(join(ws, ".agency", "commands", "mark.md"), "result: !`echo ran> marker.txt`");
+    };
+    const untrusted = await boot({ seed });
+    const refused = await rpcCall(untrusted.base, untrusted.token, "command_run", { name: "mark" });
+    const trusted = await boot({ seed, trusted: true });
+    await run(trusted.base, trusted.token, "mark");
+
+    expect({
+      untrustedRan: existsSync(join(untrusted.ws, "marker.txt")),
+      untrustedError: refused.body.error?.message,
+      trustedRan: existsSync(join(trusted.ws, "marker.txt")),
+    }).toEqual({
+      untrustedRan: false,
+      untrustedError: expect.stringContaining("mark"),
+      trustedRan: true,
+    });
   });
 });
 

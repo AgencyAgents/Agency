@@ -65,8 +65,7 @@ export interface HeadlessConnectOptions {
 export function hasTrustGatedContent(workspaceRoot: string): boolean {
   return (
     collectAgentsFiles(workspaceRoot, workspaceRoot).length + collectRuleFiles(workspaceRoot).length > 0 ||
-    existsSync(join(workspaceRoot, ".agency", "plugins")) ||
-    existsSync(join(workspaceRoot, ".agency", "skills"))
+    ["plugins", "skills", "agents", "commands"].some((dir) => existsSync(join(workspaceRoot, ".agency", dir)))
   );
 }
 

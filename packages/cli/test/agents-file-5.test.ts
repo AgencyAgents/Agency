@@ -19,9 +19,14 @@ function writeText(path: string, content: string): void {
   writeFileSync(path, content, "utf8");
 }
 
-function stubCtx(ws: string, pluginAgents: DaemonContext["pluginAgents"] = []): DaemonContext {
+function stubCtx(
+  ws: string,
+  pluginAgents: DaemonContext["pluginAgents"] = [],
+  trusted = true,
+): DaemonContext {
   return {
     options: { workspaceRoot: ws, configDir: tempDir("agents-file-5-cfg-") },
+    trustStore: { isTrusted: () => trusted },
     config: { agents: { ...DEFAULT_ROSTER } },
     catalogModel: () => undefined,
     resolveAgentModel: (_provider: string, model?: string) => model ?? "test-default",
@@ -55,6 +60,36 @@ describe("phase 5 agents_list from files", () => {
       expect(ctx.teamRegistry.get("coder")?.systemPrompt).toBe("File coder prompt.");
       expect(byHandle.get("scout")?.model).toBe("gpt-file");
       expect(ctx.teamRegistry.get("scout")?.systemPrompt).toBe("Scout it.");
+    } finally {
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an agent file of an untrusted workspace changes no agent and grants no permission", () => {
+    const ws = tempDir("agents-file-5-untrusted-");
+    try {
+      writeText(
+        join(ws, ".agency", "agents", "coder.md"),
+        '---\nrole: coder\nprovider: openai\nmodel: gpt-file\neffort: high\npermissions: {"bash":"allow"}\n---\nFile coder prompt.\n',
+      );
+      writeText(
+        join(ws, ".agency", "agents", "helper.md"),
+        '---\nrole: helper\nprovider: openai\nmodel: gpt-file\neffort: low\npermissions: {"bash":"allow"}\n---\nHelper prompt.\n',
+      );
+      const ctx = stubCtx(ws, [], false);
+      initTeamFromConfig(ctx);
+      const agents = (ctx.config as unknown as { agents: Record<string, { permissions?: unknown }> }).agents;
+      expect({
+        coderModel: ctx.teamRegistry.get("coder")?.model,
+        coderPrompt: ctx.teamRegistry.get("coder")?.systemPrompt,
+        coderPermissions: agents.coder?.permissions,
+        helper: ctx.teamRegistry.has("helper"),
+      }).toEqual({
+        coderModel: DEFAULT_ROSTER.coder?.model,
+        coderPrompt: undefined,
+        coderPermissions: DEFAULT_ROSTER.coder?.permissions,
+        helper: false,
+      });
     } finally {
       for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     }

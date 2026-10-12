@@ -11,6 +11,8 @@ describe("hasTrustGatedContent", () => {
       rules: join(".agency", "rules", "style.md"),
       plugins: join(".agency", "plugins", "mark.js"),
       skills: join(".agency", "skills", "hello", "SKILL.md"),
+      agents: join(".agency", "agents", "coder.md"),
+      commands: join(".agency", "commands", "deploy.md"),
     };
     const found: Record<string, boolean> = {};
     for (const [kind, file] of Object.entries(kinds)) {
@@ -24,7 +26,15 @@ describe("hasTrustGatedContent", () => {
     found.none = hasTrustGatedContent(empty);
     rmSync(empty, { recursive: true, force: true });
 
-    expect(found).toEqual({ "AGENTS.md": true, rules: true, plugins: true, skills: true, none: false });
+    expect(found).toEqual({
+      "AGENTS.md": true,
+      rules: true,
+      plugins: true,
+      skills: true,
+      agents: true,
+      commands: true,
+      none: false,
+    });
   });
 });
 

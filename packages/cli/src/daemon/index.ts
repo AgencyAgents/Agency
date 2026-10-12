@@ -298,7 +298,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const builtinsMode = options.tools === undefined;
-  // A plugin file is code: the files of a workspace run only when the user trusted that workspace.
+  // Plugin, command and agent files can run code or grant tools: those of a workspace load only after trust.
   const projectTrusted = trustStore.isTrusted(options.workspaceRoot);
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
@@ -369,6 +369,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
     configDirOverride: options.configDir,
+    projectTrusted,
   });
 
   const defaultCapabilitiesSync: Capabilities =
