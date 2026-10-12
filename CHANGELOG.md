@@ -148,6 +148,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Key variable for an id with a hyphen**: the id `my-gateway` gave a
   variable name that a POSIX shell cannot set. A character that is not a
   letter or a digit is now an underscore.
+- **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
+  client left, with its shell command still alive. A request that is dropped
+  before the call ends now cancels the turn, as a closed TCP connection does.
 - **Cancel on Windows**: a cancelled or timed-out shell command left the
   programs that it started running, because the shell was killed before its
   process tree. The tree is now killed first.
