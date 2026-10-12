@@ -189,6 +189,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   cost, and the budget did not count it. The adapter now reads the counts
   and the charge from both events. Live through the Messages endpoint of
   OpenRouter: 0 input tokens and no cost before, 3952 and a charge after.
+- **Output limit used by thinking**: when a model used the whole output
+  limit before any answer text, the error said only that the reply was cut.
+  It now gives the limit in tokens and names the setting to raise.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
