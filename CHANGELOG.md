@@ -165,6 +165,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   half line stayed in the reply as a stray line. The reply now continues
   from its last complete line. Measured on DeepSeek V4 Flash with a
   1500-token limit: 1 of 7 continued replies was clean before, 6 of 6 after.
+- **Clients that start together**: when several clients started at one time
+  with no daemon, a client could take the start lock from a client that had
+  created it and not written it yet. Two daemons then started for one
+  folder, and one stayed behind with no client. On Windows a client could
+  also stop with `EFAULT` or `EPERM` on the lock file. A lock with no
+  content is now held until it is old, and an error on the lock file no
+  longer stops a client. Measured with 12 clients at one time over 100
+  rounds: 41 rounds with two starts and 7 with an error before, 0 and 0
+  after.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
