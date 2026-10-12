@@ -1,5 +1,6 @@
 import { relative, resolve } from "node:path";
 import { scopeMatchesPattern } from "./capabilities.ts";
+import { fromMsysPath } from "./sandbox.ts";
 import type { TrustStore } from "./trust.ts";
 
 /**
@@ -337,7 +338,7 @@ export class PolicyEngine {
 
 /** Workspace-relative, forward-slash form of `candidate` (absolute or relative). */
 export function relativeWorkspacePath(root: string, candidate: string): string {
-  const rel = relative(resolve(root), resolve(root, candidate)).replace(/\\/g, "/");
+  const rel = relative(resolve(root), resolve(root, fromMsysPath(candidate))).replace(/\\/g, "/");
   return rel === "" ? "." : rel;
 }
 

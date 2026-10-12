@@ -35,6 +35,14 @@ describe("SandboxBoundary.resolvePath", () => {
     expect(() => boundary.resolvePath(sibling)).toThrow(AgencyError);
   });
 
+  test("reads the drive form that Git Bash prints as a Windows path", () => {
+    if (!isWin) return;
+    expect(boundary.resolvePath("/c/repo/project/src/index.ts")).toBe(join(root, "src", "index.ts"));
+    expect(() => boundary.resolvePath("/c/Windows/System32")).toThrow(AgencyError);
+    // The bare drive is the drive root. "C:" alone is the current folder of that drive, which is the sandbox root.
+    expect(() => boundary.resolvePath("/c")).toThrow(AgencyError);
+  });
+
   test("the thrown error carries PERMISSION_DENIED", () => {
     const err = (() => {
       try {

@@ -126,7 +126,7 @@ export class SandboxBoundary implements SandboxBackend {
   }
 
   private resolveUncontained(candidate: string): string {
-    return canonicalPath(resolve(this.root, candidate));
+    return canonicalPath(resolve(this.root, fromMsysPath(candidate)));
   }
 
   private contains(resolved: string): boolean {
@@ -157,6 +157,12 @@ export class SandboxBoundary implements SandboxBackend {
 
 function sep(): string {
   return process.platform === "win32" ? "\\" : "/";
+}
+
+/** Git Bash prints a drive as `/c/...`, and a model copies that form into the file tools. Windows reads it as `C:\c\...`. */
+export function fromMsysPath(candidate: string): string {
+  if (process.platform !== "win32") return candidate;
+  return candidate.replace(/^\/([a-zA-Z])(\/|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`);
 }
 
 function windowsCompareKey(p: string): string {

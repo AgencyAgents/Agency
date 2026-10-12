@@ -133,10 +133,24 @@ describe("relativeWorkspacePath", () => {
   test("resolves relative input against the root", () => {
     expect(relativeWorkspacePath(root, join(".agency", "plans", "x.md"))).toBe(".agency/plans/x.md");
   });
+
+  test("reads the drive form that Git Bash prints as the same path", () => {
+    if (!isWin) return;
+    expect(relativeWorkspacePath(root, "/c/repo/src/index.ts")).toBe("src/index.ts");
+  });
 });
 
 describe("PermissionsGate", () => {
   const root = process.platform === "win32" ? join("C:", "repo") : join("/", "repo");
+
+  test("a deny rule holds for a path in the drive form that Git Bash prints", () => {
+    if (process.platform !== "win32") return;
+    const gate = new PermissionsGate({
+      permissions: { read: { "*": "allow", "secrets/**": "deny" } },
+      workspaceRoot: root,
+    });
+    expect(gate.decisionFor({ tool: "read", path: "/c/repo/secrets/key.txt" })).toBe("deny");
+  });
 
   test("a bare deny filters the tool from the offered list", () => {
     const gate = new PermissionsGate({
