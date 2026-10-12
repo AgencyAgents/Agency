@@ -210,7 +210,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   line, and a file in `.agency/commands/` could hold a shell block that
   `command_run` ran. Both loaded in a workspace that the user had not
   trusted. They now load only after `agency trust`, and the daemon writes no
-  default agent files into an untrusted workspace. Measured on DeepSeek V4
+  default agent files into an untrusted workspace. `agency plugin install`
+  says when the workspace is not trusted. Measured on DeepSeek V4
   Flash in an untrusted workspace: a dispatched agent from such a file ran a
   shell command before, and the agent is unknown after.
 - **Shell of a dispatched agent**: in the default mode the main turn could
