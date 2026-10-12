@@ -411,6 +411,57 @@ export const GATEWAY_BASE_URLS: Readonly<Record<string, string>> = {
   xai: "https://api.x.ai/v1",
 };
 
+/** A provider adds the output limit to the prompt and rejects a sum over the window, so a request asks for less. */
+const LEARNED_OUTPUT_CAP = 32_000;
+const LEARNED_OUTPUT_DEFAULT = 8192;
+
+/** The public model list of OpenRouter as catalog entries. The list needs no key, so none is sent. */
+export async function fetchOpenRouterModels(
+  http: HttpClient,
+  baseUrl: string,
+  signal?: AbortSignal,
+): Promise<ModelInfo[]> {
+  const res = await http.fetch(`${baseUrl.replace(/\/+$/, "")}/models`, signal ? { signal } : undefined);
+  if (!res.ok) throw new Error(`model list of openrouter failed with ${res.status}`);
+  const data = fieldOf(await res.json(), "data");
+  if (!Array.isArray(data)) throw new Error("model list of openrouter has no data array");
+
+  const perMTok = (value: unknown) => Math.max(0, Number(value) || 0) * 1e6;
+  return data.flatMap((raw): ModelInfo[] => {
+    const entry = raw as {
+      id?: unknown;
+      context_length?: unknown;
+      top_provider?: { max_completion_tokens?: unknown };
+      pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown };
+      architecture?: { input_modalities?: unknown };
+      supported_parameters?: unknown;
+    };
+    const window = Number(entry.context_length);
+    if (typeof entry.id !== "string" || !(window > 0)) return [];
+    const listed = Number(entry.top_provider?.max_completion_tokens) || LEARNED_OUTPUT_DEFAULT;
+    const has = (list: unknown, value: string) => Array.isArray(list) && list.includes(value);
+    const cached = entry.pricing?.input_cache_read;
+    return [
+      {
+        id: entry.id,
+        family: "openrouter",
+        contextWindow: window,
+        maxOutputTokens: Math.min(listed, LEARNED_OUTPUT_CAP, Math.floor(window / 4)),
+        pricing: {
+          inputPerMTok: perMTok(entry.pricing?.prompt),
+          outputPerMTok: perMTok(entry.pricing?.completion),
+          ...(cached === undefined || cached === null ? {} : { cachedInputPerMTok: perMTok(cached) }),
+        },
+        capabilities: {
+          tools: has(entry.supported_parameters, "tools"),
+          vision: has(entry.architecture?.input_modalities, "image"),
+          thinking: has(entry.supported_parameters, "reasoning"),
+        },
+      },
+    ];
+  });
+}
+
 /**
  * Live model IDs for one provider family, covering every known family plus a
  * generic OpenAI-compatible `/v1/models` fallback so custom gateways resolve

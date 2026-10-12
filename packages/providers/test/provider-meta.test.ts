@@ -7,6 +7,7 @@ import { loadModelRegistry, saveCachedCatalog } from "../src/catalog-cache.ts";
 import {
   BUILTIN_PROVIDER_METADATA,
   fetchLiveIdsForFamily,
+  fetchOpenRouterModels,
   getProviderMetadata,
   type ModelInfo,
   UnknownProviderError,
@@ -162,6 +163,37 @@ describe("live model ids", () => {
       "https://proxy.local/oai/",
     );
     expect(seen.url).toBe("https://proxy.local/oai/models");
+  });
+
+  test("the model list of openrouter gives each model its window, a safe output limit, prices and abilities", async () => {
+    // Recorded from the public list. No key goes out: the list needs none.
+    const sample = await Bun.file(`${import.meta.dir}/cassettes/openrouter-models.json`).json();
+    const seen: { url?: string; auth?: string | null } = {};
+    const models = await fetchOpenRouterModels(jsonHttp(sample, 200, seen), "https://openrouter.ai/api/v1/");
+    expect(seen).toMatchObject({ url: "https://openrouter.ai/api/v1/models", auth: null });
+
+    const of = (id: string) => models.find((model) => model.id === id);
+    expect(of("deepseek/deepseek-v4-flash")).toEqual({
+      id: "deepseek/deepseek-v4-flash",
+      family: "openrouter",
+      contextWindow: 1048576,
+      // The list says 943718. A provider adds the limit to the prompt, so the request asks for less.
+      maxOutputTokens: 32000,
+      pricing: { inputPerMTok: 0.03, outputPerMTok: 1.28, cachedInputPerMTok: 0.03 },
+      capabilities: { tools: true, vision: false, thinking: true },
+    });
+    expect(of("liquid/lfm-2.5-2.6b:free")).toMatchObject({ contextWindow: 65536, maxOutputTokens: 8192 });
+    expect(of("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")?.capabilities.vision).toBe(true);
+    // No output limit in the list: the default. A price below zero (a router) is not a price.
+    expect(of("typesafe/jev-router")).toMatchObject({
+      maxOutputTokens: 8192,
+      pricing: { inputPerMTok: 0, outputPerMTok: 0 },
+    });
+    // An output limit near the window leaves no room for the prompt: at most a quarter of the window.
+    expect(of("google/gemini-nano-banana-2.1")).toMatchObject({
+      contextWindow: 65536,
+      maxOutputTokens: 16384,
+    });
   });
 
   test("ollama reads tags verbatim with a localhost default", async () => {

@@ -560,6 +560,7 @@ export interface DaemonContext {
   activeTurnMeta: Map<string, ActiveTurnMeta>;
   commands: CommandTemplate[];
   catalogModel: (provider: string, model: string) => ModelInfo | undefined;
+  learnModel: (provider: string, model: string, http: HttpClient) => Promise<void>;
   resolveAgentModel: (provider: string, model?: string) => string;
   getKeychain: () => Promise<KeychainBackend | undefined>;
   configFingerprint: { check(): boolean };

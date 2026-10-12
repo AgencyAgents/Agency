@@ -155,8 +155,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const adapterFor = options.adapterFor ?? ((provider: string) => resolveAdapter(provider, providers));
   const http = options.http ?? createHttpClient();
 
-  // Model metadata for pre-flight accounting (max output tokens, pricing):
-  // resolved offline, never fetched on the turn path.
+  // Model metadata for pre-flight accounting (max output tokens, pricing): resolved offline.
+  // One exception: the first turn on an OpenRouter model that the catalog does not know reads OpenRouter's model list.
   const models = createModelCatalog(providers, config);
   const catalogModel = models.catalogModel;
   const resolveAgentModel = models.resolveAgentModel;
@@ -519,6 +519,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     activeTurnMeta,
     commands,
     catalogModel,
+    learnModel: models.learnModel,
     resolveAgentModel,
     getKeychain,
     configFingerprint,

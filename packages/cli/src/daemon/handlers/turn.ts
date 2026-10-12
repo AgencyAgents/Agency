@@ -242,6 +242,7 @@ export async function executeTurn(
         if (teamBudget !== undefined && teamFor(budgetParent).teamTotal.value >= teamBudget)
           throw new Error(`team budget exceeded: ${teamFor(budgetParent).teamTotal.value} >= ${teamBudget}`);
 
+        await ctx.learnModel(resolvedProvider, resolvedModel, http);
         const modelInfo = catalogModel(resolvedProvider, resolvedModel);
         // Clamp the resolved thinking level to what the model actually supports
         if (resolvedThinkingLevel && modelInfo) {

@@ -862,6 +862,72 @@ describe("createAgentDaemon", () => {
       else process.env[dataEnvKey] = previous;
     }
   });
+
+  test("run_turn takes the limits of an openrouter model from the provider's model list, with one read", async () => {
+    const maxTokens: Array<number | undefined> = [];
+    const capturingAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        maxTokens.push(request.maxTokens);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const list = await Bun.file(
+      join(import.meta.dir, "..", "..", "providers", "test", "cassettes", "openrouter-models.json"),
+    ).text();
+    const reads: string[] = [];
+    const http: HttpClient = {
+      fetch: async (url) => {
+        reads.push(String(url));
+        return new Response(list, { status: 200 });
+      },
+    };
+    const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter, http });
+    const turn = (turnId: string, model: string) =>
+      client.call("run_turn", {
+        turnId,
+        provider: "openrouter",
+        model,
+        apiKey: "key",
+        systemPrompt: "s",
+        session: [],
+      });
+
+    await turn("t1", "deepseek/deepseek-v4-flash");
+    await turn("t2", "liquid/lfm-2.5-2.6b:free");
+    // A model that the list does not have keeps the default.
+    await turn("t3", "no-such/model");
+
+    expect(maxTokens).toEqual([32_000, 8192, 8192]);
+    expect(reads).toEqual(["https://openrouter.ai/api/v1/models"]);
+  });
+
+  test("run_turn keeps the default limits when the model list cannot be read", async () => {
+    let maxTokens: number | undefined;
+    const capturingAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        maxTokens = request.maxTokens;
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const http: HttpClient = { fetch: async () => new Response("down", { status: 503 }) };
+    const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter, http });
+
+    const result = (await client.call("run_turn", {
+      turnId: "t1",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-flash",
+      apiKey: "key",
+      systemPrompt: "s",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(maxTokens).toBe(8192);
+  });
 });
 
 describe("system prompt composition", () => {
