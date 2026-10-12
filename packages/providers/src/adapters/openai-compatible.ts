@@ -279,8 +279,9 @@ async function* streamRaw(
 
     if (choice.finish_reason) {
       stopReason = FINISH_REASON[choice.finish_reason] ?? "end_turn";
+      // OpenRouter repeats the finish reason on its usage chunk. A call that ends twice runs twice.
+      if (!finished) for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
       finished = true;
-      for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
     }
   }
 

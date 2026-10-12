@@ -276,6 +276,23 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(events.at(-1)).toMatchObject({ stopReason: "tool_use" });
   });
 
+  test("an OpenRouter stream repeats the finish reason on its usage chunk: the tool call ends once", async () => {
+    // Recorded from openrouter.ai with deepseek/deepseek-v4-flash. Two ends made the loop run each tool twice.
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-stream-tool-call.sse`).text();
+    const http: HttpClient = { fetch: async () => new Response(cassette, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.filter((event) => event.type === "tool_call_end")).toEqual([
+      { type: "tool_call_end", id: "call_c167c9cf19a14a05b9cf6eba" },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "message_stop",
+      stopReason: "tool_use",
+      usage: { inputTokens: 359, outputTokens: 63 },
+    });
+  });
+
   test("a tool call with no id still runs: the adapter gives it one", async () => {
     const http = streamOf(
       [
