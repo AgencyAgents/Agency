@@ -262,6 +262,64 @@ describe("per-agent permissions", () => {
     }
   });
 
+  it("the shell and the file tools of a dispatched agent work in the same worktree", async () => {
+    const root = gitRoot();
+    const results: string[] = [];
+    let step = 0;
+    const adapter = spyAdapter({ calls: [] }, (text, toolResult) => {
+      if (toolResult.includes("CHILD:")) return { kind: "text", text: "parent done" };
+      if (text.includes("coder brief") || toolResult.length > 0) {
+        if (toolResult.length > 0) results.push(toolResult);
+        step += 1;
+        if (step === 1)
+          return { kind: "tool", name: "bash", input: { command: "echo fromshell > shell.txt" } };
+        if (step === 2)
+          return { kind: "tool", name: "write", input: { path: "tool.txt", content: "fromtool" } };
+        if (step === 3) return { kind: "tool", name: "read", input: { path: "shell.txt" } };
+        return { kind: "text", text: "CHILD:done" };
+      }
+      return {
+        kind: "tool",
+        name: "dispatch",
+        input: { agents: [{ handle: "coder", brief: "coder brief" }] },
+      };
+    });
+    const client = await startDaemon(
+      {
+        permissions: GLOBAL_PERMS,
+        agents: { leader: agentEntry("Leader"), coder: agentEntry("Coder", CODER_PERMS) },
+      },
+      root,
+      adapter,
+    );
+    const result = (await client.call("run_turn", {
+      turnId: "t-worktree-tools",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      sessionId: "test-worktree-tools",
+    })) as RunTurnRpcResult;
+
+    const worktree = join(root, ".agency", "worktrees", "test-worktree-tools", "coder");
+    expect({
+      shellFileInWorktree: existsSync(join(worktree, "shell.txt")),
+      toolFileInWorktree: existsSync(join(worktree, "tool.txt")),
+      toolFileInWorkspace: existsSync(join(root, "tool.txt")),
+      readSeesShellFile: results.some((r) => r.includes("fromshell")),
+      leadIsToldWhereTheWorkIs: toolResultText(result).includes(
+        ".agency/worktrees/test-worktree-tools/coder",
+      ),
+    }).toEqual({
+      shellFileInWorktree: true,
+      toolFileInWorktree: true,
+      toolFileInWorkspace: false,
+      readSeesShellFile: true,
+      leadIsToldWhereTheWorkIs: true,
+    });
+  });
+
   it("a dispatched agent writes only when the run that dispatched it may write", async () => {
     const dispatchCoder = async (permissionMode?: "allow-all") => {
       const root = gitRoot();

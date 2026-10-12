@@ -62,6 +62,16 @@ export async function createWorktree(cwd: string, path: string, branch?: string)
   await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));
 }
 
+/** The branch that a worktree has checked out. Empty when git cannot tell. */
+export async function worktreeBranch(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function removeWorktree(cwd: string, path: string, force = false): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), path];
   await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));

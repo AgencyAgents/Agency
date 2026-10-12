@@ -14,8 +14,9 @@ import {
   resolveDispatchTarget,
   runChildTurn,
   type ToolSpec,
+  worktreeBranch,
 } from "@agency/core";
-import { checkCostForecast } from "@agency/guard";
+import { checkCostForecast, relativeWorkspacePath } from "@agency/guard";
 import { classifyEffortFromText } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
@@ -265,6 +266,8 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           } catch {}
           const scope = await getOrCreateScope(childSessionId, a.handle);
           scope.teamId = parentSessionId;
+          // The folder where this agent's shell and file tools work. A writable worktree replaces the workspace.
+          let agentRoot = options.workspaceRoot;
           const caps = agent.capabilities;
           const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
           if (writeCapable) {
@@ -298,7 +301,12 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               const scratchAbs = makeWorktreeReadOnly(wtPath, `scratch-${batchId}`);
               if (sc) sc.bashState.cwd = scratchAbs;
             } else {
-              if (sc) sc.bashState.cwd = wtPath;
+              agentRoot = wtPath;
+              if (sc) {
+                sc.bashState.cwd = wtPath;
+                // Without this the file tools write to the workspace while the shell runs in the worktree.
+                sc.fileBase.root = wtPath;
+              }
             }
           }
           const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
@@ -388,7 +396,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               .list()
               .filter((i) => i.claimedBy === a.handle)
               .map((i) => `${i.id} ${i.content}`),
-            workspaceRoot: options.workspaceRoot,
+            workspaceRoot: agentRoot,
           });
 
           const childTurn = await team.limiter.run(() =>
@@ -556,9 +564,15 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
             const unfinished = childResult?.error
               ? ` did not finish (${childResult.error.code}: ${childResult.error.message})`
               : "";
+            // The lead must know that the files are not in the workspace yet: merge-back is its step.
+            const branch = agentRoot === options.workspaceRoot ? "" : await worktreeBranch(agentRoot);
+            const workNote =
+              agentRoot === options.workspaceRoot
+                ? ""
+                : ` Its file changes are in ${relativeWorkspacePath(options.workspaceRoot, agentRoot)}${branch ? ` on branch ${branch}` : ""}, not in the workspace.`;
             dispatchBarrier.complete(
               slot,
-              `${a.handle} dispatched at ${effort}:${unfinished} ${leanSummary(finalText, 80) || "(no output)"}`,
+              `${a.handle} dispatched at ${effort}:${unfinished} ${leanSummary(finalText, 80) || "(no output)"}${workNote}`,
             );
             dispatchLog.append({
               index: slot,

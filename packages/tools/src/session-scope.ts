@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CallerIdentity } from "@agency/guard";
+import { type CallerIdentity, rebaseSandbox } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { type BashState, createBashTool } from "./builtins/bash.ts";
 import { createBrowserTool } from "./builtins/browser.ts";
@@ -73,6 +73,8 @@ export interface SessionScope {
   processManager: ProcessManager;
   todos: TodoStore;
   bashState: BashState;
+  /** Where a relative path of the file tools starts. An agent with a worktree gets that worktree here. */
+  fileBase: { root: string };
   readState: ReadState;
   snapshots: SnapshotStore;
   mcpFailures: ReadonlyMap<string, string>;
@@ -118,7 +120,12 @@ export interface SessionScopeOptions {
   identityFor?: McpManagerOptions["identityFor"];
 }
 
-export async function createSessionScope(options: SessionScopeOptions): Promise<SessionScope> {
+export async function createSessionScope(scopeOptions: SessionScopeOptions): Promise<SessionScope> {
+  const fileBase = { root: scopeOptions.workspaceRoot };
+  const options: SessionScopeOptions = {
+    ...scopeOptions,
+    deps: { ...scopeOptions.deps, sandbox: rebaseSandbox(scopeOptions.deps.sandbox, () => fileBase.root) },
+  };
   const snapshots = new SnapshotStore(
     options.snapshotDir,
     options.snapshotJournalFile ? { journalFile: options.snapshotJournalFile } : undefined,
@@ -374,6 +381,7 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
     processManager,
     todos,
     bashState,
+    fileBase,
     readState,
     snapshots,
     get mcpFailures(): ReadonlyMap<string, string> {

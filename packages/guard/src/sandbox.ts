@@ -159,6 +159,19 @@ function sep(): string {
   return process.platform === "win32" ? "\\" : "/";
 }
 
+/**
+ * A view of a sandbox for an agent that works in a subfolder: a relative path starts at `base()`.
+ * The view inherits from `inner`, so its boundary and every other member stay (a container backend keeps `exec`).
+ */
+export function rebaseSandbox<T extends SandboxBackend>(inner: T, base: () => string): T {
+  const at = (candidate: string) => resolve(base(), fromMsysPath(candidate));
+  return Object.assign(Object.create(inner) as T, {
+    resolvePath: (candidate: string) => inner.resolvePath(at(candidate)),
+    resolvePathGated: (candidate: string, opts: { tool: string; ask?: RequestApproval }) =>
+      inner.resolvePathGated(at(candidate), opts),
+  });
+}
+
 /** Git Bash prints a drive as `/c/...`, and a model copies that form into the file tools. Windows reads it as `C:\c\...`. */
 export function fromMsysPath(candidate: string): string {
   if (process.platform !== "win32") return candidate;
