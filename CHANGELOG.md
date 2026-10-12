@@ -132,6 +132,22 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   - **Rate limits**: a rate limit got 4 attempts in 3.5 s. Measured limits of
     free models clear in 11 s to 22 s, so it now gets 7 attempts (about 30 s),
     and each retry shows as a `Retry <n>` line.
+  - **Error in the middle of a stream**: OpenRouter reports a failure after
+    the stream began with HTTP 200 and the finish reason "error". The adapter
+    took it as the end of a good reply. It now fails the request. This case
+    was not seen live; the test uses the form in OpenRouter's documentation.
+  - **Empty tool result**: a shell command with no output gave an empty
+    result, and Cohere (through OpenRouter) rejected the next request with
+    400. An empty result now has the text "(no output)".
+  - **Refused tool call**: the refusal now tells the model not to send the
+    call again. Measured on a free model over five runs: 15 repeated calls on
+    average before, 1 after.
+- **Image file**: a wrong path for the image option was dropped without a
+  word, so the prompt went out with no image. The run now stops with an
+  error, and the help text lists the option.
+- **Key variable for an id with a hyphen**: the id `my-gateway` gave a
+  variable name that a POSIX shell cannot set. A character that is not a
+  letter or a digit is now an underscore.
 - **Cancel on Windows**: a cancelled or timed-out shell command left the
   programs that it started running, because the shell was killed before its
   process tree. The tree is now killed first.
