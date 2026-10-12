@@ -1,0 +1,3 @@
+# A test run from this folder must get the same isolation as a run from the repository root.
+[test]
+preload = ["../../scripts/test-preload.ts"]
