@@ -213,6 +213,16 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   default agent files into an untrusted workspace. Measured on DeepSeek V4
   Flash in an untrusted workspace: a dispatched agent from such a file ran a
   shell command before, and the agent is unknown after.
+- **Shell of a dispatched agent**: in the default mode the main turn could
+  not use the shell, but an agent that the main turn dispatched could. The
+  default roster allows `bash`, `write` and `edit` for some agents, and the
+  agent's map replaced the global permissions. The global `permissions` and
+  the mode of the run are now a ceiling for each agent: the stricter verdict
+  wins. In the default mode a dispatched agent can only read.
+  `--permission-mode allow-all`, `allow-edits`, or an `allow` entry in the
+  global `permissions` gives it more. Measured on DeepSeek V4 Flash: a
+  dispatched `coder` ran a shell command in the default mode before, and is
+  refused after. With `allow-all` the command runs.
 - **Skill and plugin text**: the body of a skill and the `agentsMd` text of a
   plugin never reached the system prompt. They are now added after the
   project instructions.
