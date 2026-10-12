@@ -144,21 +144,32 @@ function acquireSpawnLock(lockFile: string, staleMs: number): boolean {
       closeSync(fd);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      // Windows gives EPERM for a lock that another client removes at this moment. The next poll tries again.
+      if (process.platform === "win32" && code === "EPERM") return false;
+      if (code !== "EEXIST") throw error;
       const holder = readSpawnLock(lockFile);
-      const holderAlive = holder !== undefined && holder.pid !== process.pid && isProcessAlive(holder.pid);
+      // A lock with no content is between its create and its write: only its age can show a dead holder.
+      const holderDead = holder !== undefined && (holder.pid === process.pid || !isProcessAlive(holder.pid));
       let age = 0;
       try {
         age = Date.now() - statSync(lockFile).mtimeMs;
       } catch {
-        // Vanished between EEXIST and stat: retry the create.
+        // Vanished between EEXIST and stat: the next poll retries the create.
       }
-      if (holderAlive && age < staleMs) return false;
+      if (!holderDead && age < staleMs) return false;
       // Dead holder, same-process leftover, or pathologically old: steal it.
-      rmSync(lockFile, { force: true });
+      releaseSpawnLock(lockFile);
     }
   }
   return false;
+}
+
+/** Windows can refuse the removal (seen as EFAULT) while another client reads the lock. A lock that stays is stolen later. */
+function releaseSpawnLock(lockFile: string): void {
+  try {
+    rmSync(lockFile, { force: true });
+  } catch {}
 }
 
 export interface EnsureDaemonOptions {
@@ -243,6 +254,6 @@ export async function ensureDaemon(
 
     throw new Error(`daemon for ${options.workspaceRoot} did not become ready within the spawn timeout`);
   } finally {
-    if (locked) rmSync(lockFile, { force: true });
+    if (locked) releaseSpawnLock(lockFile);
   }
 }
