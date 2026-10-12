@@ -355,6 +355,9 @@ export async function runTurn(
         turn = await collectWithFallback();
       }
 
+      if (turn.stopReason === "max_tokens" && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
+        turn.content = withoutCutLine(turn.content);
+      }
       // A reply with no content is not stored: strict providers reject an empty message.
       if (turn.content.length > 0) await append({ role: "assistant", content: turn.content });
       spoke = turn.content.some((block) => block.type === "text" && block.text.trim() !== "");
@@ -522,6 +525,14 @@ export const OUTPUT_CUT_NOTE =
   "Your reply was cut at the output limit. Continue from the exact point where it stopped. Do not repeat text.";
 const CUT_CALL_NOTE =
   "not run: the output limit cut this call before its arguments were complete. Send it again with shorter arguments, for example write a long file in smaller parts.";
+
+/** Measured: a model writes the cut line again from its start, so the half line was in the output twice. */
+function withoutCutLine(content: ContentBlock[]): ContentBlock[] {
+  const last = content.at(-1);
+  if (last?.type !== "text") return content;
+  const kept = last.text.slice(0, Math.max(0, last.text.lastIndexOf("\n")));
+  return kept.trim() === "" ? content : [...content.slice(0, -1), { ...last, text: kept }];
+}
 
 /** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */
 function unrunResults(calls: ReadonlyArray<{ id: string }>, why: string): Message {

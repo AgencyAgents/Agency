@@ -521,13 +521,48 @@ describe("runTurn", () => {
     expect(texts).toEqual(["part one,", " part two."]);
   });
 
+  test("a reply that is cut in the middle of a line goes on from its last complete line", async () => {
+    const requests: Message[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push([...request.messages]);
+        const first = requests.length === 1;
+        // A real model writes the cut line again from its start.
+        yield { type: "text_delta", text: first ? "one\ntwo\nthr" : "three\nfour" };
+        yield {
+          type: "message_stop",
+          stopReason: first ? "max_tokens" : "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "count" }] }],
+    });
+
+    const texts = (messages: Message[]) =>
+      messages
+        .filter((message) => message.role === "assistant")
+        .flatMap((message) => message.content)
+        .map((block) => (block.type === "text" ? block.text : ""));
+    expect(texts(requests[1] ?? [])).toEqual(["one\ntwo"]);
+    expect(texts(result.messages)).toEqual(["one\ntwo", "three\nfour"]);
+  });
+
   test("a reply that stays cut at the output limit ends as a turn error, not as a normal end", async () => {
     let requests = 0;
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(): AsyncIterable<StreamEvent> {
         requests += 1;
-        yield { type: "text_delta", text: "more" };
+        yield { type: "text_delta", text: "more\nand mo" };
         yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
       },
     };
@@ -544,6 +579,9 @@ describe("runTurn", () => {
     expect(requests).toBe(4);
     expect(result.stopReason).toBe("max_tokens");
     expect(result.error?.code).toBe("max_tokens");
+    // The last part is the end of the output, so its half line stays.
+    const last = result.messages.at(-1)?.content.at(-1);
+    expect(last).toMatchObject({ type: "text", text: "more\nand mo" });
   });
 
   test("a complete tool call in a reply that the output limit cut still runs", async () => {
