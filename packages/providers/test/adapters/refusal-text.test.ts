@@ -16,10 +16,13 @@ const request: ProviderRequest = {
 const openrouter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
 const ADAPTERS: ProviderAdapter[] = [anthropicAdapter, googleAdapter, openrouter];
 
-async function failure(adapter: ProviderAdapter, status: number, message: string): Promise<AgencyError> {
-  const http: HttpClient = {
-    fetch: async () => new Response(JSON.stringify({ error: { message } }), { status }),
-  };
+async function failure(
+  adapter: ProviderAdapter,
+  status: number,
+  error: string | Record<string, unknown>,
+): Promise<AgencyError> {
+  const body = { error: typeof error === "string" ? { message: error } : error };
+  const http: HttpClient = { fetch: async () => new Response(JSON.stringify(body), { status }) };
   try {
     for await (const _ of adapter.stream(request, http)) void 0;
   } catch (error) {
@@ -48,5 +51,21 @@ describe("the text and code of a provider's refusal", () => {
     }
     const noTools = await failure(openrouter, 404, "No endpoints found that support tool use.");
     expect(noTools.code).toBe(ErrorCode.INVALID_REQUEST);
+  });
+
+  test("OpenRouter's generic text gets the upstream's cause from the metadata", async () => {
+    // The 429 body of openrouter.ai for a free model that its upstream limited.
+    const error = await failure(openrouter, 429, {
+      message: "Provider returned error",
+      code: 429,
+      metadata: {
+        raw: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly.",
+        provider_name: "Google AI Studio",
+      },
+    });
+    expect(error.code).toBe(ErrorCode.RATE_LIMIT);
+    expect(error.message).toBe(
+      "Provider returned error (Google AI Studio): google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly.",
+    );
   });
 });

@@ -122,9 +122,20 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
 
 async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
-    | { error?: { message?: string; code?: string; type?: string } }
+    | {
+        error?: {
+          message?: string;
+          code?: string;
+          type?: string;
+          metadata?: { raw?: unknown; provider_name?: string };
+        };
+      }
     | undefined;
-  const message = body?.error?.message ?? res.statusText;
+  // OpenRouter says only "Provider returned error" and puts the upstream's cause in the metadata.
+  const meta = body?.error?.metadata;
+  const stated = body?.error?.message ?? res.statusText;
+  const from = meta?.provider_name ? ` (${meta.provider_name})` : "";
+  const message = typeof meta?.raw === "string" ? `${stated}${from}: ${meta.raw.slice(0, 500)}` : stated;
   const context = { status: res.status, source: family };
 
   if (res.status === 401 || res.status === 403) {
