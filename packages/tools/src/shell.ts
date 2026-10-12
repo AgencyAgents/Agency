@@ -68,7 +68,8 @@ const GIT_BASH: ShellConfig = {
     `${userCommand}\n` +
     `__agency_exit=$?\n` +
     `printf '\\n${EXIT_MARKER}%s\\n' "$__agency_exit"\n` +
-    `printf '${CWD_MARKER}%s\\n' "$(pwd)"`,
+    // -W gives the Windows form. The MSYS form (/tmp/x, /c/x) is not a path that the host can resolve.
+    `printf '${CWD_MARKER}%s\\n' "$(pwd -W)"`,
   label: "Git Bash",
 };
 

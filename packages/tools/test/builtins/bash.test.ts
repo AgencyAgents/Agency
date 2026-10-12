@@ -283,3 +283,28 @@ describe("createBashTool cwd containment (A5: bash calls resolvePath)", () => {
     expect(result.content).toContain("resolves outside the workspace");
   }, 30_000);
 });
+
+describe.skipIf(process.platform !== "win32" || Bun.which("bash") === null)(
+  "createBashTool in Git Bash",
+  () => {
+    test("a directory change persists across calls, with no notice that it left the workspace", async () => {
+      // Live: `pwd` gave the MSYS form (/tmp/...), no call could change the directory, and each result had the notice.
+      const root = mkdtempSync(join(tmpdir(), "agency-bash-test-"));
+      dirs.push(root);
+      mkdirSync(join(root, "sub"));
+      const deps: ToolDeps = {
+        identity: { type: "user" },
+        capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },
+        sandbox: new SandboxBoundary(root),
+      };
+      const manager = new ProcessManager();
+      managers.push(manager);
+      const tool = createBashTool(deps, resolveShell("win32", "gitbash"), { cwd: root }, manager);
+
+      const moved = await tool.handler({ command: "cd sub" }, { signal });
+      expect(moved.content).not.toContain("cwd kept");
+      const where = await tool.handler({ command: 'basename "$(pwd)"' }, { signal });
+      expect(where.content.trim()).toBe("sub");
+    }, 60_000);
+  },
+);
