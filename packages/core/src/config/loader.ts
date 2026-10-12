@@ -175,7 +175,14 @@ export function loadConfig(sources: ConfigSources = {}): Config {
     if (managedLayer) merged = deepMergeLayer(merged, migrateLayer(managedLayer));
   }
 
-  const config = ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+  const parsed = ConfigSchema.safeParse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+    const projectPath = sources.projectRoot && join(sources.projectRoot, ".agency", "config.jsonc");
+    const files = [globalPath, projectPath, sources.managedPath].filter((path) => path && existsSync(path));
+    throw new Error(`config is not valid: ${issues.join("; ")} (files: ${files.join(", ") || "none"})`);
+  }
+  const config = parsed.data;
 
   // Fresh config with no agents key gets the default empty roster.
   if (!config.agents) {

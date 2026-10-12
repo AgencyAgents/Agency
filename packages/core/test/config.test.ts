@@ -24,6 +24,23 @@ describe("loadConfig", () => {
     expect(config.locale).toBe("en");
   });
 
+  test("a value of the wrong type gives one line that names the key and the file", () => {
+    const globalDir = tempDir();
+    cleanup.push(globalDir);
+    const file = join(globalDir, "config.jsonc");
+    writeFileSync(file, `{ "provider": { "gateway": { "env": "MY_KEY" } } }`);
+
+    let message = "";
+    try {
+      loadConfig({ globalDir, env: {} });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("provider.gateway.env");
+    expect(message).toContain(file);
+    expect(message).not.toContain("\n");
+  });
+
   test("project config overrides global config", () => {
     const globalDir = tempDir();
     const projectRoot = tempDir();
