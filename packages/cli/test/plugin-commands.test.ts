@@ -106,6 +106,18 @@ describe("plugin install", () => {
     expect(existsSync(skillPath)).toBe(true);
   });
 
+  test("a second install says in plain text that the files exist, and names the CLI flag", () => {
+    const ws = tempDir("agency-plugin-reinstall-");
+    pluginInstallCmd(FIXTURE_DIR, ws, false, () => {});
+    const c = capture();
+    pluginInstallCmd(FIXTURE_DIR, ws, false, c.deps.err);
+
+    const text = c.err.join("\n");
+    expect(text).toContain('skill "my-skill" already exists');
+    expect(text).toContain("--overwrite");
+    expect(text).not.toContain('{"time"');
+  });
+
   test("prints error for missing source dir", async () => {
     const c = capture();
     const ws = tempDir("agency-plugin-missing-");
@@ -154,7 +166,7 @@ describe("plugin list", () => {
 
     const list = pluginListCmd(ws);
     expect(list).toContain("my-skill  (skill)");
-    expect(list).toContain("test-plugin  (skill)");
+    expect(list).toContain("test-plugin  (plugin)");
   });
 
   test("shows empty when nothing installed", () => {
@@ -201,6 +213,15 @@ describe("plugin remove", () => {
     expect(existsSync(join(ws, ".agency", "skills", "my-skill"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(false);
+  });
+
+  test("refuses to remove one skill of a plugin, and names the plugin", () => {
+    const ws = tempDir("agency-plugin-remove-skill-");
+    pluginInstallCmd(FIXTURE_DIR, ws, false, () => {});
+
+    expect(() => pluginRemoveCmd("my-skill", ws)).toThrow("agency plugin remove test-plugin");
+    expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "skills", "test-plugin", "receipt.json"))).toBe(true);
   });
 
   test("errors on unknown plugin name", () => {

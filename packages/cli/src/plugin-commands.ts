@@ -25,7 +25,11 @@ export function pluginInstallCmd(
   overwrite: boolean,
   errSink: (line: string) => void,
 ): string {
-  const logger = new Logger({ level: "warn", sink: errSink });
+  // The importer logs JSON lines for a daemon. A person at the CLI gets the text and the CLI flag.
+  const logger = new Logger({
+    level: "warn",
+    sink: (line) => errSink(String(JSON.parse(line).message).replace("overwrite: true", "--overwrite")),
+  });
   const report = importClaudePlugin(sourceDir, { sourceDir, workspaceRoot, overwrite, logger });
 
   // Write install receipt into .agency/skills/<pluginName>/receipt.json
@@ -104,7 +108,8 @@ export function pluginListCmd(workspaceRoot: string): string {
       const fullPath = join(skillsDir, entry);
       try {
         if (statSync(fullPath).isDirectory()) {
-          lines.push(`  ${entry}  (skill)`);
+          const kind = existsSync(join(fullPath, "receipt.json")) ? "plugin" : "skill";
+          lines.push(`  ${entry}  (${kind})`);
         }
       } catch {
         // race: dir disappeared between readdir and stat
@@ -131,6 +136,21 @@ export function pluginListCmd(workspaceRoot: string): string {
 // plugin remove <name>
 // ---------------------------------------------------------------------------
 
+function owningPlugin(workspaceRoot: string, skill: string): string | undefined {
+  const skillsDir = join(workspaceRoot, ".agency", "skills");
+  for (const entry of readdirSync(skillsDir)) {
+    try {
+      const receipt: InstallReceipt = JSON.parse(
+        readFileSync(join(skillsDir, entry, "receipt.json"), "utf8"),
+      );
+      if (receipt.skillsInstalled.includes(skill)) return receipt.pluginName;
+    } catch {
+      // No receipt or a corrupt one: this folder owns no skill.
+    }
+  }
+  return undefined;
+}
+
 export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   const skillDir = join(workspaceRoot, ".agency", "skills", name);
   if (!existsSync(skillDir)) {
@@ -139,6 +159,13 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
 
   // Read receipt to find command files and skill dirs to delete
   const receiptPath = join(skillDir, "receipt.json");
+  if (!existsSync(receiptPath)) {
+    // A skill that a plugin installed goes with its plugin: alone, its removal leaves the receipt behind.
+    const owner = owningPlugin(workspaceRoot, name);
+    if (owner !== undefined) {
+      throw new Error(`"${name}" is a skill of the plugin "${owner}". Run: agency plugin remove ${owner}`);
+    }
+  }
   let commandsToDelete: string[] = [];
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
