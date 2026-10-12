@@ -616,7 +616,8 @@ async function runTools(
     results[item.index] = {
       type: "tool_result",
       toolCallId: item.call.id,
-      content: result.content,
+      // A strict provider (Cohere) rejects an empty result, and a model reads an empty one as a failure.
+      content: result.content || "(no output)",
       isError: result.isError,
       ...(result.images?.length ? { images: result.images } : {}),
     };

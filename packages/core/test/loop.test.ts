@@ -356,6 +356,27 @@ describe("runTurn", () => {
     expect(types[types.length - 1]).toBe("budget_exceeded");
   });
 
+  test("a tool that returns no text gives a result that says so: an empty result is rejected by strict providers", async () => {
+    // Cohere through OpenRouter answers 400 "all elements in tool_results must have the 'outputs' property" for "".
+    const silent: ToolSpec = {
+      name: "bash",
+      description: "runs",
+      inputSchema: {},
+      handler: async () => ({ content: "" }),
+    };
+    const result = await runTurn(toolThenDoneAdapter("bash", {}), new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [silent],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages[1]?.content[0]).toMatchObject({ type: "tool_result", content: "(no output)" });
+  });
+
   test("a charge that the provider reports counts against the cost budget with no price table", async () => {
     const charged: ProviderAdapter = {
       family: "fake",
