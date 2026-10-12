@@ -420,6 +420,7 @@ export async function executeTurn(
               mcpFailures: effectiveMcpFailures,
               shellLabel,
               trustStore,
+              pluginInstructions: ctx.pluginInstructions,
             });
             result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
               identity,
@@ -512,6 +513,7 @@ export async function executeTurn(
               mcpFailures: fallbackMcpFailures,
               shellLabel,
               trustStore,
+              pluginInstructions: ctx.pluginInstructions,
             });
             try {
               result = await runTurn(
@@ -566,6 +568,7 @@ export async function executeTurn(
               mcpFailures: cassetteMcpFailures,
               shellLabel,
               trustStore,
+              pluginInstructions: ctx.pluginInstructions,
             });
             writeTurnCassette(traceRecorder, params, sysPrompt, collectedTraceEvents, result);
           }

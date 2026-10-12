@@ -212,11 +212,12 @@ export function resolvePluginTierDirs(
 export function collectPluginTierFiles(
   workspaceRoot: string,
   configDirOverride?: string,
-  options: { maxBytes?: number } = {},
+  options: { maxBytes?: number; projectTrusted?: boolean } = {},
 ): string[] {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_PLUGIN_INSTRUCTION_BYTES;
   const out: string[] = [];
-  for (const { dir } of resolvePluginTierDirs(workspaceRoot, configDirOverride)) {
+  for (const { tier, dir } of resolvePluginTierDirs(workspaceRoot, configDirOverride)) {
+    if (tier === "project" && options.projectTrusted === false) continue;
     const agents = join(dir, "AGENTS.md");
     if (existsSync(agents)) {
       try {

@@ -1,7 +1,32 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hasTrustGatedContent } from "../src/headless.ts";
+
+describe("hasTrustGatedContent", () => {
+  test("is true for each kind of workspace content that needs trust, and false for none", () => {
+    const kinds: Record<string, string> = {
+      "AGENTS.md": "AGENTS.md",
+      rules: join(".agency", "rules", "style.md"),
+      plugins: join(".agency", "plugins", "mark.js"),
+      skills: join(".agency", "skills", "hello", "SKILL.md"),
+    };
+    const found: Record<string, boolean> = {};
+    for (const [kind, file] of Object.entries(kinds)) {
+      const ws = mkdtempSync(join(tmpdir(), "agency-gated-"));
+      mkdirSync(join(ws, file, ".."), { recursive: true });
+      writeFileSync(join(ws, file), "x");
+      found[kind] = hasTrustGatedContent(ws);
+      rmSync(ws, { recursive: true, force: true });
+    }
+    const empty = mkdtempSync(join(tmpdir(), "agency-gated-"));
+    found.none = hasTrustGatedContent(empty);
+    rmSync(empty, { recursive: true, force: true });
+
+    expect(found).toEqual({ "AGENTS.md": true, rules: true, plugins: true, skills: true, none: false });
+  });
+});
 
 describe("runHeadless", () => {
   test("headless path with fake daemon returns result and closes client", async () => {

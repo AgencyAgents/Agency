@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { collectAgentsFiles, collectRuleFiles, configDir, dataDir, loadConfig } from "@agency/core";
 import type { PermissionMode } from "@agency/guard";
@@ -60,6 +61,15 @@ export interface HeadlessConnectOptions {
   log?: (msg: string) => void;
 }
 
+/** True when the workspace holds content that the daemon loads only after `agency trust`. */
+export function hasTrustGatedContent(workspaceRoot: string): boolean {
+  return (
+    collectAgentsFiles(workspaceRoot, workspaceRoot).length + collectRuleFiles(workspaceRoot).length > 0 ||
+    existsSync(join(workspaceRoot, ".agency", "plugins")) ||
+    existsSync(join(workspaceRoot, ".agency", "skills"))
+  );
+}
+
 /**
  * Finds or starts this workspace's daemon (one per workspace root) and returns
  * a handshake-complete client. Checks trust before spawning, and logs
@@ -90,12 +100,7 @@ export async function connectHeadlessClient(
       log(t("cli.trust.denied", { path: options.workspaceRoot }));
       throw new Error(t("trust.denied"));
     }
-  } else if (
-    !trusted &&
-    collectAgentsFiles(options.workspaceRoot, options.workspaceRoot).length +
-      collectRuleFiles(options.workspaceRoot).length >
-      0
-  ) {
+  } else if (!trusted && hasTrustGatedContent(options.workspaceRoot)) {
     // Silence here would hide that the model runs without the project's own rules.
     log(t("cli.trust.instructions_skipped"));
   }

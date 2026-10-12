@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoardStore, ChoiceLog, EventBus, SessionStore } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { registerSurfaceHandlers } from "../src/daemon/handlers/surface.ts";
@@ -60,14 +61,18 @@ export const hooks = {
 };
 `;
 
-async function boot(opts: { seed?: (ws: string) => void } = {}) {
+async function boot(opts: { seed?: (ws: string) => void; trusted?: boolean } = {}) {
   const ws = tempDir("agency-cmd-ws-");
   opts.seed?.(ws);
+  // A workspace plugin file runs only in a trusted workspace.
+  const trustStorePath = join(tempDir("agency-cmd-trust-"), "trust.json");
+  if (opts.trusted) createFileTrustStore(trustStorePath).trust(ws);
   const daemon = await createAgentDaemon({
     workspaceRoot: ws,
     instanceFile: join(ws, ".agency", "instance.json"),
     sessionsDir: tempDir("agency-cmd-sess-"),
     approvalsDir: tempDir("agency-cmd-appr-"),
+    trustStorePath,
     adapterFor: () => echoAdapter(),
     http: noopHttp,
     tools: [],
@@ -368,6 +373,7 @@ describe("file templates resolve through command_run", () => {
 describe("fixture plugin command plus hook", () => {
   test("plugin command resolves and cost.threshold fires the hook", async () => {
     const { base, token, ws } = await boot({
+      trusted: true,
       seed: (w) => {
         mkdirSync(join(w, ".agency", "plugins"), { recursive: true });
         writeFileSync(join(w, ".agency", "plugins", "fixture.mjs"), FIXTURE_PLUGIN);

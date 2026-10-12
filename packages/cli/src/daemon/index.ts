@@ -248,6 +248,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     join(options.workspaceRoot, ".agency", "config.jsonc"),
     // The executable too: after an update, an idle daemon from the old binary leaves.
     process.execPath,
+    // The trust list too: plugins load at start, so a trust change must start a new daemon.
+    options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
@@ -296,6 +298,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const builtinsMode = options.tools === undefined;
+  // A plugin file is code: the files of a workspace run only when the user trusted that workspace.
+  const projectTrusted = trustStore.isTrusted(options.workspaceRoot);
+  let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
   let pluginAgents: Array<{ pluginId: string; agent: import("@agency/core").PluginAgentContribution }> = [];
@@ -308,6 +313,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      projectTrusted,
       bus: eventBus,
       logger,
       registry: sharedPluginRegistry as unknown as never,
@@ -320,6 +326,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     sharedPluginTools = sharedPluginRegistry.list();
     pluginAgents = collectPluginAgents(pluginResultEarly.plugins);
     pluginCommands = collectPluginCommands(pluginResultEarly.plugins);
+    pluginInstructions = pluginResultEarly.instructions;
   } else {
     tools = options.tools ?? [];
     const { ToolRegistry } = await import("@agency/tools");
@@ -329,6 +336,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      projectTrusted,
       bus: eventBus,
       logger,
       registry: pluginToolRegistry as unknown as never,
@@ -341,6 +349,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     tools = pluginToolRegistry.list();
     pluginAgents = collectPluginAgents(pluginResult.plugins);
     pluginCommands = collectPluginCommands(pluginResult.plugins);
+    pluginInstructions = pluginResult.instructions;
   }
 
   const activeTurnMeta = new Map<
@@ -495,6 +504,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginAgents,
     pluginCommands,
     trustStore,
+    pluginInstructions,
     teamContexts,
     teamFor,
     sessionInboxes,

@@ -401,6 +401,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     const resolved = resolvePrompt(params, {
       workspaceRoot: ctx.options.workspaceRoot,
       trustStore: ctx.trustStore,
+      pluginInstructions: ctx.pluginInstructions,
     });
     return { prompt: resolved.text, segments: resolved.segments };
   };

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, type ToolSpec, TraceRecorder } from "@agency/core";
@@ -956,6 +956,53 @@ describe("system prompt composition", () => {
 
     expect(await run(true)).toContain("Project rule: answer in French.");
     expect(await run(false)).not.toContain("Project rule");
+  });
+
+  test("plugins and skills of a workspace load only in a trusted workspace, and their text reaches the prompt", async () => {
+    const run = async (trusted: boolean): Promise<{ system: string; ran: boolean }> => {
+      const capture = { systems: [] as string[] };
+      const workspaceRoot = tempRoot();
+      const pluginsDir = join(workspaceRoot, ".agency", "plugins");
+      mkdirSync(pluginsDir, { recursive: true });
+      mkdirSync(join(workspaceRoot, ".agency", "skills", "hello"), { recursive: true });
+      // The plugin file writes a marker when it runs. Code of a workspace that the user did not trust must not run.
+      writeFileSync(
+        join(pluginsDir, "mark.mjs"),
+        'import { writeFileSync } from "node:fs";\n' +
+          'writeFileSync(new URL("./ran.txt", import.meta.url), "ran");\n' +
+          'export default { id: "mark", agentsMd: "Plugin rule: QUARTZ-881." };\n',
+      );
+      writeFileSync(
+        join(workspaceRoot, ".agency", "skills", "hello", "SKILL.md"),
+        "---\nname: hello\ndescription: a test skill\n---\n\nSkill rule: ZEPHYR-204.\n",
+      );
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        trustStorePath,
+        adapterFor: () => textAdapter("ok", capture),
+      });
+      await client.call("run_turn", {
+        turnId: `plugins-${trusted}`,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [],
+      });
+      return { system: capture.systems[0] ?? "", ran: existsSync(join(pluginsDir, "ran.txt")) };
+    };
+
+    const untrusted = await run(false);
+    expect(untrusted.ran).toBe(false);
+    expect(untrusted.system).not.toContain("ZEPHYR-204");
+    expect(untrusted.system).not.toContain("QUARTZ-881");
+
+    const trusted = await run(true);
+    expect(trusted.ran).toBe(true);
+    expect(trusted.system).toContain("Skill rule: ZEPHYR-204.");
+    expect(trusted.system).toContain("Plugin rule: QUARTZ-881.");
   });
 
   test("a plain systemPrompt string is used as the base, with the environment block appended", async () => {

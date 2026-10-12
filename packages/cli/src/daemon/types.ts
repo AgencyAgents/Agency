@@ -163,6 +163,8 @@ export interface ResolveSystemPromptOptions {
   shellLabel?: string;
   /** Gate for AGENTS.md, CLAUDE.md and .agency/rules: the daemon loads them unless the client sent its own. */
   trustStore?: import("@agency/guard").TrustStore;
+  /** Texts of the loaded plugins and skills. They go after the project instructions. */
+  pluginInstructions?: readonly string[];
 }
 
 /** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
@@ -533,6 +535,7 @@ export interface DaemonContext {
   pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }>;
   pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;
   trustStore: import("@agency/guard").TrustStore;
+  pluginInstructions: readonly string[];
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;
@@ -611,7 +614,7 @@ export function resolvePrompt(
   const composed = composeSystemPrompt({
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
     familyPresetOverlay: composeFromParts ? role : undefined,
-    instructions: instructions ?? projectInstructions(options),
+    instructions: instructions ?? [...projectInstructions(options), ...(options.pluginInstructions ?? [])],
     toolDescriptions: [],
     context,
   });
