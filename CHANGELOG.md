@@ -182,6 +182,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Config value of the wrong type**: the error was a JSON list of schema
   issues with no file name. It is now one line that names each key, the
   problem, and the config files that were read.
+- **Token counts on the Anthropic wire format**: the adapter read the input
+  token count only from the first stream event. A gateway that speaks the
+  Messages format (OpenRouter) sends zero there and the real counts, with
+  its charge, in the last event, so a turn showed 0 input tokens and no
+  cost, and the budget did not count it. The adapter now reads the counts
+  and the charge from both events. Live through the Messages endpoint of
+  OpenRouter: 0 input tokens and no cost before, 3952 and a charge after.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
