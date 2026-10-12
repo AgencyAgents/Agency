@@ -25,6 +25,7 @@ const FINISH_REASON: Record<string, StopReason> = {
   function_call: "tool_use",
   length: "max_tokens",
   content_filter: "refusal",
+  error: "error",
 };
 
 function toOpenAiContent(content: ContentBlock[]): string | Record<string, unknown>[] {
@@ -205,6 +206,8 @@ async function* streamRaw(
   for await (const frame of parseSse(res.body)) {
     if (frame.data === "[DONE]") continue;
     const payload = JSON.parse(frame.data) as {
+      /** OpenRouter: a failure after the stream began. The HTTP status is 200 by then. */
+      error?: { code?: unknown };
       choices: Array<{
         delta: {
           content?: string;
@@ -234,6 +237,12 @@ async function* streamRaw(
         cost?: number;
       };
     };
+
+    if (payload.error) {
+      const code = payload.error.code;
+      const status = typeof code === "number" && code >= 400 && code <= 599 ? code : 502;
+      throw await toAgencyError(new Response(JSON.stringify({ error: payload.error }), { status }), family);
+    }
 
     if (payload.usage) {
       const cachedTokens = payload.usage.prompt_tokens_details?.cached_tokens;

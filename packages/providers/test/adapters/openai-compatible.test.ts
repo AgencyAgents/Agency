@@ -247,6 +247,32 @@ describe("createOpenAiCompatibleAdapter", () => {
     return { fetch: async () => new Response(text, { status: 200 }) };
   }
 
+  test("an error in the middle of a stream fails the request: it is not the end of a good reply", async () => {
+    // OpenRouter's documented form: HTTP 200, an `error` beside `choices`, finish reason "error".
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: "The answer is" }, finish_reason: null }] },
+      {
+        error: { code: 429, message: "Rate limit exceeded", metadata: { error_type: "rate_limit_exceeded" } },
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      },
+    ];
+    const text = chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("");
+    const http: HttpClient = { fetch: async () => new Response(text, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const err = await collect(adapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.RATE_LIMIT);
+    expect((err as AgencyError).message).toBe("Rate limit exceeded");
+  });
+
+  test("a finish reason of error with no error body stops the reply as an error", async () => {
+    const http = streamOf([{ content: "The answer is" }], "error");
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "error" });
+  });
+
   test("a tool call that ends with finish reason stop is still a tool turn", async () => {
     // Some servers send the call and then "stop". With end_turn the loop would not run the tool.
     const http = streamOf(
