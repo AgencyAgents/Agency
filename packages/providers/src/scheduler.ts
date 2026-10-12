@@ -96,6 +96,7 @@ export class Scheduler {
   private readonly semaphore: Semaphore;
   private readonly bucket: TokenBucket;
   private readonly maxAttempts: number;
+  private readonly rateLimitAttempts: number;
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
   private rotationCursor = 0;
@@ -110,6 +111,8 @@ export class Scheduler {
     const capacity = Math.max(1, Math.ceil(rpm / 10)); // ~6 seconds of burst headroom
     this.bucket = new TokenBucket(capacity, rpm / 60_000);
     this.maxAttempts = options.maxAttempts ?? 4;
+    // A rate limit clears in seconds (11 s to 22 s measured on OpenRouter's free models): it gets about 30 s, not 3.5 s.
+    this.rateLimitAttempts = options.maxAttempts ?? 7;
     this.baseDelayMs = options.baseDelayMs ?? 500;
     this.maxDelayMs = options.maxDelayMs ?? 30_000;
   }
@@ -231,11 +234,11 @@ export class Scheduler {
       try {
         return await fn();
       } catch (error) {
-        const shouldRetry =
-          error instanceof AgencyError && error.retryClass === "retryable" && attempt < this.maxAttempts;
-        if (!shouldRetry) throw error;
+        if (!(error instanceof AgencyError) || error.retryClass !== "retryable") throw error;
+        const limit = error.code === ErrorCode.RATE_LIMIT ? this.rateLimitAttempts : this.maxAttempts;
+        if (attempt >= limit) throw error;
 
-        const retryAfterMs = error instanceof AgencyError ? extractRetryAfterMs(error) : undefined;
+        const retryAfterMs = extractRetryAfterMs(error);
         // Security bound: a hostile or misconfigured Retry-After must not hang a
         // turn for a day, so the header is capped like the computed backoff is.
         const delayMs =
