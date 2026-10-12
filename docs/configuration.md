@@ -166,6 +166,8 @@ Run it with `--model local/qwen`. Notes:
 
 The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/rules/*.md` to the system prompt through `loadInstructions`, but only for a trusted workspace: repo-provided text is an injection surface. Run `agency trust` in the workspace, or accept the trust question in `agency onboard`. In an untrusted workspace the files are skipped and the CLI prints a one-line notice. A client that sends `systemPromptParts.instructions` replaces the daemon-loaded list.
 
+The same rule applies to `.agency/plugins/` and `.agency/skills/` of the workspace. A plugin file is code that runs inside the daemon, so the daemon loads it only for a trusted workspace. The text of each loaded skill and the `agentsMd` text of each loaded plugin are added after the project instructions. Plugins and skills in the user config directory load in every workspace.
+
 ## Permissions
 
 `permissions` maps a tool name (or `external_directory`) to a bare decision or a pattern map. Pattern maps use last-match-wins: e.g. `{"bash": {"*":"ask","git *":"allow","rm *":"deny"}}`. Path patterns match workspace-relative forward-slash paths. The daemon builds a `PermissionsGate`; the sandbox enforces `external_directory` and a deny-only `CommandPolicy` derived from `bash` deny patterns. A tool with no entry runs when its risk tier is `safe` and asks otherwise; a tool with no risk tier (an MCP tool) asks.

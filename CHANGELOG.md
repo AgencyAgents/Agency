@@ -199,6 +199,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   A failed read keeps the defaults. Measured on DeepSeek V4 Flash with a
   reply of about 16000 tokens: 2 cuts and a list that ran past its end
   before, one exact reply after.
+- **Plugin code of an untrusted workspace**: the daemon ran each
+  `.agency/plugins/*.js` file of a workspace at start, also when the user had
+  not trusted that workspace. The daemon now loads the plugins, skills and
+  plugin instruction files of a workspace only after `agency trust`, and the
+  CLI notice names them. Plugins and skills in the user config directory load
+  as before.
+- **Skill and plugin text**: the body of a skill and the `agentsMd` text of a
+  plugin never reached the system prompt. They are now added after the
+  project instructions.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
