@@ -398,6 +398,24 @@ function subcommandError(group: string, subcommand: string | undefined): Error {
 /** What `-p` prints in text mode: the reply to the prompt this run sent.
  *  A session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
+  const isCutNote = (message: Message) =>
+    message.role === "user" &&
+    message.content.some((block) => block.type === "text" && block.text === OUTPUT_CUT_NOTE);
+  // The answer is the last assistant message and the parts that a cut note joins to it. A sentence that the
+  // model wrote before a tool call is progress on stderr, not output: a script reads stdout as the answer.
+  let start = messages.length;
+  while (start > 0) {
+    const message = messages[start - 1] as Message;
+    if (message.role !== "assistant" && !isCutNote(message)) break;
+    start -= 1;
+  }
+  const answer = messages
+    .slice(start)
+    .flatMap((message) => (message.role === "assistant" ? message.content : []))
+    .flatMap((block) => (block.type === "text" ? [block.text] : []));
+  if (answer.length > 0) return answer.join("\n");
+
+  // No answer (a turn that stopped early): show every text of this run, so partial work is not lost.
   // The note after a cut reply is not a prompt: the parts before it are output too. A real model drops the
   // space at the cut ("22" then "23"), so the parts keep a line break between them and never merge.
   const prompt = messages.findLastIndex(

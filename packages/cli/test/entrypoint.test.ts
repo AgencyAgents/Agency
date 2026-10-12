@@ -486,6 +486,53 @@ describe("-p headless mode", () => {
     expect(out.join("").split(/\s+/)).toEqual(["1", "2", "3", "4", "5", "6"]);
   });
 
+  test("text mode prints the answer, not the sentence that the model wrote before a tool call", async () => {
+    const text = (value: string) => [{ type: "text" as const, text: value }];
+    const toolRound = [
+      { role: "user" as const, content: text("list") },
+      {
+        role: "assistant" as const,
+        content: [
+          ...text("Let me generate this with a script"),
+          { type: "tool_use" as const, id: "c1", name: "bash", input: { command: "seq 3" } },
+        ],
+      },
+      {
+        role: "user" as const,
+        content: [
+          { type: "tool_result" as const, toolUseId: "c1", content: "permission denied", isError: true },
+        ],
+      },
+    ];
+    const printed = async (result: Record<string, unknown>) => {
+      const fake = fakeRunHeadless({ ...TURN_RESULT, ...result } as typeof TURN_RESULT);
+      const { out, deps } = capture();
+      await runEntrypoint(["-p", "list", "--model", "openai/fake-1"], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+      return out.join("\n");
+    };
+
+    expect({
+      finished: await printed({
+        messages: [
+          ...toolRound,
+          { role: "assistant", content: text("one\ntwo ") },
+          { role: "user", content: text(OUTPUT_CUT_NOTE) },
+          { role: "assistant", content: text("three") },
+        ],
+      }),
+      // A turn that stopped before an answer still shows the text that it has.
+      stoppedEarly: await printed({
+        messages: toolRound,
+        stopReason: "tool_use",
+        error: { code: "iteration_limit", message: "stopped after 25 tool steps" },
+      }),
+    }).toEqual({ finished: "one\ntwo \nthree", stoppedEarly: "Let me generate this with a script" });
+  });
+
   test("a reply that streams in small parts shows as whole lines of progress, not one part per line", async () => {
     const { err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
