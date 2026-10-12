@@ -908,6 +908,8 @@ describe("-p headless mode", () => {
     });
     expect(code).toBe(1);
     expect(none.err.join("\n")).toContain("No sessions to continue");
+    // A plain -p run keeps no session, so the message says how to get one.
+    expect(none.err.join("\n")).toContain("--session <name>");
 
     const both = capture();
     const code2 = await runEntrypoint(["-p", "hi", "--continue", "--session", "x"], {

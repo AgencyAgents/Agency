@@ -173,7 +173,8 @@ export const en = {
   "cli.error.provider_without_model":
     "No default model id to pair with {provider}. Pass --model provider/model.",
   "cli.error.no_key": "No API key for {provider}. Run `agency auth login {provider}`.",
-  "cli.error.no_sessions": "No sessions to continue.",
+  "cli.error.no_sessions":
+    "No sessions to continue. A run with -p keeps a session only when it has --session <name>.",
   "cli.error.unknown_session": 'Unknown session "{id}".',
   "cli.error.session_delete_usage": "usage: agency session delete <id>",
   "cli.error.auth_login_usage": "usage: agency auth login <provider>",
