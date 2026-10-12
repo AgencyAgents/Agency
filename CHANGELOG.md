@@ -107,6 +107,33 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Progress of a streamed reply**: in text mode `agency -p` printed each
   small part of a streamed reply on its own stderr line, so a real model gave
   a column of word fragments. The parts now collect into whole lines.
+- **First runs on a real provider (OpenRouter)**: the defects below came from
+  runs of the compiled binary against openrouter.ai, on
+  `deepseek/deepseek-v4-flash` and four free models.
+  - **Each tool ran twice**: OpenRouter repeats the finish reason on its usage
+    chunk, and the adapter ended each tool call on both. A shell command that
+    appends one line appended two. A call now ends once.
+  - **`unknown provider: openrouter`**: only `anthropic`, `openai` and `google`
+    worked without a `provider.<id>.baseUrl` entry. `openrouter`, `deepseek`,
+    `groq` and `xai` now use their public endpoints, and `auth list` shows them.
+  - **Key names**: a key in `OPENROUTER_API_KEY` was not read, and a name from
+    `provider.<id>.env` passed the CLI check but gave the daemon no key. Each
+    lookup now reads the declared names, `AGENCY_<ID>_API_KEY`, then the
+    provider's own name.
+  - **Cost 0**: a turn on a model with no price entry had no cost, so a
+    `maxCostUsd` budget never stopped it. The charge that OpenRouter reports
+    for each request is now the cost (`usage.costUsd`).
+  - **Reasoning**: text in `delta.reasoning` was dropped. It is now thinking.
+  - **Error text**: a wrong key gave only "User not found."; it now names the
+    provider and the HTTP status. "Provider returned error" now has the
+    upstream's name and cause. An unknown model id has the code
+    `invalid_request`, not `internal`.
+  - **Rate limits**: a rate limit got 4 attempts in 3.5 s. Measured limits of
+    free models clear in 11 s to 22 s, so it now gets 7 attempts (about 30 s),
+    and each retry shows as a `Retry <n>` line.
+- **Cancel on Windows**: a cancelled or timed-out shell command left the
+  programs that it started running, because the shell was killed before its
+  process tree. The tree is now killed first.
 - **Rollback**: `agency update --rollback` is in the help text and the docs,
   but the option parser rejected it with "Unknown option". The parser now
   knows the option (`parseArgv` in `packages/cli/src/entrypoint.ts`). With no
