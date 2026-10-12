@@ -179,6 +179,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   stop with `EPERM` on the session lock, and its entry was lost. The append
   now waits for the lock. Measured with two processes and 3000 appends:
   8 to 11 lost before, 0 after.
+- **Config value of the wrong type**: the error was a JSON list of schema
+  issues with no file name. It is now one line that names each key, the
+  problem, and the config files that were read.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
