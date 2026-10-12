@@ -27,6 +27,8 @@ export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** The provider's own charge in USD, when it reports one. */
+  costUsd?: number;
 }
 
 export interface RunTurnParams {

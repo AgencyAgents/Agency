@@ -36,6 +36,7 @@ export function cacheHitRate(usage: Usage): number | undefined {
 }
 
 export function turnCostUsd(usage: Usage, pricing?: ModelPricing): number {
+  if (usage.costUsd !== undefined) return usage.costUsd;
   if (!pricing) return 0;
   const cached = usage.cachedInputTokens ?? 0;
   const written = usage.cacheWriteInputTokens ?? 0;

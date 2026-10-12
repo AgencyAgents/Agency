@@ -3,7 +3,7 @@ import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
-import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
+import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usage } from "../types.ts";
 
 /**
  * OpenAI's reasoning_effort only has four tiers, coarser than Agency's unified
@@ -181,11 +181,7 @@ async function* streamRaw(
   // OpenAI addresses parallel tool calls by delta index, not id: the id only
   // appears once, on the first delta for that index.
   const toolCallIdByIndex = new Map<number, string>();
-  let usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-  } = { inputTokens: 0, outputTokens: 0 };
+  let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
   let finished = false;
   let refused = false;
@@ -216,6 +212,8 @@ async function* streamRaw(
         prompt_tokens: number;
         completion_tokens: number;
         prompt_tokens_details?: { cached_tokens?: number };
+        /** OpenRouter: the charge for this request in USD. */
+        cost?: number;
       };
     };
 
@@ -225,6 +223,7 @@ async function* streamRaw(
         inputTokens: payload.usage.prompt_tokens,
         outputTokens: payload.usage.completion_tokens,
         ...(cachedTokens === undefined ? {} : { cachedInputTokens: cachedTokens }),
+        ...(typeof payload.usage.cost === "number" ? { costUsd: payload.usage.cost } : {}),
       };
     }
 

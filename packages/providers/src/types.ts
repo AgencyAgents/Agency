@@ -42,6 +42,8 @@ export interface Usage {
   cachedInputTokens?: number;
   /** Tokens written to the provider-side cache at the write premium. */
   cacheWriteInputTokens?: number;
+  /** The provider's own charge in USD, when it reports one (OpenRouter). It wins over the price table. */
+  costUsd?: number;
 }
 
 /**

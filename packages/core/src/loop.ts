@@ -1130,6 +1130,10 @@ export function addUsage(a: Usage, b: Usage): Usage {
     ...(a.cacheWriteInputTokens === undefined && b.cacheWriteInputTokens === undefined
       ? {}
       : { cacheWriteInputTokens: written }),
+    // ponytail: a sum of a reported and an unreported charge drops the unreported part. Price each request alone if one usage ever mixes providers.
+    ...(a.costUsd === undefined && b.costUsd === undefined
+      ? {}
+      : { costUsd: (a.costUsd ?? 0) + (b.costUsd ?? 0) }),
   };
 }
 
@@ -1138,6 +1142,7 @@ function totalTokens(usage: Usage): number {
 }
 
 function costOf(usage: Usage, price?: PricePerMTok): number {
+  if (usage.costUsd !== undefined) return usage.costUsd;
   if (!price) return 0;
   const cached = usage.cachedInputTokens ?? 0;
   const written = usage.cacheWriteInputTokens ?? 0;

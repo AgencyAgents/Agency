@@ -34,6 +34,12 @@ describe("usage accounting", () => {
     expect(turnCostUsd(usage)).toBe(0);
   });
 
+  test("turnCostUsd takes the charge that the provider reports over the price table", () => {
+    const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000, costUsd: 0.25 };
+    expect(turnCostUsd(usage, PRICING)).toBe(0.25);
+    expect(turnCostUsd(usage)).toBe(0.25);
+  });
+
   test("a cached read and an uncached write on the same tokens cost differently", () => {
     const pricing = { ...PRICING, cacheWritePerMTok: 3.75 };
     const read = { inputTokens: 100_000, outputTokens: 0, cachedInputTokens: 100_000 };

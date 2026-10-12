@@ -356,6 +356,34 @@ describe("runTurn", () => {
     expect(types[types.length - 1]).toBe("budget_exceeded");
   });
 
+  test("a charge that the provider reports counts against the cost budget with no price table", async () => {
+    const charged: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "tool_call_start", id: "call_1", name: "read" };
+        yield { type: "tool_call_end", id: "call_1" };
+        const usage = { inputTokens: 10, outputTokens: 5, costUsd: 0.02 };
+        yield { type: "message_stop", stopReason: "tool_use", usage };
+      },
+    };
+    const result = await runTurn(charged, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [
+        { name: "read", description: "reads", inputSchema: {}, handler: async () => ({ content: "x" }) },
+      ],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      budget: { maxCostUsd: 0.03 },
+    });
+
+    // Two requests at 0.02 pass 0.03. A third request would mean that the charge did not count.
+    expect(result.budgetExceeded).toBe(true);
+    expect(result.usage.costUsd).toBeCloseTo(0.04, 9);
+  });
+
   test("maxToolIterations caps a runaway tool-calling loop and says so", async () => {
     let calls = 0;
     const spec: ToolSpec = {

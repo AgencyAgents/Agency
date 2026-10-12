@@ -289,7 +289,7 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect(events.at(-1)).toMatchObject({
       type: "message_stop",
       stopReason: "tool_use",
-      usage: { inputTokens: 359, outputTokens: 63 },
+      usage: { inputTokens: 359, outputTokens: 63, costUsd: 0.000044135 },
     });
   });
 
