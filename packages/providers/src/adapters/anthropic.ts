@@ -190,7 +190,10 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   const context = { status: res.status, source: "anthropic" };
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: "anthropic", context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `anthropic ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: "anthropic", context });
   }
   if (res.status === 429) {
     const retryAfterMsValue = parseRetryAfterMs(res);
@@ -208,7 +211,9 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (isInputTooLong(res.status, message, body?.error?.type)) {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "anthropic", context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: "anthropic", context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: "anthropic", context });
 }
 
 async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {

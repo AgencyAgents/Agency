@@ -128,7 +128,10 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
   const context = { status: res.status, source: family };
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: family, context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `${family} ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: family, context });
   }
   if (res.status === 429) {
     const retryAfterMs = parseRetryAfterMs(res);
@@ -153,7 +156,9 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: family, context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: family, context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: family, context });
 }
 
 async function* streamRaw(

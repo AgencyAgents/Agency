@@ -246,7 +246,10 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   const googleStatus = body?.error?.status;
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: "google", context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `google ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: "google", context });
   }
   if (res.status === 429 || googleStatus === "RESOURCE_EXHAUSTED") {
     const retryAfterMs = parseRetryAfterMs(res);
@@ -261,7 +264,9 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (isInputTooLong(res.status, message)) {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "google", context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: "google", context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: "google", context });
 }
 
 interface GeminiPart {
