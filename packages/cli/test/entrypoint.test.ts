@@ -512,6 +512,17 @@ describe("-p headless mode", () => {
     ]);
   });
 
+  test("an image file that cannot be read stops the run: the prompt does not go out with no image", async () => {
+    const fake = fakeRunHeadless();
+    const { err, deps } = capture();
+    const argv = ["-p", "what colour is this?", "--image", "no-such-file.png", "--model", "openai/fake-1"];
+    const code = await runEntrypoint(argv, { ...baseDeps(), ...deps, runHeadless: fake.runHeadless });
+
+    expect(code).toBe(1);
+    expect(err.join(" ")).toContain("Cannot read the image file no-such-file.png");
+    expect(fake.calls).toHaveLength(0);
+  });
+
   test("a retry shows as a line of progress, so a wait for a rate limit is not silent", async () => {
     const { err, deps } = capture();
     await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {

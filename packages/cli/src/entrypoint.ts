@@ -88,6 +88,7 @@ Options:
   --session <id>           With -p: run in (creating if needed) this session
   --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
   --max-steps <n>          With -p: tool steps one turn may take (default: 25)
+  --image <path>           With -p: send an image file with the prompt (repeat for more)
   --format <text|json>     Output format (default: text; json is for scripting)
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
@@ -437,19 +438,23 @@ function latestSessionId(store: SessionStore): string | undefined {
 function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[] {
   const blocks: import("@agency/schema").ImageBlock[] = [];
   for (const p of paths) {
+    let data: Buffer;
     try {
-      const data = readFileSync(p);
-      const ext = p.split(".").pop()?.toLowerCase() ?? "";
-      const mime =
-        ext === "png"
-          ? "image/png"
-          : ext === "jpg" || ext === "jpeg"
-            ? "image/jpeg"
-            : ext === "webp"
-              ? "image/webp"
-              : "image/png";
-      blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
-    } catch {}
+      data = readFileSync(p);
+    } catch {
+      // A prompt that goes out with no image gets an answer about some other thing.
+      throw new Error(t("cli.error.image_unreadable", { path: p }));
+    }
+    const ext = p.split(".").pop()?.toLowerCase() ?? "";
+    const mime =
+      ext === "png"
+        ? "image/png"
+        : ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "webp"
+            ? "image/webp"
+            : "image/png";
+    blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
   }
   return blocks;
 }
