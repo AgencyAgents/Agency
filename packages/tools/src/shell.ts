@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export type WindowsShellKind = "powershell" | "gitbash" | "cmd";
 
@@ -36,6 +37,8 @@ export interface ShellConfig {
   /** A short, human-readable name to state in the system prompt so the model
    *  writes commands in the right dialect instead of defaulting to bash. */
   label: string;
+  /** True when bash syntax is right for this shell, so the tool needs no warning against it. */
+  posixSyntax?: boolean;
 }
 
 const POSIX: ShellConfig = {
@@ -47,6 +50,7 @@ const POSIX: ShellConfig = {
     `printf '\\n${EXIT_MARKER}%s\\n' "$__agency_exit"\n` +
     `printf '${CWD_MARKER}%s\\n' "$(pwd)"`,
   label: "POSIX sh",
+  posixSyntax: true,
 };
 
 const POWERSHELL: ShellConfig = {
@@ -71,6 +75,7 @@ const GIT_BASH: ShellConfig = {
     // -W gives the Windows form. The MSYS form (/tmp/x, /c/x) is not a path that the host can resolve.
     `printf '${CWD_MARKER}%s\\n' "$(pwd -W)"`,
   label: "Git Bash",
+  posixSyntax: true,
 };
 
 const CMD: ShellConfig = {
@@ -103,6 +108,32 @@ export function resolveShell(platform: string, windowsShell: WindowsShellKind = 
     case "cmd":
       return CMD;
   }
+}
+
+/** The launcher of Git for Windows, found from git. A bare `bash.exe` can be the WSL launcher. */
+export function findGitBash(which: (name: string) => string | null = Bun.which): string | undefined {
+  const git = which("git");
+  if (!git) return undefined;
+  // git.exe is in <root>/cmd or in <root>/mingw64/bin.
+  return ["..", join("..", "..")]
+    .map((up) => join(dirname(git), up, "bin", "bash.exe"))
+    .find((path) => existsSync(path));
+}
+
+/**
+ * The shell for a config value. With none, Windows gets Git Bash when Git for Windows is installed: measured on one
+ * task, a weaker model needed 10 tool calls with 2 errors there, and 24 calls with 13 errors in PowerShell 5.1.
+ */
+export function resolveConfiguredShell(
+  platform: string,
+  configured?: WindowsShellKind,
+  find: () => string | undefined = findGitBash,
+): ShellConfig {
+  if (platform !== "win32") return resolveShell(platform, configured);
+  const gitBash = configured === undefined || configured === "gitbash" ? find() : undefined;
+  const kind = configured ?? (gitBash ? "gitbash" : "powershell");
+  const shell = resolveShell(platform, kind);
+  return kind === "gitbash" && gitBash ? { ...shell, command: gitBash } : shell;
 }
 
 export interface ParsedShellOutput {

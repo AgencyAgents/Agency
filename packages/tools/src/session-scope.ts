@@ -30,7 +30,7 @@ import { transportForWithContainerSandbox } from "./mcp/transport.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { ReadState } from "./read-state.ts";
 import { ToolRegistry } from "./registry.ts";
-import { resolveShell, type WindowsShellKind } from "./shell.ts";
+import { resolveConfiguredShell, type WindowsShellKind } from "./shell.ts";
 import { SnapshotStore } from "./snapshot.ts";
 
 /**
@@ -124,7 +124,7 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
     options.snapshotJournalFile ? { journalFile: options.snapshotJournalFile } : undefined,
   );
   const formatter = options.formatter ?? {};
-  const shell = resolveShell(process.platform, options.windowsShell);
+  const shell = resolveConfiguredShell(process.platform, options.windowsShell);
   const bashState: BashState = { cwd: options.workspaceRoot };
   const processManager = new ProcessManager();
   const todos = new TodoStore(options.todoPersistence);

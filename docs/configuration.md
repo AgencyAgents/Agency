@@ -46,7 +46,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `sandbox.capDrop` | `string[]` | — | Linux capabilities to drop (`--cap-drop`); unknown names fail boot |
 | `sandbox.forecastCostUsd` | number | — | Pre-dispatch cost threshold that triggers an ask |
 | `formatter` | `{command?: string[]}` | — | Appended with the file path after each write/edit |
-| `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only; default `powershell` |
+| `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only. With no value: `gitbash` when Git for Windows is installed (its `bin\bash.exe`, found from `git` on PATH), otherwise `powershell`. Models write bash with far fewer errors than Windows PowerShell 5.1 |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |

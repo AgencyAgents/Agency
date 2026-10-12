@@ -147,8 +147,11 @@ export function createBashTool(
   const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number }> = {
     name: "bash",
     description:
-      `Runs a shell command in ${shell.label}. Despite the tool's name, write commands in ` +
-      `${shell.label} syntax on this platform, not bash/POSIX syntax. Working directory persists ` +
+      `Runs a shell command in ${shell.label}. ` +
+      (shell.posixSyntax
+        ? ""
+        : `Despite the tool's name, write commands in ${shell.label} syntax on this platform, not bash/POSIX syntax. `) +
+      "Working directory persists " +
       "across calls within this session; environment variables do not. Pass background: true for " +
       "long-running processes (dev servers, watchers) instead of waiting for them to exit. Pass " +
       "timeout (milliseconds) to kill a command that may hang.",

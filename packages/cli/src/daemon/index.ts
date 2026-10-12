@@ -54,7 +54,7 @@ import {
   writeInstanceFile,
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
-import { resolveShell, type TeamMcpPool } from "@agency/tools";
+import { resolveConfiguredShell, type TeamMcpPool } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
@@ -178,7 +178,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
-  const shellLabel = resolveShell(process.platform, config.windowsShell).label;
+  const shellLabel = resolveConfiguredShell(process.platform, config.windowsShell).label;
   const sandbox = createSandboxBackend(
     options.workspaceRoot,
     commandPolicy,
