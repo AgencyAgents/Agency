@@ -45,6 +45,7 @@ import {
   type CacheSegment,
   classifyEffortFromText,
   createOpenAiCompatibleAdapter,
+  GATEWAY_BASE_URLS,
   googleAdapter,
   type KeychainBackend,
   type ModelInfo,
@@ -230,8 +231,8 @@ export interface SessionMessageParams {
  * Adapter resolution over the merged provider set: a config-defined provider
  * speaks its declared family's wire format (defaulting to openai-compatible,
  * which makes any OpenAI-shaped gateway work with zero adapter code), a
- * builtin family id falls back to its native adapter, and a catalog provider
- * with a known API base URL gets the openai-compatible adapter pointed there.
+ * builtin family id falls back to its native adapter, and a catalog provider or
+ * built-in gateway id with a known API base URL gets the openai-compatible adapter pointed there.
  * Unknown ids still throw, but only after every layer had its chance.
  */
 export function resolveAdapter(
@@ -244,7 +245,7 @@ export function resolveAdapter(
   const native = NATIVE_ADAPTERS[config.family ?? providerId];
   if (native && config.family !== "openai-compatible") return bindEndpoint(native, config);
 
-  const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
+  const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId] ?? GATEWAY_BASE_URLS[providerId];
   if (baseUrl) {
     return bindEndpoint(createOpenAiCompatibleAdapter(providerId, baseUrl), {
       headers: config.headers,

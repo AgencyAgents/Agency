@@ -403,6 +403,14 @@ function googleShapeIds(family: string, body: unknown): string[] {
   return payloadIds(family, fieldOf(body, "models"), (entry) => fieldOf(entry, "name"));
 }
 
+/** Public OpenAI-compatible endpoints of the gateway ids that work without config. `provider.<id>.baseUrl` replaces one. */
+export const GATEWAY_BASE_URLS: Readonly<Record<string, string>> = {
+  openrouter: "https://openrouter.ai/api/v1",
+  deepseek: "https://api.deepseek.com/v1",
+  groq: "https://api.groq.com/openai/v1",
+  xai: "https://api.x.ai/v1",
+};
+
 /**
  * Live model IDs for one provider family, covering every known family plus a
  * generic OpenAI-compatible `/v1/models` fallback so custom gateways resolve

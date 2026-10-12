@@ -1393,6 +1393,31 @@ describe("resolveAdapter", () => {
     }
   });
 
+  test("a built-in gateway id sends its key to its own public endpoint without any config", async () => {
+    const sent: string[] = [];
+    const http: HttpClient = {
+      fetch: async (url) => {
+        sent.push(String(url));
+        return new Response("refused", { status: 400 });
+      },
+    };
+    for (const id of ["openrouter", "deepseek", "groq", "xai"]) {
+      const adapter = resolveAdapter(id, {});
+      expect(adapter.family).toBe(id);
+      const stream = adapter.stream({ model: "m", apiKey: "k", messages: [], maxTokens: 16 }, http);
+      await (async () => {
+        for await (const _ of stream) break;
+      })().catch(() => {});
+    }
+    expect(sent).toEqual([
+      "https://openrouter.ai/api/v1/chat/completions",
+      "https://api.deepseek.com/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
+      "https://api.x.ai/v1/chat/completions",
+    ]);
+    expect(() => resolveAdapter("no-such-provider", {})).toThrow(/unknown provider/);
+  });
+
   test("a config openai-compatible provider without any baseUrl throws", () => {
     expect(() => resolveAdapter("my-gateway", { "my-gateway": {} })).toThrow(/baseUrl/);
   });

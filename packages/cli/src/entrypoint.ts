@@ -20,6 +20,7 @@ import {
   BUILTIN_MODELS,
   createKeychain,
   defaultModelIDs,
+  GATEWAY_BASE_URLS,
   type KeychainBackend,
   OAUTH_PROVIDERS,
   resolveApiKey,
@@ -365,7 +366,8 @@ async function providerConnections(
   env: NodeJS.ProcessEnv,
   keychain: KeychainBackend,
 ): Promise<Array<{ provider: string; connected: boolean }>> {
-  const ids = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])].sort();
+  const builtin = ["anthropic", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
+  const ids = [...new Set([...builtin, ...Object.keys(config.provider)])].sort();
   const rows: Array<{ provider: string; connected: boolean }> = [];
   for (const id of ids) {
     const providerConfig = config.provider[id];

@@ -132,6 +132,12 @@ Provider keys are resolved per turn as: declared `provider.<id>.env` entries, th
 
 `--model provider/model` and `--provider` compose the active `model` ref via the flags layer. A bare `--provider` without `--model` reuses the model id from `config.model`, falling back to that provider's catalog default (newest catalog model for the family) when no config model is set. The daemon resolves model metadata offline from the on-disk catalog cache (`<cacheDir>/model-catalog.json`) or the built-in snapshot, merged with `provider` overrides — the turn path never fetches.
 
+The ids `openrouter`, `deepseek`, `groq` and `xai` need no config entry. Each uses its public OpenAI-compatible endpoint, and `provider.<id>.baseUrl` replaces it. This run was made against OpenRouter with the key in `OPENROUTER_API_KEY`:
+
+```sh
+agency -p "Reply with the one word: ok" --model openrouter/deepseek/deepseek-v4-flash
+```
+
 ### Local model server
 
 A server that speaks the OpenAI chat completions format is a config-defined provider. This example was run against a llama.cpp `llama-server` (build b11155, started with `--jinja -c 12288`):

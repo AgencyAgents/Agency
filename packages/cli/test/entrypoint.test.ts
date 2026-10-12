@@ -391,14 +391,22 @@ describe("auth commands", () => {
 
     const deps: EntrypointDeps = {
       keychain: backend,
-      env: { AGENCY_OPENAI_API_KEY: "sk-openai" },
+      env: { AGENCY_OPENAI_API_KEY: "sk-openai", OPENROUTER_API_KEY: "sk-openrouter" },
       configDir: tempDir("agency-ep-config-"),
     };
 
     const json = capture();
     await runEntrypoint(["auth", "list", "--format", "json"], { ...deps, ...json.deps });
     const states = JSON.parse(json.out.join(""));
-    expect(states).toEqual({ anthropic: true, google: false, openai: true });
+    expect(states).toEqual({
+      anthropic: true,
+      deepseek: false,
+      google: false,
+      groq: false,
+      openai: true,
+      openrouter: true,
+      xai: false,
+    });
 
     const text = capture();
     await runEntrypoint(["auth", "list"], { ...deps, ...text.deps });
@@ -934,7 +942,7 @@ describe("bare agency", () => {
 
     const list = capture();
     await runEntrypoint(["auth", "list", "--format", "json"], { ...shared, ...list.deps });
-    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual([false, false, false]);
+    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(7).fill(false));
   });
 });
 
