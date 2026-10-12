@@ -252,7 +252,11 @@ export function resolveAdapter(
       streamIdleMs: config.streamIdleMs,
     });
   }
-  if (providers[providerId] === undefined) throw new Error(`unknown provider: ${providerId}`);
+  if (providers[providerId] === undefined) {
+    throw new Error(
+      `unknown provider: ${providerId}. A provider with no built-in endpoint needs provider.${providerId}.baseUrl in the config.`,
+    );
+  }
   throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
 }
 

@@ -1503,6 +1503,11 @@ describe("resolveAdapter", () => {
   test("a fully unknown provider still throws", () => {
     expect(() => resolveAdapter("not-real", {})).toThrow(/unknown provider/);
   });
+
+  test("the error for a provider with no endpoint names the config key that gives it one", () => {
+    // The catalog lists glm models, but glm has no built-in endpoint: the id alone told the user nothing to do.
+    expect(() => resolveAdapter("glm", {})).toThrow(/provider\.glm\.baseUrl/);
+  });
 });
 
 // --- A5: permissions, approvals, capabilities, plans, trust ---
