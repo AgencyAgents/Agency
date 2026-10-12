@@ -224,6 +224,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   global `permissions` gives it more. Measured on DeepSeek V4 Flash: a
   dispatched `coder` ran a shell command in the default mode before, and is
   refused after. With `allow-all` the command runs.
+- **File tools of a dispatched agent**: the shell of a dispatched agent ran in
+  its git worktree, but its `read`, `write`, `edit`, `glob` and `grep` tools
+  used the main workspace. An agent that changed a file and then ran the
+  tests, tested the old code, and it could not read a file that its own
+  shell had made. The file tools now start at the worktree too. The work
+  stays in `.agency/worktrees/<session>/<handle>` until it is merged, and
+  the dispatch result names that folder and its branch.
 - **Plugin commands**: `agency plugin list` showed the receipt folder of a
   plugin as a skill. It now shows `(plugin)`. `agency plugin remove` with
   the name of one skill of a plugin removed that skill and left the receipt.

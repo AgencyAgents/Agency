@@ -74,7 +74,7 @@ Starter roster presets are editable config examples, not hardcoded. Example:
 }
 ```
 
-Worktree isolation: agents with write capabilities get `.agency/worktrees/<handle>`; read-only agents share the main workspace. Merge-back is manual or via leader instruction.
+Worktree isolation: an agent that can write gets a git worktree at `.agency/worktrees/<session>/<handle>`; read-only agents share the main workspace. The shell and the file tools of the agent both work in that worktree, so a relative path is a path in the worktree. The worktree starts at the last commit, so uncommitted changes of the workspace are not in it. The dispatch result names the worktree and its branch. Merge-back is manual or via leader instruction.
 
 ### ProviderConfig (`provider.<id>`)
 
