@@ -205,6 +205,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   plugin instruction files of a workspace only after `agency trust`, and the
   CLI notice names them. Plugins and skills in the user config directory load
   as before.
+- **Agent and command files of an untrusted workspace**: a file in
+  `.agency/agents/` could give its agent the shell with a `permissions`
+  line, and a file in `.agency/commands/` could hold a shell block that
+  `command_run` ran. Both loaded in a workspace that the user had not
+  trusted. They now load only after `agency trust`, and the daemon writes no
+  default agent files into an untrusted workspace. Measured on DeepSeek V4
+  Flash in an untrusted workspace: a dispatched agent from such a file ran a
+  shell command before, and the agent is unknown after.
 - **Skill and plugin text**: the body of a skill and the `agentsMd` text of a
   plugin never reached the system prompt. They are now added after the
   project instructions.

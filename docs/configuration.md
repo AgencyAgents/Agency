@@ -166,7 +166,7 @@ Run it with `--model local/qwen`. Notes:
 
 The daemon adds `AGENTS.md`, `CLAUDE.md` (nearest directory first) and `.agency/rules/*.md` to the system prompt through `loadInstructions`, but only for a trusted workspace: repo-provided text is an injection surface. Run `agency trust` in the workspace, or accept the trust question in `agency onboard`. In an untrusted workspace the files are skipped and the CLI prints a one-line notice. A client that sends `systemPromptParts.instructions` replaces the daemon-loaded list.
 
-The same rule applies to `.agency/plugins/` and `.agency/skills/` of the workspace. A plugin file is code that runs inside the daemon, so the daemon loads it only for a trusted workspace. The text of each loaded skill and the `agentsMd` text of each loaded plugin are added after the project instructions. Plugins and skills in the user config directory load in every workspace.
+The same rule applies to `.agency/plugins/`, `.agency/skills/`, `.agency/agents/` and `.agency/commands/` of the workspace. A plugin file is code that runs inside the daemon, an agent file can give its agent tools, and a command file can hold shell blocks, so the daemon loads them only for a trusted workspace. In an untrusted workspace the team is the roster from the config and the user config directory, and the daemon writes no default agent files. The text of each loaded skill and the `agentsMd` text of each loaded plugin are added after the project instructions. Plugins, skills, agents and commands in the user config directory load in every workspace.
 
 ## Permissions
 
