@@ -156,6 +156,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   1.5 errors in Git Bash (6 of 6 finished). Git Bash mode also lost each
   directory change, because it read the directory in the MSYS form. It now
   reads the Windows form.
+- **Drive path from Git Bash**: Git Bash prints the C drive as `/c/...`. A
+  model copied that form into the read, edit and write tools, and each call
+  failed with "resolves outside the sandbox root". The file tools and the
+  permission rules now read that form as the same Windows path.
 - **Dropped HTTP request**: a turn started with `POST /rpc` ran on after its
   client left, with its shell command still alive. A request that is dropped
   before the call ends now cancels the turn, as a closed TCP connection does.
