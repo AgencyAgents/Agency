@@ -293,6 +293,16 @@ describe("createOpenAiCompatibleAdapter", () => {
     });
   });
 
+  test("OpenRouter sends reasoning in `delta.reasoning`: it comes out as thinking", async () => {
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-stream-tool-call.sse`).text();
+    const http: HttpClient = { fetch: async () => new Response(cassette, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    const thinking = events.flatMap((event) => (event.type === "thinking_delta" ? [event.text] : []));
+    expect(thinking.join("")).toBe("The user wants me to call the read tool on notes.txt. Let me do that.");
+  });
+
   test("a tool call with no id still runs: the adapter gives it one", async () => {
     const http = streamOf(
       [
