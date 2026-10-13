@@ -194,6 +194,24 @@ Egress (deny-by-default once configured): `sandbox.egress` undefined means unres
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
+## Subagents
+
+The `spawn` tool starts a worker: a child session that sees only the task that the model writes for it, and returns only its final text. Several `spawn` calls in one reply run at the same time. A worker cannot start another worker.
+
+An agent file with a `description` is an agent type of `spawn`. The tool lists each type with its description, and the model chooses one with the `agent` parameter. The worker then gets the body of the file as its system prompt, the `tools` of the file as its tool list, and the `provider` and `model` of the file when they are set.
+
+```markdown
+---
+description: Reviews a diff for defects. Use after a code change.
+tools: read, grep, glob
+---
+You review the diff that the task names. Report each defect with its file and line.
+```
+
+Agent files are in `agents/` of the user config directory, and in `.agency/agents/` of a trusted workspace. The file name is the name of the type. An agent file of Claude Code works as it is: `name` and `color` are accepted, its tool names (`Read`, `Bash`, `WebFetch` and the others) are mapped, and a `model` of `inherit`, `sonnet`, `opus` or `haiku` means the model of the parent turn.
+
+A worker has the permission mode of the run that started it. In the default mode it can read, and an ask goes to the approval surface of the parent turn, so a headless run refuses it. In `allow-edits` it can change files, and in `allow-all` it can use the shell.
+
 ## Session goal
 
 A session can hold a goal: a condition that must be true before a turn ends. When the model ends a turn, the daemon asks the model of that turn if the newest part of the transcript shows that the goal is met. If it does not, the model gets the reason as a message and the turn goes on. When the goal is met, the daemon clears it.

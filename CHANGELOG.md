@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Permissions of a spawned worker**: a worker now has the permission
+  mode of the run that started it, and its asks go to the approval
+  surface of the parent turn. Before, a worker had no mode and no
+  approval surface, so it could not change a file or use the shell
+  even in an `allow-all` run. A worker also gets the environment block
+  (folder, shell, date) that it lacked.
 - **Skills load on demand**: a skill with a `description` is one line
   in the system prompt, and the model loads its body with the new
   `skill` tool. Before, the full text of every skill was in every
@@ -518,6 +524,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Agent types for `spawn`**: an agent file with a `description` is a
+  type that the model can choose with the new `agent` parameter. The
+  worker gets the file's prompt, tools and model. An agent file of
+  Claude Code works as it is: before, its `name` and `description`
+  fields made the file invalid.
 - **Session goal**: `--goal "<condition>"` with `--session`, the
   `/goal <session> [condition|clear]` command, and the `goal` field of
   `session_send` give a session a condition that must be true before a
