@@ -203,6 +203,10 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 
 `agency review` reviews the uncommitted changes of the workspace, new files included. `agency review <ref>` reviews the changes since a branch, a tag or a commit (`git diff <ref>...HEAD`). The model gets the diff, can read the files around it, and reports problems with file, line and a case that fails. The turn has the `ask` mode with no person to ask, so an edit or a shell command is refused and no file changes. `--model`, `--format json` and `--max-cost` work as with `-p`. A diff above 200000 characters is cut.
 
+## Structured answer
+
+`--json-schema <file>` with `-p` makes the answer JSON that matches a JSON Schema. The value can also be the schema text. Stdout is the JSON only, and `--format json` has it as `structuredOutput`. The model gives the answer through a `structured_output` tool, and an answer that breaks the schema goes back to the model with the reason. The run exits with code 1 when the model gives no such answer. The check covers the object root: `required`, and `type` and `enum` of the top-level properties. It is for a one-shot run, not for `--session`.
+
 ## System prompt
 
 The system prompt of a turn is a base text, then the environment block, the project instructions and the list of skills. With `-p`, `--system-prompt <text>` replaces the base text for that run, and `--append-system-prompt <text>` adds text after it. Both are flags of Claude Code. The other parts stay.

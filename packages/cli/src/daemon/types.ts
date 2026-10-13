@@ -81,6 +81,8 @@ export const DEFAULT_SYSTEM_PROMPT =
   "in quoting, chaining, and env-var expansion); default to POSIX sh only when no shell " +
   "is named.";
 
+export const STRUCTURED_OUTPUT_TOOL = "structured_output";
+
 export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const DEFAULT_IDLE_LINGER_MS = 10 * 60 * 1000;
 
@@ -127,6 +129,8 @@ export interface RunTurnParams {
   session: Message[];
   budget?: Budget;
   maxToolIterations?: number;
+  /** A JSON Schema for the final answer: the turn gets a `structured_output` tool with it as the input schema. */
+  outputSchema?: Record<string, unknown>;
   /**
    * Session this turn belongs to: scopes the "always allow" approval grants
    * (they persist across the session's turns, never beyond the daemon

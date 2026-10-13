@@ -704,6 +704,40 @@ describe("-p headless mode", () => {
     ).toBe("You are a reviewer.\n\nAnswer in French.");
   });
 
+  test("--json-schema sends the schema and prints the structured answer, or fails with no answer", async () => {
+    const schema = { type: "object", properties: { count: { type: "number" } }, required: ["count"] };
+    const run = async (result: RunTurnRpcResult, ...flags: string[]) => {
+      const fake = fakeRunHeadless(result);
+      const { out, err, deps } = capture();
+      const code = await runEntrypoint(
+        ["-p", "count", "--model", "openai/fake-1", "--json-schema", JSON.stringify(schema), ...flags],
+        { ...baseDeps(), ...deps, runHeadless: fake.runHeadless },
+      );
+      return { code, call: fake.calls[0], out, err: err.join("\n") };
+    };
+    const answered: RunTurnRpcResult = {
+      ...TURN_RESULT,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_call", id: "c1", name: "structured_output", input: { count: 7 } }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "Done." }] },
+      ],
+    };
+    const text = await run(answered);
+    expect(text.call?.outputSchema).toEqual(schema);
+    expect(text.call?.prompt).toContain("structured_output");
+    expect(text.out).toEqual(['{"count":7}']);
+    expect(text.code).toBe(0);
+    const json = await run(answered, "--format", "json");
+    expect(JSON.parse(json.out.join("\n")).structuredOutput).toEqual({ count: 7 });
+    const none = await run(TURN_RESULT);
+    expect(none.code).toBe(1);
+    expect(none.err).toContain("no structured answer");
+    expect((await run(answered, "--session", "s1")).code).not.toBe(0);
+  });
+
   test("review sends the diff of the workspace in a turn that cannot change files", async () => {
     const cwd = tempDir("agency-ep-review-");
     const git = (...args: string[]) => {

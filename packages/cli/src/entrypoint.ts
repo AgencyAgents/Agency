@@ -30,7 +30,7 @@ import {
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
-import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
+import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
@@ -99,6 +99,8 @@ Options:
   --system-prompt <text>   With -p: use this text in place of the built-in base prompt
   --append-system-prompt <text>
                            With -p: add this text after the base prompt
+  --json-schema <file>     With -p: the answer is JSON that matches this JSON Schema
+                           (a file, or the schema itself)
   --goal <condition>       With -p and a session: the turn goes on until the model
                            judges the condition met, or the step limit
   --image <path>           With -p: send an image file with the prompt (repeat for more)
@@ -142,6 +144,7 @@ export interface ParsedArgv {
   maxSteps: number | undefined;
   goal: string | undefined;
   systemPrompt: string | undefined;
+  jsonSchema: string | undefined;
   appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
   /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
@@ -217,6 +220,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     maxSteps: undefined,
     goal: undefined,
     systemPrompt: undefined,
+    jsonSchema: undefined,
     appendSystemPrompt: undefined,
     maxCost: undefined,
     streamJson: false,
@@ -305,6 +309,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
       }
       case "--goal":
         parsed.goal = value();
+        break;
+      case "--json-schema":
+        parsed.jsonSchema = value();
         break;
       case "--system-prompt":
         parsed.systemPrompt = value();
@@ -568,6 +575,20 @@ async function runPrintMode(
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
 
+  let outputSchema: Record<string, unknown> | undefined;
+  if (parsed.jsonSchema !== undefined) {
+    if (parsed.continueLast || parsed.session !== undefined) throw new Error(t("cli.error.schema_session"));
+    try {
+      const raw = parsed.jsonSchema.trimStart().startsWith("{")
+        ? parsed.jsonSchema
+        : readFileSync(resolve(deps.cwd ?? process.cwd(), parsed.jsonSchema), "utf8");
+      outputSchema = JSON.parse(raw) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(
+        t("cli.error.invalid_schema", { detail: error instanceof Error ? error.message : String(error) }),
+      );
+    }
+  }
   // Progress events: printed to stderr in text mode, silent in JSON mode.
   // A model sends text in small parts: they collect into whole lines, and a part line ends before any other line.
   let partLine = "";
@@ -654,16 +675,31 @@ async function runPrintMode(
     provider,
     model,
     systemPrompt: basePrompt(parsed),
-    prompt,
+    prompt: outputSchema === undefined ? prompt : `${prompt}\n\n${STRUCTURED_OUTPUT_NOTE}`,
+    ...(outputSchema === undefined ? {} : { outputSchema }),
     images,
     onEvent,
     permissionMode: parsed.permissionMode,
     maxToolIterations: parsed.maxSteps,
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
-  return reportTurn(out, err, parsed, result);
+  if (outputSchema === undefined) return reportTurn(out, err, parsed, result);
+  const answer = result.messages
+    .flatMap((m) => m.content)
+    .findLast((b) => b.type === "tool_call" && b.name === STRUCTURED_OUTPUT_TOOL);
+  if (answer?.type !== "tool_call") {
+    reportTurn(out, err, parsed, result);
+    err(t("cli.error.no_structured_output"));
+    return 1;
+  }
+  if (parsed.format === "text" && !parsed.streamJson) {
+    out(JSON.stringify(answer.input));
+    return reportTurn(() => {}, err, parsed, result);
+  }
+  return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
 }
 
+const STRUCTURED_OUTPUT_NOTE = `When the work is done, call the ${STRUCTURED_OUTPUT_TOOL} tool one time with the final answer.`;
 const REVIEW_MAX_DIFF_CHARS = 200_000;
 
 /** `review [<ref>]`: one turn over the diff. The mode is `ask` with no person to ask, so an edit or a command is refused. */

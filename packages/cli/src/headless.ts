@@ -29,6 +29,7 @@ export interface RunHeadlessOptions {
   permissionMode?: PermissionMode;
   maxToolIterations?: number;
   budget?: RunTurnParams["budget"];
+  outputSchema?: Record<string, unknown>;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
@@ -171,6 +172,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       permissionMode: options.permissionMode,
       maxToolIterations: options.maxToolIterations,
       ...(options.budget === undefined ? {} : { budget: options.budget }),
+      ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
       nonInteractive: true,
       ...(options.images?.length ? { images: options.images } : {}),
     };

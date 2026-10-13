@@ -595,6 +595,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`--json-schema <file>`**: with `-p`, the answer is JSON that
+  matches a JSON Schema, for scripts and CI. An answer that breaks the
+  schema goes back to the model. The `outputSchema` field of
+  `run_turn` does the same for an RPC client.
 - **`agency review [<ref>]`**: a review of the uncommitted changes, or
   of the changes since a ref, that changes no file. Findings have
   file, line and a case that fails.

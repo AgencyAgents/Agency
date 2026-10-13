@@ -1,5 +1,6 @@
 import {
   addUsage,
+  type ToolSpec as CoreToolSpec,
   deferTools,
   isTeamLive,
   LEAD_WITHHELD_TOOLS,
@@ -31,6 +32,7 @@ import {
   type RunTurnRpcResult,
   resolvePrompt,
   resolveSystemPrompt,
+  STRUCTURED_OUTPUT_TOOL,
   type TeamBudgets,
 } from "../types.ts";
 import { applyMcpPrompt, applySlashCommand } from "./commands.ts";
@@ -401,6 +403,20 @@ export async function executeTurn(
           spent = { inputTokens: 0, outputTokens: 0 };
         };
         const deferMode = config.mcpDeferTools ?? "auto";
+        // The loop validates the input of a tool against its schema, so a wrong answer goes back to the model.
+        const structuredTools: CoreToolSpec[] =
+          params.outputSchema === undefined
+            ? []
+            : [
+                {
+                  name: STRUCTURED_OUTPUT_TOOL,
+                  description:
+                    "Gives the final answer of the task in the required structure. Call it one time, when the work is done.",
+                  inputSchema: params.outputSchema,
+                  riskTier: "safe",
+                  handler: async () => ({ content: "The answer is recorded. End the turn now." }),
+                },
+              ];
         const sessionLoaded = ctx.loadedTools.get(sessionId) ?? new Set<string>();
         ctx.loadedTools.set(sessionId, sessionLoaded);
         try {
@@ -419,7 +435,7 @@ export async function executeTurn(
             leadTurn && isTeamLive(boardStore.list())
               ? gatedTools.filter((t) => !withheld.has(t.name))
               : gatedTools;
-          const effectiveTools = deferTools(offeredTools, deferMode, sessionLoaded);
+          const effectiveTools = [...deferTools(offeredTools, deferMode, sessionLoaded), ...structuredTools];
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
             tools: effectiveTools,
@@ -557,13 +573,16 @@ export async function executeTurn(
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
             const fallbackMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-            const fallbackTools = deferTools(
-              builtinsMode && turnScope
-                ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
-                : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier)),
-              deferMode,
-              sessionLoaded,
-            );
+            const fallbackTools = [
+              ...deferTools(
+                builtinsMode && turnScope
+                  ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
+                  : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier)),
+                deferMode,
+                sessionLoaded,
+              ),
+              ...structuredTools,
+            ];
             activeTurnMeta.set(params.turnId, {
               capabilities: fallbackCapabilities,
               tools: fallbackTools,

@@ -194,6 +194,42 @@ describe("createAgentDaemon", () => {
     expect(result.cancelled).toBe(true);
   }, 30_000);
 
+  test("outputSchema gives the turn a structured_output tool, and an answer that breaks the schema goes back", async () => {
+    const schema = { type: "object", properties: { count: { type: "number" } }, required: ["count"] };
+    const offered: unknown[] = [];
+    const inputs = [{ count: "seven" }, { count: 7 }];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        offered.push(request.tools?.find((t) => t.name === "structured_output")?.inputSchema);
+        const input = inputs[offered.length - 1];
+        if (input) {
+          yield { type: "tool_call_start", id: `c${offered.length}`, name: "structured_output" };
+          yield { type: "tool_call_delta", id: `c${offered.length}`, inputJsonDelta: JSON.stringify(input) };
+          yield { type: "tool_call_end", id: `c${offered.length}` };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const { client } = await startFakeDaemon({ adapterFor, tools: [] });
+    const result = (await client.call("run_turn", {
+      turnId: "t-schema",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "k",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "count" }] }],
+      outputSchema: schema,
+    })) as RunTurnRpcResult;
+    expect(offered[0]).toEqual(schema);
+    const results = result.messages.flatMap((m) => m.content).filter((b) => b.type === "tool_result");
+    expect(results.map((b) => (b.type === "tool_result" ? b.isError : undefined))).toEqual([true, false]);
+    expect(JSON.stringify(results[0])).toContain('\\"count\\" must be number');
+  }, 30_000);
+
   test("a Notification hook runs when a turn waits for an approval", async () => {
     const dir = tempRoot();
     const out = join(dir, "notified.json");
