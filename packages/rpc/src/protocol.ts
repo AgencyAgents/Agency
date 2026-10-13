@@ -20,7 +20,7 @@ export const PROVIDERS_LIST_METHOD = "providers_list";
 
 export type RpcMessage =
   | { type: "hello"; version: number; token?: string }
-  | { type: "hello_ack"; version: number; compatible: boolean; authorized?: boolean }
+  | { type: "hello_ack"; version: number; compatible: boolean; authorized?: boolean; leaving?: boolean }
   | { type: "request"; id: string; method: string; params: unknown }
   | { type: "response"; id: string; result: unknown }
   | { type: "response_error"; id: string; error: { message: string; code?: string } }

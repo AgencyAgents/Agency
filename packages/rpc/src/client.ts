@@ -227,6 +227,10 @@ export async function connectToDaemon(
         `daemon protocol version ${ack.version} is incompatible with this client's version ${PROTOCOL_VERSION}`,
       );
     }
+    if (ack.leaving === true) {
+      sock.destroy();
+      throw new Error("the daemon is leaving because its config changed");
+    }
     if (ack.authorized === false) {
       authRejected = true; // permanent: retrying with the same token is futile
       sock.destroy();

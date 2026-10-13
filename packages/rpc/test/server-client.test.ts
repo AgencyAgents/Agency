@@ -121,6 +121,27 @@ describe("startDaemonServer + connectToDaemon", () => {
     socket.destroy();
   });
 
+  test("a first client that the server refuses gets an error that names the cause", async () => {
+    server = await startDaemonServer({ handlers: {}, refuseFirstClient: () => true });
+    await expect(connectToDaemon(server.port)).rejects.toThrow("the daemon is leaving");
+  });
+
+  test("a server that has a client does not ask to refuse the next one", async () => {
+    let asked = 0;
+    let refuse = false;
+    server = await startDaemonServer({
+      handlers: {},
+      refuseFirstClient: () => {
+        asked += 1;
+        return refuse;
+      },
+    });
+    clients.push(await connectToDaemon(server.port));
+    refuse = true;
+    clients.push(await connectToDaemon(server.port));
+    expect(asked).toBe(1);
+  });
+
   test("onClientCount reflects connects and disconnects", async () => {
     const counts: number[] = [];
     server = await startDaemonServer({ handlers: {}, onClientCount: (n) => counts.push(n) });

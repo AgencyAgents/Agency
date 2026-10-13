@@ -50,7 +50,7 @@ function instanceFilePath(instanceDir: string, workspaceRoot: string): string {
   return join(instanceDir, `${hashWorkspaceRoot(workspaceRoot)}.json`);
 }
 
-function readInstanceFile(path: string): InstanceInfo | undefined {
+export function readInstanceFile(path: string): InstanceInfo | undefined {
   if (!existsSync(path)) return undefined;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as InstanceInfo;

@@ -670,6 +670,19 @@ describe("createAgentDaemon", () => {
     expect(left).toEqual({ edit: true, add: true });
   }, 15_000);
 
+  test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
+    const instanceFile = tempInstanceFile();
+    const { daemon, client } = await startFakeDaemon({ instanceFile });
+    await client.close();
+    clients.length = 0;
+    // The close of the client must be over before the server destroys its sockets (Bun on Windows).
+    await new Promise((r) => setTimeout(r, 100));
+    const successor = JSON.stringify({ port: 1, pid: 1, startedAt: "", version: 2, token: "other" });
+    writeFileSync(instanceFile, successor);
+    await daemon.stop();
+    expect(readFileSync(instanceFile, "utf8")).toBe(successor);
+  });
+
   test("onIdleShutdown does not fire while a client is still connected", async () => {
     let shutdownCalled = false;
     await startFakeDaemon({ idleLingerMs: 30, onIdleShutdown: () => (shutdownCalled = true) });

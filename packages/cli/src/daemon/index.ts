@@ -56,6 +56,7 @@ import {
   type HttpGatewayServer,
   newInstanceToken,
   PROTOCOL_VERSION,
+  readInstanceFile,
   startDaemonServer,
   startHttpGateway,
   writeInstanceFile,
@@ -609,6 +610,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
   };
 
+  const leave = (): void => {
+    clearInterval(staleConfigTimer);
+    try {
+      eventBus.emit("session.idle", {});
+      eventBus.emit("event", { event: "session.idle", payload: {} });
+    } catch {}
+    options.onIdleShutdown?.();
+  };
+
   server = await startDaemonServer({
     token: authToken,
     handlers,
@@ -617,14 +627,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       clearInterval(staleConfigTimer);
       idleTimer = undefined;
       if (count > 0) return;
-      const leave = () => {
-        clearInterval(staleConfigTimer);
-        try {
-          eventBus.emit("session.idle", {});
-          eventBus.emit("event", { event: "session.idle", payload: {} });
-        } catch {}
-        options.onIdleShutdown?.();
-      };
       idleTimer = setTimeout(leave, idleLingerMs);
       // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
       staleConfigTimer = setInterval(() => {
@@ -634,6 +636,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
 
     onClientDisconnect: cancelTurnsOf,
+    // The check of an idle daemon comes each second: a run that follows a change directly would get the old config.
+    refuseFirstClient: () => {
+      if (options.onIdleShutdown === undefined || !configFingerprint.check()) return false;
+      leave();
+      return true;
+    },
   });
 
   // Mount the HTTP+SSE gateway on the same handler table and auth token as
@@ -691,7 +699,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       // SSE streams must end before the HTTP server stops (ECONNRESET).
       await httpGateway.close();
       await server.close();
-      rmSync(options.instanceFile, { force: true });
+      // After a refusal of a first client, a new daemon can own the file before this one has stopped.
+      if (readInstanceFile(options.instanceFile)?.token === authToken) {
+        rmSync(options.instanceFile, { force: true });
+      }
       await rotatingSink?.flush();
     },
   };
