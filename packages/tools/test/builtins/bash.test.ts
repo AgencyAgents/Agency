@@ -46,6 +46,23 @@ describe("createBashTool", () => {
     expect(result.content).toContain("hello-from-bash-tool");
   }, 30_000);
 
+  test("the provider keys of the harness are not in the environment of a command, and other variables are", async () => {
+    const { tool } = setup();
+    process.env.AGENCY_ENVTEST_API_KEY = "harness-key-71f3";
+    process.env.ENVTEST_PLAIN = "plain-value-52c1";
+    const read = (name: string): string =>
+      process.platform === "win32" ? `Write-Output "[$env:${name}]"` : `echo "[$${name}]"`;
+    try {
+      const key = await tool.handler({ command: read("AGENCY_ENVTEST_API_KEY") }, { signal });
+      expect(key.content).toContain("[]");
+      const plain = await tool.handler({ command: read("ENVTEST_PLAIN") }, { signal });
+      expect(plain.content).toContain("[plain-value-52c1]");
+    } finally {
+      delete process.env.AGENCY_ENVTEST_API_KEY;
+      delete process.env.ENVTEST_PLAIN;
+    }
+  }, 30_000);
+
   // Two sequential real shell spawns; PowerShell's cold start in this
   // sandbox is slow and variable enough that the 5s default is too tight.
   test("working directory persists across calls within a session", async () => {

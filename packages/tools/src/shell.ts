@@ -170,3 +170,15 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
     exitCode: exitLine !== undefined && exitLine !== "" ? Number.parseInt(exitLine, 10) : 0,
   };
 }
+
+/**
+ * The environment of a command that the model wrote, with no provider key of the harness (`AGENCY_<ID>_API_KEY`):
+ * a command could print the key into the transcript or send it out.
+ */
+export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && !/^AGENCY_.+_API_KEY$/i.test(name)) out[name] = value;
+  }
+  return out;
+}

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { modelCommandEnv } from "./shell.ts";
 
 const MAX_LOG_BYTES = 256 * 1024; // bounded ring buffer per process, not unbounded growth
 
@@ -36,6 +37,7 @@ export class ProcessManager {
     const id = randomUUID();
     const proc = Bun.spawn(command, {
       cwd: options.cwd,
+      env: modelCommandEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });

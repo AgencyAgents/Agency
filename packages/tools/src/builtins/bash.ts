@@ -4,7 +4,7 @@ import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.
 import type { ToolContext, ToolDeps, ToolResult, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
-import { CWD_MARKER, EXIT_MARKER, parseShellOutput, type ShellConfig } from "../shell.ts";
+import { CWD_MARKER, EXIT_MARKER, modelCommandEnv, parseShellOutput, type ShellConfig } from "../shell.ts";
 import { truncateWithSpill } from "../truncate.ts";
 
 /**
@@ -242,7 +242,12 @@ export function createBashTool(
         return runContainerExec(container, argv, state.cwd, ctx, timeout, finish);
       }
 
-      const proc = Bun.spawn(argv, { cwd: state.cwd, stdout: "pipe", stderr: "pipe" });
+      const proc = Bun.spawn(argv, {
+        cwd: state.cwd,
+        env: modelCommandEnv(),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
       // Reads start immediately and stay in flight across the race below:
       // when the kill lands the pipes close and they settle with whatever
