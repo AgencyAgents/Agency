@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Shell of a hook command**: a hook command runs in the shell of the
+  `bash` tool (Git Bash on Windows when it is installed). It was
+  `cmd.exe` on Windows, where a hook that is a shell script did not
+  run.
+- **Skill files of a plugin**: `agency plugin install` copies the whole
+  folder of a skill. It copied only `SKILL.md`, so a skill could not
+  read its own reference files.
 - **Step limit**: a turn takes at most 100 tool steps by default. It was
   25. `maxSteps` in the config and `--max-steps` set another limit.
 - **Permissions of a spawned worker**: a worker now has the permission
@@ -80,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Plugin names that are paths**: a plugin whose manifest name or
+  skill name was a path such as `../..` could write outside
+  `.agency`, and `agency plugin remove ..` deleted the `.agency`
+  folder. The install now refuses such a name, and the removal
+  ignores a path in its argument and in a receipt.
 - **Daemon start limit**: the CLI waited 5 s for a new daemon. On a slow
   machine the daemon needs longer (13 s or more on an emulated CPU about five
   times slower than a laptop), so the first run failed and left a daemon
@@ -526,6 +538,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Hooks of a Claude Code plugin**: `agency plugin install` now
+  installs the command hooks of a plugin into
+  `.agency/hooks/<plugin>.json`, copies the plugin to
+  `.agency/plugin-roots/<plugin>/` and points `${CLAUDE_PLUGIN_ROOT}`
+  at that copy. The daemon runs the hook files of a workspace only
+  when the workspace is trusted. Before, the install only printed a
+  list of event names and no hook ran. `agency plugin remove` deletes
+  the hook file and the copy.
 - **`--max-cost <usd>`**: stops a headless turn when its cost reaches the
   amount. The run prints `budget_exceeded` and exits with code 1.
 - **`--format stream-json`**: with `-p`, one JSON line for each event

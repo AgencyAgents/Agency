@@ -263,7 +263,7 @@ The model of the session writes the summary: one more request, on the transcript
 | `SessionStart` | Before the first prompt of a session | None. |
 | `Stop` | When the model ends its turn | The turn goes on. The model gets the reason as a message. |
 
-Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `prompt`, `stop_hook_active`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace through the system shell (`cmd.exe` on Windows, `sh` elsewhere).
+Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `prompt`, `stop_hook_active`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace, in the shell of the `bash` tool: `sh` on Linux and macOS, and the shell of `windowsShell` on Windows (Git Bash when it is installed). A hook that is a shell script thus runs on Windows too.
 
 - Exit code 2 is a block, and stderr is the reason. So is exit code 0 with `{"decision": "block", "reason": "..."}` on stdout, or with `hookSpecificOutput.permissionDecision` set to `deny`.
 - Any other exit code that is not 0 is a failed hook. It does not block.
@@ -272,7 +272,24 @@ Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session
 - `timeout` is in seconds. The default is 60. A command that runs longer is stopped, and it does not block.
 - `Stop` hooks do not run for subagents. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
 
-The daemon reads `hooks` only from the user config, so a workspace cannot add hooks. A plugin module can do the same from code: a handler of `tool.execute.before`, `tool.execute.after` or `turn.stop` that returns `{ block: "reason" }` blocks in the same way.
+Hooks come from two places, and the daemon runs those of the user config first:
+
+- `hooks` in the user config. The `.agency/config.jsonc` of a workspace cannot add hooks.
+- Each `*.json` file in `.agency/hooks/` of the workspace, with the same format (the block can be the file, or the value of a `hooks` key). The daemon reads these files only when the workspace is trusted, because a hook command runs with your rights. A file that is not valid is skipped with a warning in the daemon log.
+
+A plugin module can do the same from code: a handler of `tool.execute.before`, `tool.execute.after` or `turn.stop` that returns `{ block: "reason" }` blocks in the same way.
+
+### Hooks of a Claude Code plugin
+
+`agency plugin install <folder>` installs the hooks of a Claude Code plugin with its skills, commands and agents:
+
+- The command hooks of the five events above go to `.agency/hooks/<plugin>.json`. The install prints each event that it installed, and each event that it skipped with the reason (an event that does not exist here, or an entry that is not a command).
+- The files of the plugin are copied to `.agency/plugin-roots/<plugin>/`, and `${CLAUDE_PLUGIN_ROOT}` in a command becomes that folder. The source folder can thus go away.
+- A skill is copied with all the files of its folder, so a skill can name its own references and scripts.
+- A plugin name or a skill name must be one plain name (letters, digits, `.`, `_`, `-`). A name that is a path is refused.
+- `agency plugin remove <plugin>` deletes the hook file and the copied folder with the rest of the plugin.
+
+The MCP servers of a plugin are not added to the config: the install prints them, and you add them to `mcpServers`.
 
 ## MCP / LSP
 
