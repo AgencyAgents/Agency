@@ -90,7 +90,7 @@ export function createTurnApproval(
       "Notification",
       { session_id: sessionId, notification_type: "permission_prompt", message: title },
       ctx.hookRun,
-    );
+    ).catch(() => {});
     const decision = await promise;
     reply(decision, approvals.closeReason(id) ?? "answered");
     return decision;
