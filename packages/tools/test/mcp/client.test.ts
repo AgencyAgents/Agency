@@ -26,6 +26,40 @@ describe("McpClient", () => {
     await client.close();
   });
 
+  test("the handshake has the fields that the specification makes mandatory, and keeps the server capabilities", async () => {
+    let deliver: (msg: Record<string, unknown>) => void = () => {};
+    const client = new McpClient(
+      "strict",
+      fakeTransport({
+        onMessage: (handler) => {
+          deliver = handler;
+        },
+        send: async (msg) => {
+          if (msg.id === undefined) return;
+          const p = (msg.params ?? {}) as Record<string, unknown>;
+          // A server that validates the request refuses one without these three fields.
+          const valid =
+            typeof p.protocolVersion === "string" &&
+            typeof p.capabilities === "object" &&
+            p.capabilities !== null &&
+            typeof p.clientInfo === "object";
+          deliver(
+            valid
+              ? {
+                  jsonrpc: "2.0",
+                  id: msg.id,
+                  result: { protocolVersion: p.protocolVersion, capabilities: { resources: {} } },
+                }
+              : { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "Invalid params" } },
+          );
+        },
+      }),
+    );
+    await client.initialize();
+    expect(client.serverCapabilities).toEqual({ resources: {} });
+    await client.close();
+  });
+
   test("a response resolves the waiting request", async () => {
     let deliver: (msg: Record<string, unknown>) => void = () => {};
     const client = new McpClient(

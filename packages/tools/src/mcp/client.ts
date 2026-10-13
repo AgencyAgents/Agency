@@ -31,8 +31,17 @@ export class McpClient {
     this.onToolListChanged = cb;
   }
 
+  /** What the server said it has in the handshake: `resources`, `prompts`, `tools`. */
+  serverCapabilities: Record<string, unknown> = {};
+
   async initialize(): Promise<void> {
-    await this.request("initialize", { clientInfo: { name: "agency", version: "0.1.0" } });
+    // The specification makes protocolVersion and capabilities mandatory: a server that validates refuses without them.
+    const result = (await this.request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "agency", version: "0.1.0" },
+    })) as { capabilities?: Record<string, unknown> } | undefined;
+    this.serverCapabilities = result?.capabilities ?? {};
     this.notify("notifications/initialized", {});
   }
 

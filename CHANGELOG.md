@@ -87,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **MCP handshake**: the `initialize` request had no `protocolVersion`
+  and no `capabilities`, which the MCP specification makes mandatory.
+  A server that validates the request refuses it. The request now has
+  them (`2025-03-26`). Found by reading and shown with a strict test
+  server: no server of an official SDK was run.
 - **`session.start` for a kept session**: a plugin hook on
   `session.start` did not run for a session that `--session`,
   `--continue` or `session_send` made. The event came only for a
