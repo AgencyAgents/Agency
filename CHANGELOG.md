@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`/goal` is now the session goal**: the team report that `/goal`
+  returned is now `/report [outcome]`. The `report_get` RPC did not
+  change.
 - **Perseverance legacy path**: the legacy import file is now `.omo/perseverance.json` (`LEGACY_PERSEVERANCE_FILE`), completing the rename with zero old-name references left. Clean break with no back-compat shim: legacy files already on disk under the previous name are no longer picked up, so move such a file to the new name to keep its state.
 - **Dispatch path**: `packages/cli/src/daemon.ts` runs delegation inline:
   `dispatch` tool on a flat team path (depth-1 nesting lives only on the
@@ -509,6 +512,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Session goal**: `--goal "<condition>"` with `--session`, the
+  `/goal <session> [condition|clear]` command, and the `goal` field of
+  `session_send` give a session a condition that must be true before a
+  turn ends. At the end of a turn the model judges the transcript
+  against the goal. With the goal not met, the model gets the reason
+  and the turn goes on, up to the step limit. A met goal clears itself.
 - **Compaction summary by the model**: the model of the session now
   writes the summary of a compacted session, in fixed sections
   (requests and rules, decisions, files, commands, errors, state, next

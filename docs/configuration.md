@@ -194,6 +194,18 @@ Egress (deny-by-default once configured): `sandbox.egress` undefined means unres
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
+## Session goal
+
+A session can hold a goal: a condition that must be true before a turn ends. When the model ends a turn, the daemon asks the model of that turn if the newest part of the transcript shows that the goal is met. If it does not, the model gets the reason as a message and the turn goes on. When the goal is met, the daemon clears it.
+
+- `agency -p "<prompt>" --session <id> --goal "<condition>"` sets the goal for a headless run. `--goal` needs `--session` or `--continue`.
+- `/goal <session> <condition>` sets it, `/goal <session> clear` removes it, and `/goal <session>` shows it. The `session_send` RPC takes it as `goal`.
+- The step limit still applies (`--max-steps`, 25 by default). A turn that reaches it ends with the goal in place, and the next turn of the session checks it again.
+- Each check is one more request to the model. It is not in the usage numbers of the turn.
+- A check that fails, or a reply that is not a verdict, does not hold the turn.
+
+The team report that `/goal` showed before is now `/report [outcome]`.
+
 ## Compaction
 
 A session is compacted when its history reaches 90 percent of the model's context window, and again when the provider reports a context overflow in the middle of a turn. The older messages become one summary, and the newest messages stay as they are. Task lists always stay.
