@@ -224,6 +224,46 @@ export function splitCommand(command: string): { parts: string[]; dynamic: boole
   return { parts, dynamic };
 }
 
+const WRAPPERS: ReadonlySet<string> = new Set(["sudo", "env", "command", "nohup", "time", "exec", "nice"]);
+const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash"]);
+const MAX_UNWRAP_DEPTH = 8;
+
+/**
+ * The forms of one simple command that the rules must see: itself, the command behind a wrapper
+ * (`sudo`, `env A=1`), its program without a folder or `.exe`, and the commands of `sh -c "..."`.
+ */
+export function unwrapCommand(command: string, depth = 0): string[] {
+  const forms = [command];
+  if (depth > MAX_UNWRAP_DEPTH) return forms;
+  const words = command.trim().split(/\s+/);
+  const program = (words[0] ?? "").replace(/^.*[\\/]/, "").replace(/\.(exe|cmd|bat|com)$/i, "");
+  if (program === "") return forms;
+  const rest = words.slice(1);
+  if (program !== words[0]) forms.push(...unwrapCommand([program, ...rest].join(" "), depth + 1));
+  // `A=1 cmd`: the assignment is not the command.
+  else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(program)) forms.push(...unwrapCommand(rest.join(" "), depth + 1));
+  else if (WRAPPERS.has(program)) {
+    let i = 0;
+    while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
+      i += 1;
+    forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
+  } else if (SHELLS.has(program)) {
+    const flag = rest.findIndex((word) => /^-[a-z]*c$/.test(word));
+    const script =
+      flag === -1
+        ? ""
+        : rest
+            .slice(flag + 1)
+            .join(" ")
+            .trim();
+    const quoted = /^(["'])([\s\S]*)\1$/.exec(script);
+    for (const part of splitCommand(quoted ? (quoted[2] ?? "") : script).parts) {
+      forms.push(...unwrapCommand(part, depth + 1));
+    }
+  }
+  return forms.filter((form) => form.trim() !== "");
+}
+
 /**
  * Compiles a glob into an anchored regex source. Path mode treats `*` as
  * within-segment (a slash-crossing wildcard is the double-star form), a
@@ -372,8 +412,11 @@ export class PolicyEngine {
     if (request.command === undefined) return this.evaluateOne(request);
     const { parts, dynamic } = splitCommand(request.command);
     let worst = this.evaluateOne(request);
-    for (const part of parts.length > 1 ? parts : []) {
-      const verdict = this.evaluateOne({ ...request, command: part, normalizedCommand: undefined });
+    const forms = new Set<string>();
+    for (const part of parts) for (const form of unwrapCommand(part)) forms.add(form);
+    forms.delete(request.command);
+    for (const form of forms) {
+      const verdict = this.evaluateOne({ ...request, command: form, normalizedCommand: undefined });
       if (DECISION_RANK[verdict.decision] > DECISION_RANK[worst.decision]) worst = verdict;
     }
     // The shell builds a part of this command at run time: no rule saw the text that will run.

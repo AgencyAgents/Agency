@@ -90,6 +90,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A deny rule did not hold behind a wrapper** (security): with a
+  rule that denies `rm *`, the commands `sudo rm -rf build`,
+  `env A=1 rm -rf build`, `/bin/rm -rf build` and
+  `bash -c "rm -rf build"` were not denied. The rules now also see the
+  command behind a wrapper, a path, an assignment or a shell.
 - **A permission rule allowed the commands after an allowed one**
   (security): with a rule that allows `git status*`, the command
   `git status; rm -rf build` ran with no ask, because a rule saw only

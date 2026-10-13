@@ -37,6 +37,24 @@ describe("a compound shell command", () => {
     expect(decide("git status '$(not run)'")).toBe("allow");
   });
 
+  test("a deny rule holds when the command is behind a wrapper, a path or a shell", () => {
+    for (const command of [
+      "sudo rm -rf build",
+      "env FOO=1 rm -rf build",
+      "FOO=1 rm -rf build",
+      "/bin/rm -rf build",
+      "rm.exe -rf build",
+      "nohup rm -rf build",
+      'bash -c "rm -rf build"',
+      "sh -lc 'ls && rm -rf build'",
+      "git status && sudo /usr/bin/rm -rf build",
+    ]) {
+      expect(decide(command)).toBe("deny");
+    }
+    // A wrapper does not make an allowed command more allowed.
+    expect(decide("sudo git status")).toBe("ask");
+  });
+
   test("quotes and redirections do not split a command", () => {
     expect(splitCommand('echo "a && b; c" | wc').parts).toEqual(['echo "a && b; c"', "wc"]);
     expect(splitCommand("ls 2>&1 >/dev/null").parts).toEqual(["ls 2>&1 >/dev/null"]);
