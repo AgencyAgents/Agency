@@ -556,6 +556,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **MCP servers of a workspace**: the daemon reads `.mcp.json` in the
+  workspace root (the project file of Claude Code) and the files of
+  `.agency/mcp/`, only when the workspace is trusted. `${VAR}` and
+  `${VAR:-default}` take values from the environment. The user config
+  wins on a name. `agency plugin install` writes the MCP servers of a
+  plugin to `.agency/mcp/<plugin>.json`: before, it printed them for
+  a manual merge.
 - **Hooks of a Claude Code plugin**: `agency plugin install` now
   installs the command hooks of a plugin into
   `.agency/hooks/<plugin>.json`, copies the plugin to

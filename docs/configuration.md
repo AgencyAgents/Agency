@@ -290,12 +290,19 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 - A skill is copied with all the files of its folder, so a skill can name its own references and scripts.
 - A plugin name or a skill name must be one plain name (letters, digits, `.`, `_`, `-`). A name that is a path is refused.
 - `agency plugin remove <plugin>` deletes the hook file and the copied folder with the rest of the plugin.
-
-The MCP servers of a plugin are not added to the config: the install prints them, and you add them to `mcpServers`.
+- The MCP servers of the plugin (its `.mcp.json`, or the `mcpServers` key of its manifest) go to `.agency/mcp/<plugin>.json`, with `${CLAUDE_PLUGIN_ROOT}` as the copied folder. `agency plugin remove` deletes that file too.
 
 ## MCP / LSP
 
 Configured under `mcpServers` / `lspServers`. The MCP layer accepts stdio (`command`+`args`) and HTTP (`url`) servers, optional `headers`, and per-request timeouts. LSP is a minimal client that decorates read/write/edit results with diagnostics. Failures surface via `providers_list` / `mcp_status` / `lsp_status` RPC and per-turn `mcp_server_down` system reminders.
+
+MCP servers come from three places:
+
+- `mcpServers` in the user config.
+- `.mcp.json` in the workspace root, the project file of Claude Code: `{ "mcpServers": { "name": { "command": "...", "args": [...] } } }`. The `type` key of Claude Code is accepted and not needed: an entry with `command` is a stdio server, and an entry with `url` is an HTTP server.
+- Each `*.json` file in `.agency/mcp/`, which `agency plugin install` writes for a plugin.
+
+The daemon reads the two workspace sources only when the workspace is trusted, because a stdio server is a program that runs with your rights. On a name that two sources have, the user config wins, then `.mcp.json`. In the workspace files, `${VAR}` in a string becomes the value of that variable of the environment, and `${VAR:-text}` gives a default. A file that is not valid is skipped with a warning in the daemon log. A change to one of these files starts a new daemon for the next command.
 
 ## Themes and keybinds (deferred — frontend follows separately)
 
