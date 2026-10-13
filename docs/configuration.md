@@ -194,6 +194,14 @@ Egress (deny-by-default once configured): `sandbox.egress` undefined means unres
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
+## Compaction
+
+A session is compacted when its history reaches 90 percent of the model's context window, and again when the provider reports a context overflow in the middle of a turn. The older messages become one summary, and the newest messages stay as they are. Task lists always stay.
+
+The model of the session writes the summary: one more request, on the transcript of the older messages with long tool results cut short. The summary has fixed sections: the user's requests and rules, decisions, files read and changed, commands and results, errors and fixes, the state of the work, and the next step. If that request fails, or no key resolves for the provider, the daemon uses an offline summary that keeps only the first and the last lines of the transcript.
+
+`/compact <session> [provider/model]` compacts a session at any size.
+
 ## Hooks
 
 `hooks` holds shell commands that run on agent events. The format is the hook format of Claude Code settings, so a hook block from a Claude Code `settings.json` works here without changes.

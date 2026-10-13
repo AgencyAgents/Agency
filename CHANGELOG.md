@@ -509,6 +509,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Compaction summary by the model**: the model of the session now
+  writes the summary of a compacted session, in fixed sections
+  (requests and rules, decisions, files, commands, errors, state, next
+  step). Before, the summary was the first and the last lines of a
+  folded transcript, so tool results and earlier answers were lost. The
+  offline summary stays as the fallback when the request fails.
+  `/compact` now compacts a session at any size: before, it did nothing
+  below 90 percent of a 200k window.
 - **Command hooks**: the `hooks` config key runs shell commands on
   `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart` and
   `Stop`, in the hook format of Claude Code settings. Exit code 2 or a
