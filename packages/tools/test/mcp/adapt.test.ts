@@ -40,10 +40,10 @@ describe("renderMcpContent", () => {
     ).toBe("file body");
   });
 
-  test("JSON-stringifies blocks without extractable text (image, blob resource)", () => {
+  test("an image is a short note in the text, and a blob resource is JSON", () => {
     const image = { type: "image", data: "aGk=", mimeType: "image/png" };
     const blob = { type: "resource", resource: { uri: "file:///a.bin", blob: "aGk=" } };
-    expect(renderMcpContent([image, blob])).toBe(`${JSON.stringify(image)}\n${JSON.stringify(blob)}`);
+    expect(renderMcpContent([image, blob])).toBe(`[image image/png]\n${JSON.stringify(blob)}`);
   });
 
   test("handles empty, missing, non-array, and scalar content", () => {
@@ -79,6 +79,21 @@ describe("adaptMcpTool handler", () => {
     const result = await spec.handler({}, { signal: new AbortController().signal });
     expect(result.content).not.toContain("[object Object]");
     expect(result.content).toBe("cfg");
+  });
+
+  test("an image of a result goes out as an image block, and its data is not in the text", async () => {
+    const data = "QUJD".repeat(50);
+    const spec = adaptMcpTool(
+      clientReturning([
+        { type: "text", text: "the chart" },
+        { type: "image", data, mimeType: "image/png" },
+      ]),
+      def,
+      OPTIONS,
+    );
+    const result = await spec.handler({}, { signal: new AbortController().signal });
+    expect(result.content).toBe("the chart\n[image image/png]");
+    expect(result.images).toEqual([{ type: "image", mimeType: "image/png", data }]);
   });
 
   test("isError passes through and undefined content renders as empty", async () => {

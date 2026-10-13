@@ -582,6 +582,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Images in MCP results**: an image that an MCP tool returns goes to
+  a model with image input as an image. Before, its base64 data was in
+  the text of the result. The text now has `[image <mime type>]`.
 - **`sandbox.denyEnv`**: a list of environment variables that a shell
   command of the model does not get, for tokens and keys of other
   names than `AGENCY_<ID>_API_KEY`.

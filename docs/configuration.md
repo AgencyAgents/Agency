@@ -328,6 +328,8 @@ MCP servers come from three places:
 
 The daemon reads the two workspace sources only when the workspace is trusted, because a stdio server is a program that runs with your rights. On a name that two sources have, the user config wins, then `.mcp.json`. In the workspace files, `${VAR}` in a string becomes the value of that variable of the environment, and `${VAR:-text}` gives a default. A file that is not valid is skipped with a warning in the daemon log. A change to one of these files starts a new daemon for the next command.
 
+An image in the result of an MCP tool goes to the model as an image, and the text of the result has `[image <mime type>]` in its place.
+
 ## Themes and keybinds (deferred — frontend follows separately)
 
 `theme` is a config key reserved for the future frontend. Keybind and theme registries were part of the removed `packages/tui` package; the backend retains the config key but does not apply it. Frontend will rebuild from these config values.

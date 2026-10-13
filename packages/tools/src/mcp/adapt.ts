@@ -1,4 +1,5 @@
 import type { CallerIdentity, Capabilities } from "@agency/guard";
+import type { ImageBlock } from "@agency/schema";
 import type { ToolSpec } from "../contract.ts";
 import type { McpClient } from "./client.ts";
 
@@ -29,11 +30,30 @@ export function renderMcpContent(content: unknown): string {
   return blocks.map(renderContentBlock).join("\n");
 }
 
+function isImage(block: unknown): block is { type: "image"; data: string; mimeType: string } {
+  const record = block as Record<string, unknown> | null;
+  return (
+    typeof record === "object" &&
+    record !== null &&
+    record.type === "image" &&
+    typeof record.data === "string" &&
+    typeof record.mimeType === "string"
+  );
+}
+
+/** The image blocks of an MCP result, for the `images` of a tool result. */
+export function mcpImages(content: unknown): ImageBlock[] {
+  const blocks = Array.isArray(content) ? content : [content];
+  return blocks.filter(isImage).map((b) => ({ type: "image", mimeType: b.mimeType, data: b.data }));
+}
+
 function renderContentBlock(block: unknown): string {
   if (typeof block === "string") return block;
   if (block === null || typeof block !== "object") return String(block);
   const record = block as Record<string, unknown>;
   if (record.type === "text" && typeof record.text === "string") return record.text;
+  // The data of an image goes to the model as an image block: as text it is only tokens.
+  if (isImage(record)) return `[image ${record.mimeType}]`;
   if (record.type === "resource") {
     const resource = record.resource;
     if (resource !== null && typeof resource === "object") {
@@ -56,7 +76,12 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
     async handler(input, ctx) {
       const caller = options.identityFor(ctx.agentHandle);
       const result = await client.callTool(def.name, input, ctx.signal, { identity: caller });
-      return { content: renderMcpContent(result.content), isError: Boolean(result.isError) };
+      const images = mcpImages(result.content);
+      return {
+        content: renderMcpContent(result.content),
+        isError: Boolean(result.isError),
+        ...(images.length > 0 ? { images } : {}),
+      };
     },
   };
   return spec;
