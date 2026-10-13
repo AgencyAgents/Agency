@@ -170,6 +170,8 @@ export const ConfigSchema = z
          * `CAP_`-prefixed and lowercase spellings are accepted and canonicalized.
          */
         capDrop: z.array(z.string().min(1)).optional(),
+        /** Names of environment variables that a shell command of the model does not get (tokens, keys). */
+        denyEnv: z.array(z.string().min(1)).optional(),
         /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
         forecastCostUsd: z.number().optional(),
       })

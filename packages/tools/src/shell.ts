@@ -171,14 +171,24 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
   };
 }
 
+// Windows names of variables have no case.
+const envName = (name: string): string => (process.platform === "win32" ? name.toUpperCase() : name);
+let deniedEnv = new Set<string>();
+
+/** The `sandbox.denyEnv` list of the config: one daemon has one config, so the list is state of the module. */
+export function setDeniedCommandEnv(names: readonly string[]): void {
+  deniedEnv = new Set(names.map(envName));
+}
+
 /**
- * The environment of a command that the model wrote, with no provider key of the harness (`AGENCY_<ID>_API_KEY`):
- * a command could print the key into the transcript or send it out.
+ * The environment of a command that the model wrote, with no provider key of the harness (`AGENCY_<ID>_API_KEY`)
+ * and no variable of the deny list: a command could print such a value into the transcript or send it out.
  */
 export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (value !== undefined && !/^AGENCY_.+_API_KEY$/i.test(name)) out[name] = value;
+    if (value === undefined || /^AGENCY_.+_API_KEY$/i.test(name) || deniedEnv.has(envName(name))) continue;
+    out[name] = value;
   }
   return out;
 }

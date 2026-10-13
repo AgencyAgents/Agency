@@ -582,6 +582,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`sandbox.denyEnv`**: a list of environment variables that a shell
+  command of the model does not get, for tokens and keys of other
+  names than `AGENCY_<ID>_API_KEY`.
 - **`agency daemon status` lists the turns that run**, and
   **`agency daemon cancel <turn>`** stops one, so a long run can be seen
   and stopped from another terminal. The `turns_list` RPC gives the

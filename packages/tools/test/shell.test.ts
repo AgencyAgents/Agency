@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   CWD_MARKER,
   EXIT_MARKER,
+  modelCommandEnv,
   parseShellOutput,
   resolveConfiguredShell,
   resolveShell,
+  setDeniedCommandEnv,
 } from "../src/shell.ts";
 
 describe("resolveShell", () => {
@@ -111,5 +113,19 @@ describe("resolveConfiguredShell", () => {
 
   test("another platform keeps its POSIX shell", () => {
     expect(resolveConfiguredShell("linux", undefined, () => gitBash).command).toBe("/bin/sh");
+  });
+});
+
+describe("modelCommandEnv", () => {
+  test("removes the provider keys of the harness and the variables of the deny list, and keeps the others", () => {
+    const env = { AGENCY_OPENROUTER_API_KEY: "k1", GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" };
+    expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" });
+    setDeniedCommandEnv(["GITHUB_TOKEN"]);
+    try {
+      expect(modelCommandEnv(env)).toEqual({ NPM_TOKEN: "t2", PATH: "/bin" });
+    } finally {
+      setDeniedCommandEnv([]);
+    }
+    expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" });
   });
 });
