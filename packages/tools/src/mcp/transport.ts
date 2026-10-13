@@ -117,6 +117,7 @@ function createHttpTransport(
   let closeHandler: (() => void) | undefined;
   const abortController = new AbortController();
   let streamStarted = false;
+  let sessionId: string | undefined;
 
   /** Pump a ReadableStream body for SSE frames, feeding each parsed message to handler. */
   async function pumpSse(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
@@ -218,10 +219,13 @@ function createHttpTransport(
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
+          ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
           ...(headers ?? {}),
         },
         body: JSON.stringify(message),
       });
+      // A server with sessions gives the id in the handshake and refuses later requests without it.
+      sessionId = res.headers.get("mcp-session-id") ?? sessionId;
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`MCP HTTP ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 500)}` : ""}`);

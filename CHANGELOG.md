@@ -87,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Session of an HTTP MCP server**: the HTTP transport did not send
+  back the `Mcp-Session-Id` that a server gives in the handshake. A
+  server with sessions refuses each later request without it. Shown
+  with a test server that has sessions: no server of an official SDK
+  was run.
 - **MCP handshake**: the `initialize` request had no `protocolVersion`
   and no `capabilities`, which the MCP specification makes mandatory.
   A server that validates the request refuses it. The request now has
