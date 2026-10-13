@@ -597,6 +597,66 @@ describe("createAgentDaemon", () => {
   }, 30_000);
 
   test.each([
+    ["auto", ["tool_search"], ["tracker_tool_3", "tool_search"]],
+    ["never", Array.from({ length: 12 }, (_, i) => `tracker_tool_${i}`), undefined],
+  ])(
+    "mcpDeferTools %s: the tool list of a request, and a loaded tool stays for the session",
+    async (mode, first, later) => {
+      const mcpTools = Array.from({ length: 12 }, (_, i): ToolSpec & { origin: "mcp" } => ({
+        name: `tracker_tool_${i}`,
+        description: `Does thing number ${i} in the tracker.`,
+        inputSchema: { type: "object", properties: {} },
+        riskTier: "safe",
+        origin: "mcp",
+        handler: async () => ({ content: `tool ${i} ran` }),
+      }));
+      const offered: string[][] = [];
+      const adapterFor = (): ProviderAdapter => ({
+        family: "fake",
+        async *stream(request): AsyncIterable<StreamEvent> {
+          offered.push((request.tools ?? []).map((t) => t.name));
+          if (offered.length === 1 && mode === "auto") {
+            yield { type: "tool_call_start", id: "c1", name: "tool_search" };
+            yield { type: "tool_call_delta", id: "c1", inputJsonDelta: '{"query":"tracker_tool_3"}' };
+            yield { type: "tool_call_end", id: "c1" };
+            yield {
+              type: "message_stop",
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+            return;
+          }
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      });
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        tools: mcpTools,
+        configDir: writeConfigDir({ mcpDeferTools: mode }),
+      });
+      const turn = (turnId: string) =>
+        client.call("run_turn", {
+          turnId,
+          sessionId: "s-defer",
+          provider: "anthropic",
+          model: "test-model",
+          apiKey: "k",
+          systemPrompt: "sys",
+          session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        });
+      await turn(`t-defer-${mode}-1`);
+      expect(offered[0]).toEqual(first);
+      if (later === undefined) return;
+      expect(offered[1]).toEqual(later);
+      // The next turn of the session: the loaded tool is in the first request.
+      await turn(`t-defer-${mode}-2`);
+      expect(offered[2]).toEqual(later);
+    },
+    30_000,
+  );
+
+  test.each([
     ["moves to the fallback", ErrorCode.OVERLOAD, 101],
     ["fails", ErrorCode.AUTH, 100],
   ])(
@@ -767,6 +827,77 @@ describe("createAgentDaemon", () => {
     };
     expect(await failures(false)).toEqual([]);
     expect(await failures(true)).toEqual(["projectserver"]);
+  }, 60_000);
+
+  test("the tool of a real MCP server is deferred, and a worker with a tool list has it loaded", async () => {
+    const workspaceRoot = tempRoot();
+    const server = join(workspaceRoot, "server.js");
+    writeFileSync(
+      server,
+      [
+        "const NL = String.fromCharCode(10);",
+        "const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + NL);",
+        "let buf = '';",
+        "process.stdin.on('data', (d) => {",
+        "  buf += d;",
+        "  for (let i = buf.indexOf(NL); i !== -1; i = buf.indexOf(NL)) {",
+        "    const m = JSON.parse(buf.slice(0, i));",
+        "    buf = buf.slice(i + 1);",
+        "    if (m.id === undefined) continue;",
+        "    if (m.method === 'initialize') send(m.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'srv', version: '1' } });",
+        "    else if (m.method === 'tools/list') send(m.id, { tools: [{ name: 'ping', description: 'Pings.', inputSchema: { type: 'object', properties: {} } }] });",
+        "    else send(m.id, { content: [{ type: 'text', text: 'pong' }] });",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(workspaceRoot, ".mcp.json"),
+      JSON.stringify({ mcpServers: { srv: { command: process.execPath, args: [server] } } }),
+    );
+    const trustStorePath = join(tempRoot(), "trust.json");
+    createFileTrustStore(trustStorePath).trust(workspaceRoot);
+    const offered = { parent: [] as string[], worker: [] as string[] };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const names = (request.tools ?? []).map((t) => t.name);
+        const spawned = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if ((request.system ?? "").includes("ephemeral worker")) offered.worker = names;
+        else if (!spawned) {
+          offered.parent = names;
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ prompt: "ping", tools: ["srv_ping"] }),
+          };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      workspaceRoot,
+      trustStorePath,
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({ mcpDeferTools: "always" }),
+    });
+    await client.call("run_turn", {
+      turnId: "t-defer-real",
+      sessionId: "s-defer-real",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(offered.parent).toContain("tool_search");
+    expect(offered.parent).not.toContain("srv_ping");
+    expect(offered.worker).toContain("srv_ping");
   }, 60_000);
 
   test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {

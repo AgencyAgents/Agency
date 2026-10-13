@@ -60,6 +60,8 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
    *  gate both consume it (`safe` runs freely, the rest asks and needs a
    *  trusted workspace). Unclassified tools are treated as ungated. */
   riskTier?: RiskTier;
+  /** Asked before each request: a hidden tool is not in the tool list, and a call of it is refused. */
+  hidden?: () => boolean;
 }
 
 /** Erased tool type for registries holding mixed-input tools. */
@@ -211,11 +213,10 @@ export async function runTurn(
     await options.onMessage?.(message);
   };
   const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
-  const toolDefs: ToolDefinition[] = options.tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    inputSchema: t.inputSchema,
-  }));
+  const toolDefs = (): ToolDefinition[] =>
+    options.tools
+      .filter((t) => !t.hidden?.())
+      .map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
 
   let cumulativeUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let spentCostUsd = 0;
@@ -291,7 +292,7 @@ export async function runTurn(
               system: options.systemPrompt,
               ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
               messages,
-              tools: toolDefs,
+              tools: toolDefs(),
               maxTokens: options.maxTokensPerRequest ?? 8192,
               thinkingLevel: options.thinkingLevel,
               ...(options.vision === undefined ? {} : { vision: options.vision }),
@@ -736,6 +737,10 @@ async function executeOne(
   if (!resolved) {
     const available = options.tools.map((t) => t.name).join(", ");
     return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
+  }
+  if (resolved.hidden?.()) {
+    const hint = `the tool "${resolved.name}" is not loaded: load it with tool_search, then call it again`;
+    return { content: hint, isError: true };
   }
 
   try {

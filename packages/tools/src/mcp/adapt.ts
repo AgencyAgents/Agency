@@ -71,6 +71,7 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
     description: def.description ?? `MCP tool ${def.name} from ${options.serverName}`,
     inputSchema: def.inputSchema ?? { type: "object", properties: {} },
     riskTier: options.riskTier,
+    origin: "mcp",
     renderCall: (input) => `${options.serverName}.${def.name} ${JSON.stringify(input)}`,
     renderResult: (result) => result.content,
     async handler(input, ctx) {

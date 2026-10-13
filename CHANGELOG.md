@@ -582,6 +582,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Deferred MCP tool schemas** (`mcpDeferTools`, default `auto`): with
+  more than 10 MCP tools, a request has no schema of an MCP tool. The
+  model sees their names in the new `tool_search` tool and loads the
+  ones that it needs, which stay for the session. Measured with one
+  server of 31 tools, one run each: 8491 input tokens against 20789
+  for a task that needs no MCP tool, 13257 against 20982 for a task
+  that needs one. `never` gives the old behaviour.
 - **Images in MCP results**: an image that an MCP tool returns goes to
   a model with image input as an image. Before, its base64 data was in
   the text of the result. The text now has `[image <mime type>]`.

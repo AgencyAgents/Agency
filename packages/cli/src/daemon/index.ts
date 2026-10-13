@@ -389,6 +389,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   }
 
   const activeTurnMeta = new Map<string, ActiveTurnMeta>();
+  const loadedTools = new Map<string, Set<string>>();
 
   const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
@@ -566,6 +567,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     activeControllers,
     turnOwners,
     activeTurnMeta,
+    loadedTools,
     commands,
     catalogModel,
     learnModel: models.learnModel,

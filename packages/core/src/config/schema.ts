@@ -130,6 +130,8 @@ export const ConfigSchema = z
      * which re-validates it via parseMcpServers at startup.
      */
     mcpServers: z.record(z.string(), z.unknown()).optional(),
+    /** `auto` keeps the schemas of the MCP tools out of a request when there are more than 10, until the model loads them. */
+    mcpDeferTools: z.enum(["auto", "always", "never"]).optional(),
     lspServers: z.record(z.string(), z.unknown()).optional(),
     /**
      * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the

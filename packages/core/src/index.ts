@@ -51,5 +51,6 @@ export * from "./team/team-store.ts";
 export * from "./team/todo.ts";
 export * from "./team/wake.ts";
 export * from "./team/windows.ts";
+export * from "./tool-search.ts";
 export * from "./trace/index.ts";
 export * from "./truncate.ts";

@@ -508,7 +508,10 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       let childTools: ToolSpec[];
       if (wantedTools !== undefined) {
         const allow = new Set(wantedTools);
-        childTools = baseTools.filter((t) => allow.has(t.name));
+        // A tool list names its tools: a deferred MCP tool in it is loaded for the worker.
+        childTools = baseTools
+          .filter((t) => allow.has(t.name))
+          .map((t) => ("hidden" in t ? { ...t, hidden: () => false } : t));
         if (!allow.has("spawn") && childTools.some((t) => t.name === "spawn")) {
           childTools = childTools.filter((t) => t.name !== "spawn");
         }

@@ -33,6 +33,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `disabled_providers` | `string[]` | `[]` | Families to hide |
 | `enabled_providers` | `string[]` | — | When set, only these families are kept |
 | `mcpServers` | `Record<string, unknown>` | — | Loose map; re-validated by `parseMcpServers` at startup |
+| `mcpDeferTools` | `"auto" \| "always" \| "never"` | `"auto"` | When the schemas of the MCP tools stay out of a request until the model loads them (see MCP / LSP) |
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
@@ -327,6 +328,8 @@ MCP servers come from three places:
 - Each `*.json` file in `.agency/mcp/`, which `agency plugin install` writes for a plugin.
 
 The daemon reads the two workspace sources only when the workspace is trusted, because a stdio server is a program that runs with your rights. On a name that two sources have, the user config wins, then `.mcp.json`. In the workspace files, `${VAR}` in a string becomes the value of that variable of the environment, and `${VAR:-text}` gives a default. A file that is not valid is skipped with a warning in the daemon log. A change to one of these files starts a new daemon for the next command.
+
+With many MCP tools, their schemas are most of a request. `mcpDeferTools` controls that. In the `auto` mode, with more than 10 MCP tools, a request has no schema of an MCP tool. It has one `tool_search` tool, and the description of that tool lists the names of the MCP tools. The model gives keywords or names to `tool_search`, which loads at most 5 tools for each call. A loaded tool stays in the requests of that session until the daemon stops. `always` does this for any number of MCP tools, and `never` puts every schema in every request. A worker that `spawn` starts with a tool list gets the MCP tools of that list loaded. The first request after a load does not use the prompt cache of the provider, because the tool list changed. Measured with one server of 31 tools and one run each: 8491 input tokens against 20789 for a task that needs no MCP tool, and 13257 against 20982 for a task that needs one.
 
 An image in the result of an MCP tool goes to the model as an image, and the text of the result has `[image <mime type>]` in its place.
 

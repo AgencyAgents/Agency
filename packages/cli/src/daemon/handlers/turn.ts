@@ -1,5 +1,6 @@
 import {
   addUsage,
+  deferTools,
   isTeamLive,
   LEAD_WITHHELD_TOOLS,
   type LoopEvent,
@@ -398,6 +399,9 @@ export async function executeTurn(
           if (spent.inputTokens + spent.outputTokens > 0) recordSpend(ran, spent);
           spent = { inputTokens: 0, outputTokens: 0 };
         };
+        const deferMode = config.mcpDeferTools ?? "auto";
+        const sessionLoaded = ctx.loadedTools.get(sessionId) ?? new Set<string>();
+        ctx.loadedTools.set(sessionId, sessionLoaded);
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -410,10 +414,11 @@ export async function executeTurn(
               : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
           const leadTurn = !findChildSession(ctx, sessionId) && !handleForSession(ctx, sessionId);
           const withheld = new Set<string>(LEAD_WITHHELD_TOOLS);
-          const effectiveTools =
+          const offeredTools =
             leadTurn && isTeamLive(boardStore.list())
               ? gatedTools.filter((t) => !withheld.has(t.name))
               : gatedTools;
+          const effectiveTools = deferTools(offeredTools, deferMode, sessionLoaded);
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
             tools: effectiveTools,
@@ -551,10 +556,13 @@ export async function executeTurn(
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
             const fallbackMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-            const fallbackTools =
+            const fallbackTools = deferTools(
               builtinsMode && turnScope
                 ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
-                : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
+                : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier)),
+              deferMode,
+              sessionLoaded,
+            );
             activeTurnMeta.set(params.turnId, {
               capabilities: fallbackCapabilities,
               tools: fallbackTools,

@@ -65,6 +65,8 @@ export interface ToolSpec<Input = Record<string, unknown>> {
   description: string;
   inputSchema: Record<string, unknown>;
   riskTier?: RiskTier;
+  /** Set for a tool of an MCP server: the daemon can keep its schema out of the request until the model loads it. */
+  origin?: "mcp";
   handler(input: Input & Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
   renderCall?(input: Input & Record<string, unknown>): string;
   renderResult?(result: ToolResult & { input?: Record<string, unknown> }): string;
