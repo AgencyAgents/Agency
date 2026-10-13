@@ -47,6 +47,18 @@ export function mcpImages(content: unknown): ImageBlock[] {
   return blocks.filter(isImage).map((b) => ({ type: "image", mimeType: b.mimeType, data: b.data }));
 }
 
+/** The contents of a `resources/read` result as content blocks: text, an image, or a note for other binary data. */
+export function resourceBlocks(contents: unknown[]): unknown[] {
+  return contents.map((entry) => {
+    const { uri, mimeType, text, blob } = (entry ?? {}) as Record<string, unknown>;
+    if (typeof text === "string") return { type: "text", text };
+    if (typeof blob === "string" && typeof mimeType === "string" && mimeType.startsWith("image/")) {
+      return { type: "image", data: blob, mimeType };
+    }
+    return { type: "text", text: `[binary data ${mimeType ?? ""} of ${uri}]` };
+  });
+}
+
 function renderContentBlock(block: unknown): string {
   if (typeof block === "string") return block;
   if (block === null || typeof block !== "object") return String(block);

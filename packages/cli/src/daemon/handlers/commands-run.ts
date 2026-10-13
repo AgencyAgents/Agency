@@ -305,13 +305,17 @@ const BUILTINS: Record<string, BuiltinFn> = {
     return { text: `${data.entries.length} entr(ies) in ${sessionId}`, data };
   },
   mcp: async (_ctx, handlers, args) => {
-    const data = await call<{ failures: Record<string, string> }>(
+    const data = await call<{ failures: Record<string, string>; prompts?: Array<{ command: string }> }>(
       handlers,
       "mcp_status",
       args[0] ? { sessionId: args[0] } : {},
     );
     const count = Object.keys(data.failures).length;
-    return { text: count === 0 ? "no MCP failures" : `${count} MCP failure(s)`, data };
+    const prompts = (data.prompts ?? []).map((p) => p.command).join(" ");
+    return {
+      text: `${count === 0 ? "no MCP failures" : `${count} MCP failure(s)`}${prompts ? `; prompts: ${prompts}` : ""}`,
+      data,
+    };
   },
   lsp: async (_ctx, handlers, args) => {
     const data = await call<{ statuses: Record<string, string> }>(

@@ -54,7 +54,7 @@ export const METHOD_DOCS: Record<string, string> = {
   agent_stop: "Stop one team agent and idle its sessions.",
   dispatch_compare: "Fan out one prompt to two agents and compare.",
   plan_approve: "Record a human approval for a plan file.",
-  mcp_status: "MCP server failures for a session scope.",
+  mcp_status: "MCP server failures and prompts for a session scope.",
   lsp_status: "Language server statuses for a session scope.",
   commands_list: "List available slash command templates.",
   commands_expand: "Expand a slash command template with args.",

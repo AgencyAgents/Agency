@@ -33,7 +33,7 @@ import {
   resolveSystemPrompt,
   type TeamBudgets,
 } from "../types.ts";
-import { applySlashCommand } from "./commands.ts";
+import { applyMcpPrompt, applySlashCommand } from "./commands.ts";
 import { createTurnApproval } from "./plan.ts";
 import { generateSessionTitle } from "./session.ts";
 import { writeTurnCassette } from "./trace.ts";
@@ -360,6 +360,7 @@ export async function executeTurn(
         if (builtinsMode) {
           turnScope = await getOrCreateScope(sessionId, mentioned.length === 1 ? mentioned[0] : undefined);
           await turnScope.todos.hydrate(sessionId);
+          await applyMcpPrompt(turnScope.mcp, params.session);
         }
         const requestApproval = createTurnApproval(ctx, params, sessionId, eventStream);
         const fallbackRef = (() => {

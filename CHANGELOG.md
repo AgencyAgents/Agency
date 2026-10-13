@@ -592,6 +592,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **MCP resources and prompts**: a server that declares resources
+  gives the model the `mcp_list_resources` and `mcp_read_resource`
+  tools. A prompt of a server is the slash command
+  `/mcp__<server>__<prompt>`, and the words after it are its
+  arguments. `mcp_status` lists the commands.
 - **Deferred MCP tool schemas** (`mcpDeferTools`, default `auto`): with
   more than 10 MCP tools, a request has no schema of an MCP tool. The
   model sees their names in the new `tool_search` tool and loads the

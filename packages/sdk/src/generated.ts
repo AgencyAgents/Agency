@@ -309,7 +309,7 @@ export interface SurfaceClient {
   inbox_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Language server statuses for a session scope. */
   lsp_status(params?: Record<string, unknown>): Promise<unknown>;
-  /** MCP server failures for a session scope. */
+  /** MCP server failures and prompts for a session scope. */
   mcp_status(params?: Record<string, unknown>): Promise<unknown>;
   /** List catalog models merged with config overrides. */
   models_list(params?: Record<string, unknown>): Promise<unknown>;

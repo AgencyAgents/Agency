@@ -830,33 +830,7 @@ describe("createAgentDaemon", () => {
   }, 60_000);
 
   test("the tool of a real MCP server is deferred, and a worker with a tool list has it loaded", async () => {
-    const workspaceRoot = tempRoot();
-    const server = join(workspaceRoot, "server.js");
-    writeFileSync(
-      server,
-      [
-        "const NL = String.fromCharCode(10);",
-        "const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + NL);",
-        "let buf = '';",
-        "process.stdin.on('data', (d) => {",
-        "  buf += d;",
-        "  for (let i = buf.indexOf(NL); i !== -1; i = buf.indexOf(NL)) {",
-        "    const m = JSON.parse(buf.slice(0, i));",
-        "    buf = buf.slice(i + 1);",
-        "    if (m.id === undefined) continue;",
-        "    if (m.method === 'initialize') send(m.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'srv', version: '1' } });",
-        "    else if (m.method === 'tools/list') send(m.id, { tools: [{ name: 'ping', description: 'Pings.', inputSchema: { type: 'object', properties: {} } }] });",
-        "    else send(m.id, { content: [{ type: 'text', text: 'pong' }] });",
-        "  }",
-        "});",
-      ].join("\n"),
-    );
-    writeFileSync(
-      join(workspaceRoot, ".mcp.json"),
-      JSON.stringify({ mcpServers: { srv: { command: process.execPath, args: [server] } } }),
-    );
-    const trustStorePath = join(tempRoot(), "trust.json");
-    createFileTrustStore(trustStorePath).trust(workspaceRoot);
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
     const offered = { parent: [] as string[], worker: [] as string[] };
     const adapter: ProviderAdapter = {
       family: "fake",
@@ -898,6 +872,39 @@ describe("createAgentDaemon", () => {
     expect(offered.parent).toContain("tool_search");
     expect(offered.parent).not.toContain("srv_ping");
     expect(offered.worker).toContain("srv_ping");
+  }, 60_000);
+
+  test("a prompt of an MCP server runs as a slash command, and the resource tools are in the request", async () => {
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
+    const seen = { text: "", tools: [] as string[] };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.tools = (request.tools ?? []).map((t) => t.name);
+        seen.text = JSON.stringify(request.messages.at(-1)?.content);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, adapterFor: () => adapter });
+    await client.call("run_turn", {
+      turnId: "t-mcp-prompt",
+      sessionId: "s-mcp-prompt",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "/mcp__srv__review 42" }] }],
+    });
+    expect(seen.text).toContain("Review the issue 42");
+    expect(seen.text).not.toContain("/mcp__srv__review");
+    expect(seen.tools).toEqual(
+      expect.arrayContaining(["srv_ping", "mcp_list_resources", "mcp_read_resource"]),
+    );
+    const status = (await client.call("mcp_status", { sessionId: "s-mcp-prompt" })) as { prompts: unknown[] };
+    expect(status.prompts).toEqual([
+      { command: "/mcp__srv__review", description: "Reviews an issue.", arguments: ["id"] },
+    ]);
   }, 60_000);
 
   test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
@@ -1595,6 +1602,41 @@ function catalogModel(id: string, family: string): ModelInfo {
     pricing: { inputPerMTok: 1, outputPerMTok: 2 },
     capabilities: { tools: true, vision: false, thinking: false },
   };
+}
+
+/** A trusted workspace whose .mcp.json starts a real stdio MCP server `srv`: one tool, one prompt, one resource. */
+function trustedWorkspaceWithMcpServer(): { workspaceRoot: string; trustStorePath: string } {
+  const workspaceRoot = tempRoot();
+  const server = join(workspaceRoot, "server.js");
+  writeFileSync(
+    server,
+    [
+      "const NL = String.fromCharCode(10);",
+      "const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + NL);",
+      "let buf = '';",
+      "process.stdin.on('data', (d) => {",
+      "  buf += d;",
+      "  for (let i = buf.indexOf(NL); i !== -1; i = buf.indexOf(NL)) {",
+      "    const m = JSON.parse(buf.slice(0, i));",
+      "    buf = buf.slice(i + 1);",
+      "    if (m.id === undefined) continue;",
+      "    if (m.method === 'initialize') send(m.id, { protocolVersion: '2025-03-26', capabilities: { tools: {}, prompts: {}, resources: {} }, serverInfo: { name: 'srv', version: '1' } });",
+      "    else if (m.method === 'tools/list') send(m.id, { tools: [{ name: 'ping', description: 'Pings.', inputSchema: { type: 'object', properties: {} } }] });",
+      "    else if (m.method === 'prompts/list') send(m.id, { prompts: [{ name: 'review', description: 'Reviews an issue.', arguments: [{ name: 'id' }] }] });",
+      "    else if (m.method === 'prompts/get') send(m.id, { messages: [{ role: 'user', content: { type: 'text', text: 'Review the issue ' + m.params.arguments.id } }] });",
+      "    else if (m.method === 'resources/list') send(m.id, { resources: [{ uri: 'docs://guide' }] });",
+      "    else send(m.id, { content: [{ type: 'text', text: 'pong' }] });",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(workspaceRoot, ".mcp.json"),
+    JSON.stringify({ mcpServers: { srv: { command: process.execPath, args: [server] } } }),
+  );
+  const trustStorePath = join(tempRoot(), "trust.json");
+  createFileTrustStore(trustStorePath).trust(workspaceRoot);
+  return { workspaceRoot, trustStorePath };
 }
 
 function writeConfigDir(config: Record<string, unknown>): string {

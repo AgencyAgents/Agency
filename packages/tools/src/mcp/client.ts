@@ -3,6 +3,19 @@ import { counterIds, PendingRequestManager } from "@agency/net";
 import type { McpToolDefinition } from "./adapt.ts";
 import type { McpTransport } from "./transport.ts";
 
+export interface McpResourceDefinition {
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptDefinition {
+  name: string;
+  description?: string;
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+}
+
 export interface McpClientOptions {
   requestTimeoutMs?: number;
   toolCallTimeoutMs?: number;
@@ -68,6 +81,29 @@ export class McpClient {
       isError?: boolean;
     };
     return { content: result.content, isError: result.isError };
+  }
+
+  // ponytail: the first page of each list only; follow nextCursor when a server pages its lists.
+  async listResources(): Promise<McpResourceDefinition[]> {
+    const result = (await this.request("resources/list", {})) as { resources?: McpResourceDefinition[] };
+    return result.resources ?? [];
+  }
+
+  async readResource(uri: string, signal?: AbortSignal): Promise<unknown[]> {
+    const result = (await this.request("resources/read", { uri }, { signal })) as { contents?: unknown[] };
+    return result.contents ?? [];
+  }
+
+  async listPrompts(): Promise<McpPromptDefinition[]> {
+    const result = (await this.request("prompts/list", {})) as { prompts?: McpPromptDefinition[] };
+    return result.prompts ?? [];
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<Array<{ content?: unknown }>> {
+    const result = (await this.request("prompts/get", { name, arguments: args })) as {
+      messages?: Array<{ content?: unknown }>;
+    };
+    return result.messages ?? [];
   }
 
   async close(): Promise<void> {
