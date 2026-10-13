@@ -230,7 +230,7 @@ The script is your code. It runs in the `agency` process with your rights, and i
 
 ## Subagents
 
-The `spawn` tool starts a worker: a child session that sees only the task that the model writes for it, and returns only its final text. Several `spawn` calls in one reply run at the same time. A worker cannot start another worker.
+The `spawn` tool starts a worker: a child session that sees only the task that the model writes for it, and returns only its final text. Several `spawn` calls in one reply run at the same time. A worker cannot start another worker. In a trusted workspace a worker gets the project instructions (`AGENTS.md`, `CLAUDE.md`, the rules) in its system prompt, as the main turn does. It does not get the texts of plugins and skills.
 
 An agent file with a `description` is an agent type of `spawn`. The tool lists each type with its description, and the model chooses one with the `agent` parameter. The worker then gets the body of the file as its system prompt, the `tools` of the file as its tool list, and the `provider` and `model` of the file when they are set.
 

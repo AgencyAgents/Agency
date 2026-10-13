@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, ProviderRequest, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
@@ -44,7 +45,11 @@ const hasResult = (request: ProviderRequest): boolean =>
   request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
 
 /** A daemon with one agent file in the user config, and a model whose main turn sends `spawnInput` to spawn. */
-async function setup(spawnInput: Record<string, unknown>, workerCall?: Iterable<StreamEvent>) {
+async function setup(
+  spawnInput: Record<string, unknown>,
+  workerCall?: Iterable<StreamEvent>,
+  project?: { agentsMd: string; trusted: boolean },
+) {
   const configDir = tmp("cfg");
   mkdirSync(join(configDir, "agents"), { recursive: true });
   // The frontmatter of a Claude Code agent file: name, description, its tool names, a model alias, a color.
@@ -69,9 +74,15 @@ async function setup(spawnInput: Record<string, unknown>, workerCall?: Iterable<
     },
   };
   const workspaceRoot = tmp("ws");
+  const trustStorePath = join(tmp("trust"), "trust.json");
+  if (project) {
+    writeFileSync(join(workspaceRoot, "AGENTS.md"), project.agentsMd);
+    if (project.trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+  }
   const daemon = await createAgentDaemon({
     workspaceRoot,
     configDir,
+    trustStorePath,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
     sessionsDir: tmp("sess"),
     approvalsDir: tmp("approvals"),
@@ -113,6 +124,20 @@ describe("agent types of the spawn tool", () => {
     expect(worker).toHaveLength(0);
     expect(JSON.stringify(main[1]?.messages)).toContain("unknown agent type: nobody");
     expect(JSON.stringify(main[1]?.messages)).toContain("reviewer");
+  }, 30000);
+});
+
+describe("project instructions of a spawned worker", () => {
+  test("a worker gets the instructions of a trusted workspace, and none of a workspace that is not trusted", async () => {
+    const seen: Record<string, boolean> = {};
+    for (const trusted of [true, false]) {
+      const project = { agentsMd: "Project rule: use QUARTZ-9 names.", trusted };
+      const { run, worker } = await setup({ prompt: "do it" }, undefined, project);
+      await run();
+      expect(worker).toHaveLength(1);
+      seen[String(trusted)] = (worker[0]?.system ?? "").includes("QUARTZ-9");
+    }
+    expect(seen).toEqual({ true: true, false: false });
   }, 30000);
 });
 

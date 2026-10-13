@@ -168,7 +168,9 @@ export interface ResolveSystemPromptOptions {
 }
 
 /** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
-function projectInstructions(options: ResolveSystemPromptOptions): string[] {
+export function projectInstructions(
+  options: Pick<ResolveSystemPromptOptions, "workspaceRoot" | "trustStore">,
+): string[] {
   if (options.trustStore === undefined) return [];
   try {
     return loadInstructions(options.trustStore, options.workspaceRoot, options.workspaceRoot);

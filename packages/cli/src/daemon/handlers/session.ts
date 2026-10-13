@@ -32,6 +32,7 @@ import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
   keySourcesFor,
+  projectInstructions,
   type RunTurnParams,
   type SessionMessageParams,
   type SessionSendParams,
@@ -520,7 +521,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
         base:
           agentType?.systemPrompt ??
           "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
-        instructions: [],
+        // The rules of the project hold for a worker too. Plugin and skill texts stay with the main turn.
+        instructions: projectInstructions({
+          workspaceRoot: options.workspaceRoot,
+          trustStore: daemon.trustStore,
+        }),
         toolDescriptions: [],
         // Without it a worker does not know its folder, its shell or the date.
         context: buildEnvironmentBlock(

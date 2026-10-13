@@ -87,6 +87,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Project instructions of a spawned worker**: a worker did not get
+  `AGENTS.md`, `CLAUDE.md` or the rules of the workspace, so it could
+  not follow the rules of the project. In a trusted workspace a worker
+  now gets them in its system prompt.
 - **One agent file that is not valid**: one agent file with an error
   made the daemon drop every agent file and use the roster of the
   config. The daemon now skips that file with a warning in its log,
