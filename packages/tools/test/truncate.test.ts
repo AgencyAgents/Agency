@@ -88,9 +88,11 @@ describe("truncateWithSpill", () => {
 
   test("truncates and spills oversized content with surrogate pair boundary", () => {
     // 😀 = 4 bytes. "a😀bc" = 1 + 4 + 1 + 1 = 7 bytes.
-    // Cap at 5: "a😀" = 5 bytes exactly, fits.
+    // Cap at 5: 2 bytes of the start ("a", the emoji does not fit) and 2 bytes of the end ("bc").
     const result = truncateWithSpill("a😀bc", 5, notices);
-    expect(result).toContain("a😀");
+    expect(result.startsWith("a\n")).toBe(true);
+    expect(result).toContain("\nbc\n");
+    expect(result.includes("\uFFFD")).toBe(false);
     expect(result).toContain("[Truncated at 10 bytes");
     // The spill file should exist
     const spillMatch = result.match(/Full output at (.+\.txt)/);
@@ -110,6 +112,25 @@ describe("truncateWithSpill", () => {
     expect(result.includes("😀")).toBe(false);
     expect(result.includes("\uFFFD")).toBe(false);
     expect(result).toContain("[Truncated at 10 bytes");
+  });
+
+  test("keeps the start and the end of a long output: the error of a test run is at the end", () => {
+    const content = `first line\n${"x".repeat(5000)}\nFAIL the last line`;
+    const out = truncateWithSpill(content, 1000, notices);
+    expect(out.startsWith("first line\n")).toBe(true);
+    expect(out).toContain("FAIL the last line");
+    expect(out).toMatch(/\[\.\.\. \d+ bytes omitted \.\.\.\]/);
+    const kept = out.slice(0, out.lastIndexOf("\n"));
+    expect(Buffer.byteLength(kept)).toBeLessThanOrEqual(1000 + 40);
+    const spill = out.match(/Full output at (.+\.txt)/)?.[1];
+    if (spill) unlinkSync(spill);
+  });
+
+  test("does not cut a character in two at the start of the kept end", () => {
+    const out = truncateWithSpill(`${"a".repeat(999)}${"é".repeat(600)}`, 1000, notices);
+    expect(out.includes("\uFFFD")).toBe(false);
+    const spill = out.match(/Full output at (.+\.txt)/)?.[1];
+    if (spill) unlinkSync(spill);
   });
 
   test("passes through content within limit with surrogate pairs", () => {
