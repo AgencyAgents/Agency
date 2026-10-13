@@ -360,7 +360,7 @@ With many MCP tools, their schemas are most of a request. `mcpDeferTools` contro
 
 An image in the result of an MCP tool goes to the model as an image, and the text of the result has `[image <mime type>]` in its place.
 
-A server that declares resources gives the model two tools: `mcp_list_resources` (each resource with its server and its URI) and `mcp_read_resource` (`server`, `uri`). A server that declares prompts gives one slash command for each prompt: `/mcp__<server>__<prompt>`, the name form of Claude Code. The words after the command are the arguments of the prompt in their order, and the last argument takes the rest of the text. The text of the prompt replaces the command as the user message. `mcp_status` and `/mcp` list the commands of a session. The client reads the first page of each list only.
+A server that declares resources gives the model two tools: `mcp_list_resources` (each resource with its server and its URI) and `mcp_read_resource` (`server`, `uri`). A server that declares prompts gives one slash command for each prompt: `/mcp__<server>__<prompt>`, the name form of Claude Code. The words after the command are the arguments of the prompt in their order, and the last argument takes the rest of the text. The text of the prompt replaces the command as the user message. `mcp_status` and `/mcp` list the commands of a session. The client reads all pages of each list.
 
 ## Themes and keybinds (deferred — frontend follows separately)
 

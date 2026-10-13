@@ -127,6 +127,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **MCP lists in pages**: the client read only the first page of the
+  tools, resources and prompts of a server, so a server that gives
+  its lists in pages lost the rest with no error. It now reads all
+  pages.
 - **A deny rule did not hold in a group or a control structure**
   (security): with a rule that denies `rm *`, these ran after an ask
   or with a wide allow rule: `{ rm -rf build; }`, `(rm -rf build)`,

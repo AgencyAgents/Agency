@@ -120,4 +120,39 @@ describe("McpClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     await client.close();
   });
+
+  test("a list that the server gives in pages is read to its end, and a server that repeats a cursor does not hang", async () => {
+    let deliver: (msg: Record<string, unknown>) => void = () => {};
+    const pages: Record<string, { items: string[]; next?: string }> = {
+      "": { items: ["a", "b"], next: "p2" },
+      p2: { items: ["c"], next: "p3" },
+      p3: { items: ["d"] },
+      // A broken server: the cursor points at itself.
+      loop: { items: ["x"], next: "loop" },
+    };
+    let start = "";
+    const client = new McpClient(
+      "paged",
+      fakeTransport({
+        onMessage: (handler) => {
+          deliver = handler;
+        },
+        send: async (msg) => {
+          const key = (msg.method as string).split("/")[0] as string;
+          const cursor = ((msg.params ?? {}) as { cursor?: string }).cursor ?? start;
+          const page = pages[cursor] ?? { items: [] };
+          const items = page.items.map((name) => ({ name, uri: name }));
+          const result = { [key]: items, ...(page.next ? { nextCursor: page.next } : {}) };
+          deliver({ jsonrpc: "2.0", id: msg.id, result });
+        },
+      }),
+    );
+    expect((await client.listTools()).map((t) => t.name)).toEqual(["a", "b", "c", "d"]);
+    expect((await client.listResources()).map((r) => r.uri)).toEqual(["a", "b", "c", "d"]);
+    expect((await client.listPrompts()).map((p) => p.name)).toEqual(["a", "b", "c", "d"]);
+    start = "loop";
+    // The second page gives the same cursor again: the read ends there.
+    expect((await client.listTools()).map((t) => t.name)).toEqual(["x", "x"]);
+    await client.close();
+  });
 });

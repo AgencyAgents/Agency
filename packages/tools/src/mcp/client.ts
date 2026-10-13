@@ -58,9 +58,26 @@ export class McpClient {
     this.notify("notifications/initialized", {});
   }
 
+  /** All pages of a list. A cursor that comes a second time ends the read: a broken server must not hang it. */
+  private async listAll<T>(kind: "tools" | "resources" | "prompts"): Promise<T[]> {
+    const items: T[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      if (cursor !== undefined) seen.add(cursor);
+      const result = (await this.request(`${kind}/list`, cursor === undefined ? {} : { cursor })) as Record<
+        string,
+        unknown
+      >;
+      items.push(...((result[kind] as T[] | undefined) ?? []));
+      cursor =
+        typeof result.nextCursor === "string" && result.nextCursor !== "" ? result.nextCursor : undefined;
+    } while (cursor !== undefined && !seen.has(cursor));
+    return items;
+  }
+
   async listTools(): Promise<McpToolDefinition[]> {
-    const result = (await this.request("tools/list", {})) as { tools?: McpToolDefinition[] };
-    return result.tools ?? [];
+    return this.listAll<McpToolDefinition>("tools");
   }
 
   async callTool(
@@ -83,10 +100,8 @@ export class McpClient {
     return { content: result.content, isError: result.isError };
   }
 
-  // ponytail: the first page of each list only; follow nextCursor when a server pages its lists.
   async listResources(): Promise<McpResourceDefinition[]> {
-    const result = (await this.request("resources/list", {})) as { resources?: McpResourceDefinition[] };
-    return result.resources ?? [];
+    return this.listAll<McpResourceDefinition>("resources");
   }
 
   async readResource(uri: string, signal?: AbortSignal): Promise<unknown[]> {
@@ -95,8 +110,7 @@ export class McpClient {
   }
 
   async listPrompts(): Promise<McpPromptDefinition[]> {
-    const result = (await this.request("prompts/list", {})) as { prompts?: McpPromptDefinition[] };
-    return result.prompts ?? [];
+    return this.listAll<McpPromptDefinition>("prompts");
   }
 
   async getPrompt(name: string, args: Record<string, string>): Promise<Array<{ content?: unknown }>> {
