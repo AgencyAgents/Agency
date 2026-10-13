@@ -2,10 +2,12 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   AgentRegistry,
+  attachCommandHooks,
   BoardStore,
   type Budget,
   ChannelStore,
   ChoiceLog,
+  type CommandHooks,
   type Config,
   collectPluginAgents,
   collectPluginCommands,
@@ -301,6 +303,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const builtinsMode = options.tools === undefined;
   // Plugin, command and agent files can run code or grant tools: those of a workspace load only after trust.
   const projectTrusted = trustStore.isTrusted(options.workspaceRoot);
+  const commandHooks: CommandHooks = config.hooks ?? {};
+  attachCommandHooks(eventBus, commandHooks, { cwd: options.workspaceRoot });
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
@@ -508,6 +512,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginCommands,
     trustStore,
     pluginInstructions,
+    commandHooks,
     teamContexts,
     teamFor,
     sessionInboxes,

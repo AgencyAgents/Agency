@@ -4,6 +4,7 @@ import {
   LEAD_WITHHELD_TOOLS,
   type LoopEvent,
   parseHandles,
+  runCommandHooks,
   runTurn,
   TraceRecorder,
   withTrace,
@@ -52,6 +53,49 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
     for (const manager of ctx.approvalManagers.values()) manager.rejectTurn(turnId);
     return { cancelled: true };
   };
+}
+
+/** The source of the error that a prompt hook's refusal throws: session_send removes the prompt on it. */
+export const PROMPT_HOOK_SOURCE = "prompt-hook";
+
+/** Runs the prompt hooks of the config. Their text goes to the session inbox: the loop stores it with the turn. */
+async function runPromptHooks(
+  ctx: DaemonContext,
+  sessionId: string,
+  prompt: string,
+  session: RunTurnParams["session"],
+): Promise<void> {
+  const opts = { cwd: ctx.options.workspaceRoot };
+  const context: string[] = [];
+  // No reply in the history yet: this is the first prompt of the session.
+  if (!session.some((m) => m.role === "assistant")) {
+    const start = await runCommandHooks(
+      ctx.commandHooks,
+      "SessionStart",
+      { session_id: sessionId, source: "startup" },
+      opts,
+    );
+    if (start.context !== undefined) context.push(start.context);
+  }
+  const submit = await runCommandHooks(
+    ctx.commandHooks,
+    "UserPromptSubmit",
+    { session_id: sessionId, prompt },
+    opts,
+  );
+  if (submit.block !== undefined) {
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `a hook blocked the prompt: ${submit.block}`, {
+      source: PROMPT_HOOK_SOURCE,
+    });
+  }
+  if (submit.context !== undefined) context.push(submit.context);
+  if (context.length === 0) return;
+  const box = ctx.sessionInboxes.get(sessionId) ?? [];
+  ctx.sessionInboxes.set(sessionId, box);
+  box.push({
+    role: "user",
+    content: [{ type: "text", text: `<hook-context>\n${context.join("\n")}\n</hook-context>` }],
+  });
 }
 
 /** Shared turn assembly behind run_turn and session_send: one definition,
@@ -402,20 +446,21 @@ export async function executeTurn(
               }
               return msgs;
             };
+            const promptText = (() => {
+              const m = params.session[params.session.length - 1];
+              const b = m?.content?.find((c: { type: string }) => c.type === "text") as
+                | { text?: string }
+                | undefined;
+              return typeof b?.text === "string" ? b.text : "";
+            })();
             try {
-              const promptText = (() => {
-                const m = params.session[params.session.length - 1];
-                const b = m?.content?.find((c: { type: string }) => c.type === "text") as
-                  | { text?: string }
-                  | undefined;
-                return typeof b?.text === "string" ? b.text : "";
-              })();
               eventBus.emit("prompt.submit", { sessionId, prompt: promptText });
               eventBus.emit("event", {
                 event: "prompt.submit",
                 payload: { sessionId, prompt: promptText },
               });
             } catch {}
+            if (!childInfo) await runPromptHooks(ctx, sessionId, promptText, params.session);
             const mainPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: effectiveMcpFailures,

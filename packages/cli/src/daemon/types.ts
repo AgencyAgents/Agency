@@ -538,6 +538,8 @@ export interface DaemonContext {
   pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;
   trustStore: import("@agency/guard").TrustStore;
   pluginInstructions: readonly string[];
+  /** Shell hooks of the config: the turn handler runs the prompt and session events itself. */
+  commandHooks: import("@agency/core").CommandHooks;
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Capabilities } from "@agency/guard";
-import type { EventBus } from "../events.ts";
+import { type EventBus, HookBlock } from "../events.ts";
 import { configDir } from "../paths.ts";
-import type { LoadedPlugin, PluginHookContext } from "./types.ts";
+import { BLOCKING_HOOKS, type LoadedPlugin, type PluginHookContext } from "./types.ts";
 
 /**
  * Tier a plugin was loaded from, in injection priority order: project
@@ -92,7 +92,7 @@ export function createPluginHookContext(
 /**
  * Error-isolation wrapper for one hook handler. A throwing plugin must never
  * break the bus loop or sibling plugins: errors are logged with plugin + hook
- * identity and swallowed, and the wrapper itself never rejects. (The EventBus
+ * identity and swallowed, and the wrapper rejects only with a `HookBlock`. (The EventBus
  * also isolates, but defense in depth matters here — a future direct-call
  * path through `definition.hooks` must stay safe too.)
  */
@@ -103,11 +103,16 @@ export function wrapHookHandler(
   ctx: PluginHookContext,
 ): (payload: unknown) => Promise<void> {
   return async (payload: unknown) => {
+    let out: unknown;
     try {
-      await handler(payload, ctx);
+      out = await handler(payload, ctx);
     } catch (err) {
       console.error(`[plugins] hook "${hookName}" in plugin "${pluginId}" threw:`, err);
+      return;
     }
+    // A returned block is a decision, not a failure: it leaves the wrapper so that the loop can act on it.
+    const block = (out as { block?: unknown } | undefined)?.block;
+    if (BLOCKING_HOOKS.has(hookName) && typeof block === "string") throw new HookBlock(block);
   };
 }
 

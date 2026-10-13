@@ -28,6 +28,7 @@ import {
   type Message,
   type StopReason,
 } from "@agency/schema";
+import { HookBlock } from "./events.ts";
 import { compactMessages, isContextOverflowError } from "./sessions/compaction.ts";
 import { summarizeTranscript } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
@@ -217,6 +218,7 @@ export async function runTurn(
   let salvageError: TurnError | undefined;
   let spoke = false;
   let outputContinuations = 0;
+  let stopBlocked = false;
   const tracer = options.traceRecorder;
   const turnSpanId = tracer
     ? tracer.startTurnSpan({
@@ -422,6 +424,23 @@ export async function runTurn(
           outputContinuations += 1;
           await append({ role: "user", content: [{ type: "text", text: OUTPUT_CUT_NOTE }] });
           continue;
+        }
+        // A stop hook can refuse the end of the turn: its reason goes to the model. The step limit bounds this.
+        const canGoOn =
+          stopReason === "end_turn" && !options.signal?.aborted && iteration + 1 < maxToolIterations;
+        if (canGoOn && options.eventBus?.emitCollect) {
+          const { errors } = await options.eventBus.emitCollect("turn.stop", {
+            sessionId: options.sessionId,
+            turnId: options.turnId,
+            taskDepth: options.taskDepth ?? 0,
+            stopHookActive: stopBlocked,
+          });
+          const reasons = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+          if (reasons.length > 0) {
+            stopBlocked = true;
+            await append({ role: "user", content: [{ type: "text", text: reasons.join("\n\n") }] });
+            continue;
+          }
         }
         break;
       }
@@ -842,8 +861,13 @@ async function executeOne(
       turnId: options.turnId,
     };
     try {
-      if (options.eventBus.emitAsync) await options.eventBus.emitAsync("tool.execute.after", afterPayload);
-      else options.eventBus.emit("tool.execute.after", afterPayload);
+      if (options.eventBus.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.execute.after", afterPayload);
+        const notes = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+        if (notes.length > 0) result = { ...result, content: [result.content, ...notes].join("\n\n") };
+      } else if (options.eventBus.emitAsync) {
+        await options.eventBus.emitAsync("tool.execute.after", afterPayload);
+      } else options.eventBus.emit("tool.execute.after", afterPayload);
     } catch {}
     options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
     if (MUTATING_TOOLS.has(resolved.name)) {

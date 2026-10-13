@@ -42,8 +42,12 @@ export interface AgencyEvents {
   "board.item.complete": { itemId: string; status: string };
   "pre.merge": { sessionId: string; restored: string[] };
   "cost.threshold": { reason: string; sessionId?: string };
+  "turn.stop": { sessionId?: string; turnId?: string; taskDepth: number; stopHookActive: boolean };
   event: { event: string; payload: unknown };
 }
+
+/** A hook's refusal: its message goes to the model. A caller of emitCollect tells it apart from a broken hook. */
+export class HookBlock extends Error {}
 
 type Listener<T = unknown> = (payload: T) => void | Promise<void>;
 
@@ -137,12 +141,13 @@ export class EventBus<_Events extends object = AgencyEvents> {
         try {
           await (listener as Listener)(payload);
         } catch (err) {
+          errors.push(err);
+          if (err instanceof HookBlock) continue;
           this.logger?.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, {
             error: String(err),
           });
           if (!this.logger)
             console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
-          errors.push(err);
         }
       }
     }

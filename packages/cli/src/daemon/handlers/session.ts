@@ -33,7 +33,7 @@ import {
   type SessionSendParams,
   type SessionSendResult,
 } from "../types.ts";
-import { executeTurn } from "./turn.ts";
+import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 
 /** Fallback window for daemon-side proactive compaction, matching the
  *  former client default until the catalog supplies a real one. */
@@ -277,7 +277,16 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
     };
     const hooks = { onContextOverflow, onMessage };
-    let result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
+    let result: Awaited<ReturnType<typeof executeTurn>>;
+    try {
+      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
+    } catch (error) {
+      // A prompt that a hook refused is not part of the session: the model must not see it in the next turn.
+      if (error instanceof AgencyError && error.source === PROMPT_HOOK_SOURCE) {
+        await store.rollback(p.sessionId, checkpoints.pop() ?? null);
+      }
+      throw error;
+    }
     if (result.needsCompaction) {
       history = await onContextOverflow();
       runParams.session = history;

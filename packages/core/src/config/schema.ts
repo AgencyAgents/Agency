@@ -1,5 +1,6 @@
 import type { Migration } from "@agency/schema";
 import { z } from "zod";
+import { CommandHooksSchema } from "../plugins/command-hooks.ts";
 
 export const CONFIG_SCHEMA_VERSION = 2;
 
@@ -189,6 +190,8 @@ export const ConfigSchema = z
     websearch: z.object({ endpoint: z.string().optional() }).optional(),
     /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
     plugins: z.array(z.string()).optional(),
+    /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */
+    hooks: CommandHooksSchema.optional(),
     fallback_model: z.string().optional(),
     trace: z
       .object({
