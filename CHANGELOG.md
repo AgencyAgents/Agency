@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Step limit**: a turn takes at most 100 tool steps by default. It was
+  25. `maxSteps` in the config and `--max-steps` set another limit.
 - **Permissions of a spawned worker**: a worker now has the permission
   mode of the run that started it, and its asks go to the approval
   surface of the parent turn. Before, a worker had no mode and no
@@ -524,6 +526,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`--max-cost <usd>`**: stops a headless turn when its cost reaches the
+  amount. The run prints `budget_exceeded` and exits with code 1.
+- **`--format stream-json`**: with `-p`, one JSON line for each event
+  of the turn, then the result as the last line.
+- **`maxSteps`** in the config: the step limit of a turn when the caller
+  sets none.
+- **`provider.<id>.requestsPerMinute`**: the request rate of the daemon
+  to one provider. The default stays 60.
 - **Agent types for `spawn`**: an agent file with a `description` is a
   type that the model can choose with the new `agent` parameter. The
   worker gets the file's prompt, tools and model. An agent file of

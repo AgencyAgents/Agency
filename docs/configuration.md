@@ -49,6 +49,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only. With no value: `gitbash` when Git for Windows is installed (its `bin\bash.exe`, found from `git` on PATH), otherwise `powershell`. Models write bash with far fewer errors than Windows PowerShell 5.1 |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
+| `maxSteps` | number | — | Tool steps that one turn may take when the caller sets no limit. With no value: 100 |
 | `hooks` | `Record<event, {matcher?, hooks: {type: "command", command, timeout?}[]}[]>` | — | Shell commands that run on agent events (see Hooks) |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
 | `leader` | string | — | Handle of leader agent; defaults to first roster entry |
@@ -79,7 +80,7 @@ Worktree isolation: an agent that can write gets a git worktree at `.agency/work
 
 ### ProviderConfig (`provider.<id>`)
 
-`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default: the native family for the ids `anthropic`, `openai` and `google`, otherwise `openai-compatible`; with a native family, `baseUrl` replaces the public endpoint up to the version segment, for example `https://gateway.example/v1` for Anthropic and OpenAI or `https://gateway.example/v1beta` for Google, and `headers` are sent with each request), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `streamIdleMs?: number` (the longest silence on a response stream before the request is cut, in ms; default 300000; a slow local server that takes more than 5 minutes to read a long prompt needs a larger value), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
+`name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default: the native family for the ids `anthropic`, `openai` and `google`, otherwise `openai-compatible`; with a native family, `baseUrl` replaces the public endpoint up to the version segment, for example `https://gateway.example/v1` for Anthropic and OpenAI or `https://gateway.example/v1beta` for Google, and `headers` are sent with each request), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `requestsPerMinute?: number` (requests of the daemon to this provider in one minute; default 60), `streamIdleMs?: number` (the longest silence on a response stream before the request is cut, in ms; default 300000; a slow local server that takes more than 5 minutes to read a long prompt needs a larger value), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
 
 ### OAuth (`provider.<id>.oauth`)
 
@@ -177,7 +178,7 @@ A headless run (`-p`) has no approval surface, so an ask refuses at once. `--per
 
 An agent of the team has its own `permissions` map in its roster entry. That map never gives the agent more than the run has. For each tool call the stricter verdict of the agent's map and the global `permissions` wins, and the mode of the run answers the asks. In the default mode a dispatched agent can only read. `--permission-mode allow-edits` lets it use `write` and `edit`, and `--permission-mode allow-all` or an `allow` entry in the global `permissions` lets it use the tools that its own map allows.
 
-One turn takes at most 25 tool steps. A run that reaches the limit prints `iteration_limit` and exits with code 1. `--max-steps <n>` sets the limit for one run.
+One turn takes at most 100 tool steps. A run that reaches the limit prints `iteration_limit` and exits with code 1. `maxSteps` in the config sets the limit for every turn, and `--max-steps <n>` sets it for one run.
 
 `permissions.git_write` (`allow|ask|deny`, default `deny`) gates real git writes: Todo 8 materialization calls `assertGitWriteAllowed` (packages/guard/src/git-write.ts) before creating commits. `allow` proceeds, `ask` routes through the existing `approval_requested` / `approval_respond` RPC surface (`once`/`always` proceed, `reject`/timeout deny), `deny` refuses with typed `PERMISSION_DENIED`. Non-interactive runs always deny regardless of setting. Only bare decisions are read; pattern maps and unknown values fail closed to `deny`.
 
@@ -193,6 +194,15 @@ Fail-closed, never silent fallback: when `sandbox.backend` is `docker` but no da
 Egress (deny-by-default once configured): `sandbox.egress` undefined means unrestricted (no `--network` flag, current behavior). A defined allowlist — even empty — isolates one-shot `docker run` with `--network=none`, unless `sandbox.network` names an explicit network (explicit intent wins, including without egress). Per-hostname enforcement is deliberately NOT at the container-flag level — plain `docker run` flags cannot express hostname allowlists — so the allowlist itself is enforced at tool-policy level (`requireNetwork` over `capabilities.network`, the same gate `fetch`/`browser`/`websearch` use); the `--network` flag is the coarse container-level lock. DNS-level filtering inside the container is out of reach and not claimed.
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
+
+## Long runs
+
+- **Step limit.** `maxSteps` in the config, or `--max-steps <n>` for one run. It is a guard against a model that never stops. A spawned worker has the default of 100.
+- **Cost limit.** `--max-cost <usd>` stops the turn when its cost reaches the amount. The run prints `budget_exceeded` and exits with code 1. The cost is the provider's own charge when it reports one (OpenRouter), and the price table of the model if not. A model with no price never reaches the limit. `budgets.dailyUsd` and `budgets.monthlyUsd` in the config are limits for the daemon as a whole.
+- **Goal.** `--goal` keeps a turn going until a condition is met (see Session goal).
+- **Events for a script.** `--format stream-json` with `-p` prints one JSON line for each event of the turn (`text_delta`, `tool_start`, `tool_result`, `turn_complete`, `retry` and the others), and then the result as the last line, with `"type": "result"`.
+- **Continue.** A turn that reached a limit keeps its steps in the session. `--continue` or `--session <id>` goes on from there.
+- **Request rate.** The daemon sends at most 60 requests a minute to one provider, for all turns and workers together. `provider.<id>.requestsPerMinute` sets another rate. Several workers at one time on a fast model reach the default.
 
 ## Subagents
 
