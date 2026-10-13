@@ -65,6 +65,8 @@ const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
   /** Longest silence on a response stream before the request is cut, in ms. Default 5 minutes. */
   streamIdleMs: z.number().int().positive().optional(),
+  /** Requests that the daemon sends to this provider in one minute, for all turns and workers together. Default 60. */
+  requestsPerMinute: z.number().positive().optional(),
   models: z.record(z.string(), ModelOverrideSchema).optional(),
   whitelist: z.array(z.string()).optional(),
   blacklist: z.array(z.string()).optional(),
@@ -193,6 +195,8 @@ export const ConfigSchema = z
     /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */
     hooks: CommandHooksSchema.optional(),
     fallback_model: z.string().optional(),
+    /** Tool steps that one turn may take when the caller sets no limit. Absent means the loop default. */
+    maxSteps: z.number().int().positive().optional(),
     trace: z
       .object({
         export: z

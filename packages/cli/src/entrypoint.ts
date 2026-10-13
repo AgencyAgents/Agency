@@ -87,11 +87,16 @@ Options:
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
   --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
-  --max-steps <n>          With -p: tool steps one turn may take (default: 25)
+  --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
+                           of the config, or 100)
+  --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
   --goal <condition>       With -p and a session: the turn goes on until the model
                            judges the condition met, or the step limit
   --image <path>           With -p: send an image file with the prompt (repeat for more)
-  --format <text|json>     Output format (default: text; json is for scripting)
+  --format <text|json|stream-json>
+                           Output format (default: text). json is one result for a
+                           script. stream-json with -p is one JSON line for each
+                           event, then the result as the last line
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
   --help, -h               Show this help
@@ -119,6 +124,9 @@ export interface ParsedArgv {
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
+  maxCost: number | undefined;
+  /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
+  streamJson: boolean;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -188,6 +196,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     permissionMode: "ask",
     maxSteps: undefined,
     goal: undefined,
+    maxCost: undefined,
+    streamJson: false,
     format: "text",
     retention: undefined,
     help: false,
@@ -250,8 +260,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--format": {
         const format = value();
-        if (format !== "text" && format !== "json") throw new Error(t("cli.error.invalid_format"));
-        parsed.format = format;
+        if (format !== "text" && format !== "json" && format !== "stream-json") {
+          throw new Error(t("cli.error.invalid_format"));
+        }
+        parsed.streamJson = format === "stream-json";
+        parsed.format = format === "text" ? "text" : "json";
         break;
       }
       case "--permission-mode": {
@@ -271,6 +284,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--goal":
         parsed.goal = value();
         break;
+      case "--max-cost": {
+        const cost = Number(value());
+        if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
+        parsed.maxCost = cost;
+        break;
+      }
       case "--max-age-days":
         parsed.retention ??= {};
         parsed.retention.maxAgeDays = numberValue(name, value());
@@ -449,12 +468,16 @@ function printJsonOrText(out: LineSink, format: "text" | "json", payload: unknow
 function reportTurn<T extends RunTurnRpcResult>(
   out: LineSink,
   err: LineSink,
-  format: "text" | "json",
+  parsed: Pick<ParsedArgv, "format" | "streamJson">,
   result: T,
 ): number {
-  printJsonOrText(out, format, result, assistantText(result.messages));
-  if (result.error && format === "text") err(`${result.error.code}: ${result.error.message}`);
-  return result.stopReason === "error" || result.error ? 1 : 0;
+  // The last line of a stream: one line, like each event before it.
+  if (parsed.streamJson) out(JSON.stringify({ type: "result", ...result }));
+  else printJsonOrText(out, parsed.format, result, assistantText(result.messages));
+  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
+  // A run that the cost limit cut is not finished: a script must not read it as success.
+  if (result.budgetExceeded && parsed.format === "text") err(t("cli.error.budget_exceeded"));
+  return result.stopReason === "error" || result.error || result.budgetExceeded ? 1 : 0;
 }
 
 /** Most recently appended session: the one `--continue` resumes. Ties break
@@ -522,8 +545,9 @@ async function runPrintMode(
     partLine = "";
     err(text);
   };
-  const onEvent =
-    parsed.format === "json"
+  const onEvent = parsed.streamJson
+    ? (event: unknown) => out(JSON.stringify(event))
+    : parsed.format === "json"
       ? undefined
       : (event: unknown) => {
           const ev = event as Record<string, unknown>;
@@ -583,9 +607,10 @@ async function runPrintMode(
         permissionMode: parsed.permissionMode,
         maxToolIterations: parsed.maxSteps,
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
+        ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
         nonInteractive: true,
       });
-      return reportTurn(out, err, parsed.format, { sessionId, tipId, ...result });
+      return reportTurn(out, err, parsed, { sessionId, tipId, ...result });
     } finally {
       await client.close();
     }
@@ -603,8 +628,9 @@ async function runPrintMode(
     onEvent,
     permissionMode: parsed.permissionMode,
     maxToolIterations: parsed.maxSteps,
+    ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
-  return reportTurn(out, err, parsed.format, result);
+  return reportTurn(out, err, parsed, result);
 }
 
 function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {

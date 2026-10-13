@@ -167,6 +167,9 @@ export interface RunTurnOptions {
 
 const NEVER_ABORTED = new AbortController().signal;
 
+/** A guard against a model that never stops, not a budget for the work: a cost limit is the budget. */
+export const DEFAULT_MAX_TOOL_ITERATIONS = 100;
+
 /** Approval prompt for a tripped doom loop. Asks instead of spinning. */
 export function doomApprovalRequest(toolName: string, repeats: number): ApprovalRequest {
   return {
@@ -205,7 +208,7 @@ export async function runTurn(
     messages.push(message);
     await options.onMessage?.(message);
   };
-  const maxToolIterations = options.maxToolIterations ?? 25;
+  const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
   const toolDefs: ToolDefinition[] = options.tools.map((t) => ({
     name: t.name,
     description: t.description,

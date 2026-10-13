@@ -161,7 +161,9 @@ export const en = {
   "cli.error.unknown_option": 'Unknown option "{flag}". Run `agency --help`.',
   "cli.error.missing_value": "Option {flag} needs a value.",
   "cli.error.image_unreadable": "Cannot read the image file {path}.",
-  "cli.error.invalid_format": '--format must be "text" or "json".',
+  "cli.error.invalid_format": '--format must be "text", "json" or "stream-json".',
+  "cli.error.invalid_max_cost": "--max-cost must be a number above 0, in USD.",
+  "cli.error.budget_exceeded": "budget_exceeded: the turn reached its cost limit: the task is not finished",
   "cli.error.invalid_permission_mode":
     '--permission-mode must be "ask", "allow-edits", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",

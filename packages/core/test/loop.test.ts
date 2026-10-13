@@ -440,6 +440,32 @@ describe("runTurn", () => {
     expect(result.error?.code).toBe("iteration_limit");
   });
 
+  test("with no limit from the caller, a runaway loop stops after 100 steps", async () => {
+    let calls = 0;
+    const spec: ToolSpec = {
+      name: "loop_tool",
+      description: "always gets called again",
+      inputSchema: {},
+      handler: async () => {
+        calls += 1;
+        return { content: "ok" };
+      },
+    };
+    // The default scheduler paces requests at 60 a minute: 100 requests would take the test over a minute.
+    const unpaced = new Scheduler({ requestsPerMinute: 1_000_000 });
+    const result = await runTurn(alwaysCallsTool, unpaced, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+    expect(calls).toBe(100);
+    expect(result.error?.code).toBe("iteration_limit");
+  });
+
   test("a natural finish never emits the iteration_limit event", async () => {
     const events: unknown[] = [];
     const scheduler = new Scheduler();

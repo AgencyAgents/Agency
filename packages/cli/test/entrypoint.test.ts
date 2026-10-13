@@ -654,6 +654,58 @@ describe("-p headless mode", () => {
     expect(err).toContain("iteration_limit: stopped after 25 tool steps: the task is not finished");
   });
 
+  test("--format stream-json prints each event as one JSON line, and the result as the last line", async () => {
+    const { out, err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "stream-json"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        options.onEvent?.({ type: "tool_start", id: "c1", name: "read" });
+        options.onEvent?.({ type: "text_delta", text: "Done" });
+        return TURN_RESULT;
+      },
+    });
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    const lines = out.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.map((line) => line.type)).toEqual(["tool_start", "text_delta", "result"]);
+    expect(lines[2]?.stopReason).toBe("end_turn");
+    expect(lines[2]?.messages).toEqual(TURN_RESULT.messages);
+  });
+
+  test("--max-cost sends the cost limit with the turn", async () => {
+    const fake = fakeRunHeadless();
+    const { deps } = capture();
+    await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "0.5"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(fake.calls[0]?.budget).toEqual({ maxCostUsd: 0.5 });
+  });
+
+  test("--max-cost refuses a value that is not a positive number", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "free"], {
+      ...baseDeps(),
+      ...deps,
+    });
+    expect(code).not.toBe(0);
+    expect(err.join("\n")).toContain("--max-cost");
+  });
+
+  test("a run that the cost limit stopped exits non-zero and says so", async () => {
+    const fake = fakeRunHeadless({ ...TURN_RESULT, budgetExceeded: true });
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "0.01"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("budget_exceeded");
+  });
+
   test("--format json prints a failed run as JSON on stdout: a script must not get empty output", async () => {
     const { out, err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "json"], {

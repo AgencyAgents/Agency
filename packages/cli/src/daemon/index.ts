@@ -477,7 +477,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const schedulerFor = (provider: string): Scheduler => {
     let scheduler = schedulers.get(provider);
     if (!scheduler) {
-      scheduler = new Scheduler({ maxConcurrent: 8 });
+      const requestsPerMinute = providers[provider]?.requestsPerMinute;
+      scheduler = new Scheduler({
+        maxConcurrent: 8,
+        ...(requestsPerMinute === undefined ? {} : { requestsPerMinute }),
+      });
       schedulers.set(provider, scheduler);
     }
     return scheduler;

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compactionPrompt, SessionStore, type ToolSpec } from "@agency/core";
@@ -265,6 +265,64 @@ describe("compact-and-retry branch", () => {
 
     expect(runs).toBe(2);
     expect(result.error?.code).toBe("iteration_limit");
+  }, 20000);
+
+  test("the config sets the step limit of a turn and the request rate of a provider", async () => {
+    const stepsUntilLimit = async (configDir: string): Promise<number> => {
+      const ws = tmp("agency-maxsteps-ws-");
+      let runs = 0;
+      const countTool: ToolSpec = {
+        name: "count",
+        description: "counts its own runs",
+        inputSchema: {},
+        riskTier: "safe",
+        handler: async () => {
+          runs += 1;
+          return { content: `run ${runs}` };
+        },
+      };
+      const adapter: ProviderAdapter = {
+        family: "fake",
+        async *stream(): AsyncIterable<StreamEvent> {
+          yield { type: "tool_call_start", id: `c${runs}`, name: "count" };
+          yield { type: "tool_call_delta", id: `c${runs}`, inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: `c${runs}` };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      };
+      const d = await createAgentDaemon({
+        workspaceRoot: ws,
+        instanceFile: join(ws, ".agency", "instance.json"),
+        sessionsDir: tmp("agency-maxsteps-sess-"),
+        configDir,
+        adapterFor: () => adapter,
+        http: noopHttp,
+        tools: [countTool],
+      });
+      daemons.push(d);
+      const c = await connectToDaemon(d.server.port, "127.0.0.1", { token: d.server.token });
+      clients.push(c);
+      const result = (await c.call("session_send", {
+        sessionId: "steps",
+        provider: "anthropic",
+        model: "m",
+        systemPrompt: "sys",
+        userText: "count for ever",
+      })) as { error?: { code: string } };
+      expect(result.error?.code).toBe("iteration_limit");
+      return runs;
+    };
+    const configDir = tmp("agency-maxsteps-cfg-");
+    writeFileSync(join(configDir, "config.jsonc"), JSON.stringify({ maxSteps: 3 }));
+    expect(await stepsUntilLimit(configDir)).toBe(3);
+
+    // At the default rate of 60 requests a minute, 100 steps take more than 90 seconds.
+    const fast = tmp("agency-maxsteps-fast-");
+    writeFileSync(
+      join(fast, "config.jsonc"),
+      JSON.stringify({ maxSteps: 100, provider: { anthropic: { requestsPerMinute: 1_000_000 } } }),
+    );
+    expect(await stepsUntilLimit(fast)).toBe(100);
   }, 20000);
 
   test("a send that waits behind another turn does not run after its client has left", async () => {
