@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { RiskTier } from "./policy.ts";
-import { normalizeCommand } from "./policy.ts";
+import { normalizeCommand, splitCommand } from "./policy.ts";
 
 /**
  * The human side of an `ask` decision. `once` approves this occurrence,
@@ -54,7 +54,12 @@ function grantKey(request: ApprovalRequest): string {
   // Doom-loop grants include the looping tool so one loop cannot approve all future loops.
   if (request.tool === "doom-loop" && typeof request.metadata?.toolName === "string")
     return `tool\u0000doom-loop\u0000${request.metadata.toolName}`;
-  if (request.command !== undefined) return `cmd\u0000${normalizeCommand(request.command)}`;
+  if (request.command !== undefined) {
+    // A compound command, or one that the shell builds at run time, is granted as its exact text only.
+    const { parts, dynamic } = splitCommand(request.command);
+    if (parts.length > 1 || dynamic) return `cmdline\u0000${request.command}`;
+    return `cmd\u0000${normalizeCommand(request.command)}`;
+  }
   if (request.path !== undefined) return `dir\u0000${dirname(request.path.replace(/\\/g, "/"))}`;
   return `tool\u0000${request.tool}`;
 }

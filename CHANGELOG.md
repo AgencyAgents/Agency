@@ -90,6 +90,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A permission rule allowed the commands after an allowed one**
+  (security): with a rule that allows `git status*`, the command
+  `git status; rm -rf build` ran with no ask, because a rule saw only
+  the first words. An "always allow" answer had the same fault. A
+  compound command is now judged part by part, and a command with a
+  substitution asks.
 - **Session of an HTTP MCP server**: the HTTP transport did not send
   back the `Mcp-Session-Id` that a server gives in the handshake. A
   server with sessions refuses each later request without it. Shown

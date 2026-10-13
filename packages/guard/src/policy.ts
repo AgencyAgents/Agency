@@ -186,6 +186,45 @@ export function normalizeCommand(
 }
 
 /**
+ * The simple commands of a shell command line, split at `;`, `&`, `|` and line ends outside quotes.
+ * `dynamic` is true when the line has a command substitution or a process substitution.
+ */
+export function splitCommand(command: string): { parts: string[]; dynamic: boolean } {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  let dynamic = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    const next = command[i + 1];
+    if (ch === "\\" && quote !== "'") {
+      current += ch + (next ?? "");
+      i += 1;
+      continue;
+    }
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      // In double quotes the shell still runs a substitution.
+      else if (quote === '"' && (ch === "`" || (ch === "$" && next === "("))) dynamic = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "`" || ((ch === "$" || ch === "<" || ch === ">") && next === "(")) dynamic = true;
+    // `2>&1` and `&>file` are redirections, not the end of a command.
+    const redirection = ch === "&" && (command[i - 1] === ">" || next === ">");
+    if ((ch === ";" || ch === "|" || ch === "\n" || ch === "&") && !redirection) {
+      if (current.trim() !== "") parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim() !== "") parts.push(current.trim());
+  return { parts, dynamic };
+}
+
+/**
  * Compiles a glob into an anchored regex source. Path mode treats `*` as
  * within-segment (a slash-crossing wildcard is the double-star form), a
  * trailing double-star covers the directory itself and everything under it,
@@ -325,8 +364,24 @@ export class PolicyEngine {
     return this.evaluateWithMatch(request).decision;
   }
 
-  /** Same walk, also naming the first matching rule for ask-source labels. */
+  /**
+   * Same walk, also naming the first matching rule for ask-source labels. A compound shell command is
+   * judged part by part and the strictest verdict wins: a rule for `git status` must not allow `git status; rm -rf ~`.
+   */
   evaluateWithMatch(request: PolicyRequest): { decision: Decision; matched?: PolicyRule } {
+    if (request.command === undefined) return this.evaluateOne(request);
+    const { parts, dynamic } = splitCommand(request.command);
+    let worst = this.evaluateOne(request);
+    for (const part of parts.length > 1 ? parts : []) {
+      const verdict = this.evaluateOne({ ...request, command: part, normalizedCommand: undefined });
+      if (DECISION_RANK[verdict.decision] > DECISION_RANK[worst.decision]) worst = verdict;
+    }
+    // The shell builds a part of this command at run time: no rule saw the text that will run.
+    if (dynamic && worst.decision === "allow") return { decision: "ask" };
+    return worst;
+  }
+
+  private evaluateOne(request: PolicyRequest): { decision: Decision; matched?: PolicyRule } {
     const subject =
       request.command !== undefined && request.normalizedCommand === undefined
         ? { ...request, normalizedCommand: normalizeCommand(request.command) }
