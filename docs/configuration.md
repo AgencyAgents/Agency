@@ -49,6 +49,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only. With no value: `gitbash` when Git for Windows is installed (its `bin\bash.exe`, found from `git` on PATH), otherwise `powershell`. Models write bash with far fewer errors than Windows PowerShell 5.1 |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
+| `hooks` | `Record<event, {matcher?, hooks: {type: "command", command, timeout?}[]}[]>` | — | Shell commands that run on agent events (see Hooks) |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
 | `leader` | string | — | Handle of leader agent; defaults to first roster entry |
 | `budgets` | `{perAgentUsd?, teamUsd?, dailyUsd?, monthlyUsd?}` | — | Per-agent and team ceilings plus daemon-wide daily and monthly hard caps that refuse before the first provider call |
@@ -192,6 +193,38 @@ Fail-closed, never silent fallback: when `sandbox.backend` is `docker` but no da
 Egress (deny-by-default once configured): `sandbox.egress` undefined means unrestricted (no `--network` flag, current behavior). A defined allowlist — even empty — isolates one-shot `docker run` with `--network=none`, unless `sandbox.network` names an explicit network (explicit intent wins, including without egress). Per-hostname enforcement is deliberately NOT at the container-flag level — plain `docker run` flags cannot express hostname allowlists — so the allowlist itself is enforced at tool-policy level (`requireNetwork` over `capabilities.network`, the same gate `fetch`/`browser`/`websearch` use); the `--network` flag is the coarse container-level lock. DNS-level filtering inside the container is out of reach and not claimed.
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
+
+## Hooks
+
+`hooks` holds shell commands that run on agent events. The format is the hook format of Claude Code settings, so a hook block from a Claude Code `settings.json` works here without changes.
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "python check_command.py" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "bun test", "timeout": 300 }] }]
+  }
+}
+```
+
+| Event | When it runs | Effect of a block |
+|---|---|---|
+| `PreToolUse` | Before each tool call | The tool does not run. The model gets the reason as the tool result. |
+| `PostToolUse` | After each tool call | The reason is added to the tool result. |
+| `UserPromptSubmit` | Before the model sees a prompt | The turn fails with the reason, and the prompt is removed from the session. |
+| `SessionStart` | Before the first prompt of a session | None. |
+| `Stop` | When the model ends its turn | The turn goes on. The model gets the reason as a message. |
+
+Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `prompt`, `stop_hook_active`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace through the system shell (`cmd.exe` on Windows, `sh` elsewhere).
+
+- Exit code 2 is a block, and stderr is the reason. So is exit code 0 with `{"decision": "block", "reason": "..."}` on stdout, or with `hookSpecificOutput.permissionDecision` set to `deny`.
+- Any other exit code that is not 0 is a failed hook. It does not block.
+- Stdout of a `UserPromptSubmit` or `SessionStart` command is given to the model as context and stays in the session. `hookSpecificOutput.additionalContext` does the same.
+- `matcher` is a regular expression on the tool name, with no regard to case, so `Bash` matches the `bash` tool and `Edit|Write` matches `edit` and `write`. With no matcher, the commands run for every tool.
+- `timeout` is in seconds. The default is 60. A command that runs longer is stopped, and it does not block.
+- `Stop` hooks do not run for subagents. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
+
+The daemon reads `hooks` only from the user config, so a workspace cannot add hooks. A plugin module can do the same from code: a handler of `tool.execute.before`, `tool.execute.after` or `turn.stop` that returns `{ block: "reason" }` blocks in the same way.
 
 ## MCP / LSP
 

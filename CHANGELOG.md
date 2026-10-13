@@ -509,6 +509,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Command hooks**: the `hooks` config key runs shell commands on
+  `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart` and
+  `Stop`, in the hook format of Claude Code settings. Exit code 2 or a
+  JSON `decision` of `block` refuses a tool call, refuses a prompt, or
+  keeps the turn going with the reason as a message to the model.
+  A plugin hook can block too: a handler of `tool.execute.before`,
+  `tool.execute.after` or the new `turn.stop` event that returns
+  `{ block: "reason" }`. Before, the plugin wrapper swallowed every
+  error of a hook, so no plugin could refuse a tool call.
 - **Reasoning on OpenAI-compatible servers**: `reasoning_content` in a
   stream (llama.cpp with a reasoning model, DeepSeek) is now reported as
   thinking. Before, it was dropped. It is never sent back to the server.
