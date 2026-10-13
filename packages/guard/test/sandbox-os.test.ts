@@ -1,0 +1,52 @@
+import { describe, expect, test } from "bun:test";
+import { ensureSandboxAvailable } from "../src/sandbox-docker.ts";
+import { buildBwrapArgs, buildSeatbeltProfile, OsSandboxBackend } from "../src/sandbox-os.ts";
+
+// No Linux or macOS machine ran these backends: the tests cover the arguments and the profile text only.
+describe("OS sandbox arguments", () => {
+  test("bubblewrap: read-only disk, writable workspace, read-only git hooks, no network by default", () => {
+    const args = buildBwrapArgs("/home/u/ws", "/home/u/ws/src", false);
+    const text = args.join(" ");
+    expect(args[0]).toBe("bwrap");
+    expect(text).toContain("--ro-bind / /");
+    expect(text).toContain("--bind /home/u/ws /home/u/ws");
+    expect(text).toContain("--ro-bind-try /home/u/ws/.git/hooks /home/u/ws/.git/hooks");
+    // A later bind wins: the workspace bind must come after the read-only root, and the hooks after the workspace.
+    expect(text.indexOf("--ro-bind / /")).toBeLessThan(text.indexOf("--bind /home/u/ws"));
+    expect(text.indexOf("--bind /home/u/ws")).toBeLessThan(text.indexOf("--ro-bind-try"));
+    expect(args).toContain("--unshare-net");
+    expect(args).toContain("--die-with-parent");
+    expect(args.slice(-3)).toEqual(["--chdir", "/home/u/ws/src", "--"]);
+    expect(buildBwrapArgs("/home/u/ws", "/home/u/ws", true)).not.toContain("--unshare-net");
+  });
+
+  test("Seatbelt: writes denied outside the workspace, hooks denied after the allow, network denied by default", () => {
+    const profile = buildSeatbeltProfile('/Users/u/my "ws"', false);
+    const lines = profile.split("\n");
+    expect(lines[0]).toBe("(version 1)");
+    expect(profile).toContain('(subpath "/Users/u/my \\"ws\\"")');
+    const allow = lines.findIndex((l) => l.startsWith("(allow file-write*"));
+    expect(lines.indexOf("(deny file-write*)")).toBeLessThan(allow);
+    expect(lines.findIndex((l) => l.includes(".git/hooks"))).toBeGreaterThan(allow);
+    expect(lines).toContain("(deny network*)");
+    expect(buildSeatbeltProfile("/Users/u/ws", true)).not.toContain("network");
+  });
+
+  test("the backend wraps a command for its platform and keeps the command policy", () => {
+    const linux = new OsSandboxBackend("/home/u/ws", { deny: [/rm -rf/] }, undefined, {
+      platform: "linux",
+    });
+    expect(linux.wrap(["sh", "-c", "ls"]).slice(-4)).toEqual(["--", "sh", "-c", "ls"]);
+    expect(() => linux.checkCommand("rm -rf /")).toThrow();
+    const mac = new OsSandboxBackend("/Users/u/ws", {}, undefined, { platform: "darwin" });
+    const wrapped = mac.wrap(["sh", "-c", "ls"]);
+    expect(wrapped.slice(0, 2)).toEqual(["/usr/bin/sandbox-exec", "-p"]);
+    expect(wrapped.slice(-3)).toEqual(["sh", "-c", "ls"]);
+  });
+
+  test("on Windows the backend is not available, and the daemon start fails with the reason", async () => {
+    const windows = new OsSandboxBackend("C:/ws", {}, undefined, { platform: "win32" });
+    expect(await windows.isAvailable()).toBe(false);
+    await expect(ensureSandboxAvailable(windows)).rejects.toThrow("Linux and macOS only");
+  });
+});

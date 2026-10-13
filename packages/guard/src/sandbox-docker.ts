@@ -460,6 +460,8 @@ export async function ensureSandboxAvailable(backend: SandboxBackend): Promise<v
   if (typeof probe !== "function") return;
   const reachable = await (probe as () => Promise<boolean>).call(backend);
   if (reachable) return;
+  const reason = (backend as { unavailableReason?: () => string }).unavailableReason?.();
+  if (reason !== undefined) throw new AgencyError(ErrorCode.INTERNAL, reason, { source: "sandbox-os" });
   throw new AgencyError(
     ErrorCode.INTERNAL,
     'sandbox.backend is "docker" but no Docker daemon is reachable (`docker info` failed). ' +

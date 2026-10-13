@@ -145,7 +145,9 @@ export const ConfigSchema = z
     sandbox: z
       .object({
         /** Local in-process boundary or container exec. Invalid values fail load. */
-        backend: z.enum(["software", "docker"]).default("software"),
+        backend: z.enum(["software", "docker", "os"]).default("software"),
+        /** With the `os` backend: shell commands get the network. Default: no network. */
+        allowNetwork: z.boolean().optional(),
         /** Image for one-shot `docker run` exec. */
         image: z.string().optional(),
         /** Existing container for `docker exec`; unset means `docker run --rm`. */

@@ -37,7 +37,8 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
-| `sandbox.backend` | `software\|docker` | `software` | Sandbox backend: in-process boundary or container exec |
+| `sandbox.backend` | `software|docker|os` | `software` | Sandbox backend: in-process boundary, container exec, or the sandbox of the operating system |
+| `sandbox.allowNetwork` | `boolean` | `false` | With the `os` backend: shell commands get the network |\|docker` | `software` | Sandbox backend: in-process boundary or container exec |
 | `sandbox.image` | string | — | Image for one-shot `docker run` exec |
 | `sandbox.container` | string | — | Existing container for `docker exec`; unset means `docker run --rm` |
 | `sandbox.containerRoot` | string | — | Container-side mount point; defaults to `/workspace` |
@@ -210,6 +211,10 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 ## System prompt
 
 The system prompt of a turn is a base text, then the environment block, the project instructions and the list of skills. With `-p`, `--system-prompt <text>` replaces the base text for that run, and `--append-system-prompt <text>` adds text after it. Both are flags of Claude Code. The other parts stay.
+
+## Sandbox of the operating system
+
+`sandbox.backend: "os"` runs each shell command of the model in a sandbox of the operating system: bubblewrap (`bwrap`) on Linux and Seatbelt (`sandbox-exec`) on macOS, the programs that Claude Code uses. A command can read the disk, can write only in the workspace and in a temporary folder, cannot write `.git/hooks`, and has no network. `sandbox.allowNetwork: true` gives it the network. The daemon does not start when the sandbox program does not work, and it never falls back to no sandbox. There is no such backend for Windows. Status: the arguments and the profile have tests, but no Linux or macOS machine has run this backend yet. Do not count on it before that run.
 
 ## Long runs
 

@@ -101,7 +101,12 @@ async function runContainerExec(
     };
     let execResult: { stdout: string; stderr: string; exitCode: number };
     try {
-      execResult = await backend.exec(argv, { cwd, timeoutMs: timeout, signal: ctx.signal });
+      execResult = await backend.exec(argv, {
+        cwd,
+        timeoutMs: timeout,
+        signal: ctx.signal,
+        env: modelCommandEnv(),
+      });
     } catch (e) {
       if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
         const partial = (value: unknown): string => (typeof value === "string" ? value : "");

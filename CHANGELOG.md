@@ -595,6 +595,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`sandbox.backend: "os"`** (not run yet on Linux or macOS): shell
+  commands in bubblewrap on Linux and in Seatbelt on macOS. Read-only
+  disk, writable workspace, no network unless `sandbox.allowNetwork`.
+  Only the arguments and the profile text have tests.
 - **`--json-schema <file>`**: with `-p`, the answer is JSON that
   matches a JSON Schema, for scripts and CI. An answer that breaks the
   schema goes back to the model. The `outputSchema` field of

@@ -6,4 +6,5 @@ export * from "./policy.ts";
 export * from "./redactor.ts";
 export * from "./sandbox.ts";
 export * from "./sandbox-docker.ts";
+export * from "./sandbox-os.ts";
 export * from "./trust.ts";

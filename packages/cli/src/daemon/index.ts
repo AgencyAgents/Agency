@@ -39,6 +39,7 @@ import {
   DockerSandboxBackend,
   type ExternalDirectoryDecision,
   ensureSandboxAvailable,
+  OsSandboxBackend,
   PermissionsGate,
   Redactor,
   type SandboxBackend,
@@ -127,6 +128,11 @@ export function createSandboxBackend(
       egress: sandboxConfig.egress,
       network: sandboxConfig.network,
       capDrop: sandboxConfig.capDrop,
+    });
+  }
+  if (sandboxConfig?.backend === "os") {
+    return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
+      allowNetwork: sandboxConfig.allowNetwork,
     });
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);

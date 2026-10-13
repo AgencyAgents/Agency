@@ -12,6 +12,8 @@ export interface ContainerExecOptions {
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** The environment of the command, for a backend that runs it on the host. A container ignores it. */
+  env?: Record<string, string | undefined>;
 }
 
 /**
