@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dataDir } from "@agency/core";
@@ -56,8 +56,8 @@ describe("plugin install", () => {
     expect(result).toContain("Plugin: test-plugin v1.2.3");
     expect(result).toContain("Skills installed:");
     expect(result).toContain("my-skill");
-    expect(result).toContain("Hooks mapped:");
-    expect(result).toContain("SessionStart -> session.start");
+    expect(result).toContain("Hooks installed (.agency/hooks/test-plugin.json");
+    expect(result).toContain("- SessionStart");
     expect(result).toContain("Hooks skipped:");
     expect(result).toContain("UnknownEvent");
     expect(result).toContain("Commands installed:");
@@ -71,6 +71,7 @@ describe("plugin install", () => {
     expect(existsSync(join(ws, ".agency", "skills", "test-plugin", "receipt.json"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "hooks", "test-plugin.json"))).toBe(true);
 
     // Verify receipt contents
     const receiptText = require("node:fs").readFileSync(
@@ -202,6 +203,7 @@ describe("plugin remove", () => {
     expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(true);
     expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin", "hooks", "hooks.json"))).toBe(true);
 
     // Remove
     const result = pluginRemoveCmd("test-plugin", ws);
@@ -213,6 +215,9 @@ describe("plugin remove", () => {
     expect(existsSync(join(ws, ".agency", "skills", "my-skill"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "agents", "custom-agent.md"))).toBe(false);
+    // Its hook commands and the copy of its files go too: a removed plugin must not run a command.
+    expect(existsSync(join(ws, ".agency", "hooks", "test-plugin.json"))).toBe(false);
+    expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin"))).toBe(false);
   });
 
   test("refuses to remove one skill of a plugin, and names the plugin", () => {
@@ -227,6 +232,31 @@ describe("plugin remove", () => {
   test("errors on unknown plugin name", () => {
     const ws = tempDir("agency-plugin-remove-unknown-");
     expect(() => pluginRemoveCmd("nope", ws)).toThrow("not installed");
+  });
+
+  test("a name that is a path deletes nothing, from the command line or from a receipt", () => {
+    const ws = tempDir("agency-plugin-remove-path-");
+    const receiptDir = join(ws, ".agency", "skills", "p");
+    mkdirSync(receiptDir, { recursive: true });
+    writeFileSync(join(ws, "keep.txt"), "keep");
+    writeFileSync(join(ws, "keep.md"), "keep");
+    writeFileSync(
+      join(receiptDir, "receipt.json"),
+      JSON.stringify({
+        pluginName: "../..",
+        skillsInstalled: ["../.."],
+        commandsInstalled: ["../../keep.txt"],
+        agentsInstalled: ["../../keep"],
+        installedAt: "",
+      }),
+    );
+    for (const name of ["..", "..\\..", "a/b", ""]) {
+      expect(() => pluginRemoveCmd(name, ws)).toThrow("not a plugin name");
+    }
+    pluginRemoveCmd("p", ws);
+    expect(existsSync(join(ws, "keep.txt"))).toBe(true);
+    expect(existsSync(join(ws, "keep.md"))).toBe(true);
+    expect(existsSync(receiptDir)).toBe(false);
   });
 
   test("remove via runEntrypoint works", async () => {

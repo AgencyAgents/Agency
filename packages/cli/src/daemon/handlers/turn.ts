@@ -65,7 +65,7 @@ async function runPromptHooks(
   prompt: string,
   session: RunTurnParams["session"],
 ): Promise<void> {
-  const opts = { cwd: ctx.options.workspaceRoot };
+  const opts = ctx.hookRun;
   const context: string[] = [];
   // No reply in the history yet: this is the first prompt of the session.
   if (!session.some((m) => m.role === "assistant")) {

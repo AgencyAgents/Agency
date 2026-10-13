@@ -1,8 +1,9 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
@@ -33,8 +34,13 @@ function tmp(name: string): string {
 
 const usage = { inputTokens: 5, outputTokens: 5 };
 
-/** A daemon whose config holds one hook command for each event, and a model that calls `note` in its first reply. */
-async function setup(): Promise<{ client: DaemonClient; requests: string[]; ran: string[] }> {
+/**
+ * A daemon with one hook command for each event, and a model that calls `note` in its first reply.
+ * The hooks are in the user's config, or in a hook file of the workspace.
+ */
+async function setup(
+  where: "config" | "trusted workspace" | "untrusted workspace" = "config",
+): Promise<{ client: DaemonClient; requests: string[]; ran: string[] }> {
   const scripts = tmp("scripts");
   const command = (name: string, body: string): { type: "command"; command: string } => {
     const file = join(scripts, `${name}.js`);
@@ -69,7 +75,15 @@ async function setup(): Promise<{ client: DaemonClient; requests: string[]; ran:
     ],
   };
   const configDir = tmp("cfg");
-  writeFileSync(join(configDir, "config.jsonc"), JSON.stringify({ hooks }));
+  const workspaceRoot = tmp("ws");
+  const trustStorePath = join(tmp("trust"), "trust.json");
+  if (where === "config") {
+    writeFileSync(join(configDir, "config.jsonc"), JSON.stringify({ hooks }));
+  } else {
+    mkdirSync(join(workspaceRoot, ".agency", "hooks"), { recursive: true });
+    writeFileSync(join(workspaceRoot, ".agency", "hooks", "guard.json"), JSON.stringify({ hooks }));
+    if (where === "trusted workspace") createFileTrustStore(trustStorePath).trust(workspaceRoot);
+  }
 
   const requests: string[] = [];
   const adapter: ProviderAdapter = {
@@ -98,10 +112,10 @@ async function setup(): Promise<{ client: DaemonClient; requests: string[]; ran:
       return { content: "noted" };
     },
   };
-  const workspaceRoot = tmp("ws");
   const daemon = await createAgentDaemon({
     workspaceRoot,
     configDir,
+    trustStorePath,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
     sessionsDir: tmp("sess"),
     adapterFor: () => adapter,
@@ -149,5 +163,18 @@ describe("command hooks of the config in a session", () => {
     expect(requests).toHaveLength(0);
     await send(client, "hello");
     expect(requests.at(-1)).not.toContain("forbidden");
+  }, 30000);
+
+  test("the hook files of a workspace run only when the user trusts the workspace", async () => {
+    const untrusted = await setup("untrusted workspace");
+    await send(untrusted.client, "take a note");
+    expect(untrusted.ran).toEqual(["note"]);
+    expect(untrusted.requests[0]).not.toContain("START-CONTEXT");
+
+    const trusted = await setup("trusted workspace");
+    await send(trusted.client, "take a note");
+    expect(trusted.ran).toEqual([]);
+    expect(trusted.requests[0]).toContain("START-CONTEXT");
+    expect(trusted.requests[1]).toContain("note is off");
   }, 30000);
 });

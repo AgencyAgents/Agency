@@ -542,6 +542,7 @@ export interface DaemonContext {
   pluginInstructions: readonly string[];
   /** Shell hooks of the config: the turn handler runs the prompt and session events itself. */
   commandHooks: import("@agency/core").CommandHooks;
+  hookRun: import("@agency/core").HookRunOptions;
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;

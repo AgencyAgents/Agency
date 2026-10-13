@@ -228,7 +228,7 @@ export const en = {
   "cli.plugin.untrusted":
     "This workspace is not trusted, so the installed files do not load. Run `agency trust` to load them.",
   "cli.trust.instructions_skipped":
-    "Project instructions, plugins, skills, agent files and command files were not loaded: this workspace is not trusted. Run `agency trust` to load them.",
+    "Project instructions, plugins, skills, hooks, agent files and command files were not loaded: this workspace is not trusted. Run `agency trust` to load them.",
 
   "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;

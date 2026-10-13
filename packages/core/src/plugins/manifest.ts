@@ -49,7 +49,7 @@ export const MANIFEST_MAX_SKILL_PATH_LEN = 256;
 
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)?$/;
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
-const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const DECISION_RE = /^(allow|ask|deny)$/;
 
 /**

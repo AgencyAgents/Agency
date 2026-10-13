@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   AgentRegistry,
@@ -17,12 +17,15 @@ import {
   DispatchStateStore,
   dataDir,
   EventBus,
+  type HookRunOptions,
   hasBoardItemShape,
   InboxStore,
   Logger,
   loadCommands,
   loadConfig,
+  loadHookFiles,
   loadPlugins,
+  mergeCommandHooks,
   SessionStore,
   storagePaths,
   type ToolSpec,
@@ -183,7 +186,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
-  const shellLabel = resolveConfiguredShell(process.platform, config.windowsShell).label;
+  const shell = resolveConfiguredShell(process.platform, config.windowsShell);
+  const shellLabel = shell.label;
   const sandbox = createSandboxBackend(
     options.workspaceRoot,
     commandPolicy,
@@ -248,11 +252,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return keychainPromise;
   };
 
+  const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
   const configFingerprint = createConfigFingerprint([
     join(options.configDir ?? configDir(), "config.jsonc"),
     join(options.workspaceRoot, ".agency", "config.jsonc"),
     // The executable too: after an update, an idle daemon from the old binary leaves.
     process.execPath,
+    // The hook folder for a new or a removed file, and each file for an edit: an edit does not change the folder.
+    hooksDir,
+    ...(existsSync(hooksDir) ? readdirSync(hooksDir).map((file) => join(hooksDir, file)) : []),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
@@ -305,8 +313,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const builtinsMode = options.tools === undefined;
   // Plugin, command and agent files can run code or grant tools: those of a workspace load only after trust.
   const projectTrusted = trustStore.isTrusted(options.workspaceRoot);
-  const commandHooks: CommandHooks = config.hooks ?? {};
-  attachCommandHooks(eventBus, commandHooks, { cwd: options.workspaceRoot });
+  // The hooks of the user's config, then those that `plugin install` put into a trusted workspace.
+  const commandHooks: CommandHooks = mergeCommandHooks(
+    config.hooks ?? {},
+    projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
+  );
+  // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
+  const hookRun: HookRunOptions = { cwd: options.workspaceRoot, shell };
+  attachCommandHooks(eventBus, commandHooks, hookRun);
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
@@ -522,6 +536,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trustStore,
     pluginInstructions,
     commandHooks,
+    hookRun,
     teamContexts,
     teamFor,
     sessionInboxes,

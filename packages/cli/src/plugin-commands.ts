@@ -1,6 +1,6 @@
 ﻿import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { importClaudePlugin, Logger } from "@agency/core";
+import { importClaudePlugin, Logger, pluginHooksFile, pluginRootDir } from "@agency/core";
 
 // ---------------------------------------------------------------------------
 // Install receipt shape
@@ -12,6 +12,8 @@ export interface InstallReceipt {
   skillsInstalled: string[];
   commandsInstalled: string[];
   agentsInstalled: string[];
+  /** Absent in a receipt from before hooks were installed. */
+  hooksInstalled?: string[];
   installedAt: string;
 }
 
@@ -39,6 +41,7 @@ export function pluginInstallCmd(
     skillsInstalled: report.skillsInstalled,
     commandsInstalled: report.commandsInstalled,
     agentsInstalled: report.agentsInstalled,
+    hooksInstalled: report.hooksInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -57,10 +60,10 @@ export function pluginInstallCmd(
     for (const s of report.skillsInstalled) lines.push(`  - ${s}`);
   }
 
-  if (report.hooksMapped.length > 0) {
+  if (report.hooksInstalled.length > 0) {
     lines.push("");
-    lines.push("Hooks mapped:");
-    for (const h of report.hooksMapped) lines.push(`  - ${h.claudeEvent} -> ${h.agencyHook}`);
+    lines.push(`Hooks installed (.agency/hooks/${report.pluginName}.json, they run shell commands):`);
+    for (const event of report.hooksInstalled) lines.push(`  - ${event}`);
   }
 
   if (report.hooksSkipped.length > 0) {
@@ -151,7 +154,11 @@ function owningPlugin(workspaceRoot: string, skill: string): string | undefined 
   return undefined;
 }
 
+/** A name from the command line or from a receipt is one path part: a path would delete outside `.agency`. */
+const isFileName = (name: string): boolean => !/^\.*$|[\\/:]/.test(name);
+
 export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
+  if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
   const skillDir = join(workspaceRoot, ".agency", "skills", name);
   if (!existsSync(skillDir)) {
     throw new Error(`Plugin "${name}" is not installed (no directory found at .agency/skills/${name}/)`);
@@ -174,10 +181,10 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   if (existsSync(receiptPath)) {
     try {
       const receipt: InstallReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-      commandsToDelete = receipt.commandsInstalled;
-      skillsToDelete = receipt.skillsInstalled;
-      agentsToDelete = receipt.agentsInstalled ?? [];
-      pluginName = receipt.pluginName;
+      commandsToDelete = receipt.commandsInstalled.filter(isFileName);
+      skillsToDelete = receipt.skillsInstalled.filter(isFileName);
+      agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
+      if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
     }
@@ -218,6 +225,12 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     }
   }
   if (deletedAgents.length > 0) lines.push(`Deleted agent files: ${deletedAgents.join(", ")}`);
+  const hooksFile = pluginHooksFile(workspaceRoot, pluginName);
+  if (existsSync(hooksFile)) {
+    rmSync(hooksFile);
+    lines.push("Deleted its hooks.");
+  }
+  rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
 
   return lines.join("\n");
 }

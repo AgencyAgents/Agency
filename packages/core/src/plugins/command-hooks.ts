@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { type EventBus, HookBlock } from "../events.ts";
 
@@ -53,20 +55,29 @@ function matches(matcher: string | undefined, toolName: string | undefined): boo
   }
 }
 
+export interface HookRunOptions {
+  cwd: string;
+  /** The shell that runs each command: the daemon gives the shell of its bash tool. Absent means the system shell. */
+  shell?: { command: string; buildArgs: (command: string) => string[] };
+}
+
 function runOne(
   command: string,
   stdin: string,
-  cwd: string,
+  opts: HookRunOptions,
   timeoutS: number,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
-      shell: true,
+    const { cwd, shell } = opts;
+    const spawnOptions = {
       cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
       env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
-    });
+    };
+    const child = shell
+      ? spawn(shell.command, shell.buildArgs(command), spawnOptions)
+      : spawn(command, { ...spawnOptions, shell: true });
     let stdout = "";
     let stderr = "";
     // The shell is not the command: without the tree, the command lives on and holds the pipes open.
@@ -117,7 +128,7 @@ export async function runCommandHooks(
   hooks: CommandHooks,
   event: CommandHookEvent,
   input: Record<string, unknown>,
-  opts: { cwd: string },
+  opts: HookRunOptions,
 ): Promise<HookOutcome> {
   const toolName = typeof input.tool_name === "string" ? input.tool_name : undefined;
   const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
@@ -125,7 +136,7 @@ export async function runCommandHooks(
   for (const group of hooks[event] ?? []) {
     if (!matches(group.matcher, toolName)) continue;
     for (const entry of group.hooks) {
-      const out = await runOne(entry.command, stdin, opts.cwd, entry.timeout ?? DEFAULT_TIMEOUT_S);
+      const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);
@@ -144,7 +155,7 @@ export async function runCommandHooks(
 }
 
 /** Connects the tool and stop events of the bus to the command hooks. Returns the function that disconnects them. */
-export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: { cwd: string }): () => void {
+export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: HookRunOptions): () => void {
   type ToolPayload = { tool: string; input: unknown; result?: unknown; sessionId?: string };
   const offs = [
     bus.on("tool.execute.before", async (payload) => {
@@ -184,4 +195,32 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: { c
   return () => {
     for (const off of offs) off();
   };
+}
+
+/** Joins hook sets: each event gets the groups of every set, in order. */
+export function mergeCommandHooks(...sets: CommandHooks[]): CommandHooks {
+  const merged: CommandHooks = {};
+  for (const event of COMMAND_HOOK_EVENTS) {
+    const groups = sets.flatMap((set) => set[event] ?? []);
+    if (groups.length > 0) merged[event] = groups;
+  }
+  return merged;
+}
+
+/** The hooks of the `*.json` files of a folder: `plugin install` writes one for each plugin. A file that is not valid is skipped. */
+export function loadHookFiles(dir: string, warn: (message: string) => void = () => {}): CommandHooks {
+  if (!existsSync(dir)) return {};
+  const sets: CommandHooks[] = [];
+  for (const entry of readdirSync(dir).sort()) {
+    if (!entry.endsWith(".json")) continue;
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, entry), "utf8")) as { hooks?: unknown };
+      sets.push(CommandHooksSchema.parse(raw.hooks ?? raw));
+    } catch (error) {
+      warn(
+        `hook file ${join(dir, entry)} is not valid: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return mergeCommandHooks(...sets);
 }

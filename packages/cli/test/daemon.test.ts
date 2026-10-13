@@ -646,6 +646,30 @@ describe("createAgentDaemon", () => {
     expect(shutdownCalled).toBe(true);
   });
 
+  test("an idle daemon leaves when a hook file of its workspace changes, and when a new one comes", async () => {
+    const left: Record<string, boolean> = {};
+    for (const [change, file] of [
+      ["edit", "a.json"],
+      ["add", "b.json"],
+    ] as const) {
+      const workspaceRoot = tempRoot();
+      const hooksDir = join(workspaceRoot, ".agency", "hooks");
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(join(hooksDir, "a.json"), "{}");
+      left[change] = false;
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        idleLingerMs: 60_000,
+        onIdleShutdown: () => (left[change] = true),
+      });
+      await client.close();
+      clients.length = 0;
+      writeFileSync(join(hooksDir, file), '{"hooks":{}}');
+      await new Promise((r) => setTimeout(r, 1_500));
+    }
+    expect(left).toEqual({ edit: true, add: true });
+  }, 15_000);
+
   test("onIdleShutdown does not fire while a client is still connected", async () => {
     let shutdownCalled = false;
     await startFakeDaemon({ idleLingerMs: 30, onIdleShutdown: () => (shutdownCalled = true) });
