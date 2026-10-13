@@ -225,7 +225,7 @@ export function splitCommand(command: string): { parts: string[]; dynamic: boole
 }
 
 const WRAPPERS: ReadonlySet<string> = new Set(["sudo", "env", "command", "nohup", "time", "exec", "nice"]);
-const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash"]);
+const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"]);
 const MAX_UNWRAP_DEPTH = 8;
 
 /**
@@ -247,8 +247,8 @@ export function unwrapCommand(command: string, depth = 0): string[] {
     while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
       i += 1;
     forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
-  } else if (SHELLS.has(program)) {
-    const flag = rest.findIndex((word) => /^-[a-z]*c$/.test(word));
+  } else if (SHELLS.has(program.toLowerCase())) {
+    const flag = rest.findIndex((word) => /^(-[a-z]*c|\/c|\/r|-command)$/i.test(word));
     const script =
       flag === -1
         ? ""

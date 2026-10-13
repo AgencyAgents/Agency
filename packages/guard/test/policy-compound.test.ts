@@ -47,6 +47,8 @@ describe("a compound shell command", () => {
       "nohup rm -rf build",
       'bash -c "rm -rf build"',
       "sh -lc 'ls && rm -rf build'",
+      'cmd /c "rm -rf build"',
+      'powershell -NoProfile -Command "rm -rf build"',
       "git status && sudo /usr/bin/rm -rf build",
     ]) {
       expect(decide(command)).toBe("deny");
