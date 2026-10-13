@@ -14,6 +14,14 @@ import { compactionSummaryMessage, type SessionStore } from "./store.ts";
 export const COMPACTION_TRIGGER_RATIO = 0.9;
 /** Target: expansion folds messages until the new chain fits this fraction. */
 export const COMPACTION_TARGET_RATIO = 0.7;
+/**
+ * The trigger never goes above this size. Each request sends the whole history again, so a large window that fills
+ * costs much more than the work it holds; a measured optimum was near 220k tokens (LangWatch, 873 compactions).
+ */
+export const COMPACTION_LIMIT_TOKENS = 220_000;
+/** The newest messages that a summary leaves word for word: this share of the target, and at most this size. */
+const TAIL_TARGET_SHARE = 0.4;
+const TAIL_MAX_TOKENS = 40_000;
 /** Hard cap on stored summary size, in tokens. */
 export const SUMMARY_CAP_TOKENS = 20_000;
 /** Hard cap on transcript chunks per summarize pass. */
@@ -25,6 +33,8 @@ export interface CompactionThreshold {
   contextWindow: number;
   /** Proactive trigger fraction; a forced compaction skips this check. */
   proactiveRatio?: number;
+  /** `compactionLimit` of the config: the trigger in tokens for a window that is larger. */
+  limitTokens?: number;
   /** Post-compaction target fraction of the window. */
   targetRatio?: number;
   /** Stored summary cap in tokens. */
@@ -33,12 +43,21 @@ export interface CompactionThreshold {
 
 /** Trigger level in tokens for a threshold. */
 export function triggerTokens(threshold: CompactionThreshold): number {
-  return threshold.contextWindow * (threshold.proactiveRatio ?? COMPACTION_TRIGGER_RATIO);
+  return Math.min(
+    threshold.contextWindow * (threshold.proactiveRatio ?? COMPACTION_TRIGGER_RATIO),
+    threshold.limitTokens ?? COMPACTION_LIMIT_TOKENS,
+  );
 }
 
 /** Target level in tokens for a threshold. */
 export function targetTokens(threshold: CompactionThreshold): number {
-  return threshold.contextWindow * (threshold.targetRatio ?? COMPACTION_TARGET_RATIO);
+  // In proportion to the trigger: the two keep their distance when the token limit sets the trigger.
+  const target = threshold.targetRatio ?? COMPACTION_TARGET_RATIO;
+  const limit = threshold.limitTokens ?? COMPACTION_LIMIT_TOKENS;
+  return Math.min(
+    threshold.contextWindow * target,
+    (limit * target) / (threshold.proactiveRatio ?? COMPACTION_TRIGGER_RATIO),
+  );
 }
 
 /** Summary cap in tokens for a threshold. */
@@ -477,11 +496,20 @@ async function foldChain(
   summarize: Summarizer,
   keepLastN: number,
 ): Promise<{ summaryText: string; summarized: Set<string>; carryForward: SessionEntry[] } | undefined> {
-  const plan = planCompaction(chain, keepLastN);
+  const target = targetTokens(threshold);
+  // A short summary alone makes the model find its place again: the newest messages stay word for word up to a budget.
+  const tailBudget = Math.min(TAIL_MAX_TOKENS, target * TAIL_TARGET_SHARE);
+  const all = chain.filter(isMessageEntry);
+  let tail = 0;
+  for (let used = 0; tail < all.length; tail++) {
+    used += await countChainTokensAsync([all[all.length - 1 - tail] as SessionEntry], tokenizer);
+    if (used > tailBudget) break;
+  }
+  // The budget does not apply when it would leave nothing to fold.
+  const plan = planCompaction(chain, tail < all.length ? Math.max(keepLastN, tail) : keepLastN);
   if (plan.summarize.length === 0) return undefined;
 
   const cap = summaryCapTokens(threshold);
-  const target = targetTokens(threshold);
   const prompt = compactionPrompt();
   const countText = (text: string): number | Promise<number> =>
     isAsyncTokenizer(tokenizer) ? tokenizer.count(text) : tokenizer.count(text);
@@ -561,6 +589,8 @@ async function elideOldToolResults(
   const out = [...chain];
   let kept = 0;
   let first = -1;
+  // In the middle of a turn the newest results have no answer yet: the model has not read them, so they stay.
+  const lastAnswer = chain.findLastIndex((e) => isMessageEntry(e) && e.message.role === "assistant");
   for (let i = chain.length - 1; i >= 0; i--) {
     const entry = chain[i];
     if (entry === undefined || !isMessageEntry(entry)) continue;
@@ -569,7 +599,7 @@ async function elideOldToolResults(
     for (const block of entry.message.content) {
       if (block.type === "tool_result" && block.content.length > ELIDE_MIN_CHARS) {
         if (kept <= keepTokens) kept += await countText(block.content);
-        if (kept > keepTokens) {
+        if (kept > keepTokens && i < lastAnswer) {
           const { images: _images, ...rest } = block;
           const chars = block.content.length;
           content.push({

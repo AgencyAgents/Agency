@@ -30,7 +30,7 @@ import {
 } from "@agency/schema";
 import { CODE_TOOL } from "./codemode.ts";
 import { HookBlock } from "./events.ts";
-import { compactMessages, isContextOverflowError } from "./sessions/compaction.ts";
+import { compactMessages, isContextOverflowError, triggerTokens } from "./sessions/compaction.ts";
 import { modelSummarizer } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
@@ -157,6 +157,8 @@ export interface RunTurnOptions {
   onContextOverflow?: () => Promise<Message[] | undefined>;
   /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
   contextWindow?: number;
+  /** `compactionLimit` of the config: the history is compacted at this size also when the window is larger. */
+  compactionLimit?: number;
   /** The model takes image input: images that a tool returned go to it. Absent means no. */
   vision?: boolean;
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
@@ -324,11 +326,19 @@ export async function runTurn(
     }
     return routed.value;
   };
+  const compactionThreshold = {
+    // A model that is not in the catalog has a window of 0 or none: both mean not known.
+    contextWindow: options.contextWindow || 200_000,
+    ...(options.compactionLimit === undefined ? {} : { limitTokens: options.compactionLimit }),
+  };
+  // The size of the last request as the provider counted it. Zero after a compaction: the next request gives the new size.
+  let requestTokens = 0;
+  let proactiveFolds = true;
   const foldInMemory = (): Promise<Message[] | undefined> =>
     compactMessages(
       messages,
       tokenizerFor(options.provider ?? ""),
-      { contextWindow: options.contextWindow ?? 200_000 },
+      compactionThreshold,
       modelSummarizer({
         adapter,
         http,
@@ -350,6 +360,16 @@ export async function runTurn(
         injected = options.drainMailbox();
       } catch {}
       for (const message of injected) await append(message);
+    }
+    // Before the provider refuses: a request near the limit costs the most, and a refused one is a lost request.
+    let folded = false;
+    if (proactiveFolds && requestTokens >= triggerTokens(compactionThreshold)) {
+      const replacement = await (options.onContextOverflow ?? foldInMemory)();
+      if (replacement !== undefined) {
+        messages.length = 0;
+        messages.push(...replacement);
+      }
+      folded = true;
     }
     let modelSpanId: string | null = null;
     if (tracer && turnSpanId) {
@@ -388,6 +408,9 @@ export async function runTurn(
       if (turn.content.length > 0) await append({ role: "assistant", content: turn.content });
       spoke = turn.content.some((block) => block.type === "text" && block.text.trim() !== "");
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
+      requestTokens = turn.usage.inputTokens + turn.usage.outputTokens;
+      // A compaction that left the request at the trigger size cannot help: the next ones would each cost a summary.
+      if (folded && requestTokens >= triggerTokens(compactionThreshold)) proactiveFolds = false;
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
       const toolCalls = toolCallsOf({ role: "assistant", content: turn.content });

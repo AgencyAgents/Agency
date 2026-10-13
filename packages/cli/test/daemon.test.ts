@@ -765,9 +765,22 @@ describe("createAgentDaemon", () => {
           tools: [noop],
           configDir: writeConfigDir({
             fallback_model: "openai/gpt-x",
+            // Above the token counts of the fake steps: a compaction in the turn would be one more paid request.
+            compactionLimit: 50_000_000,
             provider: {
-              anthropic: { models: { "test-model": { pricing: { inputPerMTok: 100, outputPerMTok: 100 } } } },
-              openai: { models: { "gpt-x": { pricing: { inputPerMTok: 1, outputPerMTok: 1 } } } },
+              anthropic: {
+                models: {
+                  "test-model": {
+                    contextWindow: 100_000_000,
+                    pricing: { inputPerMTok: 100, outputPerMTok: 100 },
+                  },
+                },
+              },
+              openai: {
+                models: {
+                  "gpt-x": { contextWindow: 100_000_000, pricing: { inputPerMTok: 1, outputPerMTok: 1 } },
+                },
+              },
             },
           }),
         });

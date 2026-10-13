@@ -210,6 +210,8 @@ export const ConfigSchema = z
     maxSteps: z.number().int().positive().optional(),
     /** Text for the model that writes the summary of a compaction: what the summary must keep. */
     compactionInstructions: z.string().optional(),
+    /** Tokens of history at which a session is compacted when the window of the model is larger. Absent means 220000. */
+    compactionLimit: z.number().int().positive().optional(),
     trace: z
       .object({
         export: z

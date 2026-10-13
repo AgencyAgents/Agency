@@ -54,6 +54,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
 | `compactionInstructions` | string | — | Text for the model that writes the summary of a compaction: what the summary must keep. It goes after the built-in rules and comes first where the two disagree. It has no effect on the offline summary |
+| `compactionLimit` | number | `220000` | Tokens of history at which a session is compacted when the window of the model is larger. A smaller window is compacted at 90 percent of its size |
 | `maxSteps` | number | — | Tool steps that one turn may take when the caller sets no limit. With no value: 100 |
 | `hooks` | `Record<event, {matcher?, hooks: {type: "command", command, timeout?}[]}[]>` | — | Shell commands that run on agent events (see Hooks) |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
@@ -282,7 +283,7 @@ The team report that `/goal` showed before is now `/report [outcome]`.
 
 ## Compaction
 
-A session is compacted when its history reaches 90 percent of the model's context window, and again when the provider reports a context overflow in the middle of a turn. The older messages become one summary, and the newest messages stay as they are. Task lists always stay.
+A session is compacted when its history reaches 90 percent of the model's context window or `compactionLimit` tokens, the smaller of the two. The check runs before each turn and before each request in a turn, with the size that the provider reported for the last request. A compaction also runs when the provider reports a context overflow. Each request sends the whole history again, so a large window that fills costs much more than the work in it: this is the reason for the token limit. The older messages become one summary, and the newest messages stay as they are: at least the last four, and more up to 40 percent of the size after compaction, at most 40000 tokens. Task lists always stay.
 
 Before a summary, the old tool output is removed: each old result becomes one line that gives its size, and the newest results stay, up to 35 percent of the window. No model writes this, and your messages, the model's texts and the tool inputs stay word for word. If this brings the history to 70 percent of the window, there is no summary. `/compact` always writes the summary.
 

@@ -271,7 +271,10 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     const tokenizer = tokenizerFor(family);
     // The model's own window, not a fixed guess: a small-window model overflows long before 200k tokens.
     const window = p.contextWindow ?? ctx.catalogModel(p.provider, p.model)?.contextWindow;
-    const threshold = { contextWindow: window ?? DEFAULT_SESSION_CONTEXT_WINDOW };
+    const threshold = {
+      contextWindow: window || DEFAULT_SESSION_CONTEXT_WINDOW,
+      ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
+    };
     const summarize = sessionSummarizer(ctx, p.provider, p.model);
     if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;

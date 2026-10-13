@@ -670,6 +670,18 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **Compaction at a token limit, and inside a turn**: a session is now
+  compacted at 220000 tokens when the window of the model is larger
+  (`compactionLimit` in the config). Before, a model with a window of
+  one million tokens was compacted at 900000. The check also runs
+  before each request in a turn. Before, a long turn was compacted
+  only after the provider refused a request. A summary now leaves
+  more of the newest messages word for word: up to 40 percent of the
+  size after compaction, at most 40000 tokens. The numbers are from
+  a study of 873 compactions of one developer (LangWatch).
+- **A cut command output keeps its end**: a `bash` output above
+  30000 bytes kept its start only. It now keeps the start and the
+  end, because the error of a build or a test run is at the end.
 - **Old tool output is removed before a summary**: a compaction first
   changes each old tool result to one line and keeps the newest
   results. If that is enough, no model writes a summary, and all
