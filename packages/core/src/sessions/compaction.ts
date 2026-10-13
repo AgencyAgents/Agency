@@ -4,7 +4,7 @@ import { ErrorCode, type Message } from "@agency/schema";
 import { HookBlock } from "../events.ts";
 import { compactionPrompt } from "../prompt/compaction.ts";
 import type { MessageEntry, SessionEntry } from "./entry.ts";
-import { isItemStateEntry, isMessageEntry, isTodoStateEntry } from "./entry.ts";
+import { isCompactionSummaryEntry, isItemStateEntry, isMessageEntry, isTodoStateEntry } from "./entry.ts";
 
 type ConcreteMessageEntry = SessionEntry & MessageEntry;
 
@@ -429,6 +429,47 @@ export type Summarizer = ((transcript: string, instructions: string) => Promise<
 };
 
 /** The store-free half of compact: which entries fold into the summary, its text, and what stays. */
+export const USER_MESSAGES_MARKER = "[the user's messages, word for word]";
+const USER_MESSAGES_MAX_TOKENS = 20_000;
+const USER_MESSAGE_MAX_CHARS = 4_000;
+
+/**
+ * The texts that the user wrote in the folded part, newest kept first up to a token budget. A summary can lose or
+ * change a rule of the user: these lines stay as written, also through later compactions.
+ */
+async function userMessagesBlock(
+  earlierSummaries: string[],
+  folded: MessageEntry[],
+  countText: (text: string) => number | Promise<number>,
+  budget: number,
+): Promise<string> {
+  const texts: string[] = [];
+  // A summary of an earlier compaction holds the lines of that time: they go on.
+  for (const summary of earlierSummaries) {
+    const marker = summary.indexOf(USER_MESSAGES_MARKER);
+    if (marker === -1) continue;
+    const lines = summary.slice(marker + USER_MESSAGES_MARKER.length).split("\n- ");
+    texts.push(...lines.map((line) => line.replace(CONTRACT_RE, "").trim()).filter(Boolean));
+  }
+  for (const entry of folded) {
+    if (entry.message.role !== "user") continue;
+    for (const block of entry.message.content) {
+      if (block.type !== "text" || block.text.trim() === "") continue;
+      const cut = block.text.length > USER_MESSAGE_MAX_CHARS;
+      texts.push(cut ? `${block.text.slice(0, USER_MESSAGE_MAX_CHARS)} [cut]` : block.text.trim());
+    }
+  }
+  const kept: string[] = [];
+  let used = 0;
+  for (const item of texts.reverse()) {
+    const cost = await countText(item);
+    if (used + cost > budget) break;
+    used += cost;
+    kept.unshift(item);
+  }
+  return kept.length === 0 ? "" : `\n\n${USER_MESSAGES_MARKER}\n- ${kept.join("\n- ")}`;
+}
+
 async function foldChain(
   chain: SessionEntry[],
   tokenizer: Tokenizer | AsyncTokenizer,
@@ -476,7 +517,13 @@ async function foldChain(
     }
     const rawDigest = parts.join("\n");
     const digest = CONTRACT_RE.test(rawDigest) ? rawDigest.replace(CONTRACT_RE, "").trimEnd() : rawDigest;
-    const suffix = outputContractSuffix(summarizeSet.length, parts.length);
+    const userBlock = await userMessagesBlock(
+      chain.filter(isCompactionSummaryEntry).map((entry) => entry.summary),
+      summarizeSet,
+      countText,
+      Math.min(USER_MESSAGES_MAX_TOKENS, Math.floor(target / 10)),
+    );
+    const suffix = `${userBlock}${outputContractSuffix(summarizeSet.length, parts.length)}`;
     const suffixTokens = await countText(suffix);
     let body = digest;
     if ((await countText(digest + suffix)) > cap) {

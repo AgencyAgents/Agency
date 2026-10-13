@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Compaction keeps your messages word for word**: the summary of a
+  compacted session ends with the messages that the user wrote, as
+  written, and they go on through later compactions. Before, the model
+  rewrote them in the summary, so a rule could be lost or changed.
 - **`PostToolUse` hooks**: a `PostToolUse` hook runs only for a tool
   call that succeeded, as in Claude Code. A failed call runs the
   `PostToolUseFailure` hooks. Before, `PostToolUse` ran for both.

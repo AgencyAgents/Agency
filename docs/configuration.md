@@ -286,6 +286,8 @@ The model of the session writes the summary: one more request, on the transcript
 
 `/compact <session> [provider/model]` compacts a session at any size.
 
+The summary ends with the messages that you wrote in the folded part, word for word, under `[the user's messages, word for word]`. A model can lose or change a rule when it writes a summary, and these lines cannot change. They also go on through later compactions. The newest lines are kept first, up to 10 percent of the size target and at most 20000 tokens, and one message is cut at 4000 characters.
+
 ## Hooks
 
 `hooks` holds shell commands that run on agent events. The format is the hook format of Claude Code settings, so a hook block from a Claude Code `settings.json` works here without changes.

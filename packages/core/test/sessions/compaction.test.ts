@@ -73,6 +73,53 @@ describe("planCompaction", () => {
 });
 
 describe("compact", () => {
+  test("the user's own messages stay word for word through two compactions", async () => {
+    const store = setup();
+    const meta = store.create("s1");
+    const tokenizer = createApproximateTokenizer(1);
+    let parentId: string | null = null;
+    const say = async (role: "user" | "assistant", text: string) => {
+      const entry = await store.append(meta.id, {
+        type: "message",
+        message: { role, content: [{ type: "text", text }] },
+        parentId,
+      });
+      parentId = entry.id;
+      return entry.id;
+    };
+    const fold = async () => {
+      const outcome = await compact(
+        store,
+        meta.id,
+        parentId ?? "",
+        tokenizer,
+        { contextWindow: 2000, proactiveRatio: 0.1 },
+        async () => "The user asked for a refactor.",
+        1,
+      );
+      expect(outcome.compacted).toBe(true);
+      parentId = outcome.tipId;
+      const first = store.messagesFor(store.load(meta.id), outcome.tipId)[0]?.content[0];
+      return (first as { text: string }).text;
+    };
+    await say("user", "RULE-ONE: never edit the file billing.py");
+    await say("assistant", "a".repeat(300));
+    await say("user", "next step please");
+    const once = await fold();
+    expect(once).toContain("The user asked for a refactor.");
+    expect(once).toContain("- RULE-ONE: never edit the file billing.py");
+
+    await say("assistant", "b".repeat(300));
+    await say("user", "RULE-TWO: run the tests with make check");
+    await say("assistant", "c".repeat(300));
+    await say("user", "go on");
+    const twice = await fold();
+    expect(twice).toContain("- RULE-ONE: never edit the file billing.py");
+    expect(twice).toContain("- RULE-TWO: run the tests with make check");
+    // One block, not a block inside a block.
+    expect(twice.split("word for word").length).toBe(2);
+  });
+
   test("summarizes the older portion, carries todos and the recent tail forward onto a new tip", async () => {
     const store = setup();
     const meta = store.create("s1");
