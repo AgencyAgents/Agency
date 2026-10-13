@@ -87,6 +87,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A run directly after a config change used the old daemon**: an idle
+  daemon checks its config each second, so a command that started in
+  the same second as `agency trust`, a config edit or a plugin install
+  ran on the old state. A hook that was installed a moment before did
+  not run. A daemon with no client now refuses the first client when
+  its config, the trust list or a hook file changed, and the command
+  starts a new daemon. A daemon that stops no longer deletes the
+  instance file of the daemon that took its place.
 - **Plugin names that are paths**: a plugin whose manifest name or
   skill name was a path such as `../..` could write outside
   `.agency`, and `agency plugin remove ..` deleted the `.agency`
