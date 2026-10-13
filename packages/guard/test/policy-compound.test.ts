@@ -57,6 +57,78 @@ describe("a compound shell command", () => {
     expect(decide("sudo git status")).toBe("ask");
   });
 
+  test("a deny rule holds inside a group, a subshell, a control structure, eval, xargs and find -exec", () => {
+    for (const command of [
+      "{ rm -rf build; }",
+      "(rm -rf build)",
+      "( cd x && rm -rf build )",
+      "if true; then rm -rf build; fi",
+      "while true; do rm -rf build; done",
+      "! rm -rf build",
+      "case x in a) rm -rf build;; esac",
+      "case x in a) ls;; b|c) rm -rf build;; esac",
+      "f() { rm -rf build; }; f",
+      "function f { rm -rf build; }; f",
+      'eval "rm -rf build"',
+      "eval rm -rf build",
+      "ls | xargs rm -rf",
+      "ls | xargs -n 1 rm -rf",
+      "find . -name x -exec rm -rf {} +",
+      "find . -execdir rm {} \\;",
+    ]) {
+      expect(`${command} -> ${decide(command)}`).toBe(`${command} -> deny`);
+    }
+  });
+
+  test("a text that the splitter cannot judge is never allowed by a rule", () => {
+    for (const command of [
+      "ls <<EOF\ntext\nEOF",
+      'ls <<< "text"',
+      "ls $'a\\x20b'",
+      "git status; $TOOL build",
+      "ls; $" + "{TOOL} build",
+    ]) {
+      expect(`${command} -> ${decide(command)}`).toBe(`${command} -> ask`);
+    }
+    // A variable as an argument is not a hidden program.
+    expect(decide("ls $HOME")).toBe("allow");
+  });
+
+  test("a destructive command asks in spite of a rule that allows it", () => {
+    const wide = new PermissionsGate({
+      permissions: { bash: { "*": "ask", "git *": "allow", "rm *": "allow", "find *": "allow" } },
+      workspaceRoot: process.cwd(),
+    });
+    const verdict = (command: string) => wide.decisionFor({ tool: "bash", command, riskTier: "dangerous" });
+    for (const command of [
+      "git push --force origin dev",
+      "git push -f",
+      "git push --force-with-lease",
+      "git push origin +dev",
+      "git reset --hard HEAD~3",
+      "git -C repo reset --hard",
+      "git clean -fdx",
+      "git branch -D feature",
+      "rm -rf build",
+      "rm -r -f build",
+      "rm --recursive build",
+      "sudo rm -fr /",
+      "find . -delete",
+      'bash -c "git reset --hard"',
+    ]) {
+      expect(`${command} -> ${verdict(command)}`).toBe(`${command} -> ask`);
+    }
+    for (const command of [
+      "git push origin dev",
+      "git reset HEAD~1",
+      "git status",
+      "rm notes.txt",
+      "git branch -d x",
+    ]) {
+      expect(`${command} -> ${verdict(command)}`).toBe(`${command} -> allow`);
+    }
+  });
+
   test("quotes and redirections do not split a command", () => {
     expect(splitCommand('echo "a && b; c" | wc').parts).toEqual(['echo "a && b; c"', "wc"]);
     expect(splitCommand("ls 2>&1 >/dev/null").parts).toEqual(["ls 2>&1 >/dev/null"]);

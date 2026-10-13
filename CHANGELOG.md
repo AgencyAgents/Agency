@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **A destructive command asks in spite of a pattern rule**: with a
+  rule such as `"git *": "allow"`, the commands `git push --force`,
+  `git reset --hard`, `git clean -f`, `git branch -D`, `rm -r`,
+  `find -delete` and a small fixed list of disk tools now ask. The
+  bare decision `"bash": "allow"` and the `allow-all` mode do not
+  ask, as before. The idea is from the dangerous-command check of
+  Codex.
 - **Prompt cache across the turns of a session**: the environment block
   of the system prompt (date, git branch, git state) is made one time
   for each session and has the label `git at session start`. Before, a
@@ -103,6 +110,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A deny rule did not hold in a group or a control structure**
+  (security): with a rule that denies `rm *`, these ran after an ask
+  or with a wide allow rule: `{ rm -rf build; }`, `(rm -rf build)`,
+  `if true; then rm ...`, a `case` arm, a function body, `eval "rm
+  ..."`, `xargs rm`, `find -exec rm`. The rules now see those
+  commands. A here-document, a here-string, a `$'...'` string and a
+  variable as the program (`$TOOL build`) are never allowed by a
+  rule: they ask.
 - **`--json-schema` and `tool_search` with a denied tool**: when the
   config denied a tool fully (for example `"write": "deny"`), the
   calls of `structured_output` and `tool_search` were refused as

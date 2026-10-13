@@ -213,6 +213,8 @@ export function splitCommand(command: string): { parts: string[]; dynamic: boole
     }
     if (ch === '"' || ch === "'") quote = ch;
     else if (ch === "`" || ((ch === "$" || ch === "<" || ch === ">") && next === "(")) dynamic = true;
+    // A here-document, a here-string and `$'..'` hold text that this splitter does not read as the shell does.
+    else if ((ch === "<" && next === "<") || (ch === "$" && next === "'")) dynamic = true;
     // `2>&1` and `&>file` are redirections, not the end of a command.
     const redirection = ch === "&" && (command[i - 1] === ">" || next === ">");
     if ((ch === ";" || ch === "|" || ch === "\n" || ch === "&") && !redirection) {
@@ -223,10 +225,64 @@ export function splitCommand(command: string): { parts: string[]; dynamic: boole
     current += ch;
   }
   if (current.trim() !== "") parts.push(current.trim());
+  // `$TOOL args`: the program is a variable, so no rule saw its name.
+  if (parts.some((part) => part.startsWith("$"))) dynamic = true;
   return { parts, dynamic };
 }
 
-const WRAPPERS: ReadonlySet<string> = new Set(["sudo", "env", "command", "nohup", "time", "exec", "nice"]);
+/**
+ * True for a command that deletes work or history with no way back. A rule with a pattern (`git *`) does not allow
+ * such a command: it asks. The list is small and fixed, after the dangerous-command check of Codex.
+ */
+export function isDestructiveCommand(command: string): boolean {
+  const words = command.trim().split(/\s+/);
+  const program = (words[0] ?? "").toLowerCase();
+  const args = words.slice(1);
+  const text = ` ${args.join(" ")} `;
+  const short = (letter: string): boolean =>
+    args.some((arg) => /^-[A-Za-z]+$/.test(arg) && arg.includes(letter));
+  if (program === "rm") return short("r") || short("R") || args.includes("--recursive");
+  if (program === "git") {
+    if (/\sreset\s.*--hard\s/.test(text)) return true;
+    if (/\sclean\s/.test(text) && (short("f") || args.includes("--force"))) return true;
+    if (/\spush\s/.test(text)) return short("f") || /\s(--force\S*|\+\S+)\s/.test(text);
+    return /\sbranch\s(.*\s)?-D\s/.test(text);
+  }
+  if (program === "find") return args.includes("-delete");
+  if (["del", "erase", "rd", "rmdir"].includes(program)) return /\s\/s\s/i.test(text);
+  if (["remove-item", "ri"].includes(program)) return /\s-r(ecurse)?\s/i.test(text);
+  return ["dd", "shred", "mkfs", "format", "diskpart"].includes(program) || program.startsWith("mkfs.");
+}
+
+const WRAPPERS: ReadonlySet<string> = new Set([
+  "sudo",
+  "env",
+  "command",
+  "nohup",
+  "time",
+  "exec",
+  "nice",
+  "xargs",
+]);
+/** Options of a wrapper that take a value in the next word. */
+const VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-n",
+  "-P",
+  "-I",
+  "-L",
+  "-s",
+  "-d",
+  "-E",
+  "-a",
+  "-u",
+  "-g",
+]);
+/** What can stand before a command in a group, a subshell or a control structure. */
+const SHELL_PREFIX = /^(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*(\S[\s\S]*)$/;
+/** `a) cmd` and `case x in a) cmd`: the command of a case arm. */
+const CASE_ARM = /^(?:case\b[\s\S]*?\bin\s+)?[^\s()]*\)\s*(\S[\s\S]*)$/;
+/** `f() { cmd` and `function f { cmd`: the first command of a function body. */
+const FUNCTION_BODY = /^(?:function\s+)?[A-Za-z_][\w-]*\s*(?:\(\))?\s*\{\s*(\S[\s\S]*)$/;
 const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"]);
 const MAX_UNWRAP_DEPTH = 8;
 
@@ -237,6 +293,10 @@ const MAX_UNWRAP_DEPTH = 8;
 export function unwrapCommand(command: string, depth = 0): string[] {
   const forms = [command];
   if (depth > MAX_UNWRAP_DEPTH) return forms;
+  for (const pattern of [SHELL_PREFIX, CASE_ARM, FUNCTION_BODY]) {
+    const inner = pattern.exec(command.trim())?.[1];
+    if (inner !== undefined) forms.push(...unwrapCommand(inner, depth + 1));
+  }
   const words = command.trim().split(/\s+/);
   const program = (words[0] ?? "").replace(/^.*[\\/]/, "").replace(/\.(exe|cmd|bat|com)$/i, "");
   if (program === "") return forms;
@@ -247,17 +307,25 @@ export function unwrapCommand(command: string, depth = 0): string[] {
   else if (WRAPPERS.has(program)) {
     let i = 0;
     while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
-      i += 1;
+      i += VALUE_OPTIONS.has(rest[i] ?? "") ? 2 : 1;
     forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
-  } else if (SHELLS.has(program.toLowerCase())) {
+  } else if (program === "find") {
+    // `-exec cmd {} ;`: the words after the option are a command.
+    rest.forEach((word, i) => {
+      if (/^-(exec|execdir|ok|okdir)$/.test(word))
+        forms.push(...unwrapCommand(rest.slice(i + 1).join(" "), depth + 1));
+    });
+  } else if (SHELLS.has(program.toLowerCase()) || program === "eval") {
     const flag = rest.findIndex((word) => /^(-[a-z]*c|\/c|\/r|-command)$/i.test(word));
     const script =
-      flag === -1
-        ? ""
-        : rest
-            .slice(flag + 1)
-            .join(" ")
-            .trim();
+      program === "eval"
+        ? rest.join(" ").trim()
+        : flag === -1
+          ? ""
+          : rest
+              .slice(flag + 1)
+              .join(" ")
+              .trim();
     const quoted = /^(["'])([\s\S]*)\1$/.exec(script);
     for (const part of splitCommand(quoted ? (quoted[2] ?? "") : script).parts) {
       forms.push(...unwrapCommand(part, depth + 1));
@@ -423,6 +491,9 @@ export class PolicyEngine {
     }
     // The shell builds a part of this command at run time: no rule saw the text that will run.
     if (dynamic && worst.decision === "allow") return { decision: "ask" };
+    if (worst.decision === "allow" && [request.command, ...forms].some(isDestructiveCommand)) {
+      return { decision: "ask" };
+    }
     return worst;
   }
 
