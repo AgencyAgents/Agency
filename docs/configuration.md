@@ -206,6 +206,28 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 - **Continue.** A turn that reached a limit keeps its steps in the session. `--continue` or `--session <id>` goes on from there.
 - **Request rate.** The daemon sends at most 60 requests a minute to one provider, for all turns and workers together. `provider.<id>.requestsPerMinute` sets another rate. Several workers at one time on a fast model reach the default.
 
+## Workflows
+
+`agency workflow run <file>` runs a script that starts agent turns. Use it when the order of the work is fixed and you do not want the model to decide it: the script is the plan, and each agent does one part. The file is a JavaScript or TypeScript module whose default export is a function:
+
+```js
+export default async ({ agent, parallel, args, log }) => {
+  const files = (await agent(`List the source files of ${args.dir}, one for each line.`)).text.split("\n");
+  const reviews = await parallel(files.map((file) => () => agent(`Review ${file} for bugs.`)), 3);
+  log(`${reviews.filter((r) => r.ok).length} reviews done`);
+  const notes = reviews.map((r) => r.text).join("\n");
+  return (await agent(`Write one report from these reviews:\n${notes}`)).text;
+};
+```
+
+- `agent(prompt, options)` runs one turn with a new context, as `-p` does, and gives `{ text, stopReason, usage, ok }`. `ok` is false when the turn ended with an error, at the step limit or at the cost limit. `options` can set `model` (`provider/model`), `permissionMode`, `maxSteps` and `maxCost` for that turn. With no option, the turn has the `--model`, `--permission-mode`, `--max-steps` and `--max-cost` of the command line.
+- `parallel(tasks, limit)` runs functions at the same time, at most `limit` at one time (4 with no value), and gives their results in the order of the tasks.
+- `args` holds the `--arg key=value` pairs of the command line. `log(text)` prints a line on stderr.
+- The value that the function returns is the output: a string as it is, and another value as JSON. An error of the script ends the command with exit code 1.
+- `--max-cost` is a limit for each turn, not for the workflow. Each result has `usage`, with `costUsd` when the provider reports its charge, so a script can add the costs and stop.
+
+The script is your code. It runs in the `agency` process with your rights, and it needs no trust of the workspace. An agent of a workflow has the permissions of a `-p` run.
+
 ## Subagents
 
 The `spawn` tool starts a worker: a child session that sees only the task that the model writes for it, and returns only its final text. Several `spawn` calls in one reply run at the same time. A worker cannot start another worker.

@@ -556,6 +556,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`agency workflow run <file>`**: runs a JavaScript or TypeScript
+  script that starts agent turns with `agent()`, in sequence or with
+  `parallel()`, and prints the value that the script returns.
+  `--arg key=value` gives arguments to the script.
 - **MCP servers of a workspace**: the daemon reads `.mcp.json` in the
   workspace root (the project file of Claude Code) and the files of
   `.agency/mcp/`, only when the workspace is trusted. `${VAR}` and
