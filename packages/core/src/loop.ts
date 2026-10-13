@@ -952,11 +952,9 @@ const SIMPLE_TYPES: Record<string, (value: unknown) => boolean> = {
 };
 
 /**
- * Minimal JSON-Schema validation over the subset tool `inputSchema`s use
- * (object root, `properties` with `type`/`enum`, `required`, shallow `items`).
- * Deliberately permissive: unknown keywords and untyped properties pass — the
- * goal is catching `{path: 123}`-shaped garbage with an actionable message,
- * not reimplementing a spec-complete validator.
+ * JSON-Schema validation over the subset that tool schemas use: `type` (also a list), `enum`, `required`,
+ * `properties` and `items`, at any depth. Unknown keywords pass: the goal is a clear message for a wrong value,
+ * not a complete validator.
  */
 export function validateToolInput(schema: Record<string, unknown>, input: unknown): string | undefined {
   if (!schema || typeof schema !== "object") return undefined;
@@ -964,50 +962,42 @@ export function validateToolInput(schema: Record<string, unknown>, input: unknow
     return `invalid input: expected an object, got ${describeType(input)}`;
   }
   if (typeof input !== "object" || input === null) return undefined;
+  const fault = validateValue(schema, input, "");
+  return fault === undefined ? undefined : `invalid input: ${fault}`;
+}
 
-  const properties = schema.properties;
-  const required = schema.required;
-  if (Array.isArray(required)) {
-    for (const name of required) {
-      if (typeof name === "string" && !(name in input)) {
-        return `invalid input: missing required property "${name}"`;
-      }
+function validateValue(schema: unknown, value: unknown, path: string): string | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  const spec = schema as Record<string, unknown>;
+  const types = (Array.isArray(spec.type) ? spec.type : [spec.type]).filter(
+    (type): type is string => typeof type === "string" && type in SIMPLE_TYPES,
+  );
+  if (types.length > 0 && !types.some((type) => SIMPLE_TYPES[type]?.(value))) {
+    return `"${path}" must be ${types.join(" or ")}, got ${describeType(value)}`;
+  }
+  if (Array.isArray(spec.enum) && !spec.enum.some((option) => option === value)) {
+    return `"${path}" must be one of ${JSON.stringify(spec.enum)}`;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const fault = validateValue(spec.items, value[i], `${path}[${i}]`);
+      if (fault !== undefined) return fault;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const at = (name: string): string => (path === "" ? name : `${path}.${name}`);
+  if (Array.isArray(spec.required)) {
+    for (const name of spec.required) {
+      if (typeof name === "string" && !(name in record)) return `missing required property "${at(name)}"`;
     }
   }
-  if (!properties || typeof properties !== "object") return undefined;
-  const record = input as Record<string, unknown>;
-
-  for (const [name, rawSpec] of Object.entries(properties as Record<string, unknown>)) {
+  if (!spec.properties || typeof spec.properties !== "object") return undefined;
+  for (const [name, propSchema] of Object.entries(spec.properties as Record<string, unknown>)) {
     if (!(name in record)) continue;
-    const value = record[name];
-    if (!(rawSpec && typeof rawSpec === "object")) continue;
-    const propSchema = rawSpec as Record<string, unknown>;
-
-    if (typeof propSchema.type === "string") {
-      const check = SIMPLE_TYPES[propSchema.type];
-      if (check && !check(value)) {
-        return `invalid input: "${name}" must be ${propSchema.type}, got ${describeType(value)}`;
-      }
-    }
-    if (Array.isArray(propSchema.enum) && !propSchema.enum.some((option) => option === value)) {
-      return `invalid input: "${name}" must be one of ${JSON.stringify(propSchema.enum)}`;
-    }
-    if (propSchema.type === "array" && Array.isArray(value)) {
-      const itemSpec = propSchema.items;
-      if (
-        itemSpec &&
-        typeof itemSpec === "object" &&
-        typeof (itemSpec as Record<string, unknown>).type === "string"
-      ) {
-        const itemCheck = SIMPLE_TYPES[(itemSpec as Record<string, unknown>).type as string];
-        if (itemCheck) {
-          const bad = value.findIndex((item) => !itemCheck(item));
-          if (bad !== -1) {
-            return `invalid input: "${name}[${bad}]" must be ${(itemSpec as Record<string, unknown>).type}, got ${describeType(value[bad])}`;
-          }
-        }
-      }
-    }
+    const fault = validateValue(propSchema, record[name], at(name));
+    if (fault !== undefined) return fault;
   }
   return undefined;
 }

@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Schema check at any depth**: the check of a tool input, and of a
+  `--json-schema` answer, now reaches nested objects, arrays of
+  objects, `enum` in array items and a list of types. Before, it
+  covered the top-level properties only, so a wrong nested value
+  passed. `pattern`, `minimum`, "oneOf" and "$ref" are not checked.
 - **Deferred MCP tools keep the tool list fixed**: `tool_search` now
   gives the input schema of a found tool as text, and the model
   calls the tool with the new `call_tool` (`name`, `input`). Before,

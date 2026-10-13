@@ -207,7 +207,7 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 
 ## Structured answer
 
-`--json-schema <file>` with `-p` makes the answer JSON that matches a JSON Schema. The value can also be the schema text. Stdout is the JSON only, and `--format json` has it as `structuredOutput`. The model gives the answer through a `structured_output` tool, and an answer that breaks the schema goes back to the model with the reason. The run exits with code 1 when the model gives no such answer. The check covers the object root: `required`, and `type` and `enum` of the top-level properties. It is for a one-shot run, not for `--session`.
+`--json-schema <file>` with `-p` makes the answer JSON that matches a JSON Schema. The value can also be the schema text. Stdout is the JSON only, and `--format json` has it as `structuredOutput`. The model gives the answer through a `structured_output` tool, and an answer that breaks the schema goes back to the model with the reason. The run exits with code 1 when the model gives no such answer. The check covers `type` (also a list of types), `enum`, `required`, `properties` and `items` at any depth. Other keywords (`pattern`, `minimum`, "oneOf", "$ref") are not checked. It is for a one-shot run, not for `--session`.
 
 ## System prompt
 
