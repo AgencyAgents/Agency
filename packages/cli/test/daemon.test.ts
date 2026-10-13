@@ -546,6 +546,56 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("a key that a tool result holds does not reach the model or the result of the turn", async () => {
+    const envKey = "env-key-value-9d2c";
+    const turnKey = "turn-key-value-41aa";
+    const dumpTool: ToolSpec = {
+      name: "dump",
+      description: "prints the keys, as an env dump does",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => ({
+        content: `OTHERPROV_API_KEY=${envKey}\nkey of the turn: ${turnKey}\nplain text stays`,
+      }),
+    };
+    const requests: string[] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push(JSON.stringify(request.messages));
+        if (requests.length === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "dump" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    process.env.OTHERPROV_API_KEY = envKey;
+    try {
+      const { client } = await startFakeDaemon({ adapterFor, tools: [dumpTool] });
+      const result = (await client.call("run_turn", {
+        turnId: "t-redact-tool-result",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: turnKey,
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "dump" }] }],
+      })) as RunTurnRpcResult;
+
+      const seen = `${requests[1]}${JSON.stringify(result.messages)}`;
+      expect(seen).not.toContain(envKey);
+      expect(seen).not.toContain(turnKey);
+      expect(requests[1]).toContain("OTHERPROV_API_KEY=[REDACTED]");
+      expect(requests[1]).toContain("plain text stays");
+    } finally {
+      delete process.env.OTHERPROV_API_KEY;
+    }
+  }, 30_000);
+
   test.each([
     ["moves to the fallback", ErrorCode.OVERLOAD, 101],
     ["fails", ErrorCode.AUTH, 100],

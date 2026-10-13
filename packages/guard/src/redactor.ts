@@ -25,11 +25,20 @@ export class Redactor {
     if (secret.length >= 4) this.secrets.add(secret);
   }
 
-  redact(text: string): string {
+  /**
+   * Only the registered values, for text that the model reads and edits (a tool result):
+   * the key patterns would also change a test key in a source file.
+   */
+  redactSecrets = (text: string): string => {
     let result = text;
     for (const secret of this.secrets) {
       result = result.split(secret).join(PLACEHOLDER);
     }
+    return result;
+  };
+
+  redact(text: string): string {
+    let result = this.redactSecrets(text);
     for (const pattern of KNOWN_KEY_PATTERNS) {
       result = result.replace(pattern, PLACEHOLDER);
     }

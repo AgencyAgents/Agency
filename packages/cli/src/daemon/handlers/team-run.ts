@@ -397,7 +397,7 @@ export async function runCompareChildTurn(
   });
   const childTurn = await team.limiter.run(() =>
     runChildTurn(
-      { http, eventBus, createTraceRecorder },
+      { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactSecrets },
       {
         adapter: adapterFor(childProvider),
         scheduler: schedulerFor(childProvider),

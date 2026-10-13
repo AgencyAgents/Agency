@@ -54,6 +54,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
     http,
     isReadOnlyAgent,
     options,
+    redactor,
     resolveAgentModel,
     sessionScopes,
     teamFor,
@@ -401,7 +402,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
 
           const childTurn = await team.limiter.run(() =>
             runChildTurn(
-              { http, eventBus, createTraceRecorder },
+              { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactSecrets },
               {
                 adapter: adapterFor(childProvider),
                 scheduler: daemon.schedulerFor(childProvider),

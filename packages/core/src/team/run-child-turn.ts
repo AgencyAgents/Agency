@@ -59,6 +59,7 @@ export interface ChildTurnSpec {
 export interface ChildTurnDeps {
   http: HttpClient;
   eventBus?: RunTurnOptions["eventBus"];
+  redactToolResult?: RunTurnOptions["redactToolResult"];
   createTraceRecorder: (trace: ChildTurnTrace) => TraceRecorder | undefined;
 }
 
@@ -80,6 +81,7 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       toolPolicy: spec.toolPolicy,
       ...(spec.requestApproval !== undefined ? { requestApproval: spec.requestApproval } : {}),
       eventBus: deps.eventBus,
+      ...(deps.redactToolResult !== undefined ? { redactToolResult: deps.redactToolResult } : {}),
       systemPrompt: spec.systemPrompt,
       ...(spec.systemSegments !== undefined ? { systemSegments: spec.systemSegments } : {}),
       tools: spec.tools,

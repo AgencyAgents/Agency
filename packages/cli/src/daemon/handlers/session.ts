@@ -532,7 +532,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
 
       const childModelInfo = catalogModel(childProvider, childModel);
       const childTurn = await runChildTurn(
-        { http, eventBus, createTraceRecorder },
+        { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactSecrets },
         {
           adapter: adapterFor(childProvider),
           scheduler: schedulerFor(childProvider),
