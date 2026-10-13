@@ -87,6 +87,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Two daemons for one workspace**: two calls of one process that
+  looked for the daemon at the same time (two agents of a workflow in
+  parallel) each started a daemon, because the spawn lock takes a
+  holder with its own process id for a leftover. The calls of one
+  process for one workspace now run one after the other.
+- **A daemon that no client reaches**: a spawned daemon started its
+  idle timer only when a client left, so a daemon that never had a
+  client stayed for all time and held the binary. Its linger now runs
+  from the start.
 - **Provider keys in tool results**: a tool result that held a
   provider key (the output of `env`, a config file that the model
   read) went to the model and into the result of the turn as it was.
