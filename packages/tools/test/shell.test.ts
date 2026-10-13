@@ -128,4 +128,21 @@ describe("modelCommandEnv", () => {
     }
     expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" });
   });
+
+  test("a name of the deny list can be a pattern with *", () => {
+    const env = {
+      GITHUB_TOKEN: "t1",
+      npm_token: "t2",
+      MY_SECRET_VALUE: "s",
+      API_KEY: "k",
+      PATH: "/bin",
+      TOKENIZER: "x",
+    };
+    setDeniedCommandEnv(["*_TOKEN", "*SECRET*", "API_KEY"]);
+    try {
+      expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", TOKENIZER: "x" });
+    } finally {
+      setDeniedCommandEnv([]);
+    }
+  });
 });

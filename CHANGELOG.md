@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Patterns in `sandbox.denyEnv`**: a name can have `*`, for example
+  `*TOKEN*`. Before, each variable needed its exact name.
 - **Compaction keeps your messages word for word**: the summary of a
   compacted session ends with the messages that the user wrote, as
   written, and they go on through later compactions. Before, the model

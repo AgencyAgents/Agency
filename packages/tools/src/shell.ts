@@ -171,13 +171,20 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
   };
 }
 
-// Windows names of variables have no case.
-const envName = (name: string): string => (process.platform === "win32" ? name.toUpperCase() : name);
-let deniedEnv = new Set<string>();
+let deniedEnv: RegExp[] = [];
 
-/** The `sandbox.denyEnv` list of the config: one daemon has one config, so the list is state of the module. */
+/**
+ * The `sandbox.denyEnv` list of the config: one daemon has one config, so the list is state of the module.
+ * `*` in a name stands for any text. A pattern has no case: a token is a token in any spelling.
+ */
 export function setDeniedCommandEnv(names: readonly string[]): void {
-  deniedEnv = new Set(names.map(envName));
+  deniedEnv = names.map((name) => {
+    const source = name
+      .split("*")
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*");
+    return new RegExp(`^${source}$`, name.includes("*") || process.platform === "win32" ? "i" : "");
+  });
 }
 
 /**
@@ -187,7 +194,8 @@ export function setDeniedCommandEnv(names: readonly string[]): void {
 export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (value === undefined || /^AGENCY_.+_API_KEY$/i.test(name) || deniedEnv.has(envName(name))) continue;
+    if (value === undefined || /^AGENCY_.+_API_KEY$/i.test(name)) continue;
+    if (deniedEnv.some((pattern) => pattern.test(name))) continue;
     out[name] = value;
   }
   return out;
