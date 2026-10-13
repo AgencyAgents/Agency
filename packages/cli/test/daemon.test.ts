@@ -1094,6 +1094,45 @@ describe("system prompt composition", () => {
     expect(await run(false)).not.toContain("Project rule");
   });
 
+  test("a plugin hook on session.start runs one time for a session that session_send makes", async () => {
+    const workspaceRoot = tempRoot();
+    const pluginsDir = join(workspaceRoot, ".agency", "plugins");
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(
+      join(pluginsDir, "starts.mjs"),
+      'import { appendFileSync } from "node:fs";\n' +
+        "export default {\n" +
+        '  id: "starts",\n' +
+        '  hooks: { "session.start": (payload) => appendFileSync(new URL("./starts.txt", import.meta.url), `${payload.sessionId}\\n`) },\n' +
+        "};\n",
+    );
+    const trustStorePath = join(tempRoot(), "trust.json");
+    createFileTrustStore(trustStorePath).trust(workspaceRoot);
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath });
+    const send = (sessionId: string) =>
+      client.call("session_send", {
+        sessionId,
+        provider: "anthropic",
+        model: "test-model",
+        systemPrompt: "sys",
+        userText: "hi",
+      });
+    const saved = process.env.AGENCY_ANTHROPIC_API_KEY;
+    process.env.AGENCY_ANTHROPIC_API_KEY = "session-start-test-key";
+    try {
+      await send("sess-a");
+      await send("sess-a");
+      await send("sess-b");
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+      else process.env.AGENCY_ANTHROPIC_API_KEY = saved;
+    }
+    const starts = existsSync(join(pluginsDir, "starts.txt"))
+      ? readFileSync(join(pluginsDir, "starts.txt"), "utf8").trim().split("\n")
+      : [];
+    expect(starts).toEqual(["sess-a", "sess-b"]);
+  }, 30_000);
+
   test("plugins and skills of a workspace load only in a trusted workspace, and their text reaches the prompt", async () => {
     const run = async (trusted: boolean): Promise<{ system: string; ran: boolean }> => {
       const capture = { systems: [] as string[] };

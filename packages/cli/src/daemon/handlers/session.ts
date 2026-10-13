@@ -253,7 +253,15 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     context: { clientId: string },
   ): Promise<SessionSendResult> => {
     const store = todoStore;
-    if (!store.list().includes(p.sessionId)) store.create(p.sessionId);
+    if (!store.list().includes(p.sessionId)) {
+      store.create(p.sessionId);
+      // The turn handler sees a session that holds its first prompt already, and does not take it for a new one.
+      const start = { sessionId: p.sessionId, workspaceRoot: ctx.options.workspaceRoot };
+      try {
+        ctx.eventBus.emit("session.start", start);
+        ctx.eventBus.emit("event", { event: "session.start", payload: start });
+      } catch {}
+    }
     const family = providers[p.provider]?.family ?? p.provider;
     const tokenizer = tokenizerFor(family);
     // The model's own window, not a fixed guess: a small-window model overflows long before 200k tokens.

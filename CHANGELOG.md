@@ -87,6 +87,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **`session.start` for a kept session**: a plugin hook on
+  `session.start` did not run for a session that `--session`,
+  `--continue` or `session_send` made. The event came only for a
+  one-shot turn. It now comes one time when the session is made.
 - **A cancelled command left a program of Git Bash alive**: on Windows a
   cancel or a time limit stopped the shell with `taskkill /T`, which
   follows parent links. A program of Git Bash (`sleep`, a shell script)
