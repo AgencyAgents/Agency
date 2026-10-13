@@ -53,6 +53,16 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
     for (const manager of ctx.approvalManagers.values()) manager.rejectTurn(turnId);
     return { cancelled: true };
   };
+  // The record of a turn holds its key: only these fields go out.
+  handlers.turns_list = async () => ({
+    turns: [...ctx.activeTurnMeta].map(([turnId, meta]) => ({
+      turnId,
+      sessionId: meta.sessionId,
+      provider: meta.provider,
+      model: meta.model,
+      startedAt: meta.startedAt,
+    })),
+  });
 }
 
 /** The source of the error that a prompt hook's refusal throws: session_send removes the prompt on it. */
@@ -155,6 +165,7 @@ export async function executeTurn(
 
     // R10 wiring: the whole turn (provider requests and tool calls) correlates under one trace ID.
     return withTrace(async () => {
+      const startedAt = new Date().toISOString();
       if (configFingerprint.check()) {
         logger.warn("config or binary changed; this daemon leaves when it is idle");
       }
@@ -410,6 +421,7 @@ export async function executeTurn(
             provider: params.provider,
             model: params.model,
             apiKey,
+            startedAt,
             budget: params.budget,
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
             permissionMode: params.permissionMode,
@@ -550,6 +562,7 @@ export async function executeTurn(
               provider: fallbackRef.provider,
               model: fallbackRef.model,
               apiKey: fbApiKey,
+              startedAt,
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               permissionMode: params.permissionMode,

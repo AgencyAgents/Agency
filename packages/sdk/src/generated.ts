@@ -60,6 +60,7 @@ export type RpcMethod =
   | "trace_export"
   | "trace_get"
   | "trace_replay"
+  | "turns_list"
   | "undo"
   | "undo_run"
   | "wake_subscribe"
@@ -366,6 +367,8 @@ export interface SurfaceClient {
   trace_get(params?: Record<string, unknown>): Promise<unknown>;
   /** Re-run a recorded turn and diff the messages. */
   trace_replay(params?: Record<string, unknown>): Promise<unknown>;
+  /** List the turns that run: id, session, model and start time. */
+  turns_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Undo the last snapshot-backed file change. */
   undo(params?: Record<string, unknown>): Promise<unknown>;
   /** Roll a session back to its pre-turn checkpoint; with mode files-only|task-only|both restores a shadow commit's files and/or the session tip. */
@@ -433,6 +436,7 @@ export function createSurfaceClient(
     trace_export: (params) => call("trace_export", params ?? {}),
     trace_get: (params) => call("trace_get", params ?? {}),
     trace_replay: (params) => call("trace_replay", params ?? {}),
+    turns_list: (params) => call("turns_list", params ?? {}),
     undo: (params) => call("undo", params ?? {}),
     undo_run: (params) => call("undo_run", params ?? {}),
     wake_subscribe: (params) => call("wake_subscribe", params ?? {}),

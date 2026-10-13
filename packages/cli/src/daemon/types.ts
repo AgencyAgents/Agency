@@ -502,6 +502,8 @@ export interface ActiveTurnMeta {
   provider: string;
   model: string;
   apiKey: string;
+  /** ISO time of the start of the turn, for the list of active turns. */
+  startedAt: string;
   budget?: Budget;
   taskDepth?: number;
   /** The mode of the run: an agent that this turn dispatches answers its asks with it. */

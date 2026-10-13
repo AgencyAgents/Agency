@@ -61,7 +61,8 @@ Commands:
   session fork <id>        Fork (clone) a session under a new id
   session clone <id> [newId]  Clone a session file under a new id (or the given one)
   session delete <id>      Delete a session by id
-  daemon status            Show daemon status for this workspace
+  daemon status            Show daemon status for this workspace, with the turns that run
+  daemon cancel <turn>     Stop a turn that runs
   auth login <provider>    Store an API key for a provider in the OS keychain
   auth login <provider> --oauth
                            OAuth browser flow for anthropic, openai, google, github-copilot
@@ -989,6 +990,39 @@ async function authCmd(
   throw subcommandError("auth", parsed.subcommand);
 }
 
+/** One row of `turns_list`: a turn that runs in the daemon. */
+interface ActiveTurn {
+  turnId: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  startedAt: string;
+}
+
+/** `daemon cancel <turn>`: stops a turn that another terminal started. `daemon status` gives the id. */
+async function daemonCancelCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): Promise<number> {
+  const turnId = parsed.args[0];
+  if (turnId === undefined) throw new Error(t("cli.error.missing_value", { flag: "daemon cancel <turn>" }));
+  const { defaultInstanceDir } = await import("./headless.ts");
+  const instanceDir = deps.instanceDir ?? defaultInstanceDir(envOf(deps));
+  const instanceFile = join(instanceDir, `${hashWorkspaceRoot(workspaceRootOf(parsed, deps))}.json`);
+  let client: DaemonClient | undefined;
+  try {
+    const info = JSON.parse(readFileSync(instanceFile, "utf8")) as InstanceInfo;
+    client = await connectToDaemon(info.port, "127.0.0.1", { token: info.token });
+  } catch {
+    throw new Error(t("cli.daemon.not_running"));
+  }
+  try {
+    const { cancelled } = (await client.call("cancel_turn", { turnId })) as { cancelled: boolean };
+    if (!cancelled) throw new Error(t("cli.daemon.no_such_turn", { turnId }));
+    out(t("cli.daemon.cancelled", { turnId }));
+    return 0;
+  } finally {
+    await client.close();
+  }
+}
+
 async function daemonStatusCmd(
   parsed: ParsedArgv,
   deps: EntrypointDeps,
@@ -1010,8 +1044,9 @@ async function daemonStatusCmd(
     let client: DaemonClient | undefined;
     try {
       client = await connectToDaemon(info.port, "127.0.0.1", { token: info.token });
+      const { turns } = (await client.call("turns_list", {})) as { turns: ActiveTurn[] };
       if (parsed.format === "json") {
-        out(JSON.stringify({ status: "running", port: info.port, pid: info.pid ?? null }, null, 2));
+        out(JSON.stringify({ status: "running", port: info.port, pid: info.pid ?? null, turns }, null, 2));
       } else {
         out(
           t("cli.daemon.status", {
@@ -1020,6 +1055,9 @@ async function daemonStatusCmd(
             pid: String(info.pid ?? "?"),
           }),
         );
+        for (const turn of turns) {
+          out(t("cli.daemon.turn", { ...turn, model: `${turn.provider}/${turn.model}` }));
+        }
       }
       return 0;
     } catch {
@@ -1179,11 +1217,13 @@ Subcommands:
       if (parsed.subcommand === "status" || parsed.subcommand === undefined) {
         return daemonStatusCmd(parsed, deps, out, err);
       }
+      if (parsed.subcommand === "cancel") return daemonCancelCmd(parsed, deps, out);
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency daemon <subcommand>
 
 Subcommands:
-  status               Show daemon status for this workspace`);
+  status               Show daemon status for this workspace, with the turns that run
+  cancel <turn>        Stop a turn that runs`);
         return 0;
       }
       throw subcommandError("daemon", parsed.subcommand);

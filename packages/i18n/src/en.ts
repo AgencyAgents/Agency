@@ -206,6 +206,10 @@ export const en = {
 
   "cli.daemon.status": "Daemon: {status} on port {port} (pid {pid})",
   "cli.daemon.not_running": "Daemon: not running",
+  "cli.daemon.turn": "  turn {turnId}  session {sessionId}  {model}  since {startedAt}",
+  "cli.daemon.cancelled": "Turn {turnId}: cancel sent.",
+  "cli.daemon.no_such_turn":
+    'No turn "{turnId}" runs in this daemon. `agency daemon status` lists the turns.',
   "cli.daemon.spawning": "Starting daemon for {workspace}...",
   "cli.daemon.connected": "Daemon connected on port {port}.",
   "cli.daemon.timeout":

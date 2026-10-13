@@ -4,7 +4,6 @@ import {
   AgentRegistry,
   attachCommandHooks,
   BoardStore,
-  type Budget,
   ChannelStore,
   ChoiceLog,
   type CommandHooks,
@@ -40,7 +39,6 @@ import {
   DockerSandboxBackend,
   type ExternalDirectoryDecision,
   ensureSandboxAvailable,
-  type PermissionMode,
   PermissionsGate,
   Redactor,
   type SandboxBackend,
@@ -93,6 +91,7 @@ import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
 import { TaskUsageTracker } from "./task-ledger.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
+  type ActiveTurnMeta,
   type AgentDaemon,
   type AgentDaemonOptions,
   commandPolicyFromPermissions,
@@ -383,20 +382,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginInstructions = pluginResult.instructions;
   }
 
-  const activeTurnMeta = new Map<
-    string,
-    {
-      capabilities: Capabilities;
-      tools: ToolSpec[];
-      sessionId: string;
-      provider: string;
-      model: string;
-      apiKey: string;
-      budget?: Budget;
-      taskDepth?: number;
-      permissionMode?: PermissionMode;
-    }
-  >();
+  const activeTurnMeta = new Map<string, ActiveTurnMeta>();
 
   const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
