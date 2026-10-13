@@ -37,8 +37,8 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
-| `sandbox.backend` | `software|docker|os` | `software` | Sandbox backend: in-process boundary, container exec, or the sandbox of the operating system |
-| `sandbox.allowNetwork` | `boolean` | `false` | With the `os` backend: shell commands get the network |\|docker` | `software` | Sandbox backend: in-process boundary or container exec |
+| `sandbox.backend` | `software\|docker\|os` | `software` | Sandbox backend: in-process boundary, container exec, or the sandbox of the operating system |
+| `sandbox.allowNetwork` | `boolean` | `false` | With the `os` backend: shell commands get the network |
 | `sandbox.image` | string | — | Image for one-shot `docker run` exec |
 | `sandbox.container` | string | — | Existing container for `docker exec`; unset means `docker run --rm` |
 | `sandbox.containerRoot` | string | — | Container-side mount point; defaults to `/workspace` |
