@@ -668,10 +668,10 @@ describe("createAgentDaemon", () => {
   }, 30_000);
 
   test.each([
-    ["auto", ["tool_search"], ["tracker_tool_3", "tool_search"]],
+    ["auto", ["tool_search", "call_tool"], ["tool_search", "call_tool"]],
     ["never", Array.from({ length: 12 }, (_, i) => `tracker_tool_${i}`), undefined],
   ])(
-    "mcpDeferTools %s: the tool list of a request, and a loaded tool stays for the session",
+    "mcpDeferTools %s: the tool list of a request, and it is the same after a search",
     async (mode, first, later) => {
       const mcpTools = Array.from({ length: 12 }, (_, i): ToolSpec & { origin: "mcp" } => ({
         name: `tracker_tool_${i}`,
@@ -720,7 +720,7 @@ describe("createAgentDaemon", () => {
       expect(offered[0]).toEqual(first);
       if (later === undefined) return;
       expect(offered[1]).toEqual(later);
-      // The next turn of the session: the loaded tool is in the first request.
+      // The next turn of the session has the same list: a change would end the prompt cache.
       await turn(`t-defer-${mode}-2`);
       expect(offered[2]).toEqual(later);
     },
