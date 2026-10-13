@@ -501,6 +501,7 @@ export async function executeTurn(
               shellLabel,
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
               identity,
@@ -603,6 +604,7 @@ export async function executeTurn(
               shellLabel,
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             try {
               result = await runTurn(
@@ -659,6 +661,7 @@ export async function executeTurn(
               shellLabel,
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             writeTurnCassette(traceRecorder, params, sysPrompt, collectedTraceEvents, result);
           }

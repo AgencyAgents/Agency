@@ -111,7 +111,7 @@ export function buildEnvironmentBlock(info: EnvironmentInfo): string {
         ? `dirty, ${info.git.changedFiles} changed file${info.git.changedFiles === 1 ? "" : "s"}`
         : "clean",
     );
-    lines.push(`git: branch ${info.git.branch} (${state.join(", ")})`);
+    lines.push(`git at session start: branch ${info.git.branch} (${state.join(", ")})`);
   }
   lines.push("</environment>");
   return lines.join("\n");

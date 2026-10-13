@@ -574,6 +574,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     turnOwners,
     activeTurnMeta,
     loadedTools,
+    sessionEnvironments: new Map(),
     commands,
     catalogModel,
     learnModel: models.learnModel,

@@ -1520,7 +1520,20 @@ describe("resolveSystemPrompt", () => {
       workspaceRoot: tempRoot(),
       git: (_cwd, args) => (args.includes("status") ? "## main...origin/main\n M a.ts\n" : null),
     });
-    expect(system).toContain("git: branch main (dirty, 1 changed file)");
+    expect(system).toContain("git at session start: branch main (dirty, 1 changed file)");
+  });
+
+  test("a session keeps its first environment block: a changed work tree must not end the prompt cache", () => {
+    let status = "## main\n";
+    const options = {
+      workspaceRoot: tempRoot(),
+      git: () => status,
+      environments: new Map<string, string>(),
+    };
+    const first = resolveSystemPrompt(params({ sessionId: "s1" }), options);
+    status = "## main\n M a.ts\n";
+    expect(resolveSystemPrompt(params({ sessionId: "s1" }), options)).toBe(first);
+    expect(resolveSystemPrompt(params({ sessionId: "s2" }), options)).toContain("dirty, 1 changed file");
   });
 
   test("identity falls back to the shared default when parts omit it", () => {

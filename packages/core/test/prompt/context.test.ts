@@ -131,7 +131,7 @@ describe("buildEnvironmentBlock", () => {
         "os: win32 10.0.26100 x64",
         "cwd: C:\\repo",
         "date: 2026-09-02",
-        "git: branch main (dirty, 2 changed files)",
+        "git at session start: branch main (dirty, 2 changed files)",
         "</environment>",
       ].join("\n"),
     );
@@ -154,7 +154,7 @@ describe("buildEnvironmentBlock", () => {
       date: "2026-09-02",
       git: { branch: "HEAD", dirty: false, changedFiles: 0, detached: true },
     });
-    expect(detached).toContain("git: branch HEAD (detached, clean)");
+    expect(detached).toContain("git at session start: branch HEAD (detached, clean)");
 
     const one = buildEnvironmentBlock({
       platform: "darwin 24 x64",
@@ -162,7 +162,7 @@ describe("buildEnvironmentBlock", () => {
       date: "2026-09-02",
       git: { branch: "main", dirty: true, changedFiles: 1, detached: false },
     });
-    expect(one).toContain("git: branch main (dirty, 1 changed file)");
+    expect(one).toContain("git at session start: branch main (dirty, 1 changed file)");
   });
 
   test("renders the shell line after the date when a shell label is known", () => {

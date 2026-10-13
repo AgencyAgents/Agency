@@ -169,6 +169,8 @@ export interface ResolveSystemPromptOptions {
   trustStore?: import("@agency/guard").TrustStore;
   /** Texts of the loaded plugins and skills. They go after the project instructions. */
   pluginInstructions?: readonly string[];
+  /** Environment block per session id. A block that changes between turns ends the prompt cache of the full history. */
+  environments?: Map<string, string>;
 }
 
 /** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
@@ -584,6 +586,8 @@ export interface DaemonContext {
   activeTurnMeta: Map<string, ActiveTurnMeta>;
   /** For each session, the MCP tools that the model loaded with tool_search. */
   loadedTools: Map<string, Set<string>>;
+  /** For each session, the environment block of its first turn. */
+  sessionEnvironments: Map<string, string>;
   commands: CommandTemplate[];
   catalogModel: (provider: string, model: string) => ModelInfo | undefined;
   learnModel: (provider: string, model: string, http: HttpClient) => Promise<void>;
@@ -618,17 +622,22 @@ export function resolvePrompt(
       "[agency] systemPromptParts.context=false omits the environment block (os/cwd/date/git/shell): the model loses workspace orientation.",
     );
   }
+  const kept = params.sessionId === undefined ? undefined : options.environments?.get(params.sessionId);
   const context =
     parts?.context === false
       ? undefined
-      : buildEnvironmentBlock(
+      : (kept ??
+        buildEnvironmentBlock(
           gatherEnvironmentInfo({
             cwd: options.workspaceRoot,
             now: options.now,
             git: options.git,
             shell: options.shellLabel,
           }),
-        );
+        ));
+  // ponytail: in memory only, so a daemon restart costs a session one cache miss. Store it with the session if that matters.
+  if (context !== undefined && params.sessionId !== undefined)
+    options.environments?.set(params.sessionId, context);
 
   const composed = composeSystemPrompt({
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
