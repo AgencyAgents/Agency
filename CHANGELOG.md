@@ -24,7 +24,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   Codex.
 - **Prompt cache across the turns of a session**: the environment block
   of the system prompt (date, git branch, git state) is made one time
-  for each session and has the label `git at session start`. Before, a
+  for each session and day, is stored next to the session, and has the
+  label `git at session start`. Before, a
   turn that changed the work tree changed the block, and the next turn
   paid full price for the full history. Measured in one two-turn
   session: 0 of 21820 input tokens of turn 2 came from the cache

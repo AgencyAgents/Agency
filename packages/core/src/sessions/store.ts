@@ -226,6 +226,7 @@ export class SessionStore {
     rmSync(sessionPath(this.sessionsDir, sessionId), { force: true });
     rmSync(join(this.sessionsDir, `${sessionId}.memory.jsonl`), { force: true });
     rmSync(join(this.sessionsDir, `${sessionId}.trace.jsonl`), { force: true });
+    rmSync(join(this.sessionsDir, `${sessionId}.environment.txt`), { force: true });
     if (existsSync(this.sessionsDir)) {
       for (const f of readdirSync(this.sessionsDir)) {
         if (f.startsWith(`${sessionId}.`) && f.endsWith(".cassette.json")) {

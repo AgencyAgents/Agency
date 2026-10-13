@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentRegistry,
   type BoardStore,
@@ -11,6 +13,7 @@ import {
   composeSystemPrompt,
   type DispatchStateStore,
   type EventBus,
+  environmentDate,
   type GitRunner,
   gatherEnvironmentInfo,
   type InboxStore,
@@ -170,7 +173,7 @@ export interface ResolveSystemPromptOptions {
   /** Texts of the loaded plugins and skills. They go after the project instructions. */
   pluginInstructions?: readonly string[];
   /** Environment block per session id. A block that changes between turns ends the prompt cache of the full history. */
-  environments?: Map<string, string>;
+  environments?: EnvironmentStore;
 }
 
 /** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
@@ -587,7 +590,7 @@ export interface DaemonContext {
   /** For each session, the MCP tools that the model loaded with tool_search. */
   loadedTools: Map<string, Set<string>>;
   /** For each session, the environment block of its first turn. */
-  sessionEnvironments: Map<string, string>;
+  sessionEnvironments: EnvironmentStore;
   commands: CommandTemplate[];
   catalogModel: (provider: string, model: string) => ModelInfo | undefined;
   learnModel: (provider: string, model: string, http: HttpClient) => Promise<void>;
@@ -601,6 +604,42 @@ export interface DaemonContext {
   todoSessionsDir: string;
   builtinsMode: boolean;
   tools: ToolsToolSpec[];
+}
+
+export interface EnvironmentStore {
+  get(sessionId: string): string | undefined;
+  set(sessionId: string, block: string): void;
+}
+
+/** The environment blocks of the sessions, in memory and in a file next to each session, so a block outlives the daemon. */
+export function sessionEnvironmentStore(sessionsDir: string): EnvironmentStore {
+  const memory = new Map<string, string>();
+  // The id of a session comes from the caller: only a plain name becomes a file name.
+  const fileOf = (sessionId: string): string | undefined =>
+    /^[\w-][\w.-]*$/.test(sessionId) ? join(sessionsDir, `${sessionId}.environment.txt`) : undefined;
+  return {
+    get(sessionId) {
+      const known = memory.get(sessionId);
+      if (known !== undefined) return known;
+      const file = fileOf(sessionId);
+      try {
+        const block = file === undefined ? "" : readFileSync(file, "utf8");
+        if (block !== "") memory.set(sessionId, block);
+      } catch {}
+      return memory.get(sessionId);
+    },
+    set(sessionId, block) {
+      if (memory.get(sessionId) === block) return;
+      memory.set(sessionId, block);
+      const file = fileOf(sessionId);
+      try {
+        if (file !== undefined) {
+          mkdirSync(sessionsDir, { recursive: true });
+          writeFileSync(file, block);
+        }
+      } catch {}
+    },
+  };
 }
 
 export function resolveSystemPrompt(params: RunTurnParams, options: ResolveSystemPromptOptions): string {
@@ -622,7 +661,9 @@ export function resolvePrompt(
       "[agency] systemPromptParts.context=false omits the environment block (os/cwd/date/git/shell): the model loses workspace orientation.",
     );
   }
-  const kept = params.sessionId === undefined ? undefined : options.environments?.get(params.sessionId);
+  const stored = params.sessionId === undefined ? undefined : options.environments?.get(params.sessionId);
+  // A block of another day has the wrong date, and the cache of the provider is gone by then.
+  const kept = stored?.includes(`date: ${environmentDate(options.now ?? new Date())}\n`) ? stored : undefined;
   const context =
     parts?.context === false
       ? undefined
@@ -635,7 +676,6 @@ export function resolvePrompt(
             shell: options.shellLabel,
           }),
         ));
-  // ponytail: in memory only, so a daemon restart costs a session one cache miss. Store it with the session if that matters.
   if (context !== undefined && params.sessionId !== undefined)
     options.environments?.set(params.sessionId, context);
 

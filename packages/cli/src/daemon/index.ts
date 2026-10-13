@@ -104,6 +104,7 @@ import {
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
   resolveAdapter,
+  sessionEnvironmentStore,
 } from "./types.ts";
 
 export * from "./config-fingerprint.ts";
@@ -574,7 +575,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     turnOwners,
     activeTurnMeta,
     loadedTools,
-    sessionEnvironments: new Map(),
+    sessionEnvironments: sessionEnvironmentStore(todoSessionsDir),
     commands,
     catalogModel,
     learnModel: models.learnModel,

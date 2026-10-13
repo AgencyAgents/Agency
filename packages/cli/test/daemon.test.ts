@@ -17,6 +17,7 @@ import {
   type RunTurnRpcResult,
   resolveAdapter,
   resolveSystemPrompt,
+  sessionEnvironmentStore,
 } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -1542,6 +1543,29 @@ describe("resolveSystemPrompt", () => {
       git: () => null,
     });
     expect(system.startsWith(`${DEFAULT_SYSTEM_PROMPT}\n\nROLE\n\n<environment>`)).toBe(true);
+  });
+
+  test("the environment block of a session outlives the daemon, and is made again on another day", () => {
+    const dir = tempRoot();
+    let status = "## main\n";
+    const options = (now: Date) => ({
+      workspaceRoot: dir,
+      git: () => status,
+      now,
+      // A new store for each call: what a new daemon has.
+      environments: sessionEnvironmentStore(join(dir, "sessions")),
+    });
+    const day = new Date(2026, 9, 13, 10);
+    const first = resolveSystemPrompt(params({ sessionId: "s1" }), options(day));
+    status = "## main\n M a.ts\n";
+    expect(resolveSystemPrompt(params({ sessionId: "s1" }), options(day))).toBe(first);
+    // The date in the prompt must be right, and after a day the cache of the provider is gone.
+    const later = resolveSystemPrompt(params({ sessionId: "s1" }), options(new Date(2026, 9, 14, 10)));
+    expect(later).toContain("date: 2026-10-14");
+    expect(later).toContain("dirty, 1 changed file");
+    // An id that is not a safe file name is kept in memory only.
+    resolveSystemPrompt(params({ sessionId: "../x" }), options(day));
+    expect(existsSync(join(dir, "x.environment.txt"))).toBe(false);
   });
 
   test("the shared default carries safety, conventions, tool-use, and shell doctrine", () => {
