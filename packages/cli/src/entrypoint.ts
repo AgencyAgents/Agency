@@ -37,6 +37,7 @@ import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from 
 import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
+import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
 
 /**
  * Inlined at compile time by scripts/build.ts (--define); running from source
@@ -72,6 +73,8 @@ Commands:
                            Install a Claude Code / Codex plugin
   plugin list              Show installed skills and plugin modules
   plugin remove <name>     Remove an installed plugin
+  workflow run <file> [--arg key=value]
+                           Run a script that starts agent turns, in sequence or in parallel
   onboard                  First-run setup: connect, model, trust
   trust                    Trust this workspace: load its AGENTS.md, CLAUDE.md and rules
   debug                    Write a redacted debug bundle for issue reports
@@ -118,6 +121,8 @@ export interface ParsedArgv {
   overwrite: boolean;
   rollback: boolean;
   images: string[];
+  /** The `--arg key=value` pairs of `workflow run`, as written. */
+  workflowArgs: string[];
   continueLast: boolean;
   session: string | undefined;
   permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
@@ -189,6 +194,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     oauth: false,
     device: false,
     images: [],
+    workflowArgs: [],
     overwrite: false,
     rollback: false,
     continueLast: false,
@@ -300,6 +306,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--image":
         parsed.images.push(value());
+        break;
+      case "--arg":
+        parsed.workflowArgs.push(value());
         break;
       case "--overwrite":
         parsed.overwrite = true;
@@ -631,6 +640,63 @@ async function runPrintMode(
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
   return reportTurn(out, err, parsed, result);
+}
+
+/** `workflow run <file>`: each `agent()` of the script is one headless turn with a new context, as `-p` runs it. */
+async function workflowCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  if (parsed.subcommand !== "run") throw subcommandError("workflow", parsed.subcommand);
+  const file = parsed.args[0];
+  if (file === undefined) throw new Error(t("cli.error.missing_value", { flag: "workflow run <file>" }));
+  const args: Record<string, string> = {};
+  for (const pair of parsed.workflowArgs) {
+    const at = pair.indexOf("=");
+    if (at < 1) throw new Error(t("cli.error.workflow_arg", { value: pair }));
+    args[pair.slice(0, at)] = pair.slice(at + 1);
+  }
+
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const config = loadConfig({ globalDir: deps.configDir, env: envOf(deps), flags: flagsFor(parsed) });
+  let started = 0;
+  const result = await runWorkflow(file, {
+    args,
+    log: err,
+    parallel: runParallel,
+    agent: async (prompt, options = {}): Promise<WorkflowAgentResult> => {
+      const ref =
+        options.model === undefined ? resolveModelRef(config, parsed) : parseModelRef(options.model);
+      if (!ref) throw new Error(t("cli.error.no_model"));
+      await validateTurnKey(ref.provider, config, deps);
+      const n = ++started;
+      err(t("cli.workflow.agent_start", { n: String(n), prompt: prompt.replace(/\s+/g, " ").slice(0, 80) }));
+      const maxCost = options.maxCost ?? parsed.maxCost;
+      const turn = await (deps.runHeadless ?? runHeadless)({
+        workspaceRoot,
+        instanceDir: deps.instanceDir,
+        provider: ref.provider,
+        model: ref.model,
+        systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        prompt,
+        permissionMode: options.permissionMode ?? parsed.permissionMode,
+        maxToolIterations: options.maxSteps ?? parsed.maxSteps,
+        ...(maxCost === undefined ? {} : { budget: { maxCostUsd: maxCost } }),
+      });
+      err(t("cli.workflow.agent_end", { n: String(n), reason: turn.error?.code ?? turn.stopReason }));
+      return {
+        text: assistantText(turn.messages),
+        stopReason: turn.stopReason,
+        usage: turn.usage,
+        ok: turn.stopReason !== "error" && !turn.error && !turn.budgetExceeded,
+      };
+    },
+  });
+  if (typeof result === "string") out(result);
+  else if (result !== undefined) out(JSON.stringify(result, null, 2));
+  return 0;
 }
 
 function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {
@@ -1160,6 +1226,8 @@ Subcommands:
     }
     case "plugin":
       return pluginCmd(parsed, deps, out, err);
+    case "workflow":
+      return workflowCmd(parsed, deps, out, err);
     default:
       throw new Error(t("cli.error.unknown_command", { command: String(parsed.command) }));
   }

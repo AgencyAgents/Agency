@@ -164,6 +164,10 @@ export const en = {
   "cli.error.invalid_format": '--format must be "text", "json" or "stream-json".',
   "cli.error.invalid_max_cost": "--max-cost must be a number above 0, in USD.",
   "cli.error.budget_exceeded": "budget_exceeded: the turn reached its cost limit: the task is not finished",
+  "cli.error.workflow_no_default": 'The workflow file "{file}" has no default export that is a function.',
+  "cli.error.workflow_arg": '--arg needs the form key=value, and got "{value}".',
+  "cli.workflow.agent_start": "[agent {n}] start: {prompt}",
+  "cli.workflow.agent_end": "[agent {n}] end: {reason}",
   "cli.error.invalid_permission_mode":
     '--permission-mode must be "ask", "allow-edits", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
