@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Skills load on demand**: a skill with a `description` is one line
+  in the system prompt, and the model loads its body with the new
+  `skill` tool. Before, the full text of every skill was in every
+  request. Measured with one skill of 60 rules: 4092 input tokens for
+  an unrelated prompt, against 6208 with the body in the prompt. A
+  skill with no description stays in the prompt in full.
 - **`/goal` is now the session goal**: the team report that `/goal`
   returned is now `/report [outcome]`. The `report_get` RPC did not
   change.
