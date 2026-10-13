@@ -87,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Provider keys in the environment of a shell command**: a command
+  of the `bash` tool had the provider keys of the harness
+  (`AGENCY_<ID>_API_KEY`) in its environment, so a command could print
+  a key into the transcript or send it out. These variables are no
+  longer given to a command, in the foreground or in the background.
 - **A run directly after a config change used the old daemon**: an idle
   daemon checks its config each second, so a command that started in
   the same second as `agency trust`, a config edit or a plugin install
