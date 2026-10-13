@@ -188,11 +188,20 @@ function discoverAgentFiles(dir: string): string[] {
   return out;
 }
 
-function loadAgentDir(dir: string, source: AgentSource): Map<string, FileAgentDef> {
+/** A file that is not valid is skipped: one bad file must not take every other agent away. */
+function loadAgentDir(
+  dir: string,
+  source: AgentSource,
+  warn: (message: string) => void,
+): Map<string, FileAgentDef> {
   const out = new Map<string, FileAgentDef>();
   for (const file of discoverAgentFiles(dir)) {
-    const def = parseAgentFile(readFileSync(file, "utf8"), file);
-    out.set(def.handle, { ...def, source, file });
+    try {
+      const def = parseAgentFile(readFileSync(file, "utf8"), file);
+      out.set(def.handle, { ...def, source, file });
+    } catch (error) {
+      warn(`skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   return out;
 }
@@ -245,6 +254,8 @@ export interface ResolveFileRosterOptions {
   seed?: boolean;
   /** False for a workspace that the user did not trust: an agent file can grant itself tools, so none loads. */
   projectTrusted?: boolean;
+  /** Gets a line for each agent file that is skipped. */
+  warn?: (message: string) => void;
 }
 
 export interface FileRoster {
@@ -264,9 +275,10 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
     seeded = written.length > 0;
   }
   const userDir = join(opts.configDirOverride ?? configDir(), "agents");
-  for (const [handle, def] of loadAgentDir(userDir, "user")) merged.set(handle, def);
+  const warn = opts.warn ?? (() => {});
+  for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
   if (opts.projectTrusted === false) return { agents: merged, seeded };
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
-  for (const [handle, def] of loadAgentDir(projectDir, "project")) merged.set(handle, def);
+  for (const [handle, def] of loadAgentDir(projectDir, "project", warn)) merged.set(handle, def);
   return { agents: merged, seeded };
 }

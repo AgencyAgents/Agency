@@ -52,6 +52,30 @@ describe("phase 5 file-based agents", () => {
     }
   });
 
+  test("an agent file that is not valid is skipped with a warning, and the other files load", () => {
+    const ws = makeDir("one-bad");
+    const userDir = makeDir("one-bad-user");
+    try {
+      writeText(join(ws, ".agency", "agents", "coder.md"), CODER_OVERRIDE);
+      writeText(join(ws, ".agency", "agents", "broken.md"), "---\nrole: broken\nreplace: maybe\n---\nbody\n");
+      const warnings: string[] = [];
+      const roster = resolveFileRoster({
+        workspaceRoot: ws,
+        configDirOverride: userDir,
+        configAgents: { ...DEFAULT_ROSTER },
+        seed: false,
+        warn: (message) => warnings.push(message),
+      });
+      expect(roster.agents.get("coder")?.model).toBe("gpt-test");
+      expect(roster.agents.has("broken")).toBe(false);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("broken.md");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(userDir, { recursive: true, force: true });
+    }
+  });
+
   test("an untrusted project contributes no agent file", () => {
     const ws = makeDir("untrusted");
     const userDir = makeDir("untrusted-user");

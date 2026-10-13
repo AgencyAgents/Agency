@@ -48,6 +48,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
       ...(ctx.options.configDir !== undefined ? { configDirOverride: ctx.options.configDir } : {}),
       ...(cfg.agents !== undefined ? { configAgents: cfg.agents } : {}),
       projectTrusted: ctx.trustStore.isTrusted(ctx.options.workspaceRoot),
+      warn: (message) => logger.warn(message),
     });
     fileAgents = roster.agents;
     const merged: Record<string, FileBackedAgent> = { ...(cfg.agents ?? {}) };

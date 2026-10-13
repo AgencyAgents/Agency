@@ -87,6 +87,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **One agent file that is not valid**: one agent file with an error
+  made the daemon drop every agent file and use the roster of the
+  config. The daemon now skips that file with a warning in its log,
+  and the other files load.
 - **Two daemons for one workspace**: two calls of one process that
   looked for the daemon at the same time (two agents of a workflow in
   parallel) each started a daemon, because the spawn lock takes a
