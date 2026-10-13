@@ -13,6 +13,7 @@ import {
   collectPluginCommands,
   configDir,
   createRotatingFileSink,
+  createSkillTool,
   DispatchStateStore,
   dataDir,
   EventBus,
@@ -330,6 +331,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResultEarly.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     sharedPluginTools = sharedPluginRegistry.list();
+    if (pluginResultEarly.skills.length > 0)
+      sharedPluginTools.push(createSkillTool(pluginResultEarly.skills));
     pluginAgents = collectPluginAgents(pluginResultEarly.plugins);
     pluginCommands = collectPluginCommands(pluginResultEarly.plugins);
     pluginInstructions = pluginResultEarly.instructions;
@@ -353,6 +356,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     tools = pluginToolRegistry.list();
+    if (pluginResult.skills.length > 0) tools.push(createSkillTool(pluginResult.skills));
     pluginAgents = collectPluginAgents(pluginResult.plugins);
     pluginCommands = collectPluginCommands(pluginResult.plugins);
     pluginInstructions = pluginResult.instructions;

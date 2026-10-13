@@ -15,6 +15,7 @@ export * from "./plugins/importer.ts";
 export * from "./plugins/loader.ts";
 export * from "./plugins/manifest.ts";
 export * from "./plugins/marketplace.ts";
+export { createSkillTool } from "./plugins/skill.ts";
 export * from "./plugins/types.ts";
 export * from "./progress/index.ts";
 export * from "./prompt/index.ts";

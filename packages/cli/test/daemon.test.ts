@@ -996,12 +996,14 @@ describe("system prompt composition", () => {
 
     const untrusted = await run(false);
     expect(untrusted.ran).toBe(false);
-    expect(untrusted.system).not.toContain("ZEPHYR-204");
+    expect(untrusted.system).not.toContain("a test skill");
     expect(untrusted.system).not.toContain("QUARTZ-881");
 
     const trusted = await run(true);
     expect(trusted.ran).toBe(true);
-    expect(trusted.system).toContain("Skill rule: ZEPHYR-204.");
+    // A skill with a description is one line in the prompt: its body comes through the skill tool.
+    expect(trusted.system).toContain("- hello: a test skill");
+    expect(trusted.system).not.toContain("ZEPHYR-204");
     expect(trusted.system).toContain("Plugin rule: QUARTZ-881.");
   });
 
