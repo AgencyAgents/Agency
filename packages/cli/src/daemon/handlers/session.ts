@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   buildEnvironmentBlock,
+  CODE_TOOL,
   compact,
   composeSystemPrompt,
   gatherEnvironmentInfo,
@@ -13,6 +14,7 @@ import {
   runChildTurn,
   type Summarizer,
   summarizeTranscript,
+  TOOL_SEARCH,
   type ToolSpec,
 } from "@agency/core";
 import type { Capabilities, PermissionsGate } from "@agency/guard";
@@ -37,6 +39,7 @@ import {
   type SessionMessageParams,
   type SessionSendParams,
   type SessionSendResult,
+  STRUCTURED_OUTPUT_TOOL,
 } from "../types.ts";
 import { setSessionGoal } from "./goal.ts";
 import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
@@ -371,7 +374,9 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
 
 export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): readonly string[] | "*" {
   const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
-  return offered.length === list.length ? ("*" as const) : offered.map((t) => t.name);
+  if (offered.length === list.length) return "*" as const;
+  // The tools that a turn adds are not in `list`. A turn adds one only when the gate offers it.
+  return [...offered.map((t) => t.name), TOOL_SEARCH, CODE_TOOL, STRUCTURED_OUTPUT_TOOL];
 }
 
 export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {

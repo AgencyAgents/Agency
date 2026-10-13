@@ -103,6 +103,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **`--json-schema` and `tool_search` with a denied tool**: when the
+  config denied a tool fully (for example `"write": "deny"`), the
+  calls of `structured_output` and `tool_search` were refused as
+  "outside this caller's allowed tools", so a run gave no structured
+  answer and could load no MCP tool.
 - **A deny rule did not hold behind a wrapper** (security): with a
   rule that denies `rm *`, the commands `sudo rm -rf build`,
   `env A=1 rm -rf build`, `/bin/rm -rf build` and
