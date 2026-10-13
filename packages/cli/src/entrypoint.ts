@@ -94,6 +94,9 @@ Options:
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
+  --system-prompt <text>   With -p: use this text in place of the built-in base prompt
+  --append-system-prompt <text>
+                           With -p: add this text after the base prompt
   --goal <condition>       With -p and a session: the turn goes on until the model
                            judges the condition met, or the step limit
   --image <path>           With -p: send an image file with the prompt (repeat for more)
@@ -108,6 +111,12 @@ Options:
 
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
+
+/** The base of the system prompt of a headless turn. The daemon adds the environment, the instructions and the skills. */
+function basePrompt(parsed: ParsedArgv): string {
+  const base = parsed.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  return parsed.appendSystemPrompt === undefined ? base : `${base}\n\n${parsed.appendSystemPrompt}`;
+}
 
 export interface ParsedArgv {
   command: string | undefined;
@@ -130,6 +139,8 @@ export interface ParsedArgv {
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
+  systemPrompt: string | undefined;
+  appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
   /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
   streamJson: boolean;
@@ -203,6 +214,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     permissionMode: "ask",
     maxSteps: undefined,
     goal: undefined,
+    systemPrompt: undefined,
+    appendSystemPrompt: undefined,
     maxCost: undefined,
     streamJson: false,
     format: "text",
@@ -290,6 +303,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
       }
       case "--goal":
         parsed.goal = value();
+        break;
+      case "--system-prompt":
+        parsed.systemPrompt = value();
+        break;
+      case "--append-system-prompt":
+        parsed.appendSystemPrompt = value();
         break;
       case "--max-cost": {
         const cost = Number(value());
@@ -610,7 +629,7 @@ async function runPrintMode(
         sessionId,
         provider,
         model,
-        systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPrompt: basePrompt(parsed),
         userText: prompt,
         images,
         onEvent,
@@ -632,7 +651,7 @@ async function runPrintMode(
     instanceDir: deps.instanceDir,
     provider,
     model,
-    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    systemPrompt: basePrompt(parsed),
     prompt,
     images,
     onEvent,
@@ -680,7 +699,7 @@ async function workflowCmd(
         instanceDir: deps.instanceDir,
         provider: ref.provider,
         model: ref.model,
-        systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPrompt: basePrompt(parsed),
         prompt,
         permissionMode: options.permissionMode ?? parsed.permissionMode,
         maxToolIterations: options.maxSteps ?? parsed.maxSteps,

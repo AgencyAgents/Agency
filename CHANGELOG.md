@@ -595,6 +595,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`--system-prompt` and `--append-system-prompt`**: with `-p`, the
+  first replaces the base text of the system prompt for one run, and
+  the second adds text after it.
 - **Six more hook events of Claude Code**: `PostToolUseFailure`,
   `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact` and
   `Notification` (when a turn waits for an approval). A `PreCompact`

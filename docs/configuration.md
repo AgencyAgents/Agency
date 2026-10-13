@@ -199,6 +199,10 @@ Egress (deny-by-default once configured): `sandbox.egress` undefined means unres
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
+## System prompt
+
+The system prompt of a turn is a base text, then the environment block, the project instructions and the list of skills. With `-p`, `--system-prompt <text>` replaces the base text for that run, and `--append-system-prompt <text>` adds text after it. Both are flags of Claude Code. The other parts stay.
+
 ## Long runs
 
 - **Step limit.** `maxSteps` in the config, or `--max-steps <n>` for one run. It is a guard against a model that never stops. A spawned worker has the default of 100.

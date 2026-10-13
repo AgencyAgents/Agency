@@ -6,7 +6,7 @@ import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
-import type { RunTurnRpcResult } from "../src/daemon.ts";
+import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "../src/daemon.ts";
 import type { EntrypointDeps } from "../src/entrypoint.ts";
 import { parseArgv, runEntrypoint } from "../src/entrypoint.ts";
 import type { RunHeadlessOptions } from "../src/headless.ts";
@@ -682,6 +682,26 @@ describe("-p headless mode", () => {
       runHeadless: fake.runHeadless,
     });
     expect(fake.calls[0]?.budget).toEqual({ maxCostUsd: 0.5 });
+  });
+
+  test("--system-prompt replaces the base prompt and --append-system-prompt adds to it", async () => {
+    const prompts = async (...flags: string[]): Promise<string | undefined> => {
+      const fake = fakeRunHeadless();
+      await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", ...flags], {
+        ...baseDeps(),
+        ...capture().deps,
+        runHeadless: fake.runHeadless,
+      });
+      return fake.calls[0]?.systemPrompt;
+    };
+    expect(await prompts()).toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(await prompts("--system-prompt", "You are a reviewer.")).toBe("You are a reviewer.");
+    expect(await prompts("--append-system-prompt", "Answer in French.")).toBe(
+      `${DEFAULT_SYSTEM_PROMPT}\n\nAnswer in French.`,
+    );
+    expect(
+      await prompts("--system-prompt", "You are a reviewer.", "--append-system-prompt", "Answer in French."),
+    ).toBe("You are a reviewer.\n\nAnswer in French.");
   });
 
   test("--max-cost refuses a value that is not a positive number", async () => {
