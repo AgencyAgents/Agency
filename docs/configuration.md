@@ -199,6 +199,10 @@ Egress (deny-by-default once configured): `sandbox.egress` undefined means unres
 
 Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-shot `docker run`, validated against the known-good Linux capability set (`capabilities(7)`); `CAP_`-prefixed and lowercase spellings canonicalize, unknown names throw a typed error at backend construction (daemon boot fails fast). Pinned-container caveat: `docker exec` cannot set network or capabilities — the container's network/caps are fixed at creation — so `egress`/`network`/`capDrop` apply to one-shot `docker run` only; operators pinning `sandbox.container` must configure that container's network and caps out of band.
 
+## Review
+
+`agency review` reviews the uncommitted changes of the workspace, new files included. `agency review <ref>` reviews the changes since a branch, a tag or a commit (`git diff <ref>...HEAD`). The model gets the diff, can read the files around it, and reports problems with file, line and a case that fails. The turn has the `ask` mode with no person to ask, so an edit or a shell command is refused and no file changes. `--model`, `--format json` and `--max-cost` work as with `-p`. A diff above 200000 characters is cut.
+
 ## System prompt
 
 The system prompt of a turn is a base text, then the environment block, the project instructions and the list of skills. With `-p`, `--system-prompt <text>` replaces the base text for that run, and `--append-system-prompt <text>` adds text after it. Both are flags of Claude Code. The other parts stay.

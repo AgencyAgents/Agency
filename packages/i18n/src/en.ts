@@ -166,6 +166,8 @@ export const en = {
   "cli.error.budget_exceeded": "budget_exceeded: the turn reached its cost limit: the task is not finished",
   "cli.error.workflow_no_default": 'The workflow file "{file}" has no default export that is a function.',
   "cli.error.workflow_arg": '--arg needs the form key=value, and got "{value}".',
+  "cli.error.review_git": "git could not give the changes: {detail}",
+  "cli.review.no_changes": "no changes to review",
   "cli.workflow.agent_start": "[agent {n}] start: {prompt}",
   "cli.workflow.agent_end": "[agent {n}] end: {reason}",
   "cli.error.invalid_permission_mode":

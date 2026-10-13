@@ -595,6 +595,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`agency review [<ref>]`**: a review of the uncommitted changes, or
+  of the changes since a ref, that changes no file. Findings have
+  file, line and a case that fails.
 - **`--system-prompt` and `--append-system-prompt`**: with `-p`, the
   first replaces the base text of the system prompt for one run, and
   the second adds text after it.

@@ -704,6 +704,47 @@ describe("-p headless mode", () => {
     ).toBe("You are a reviewer.\n\nAnswer in French.");
   });
 
+  test("review sends the diff of the workspace in a turn that cannot change files", async () => {
+    const cwd = tempDir("agency-ep-review-");
+    const git = (...args: string[]) => {
+      const done = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", ...args], {
+        cwd,
+      });
+      if (done.exitCode !== 0) throw new Error(done.stderr.toString());
+    };
+    git("init", "-q", ".");
+    writeFileSync(join(cwd, "calc.js"), "export const add = (a, b) => a + b;\n");
+    git("add", "calc.js");
+    git("commit", "-q", "-m", "start");
+    const run = async (...args: string[]) => {
+      const fake = fakeRunHeadless();
+      const { out, deps } = capture();
+      const code = await runEntrypoint(["review", ...args, "--model", "openai/fake-1"], {
+        ...baseDeps({ cwd }),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+      return { code, call: fake.calls[0], out: out.join("\n") };
+    };
+    const clean = await run();
+    expect(clean.call).toBeUndefined();
+    expect(clean.out).toContain("no changes");
+
+    writeFileSync(join(cwd, "calc.js"), "export const add = (a, b) => a - b;\n");
+    writeFileSync(join(cwd, "new.js"), "export const x = 1;\n");
+    const dirty = await run();
+    expect(dirty.code).toBe(0);
+    expect(dirty.call?.prompt).toContain("+export const add = (a, b) => a - b;");
+    expect(dirty.call?.prompt).toContain("new.js");
+    expect(dirty.call?.permissionMode).toBe("ask");
+
+    git("add", "calc.js", "new.js");
+    git("commit", "-q", "-m", "change");
+    const against = await run("HEAD~1");
+    expect(against.call?.prompt).toContain("+export const add = (a, b) => a - b;");
+    expect((await run("no-such-ref")).code).not.toBe(0);
+  });
+
   test("--max-cost refuses a value that is not a positive number", async () => {
     const { err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "free"], {

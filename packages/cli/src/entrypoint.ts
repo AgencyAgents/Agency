@@ -74,6 +74,8 @@ Commands:
                            Install a Claude Code / Codex plugin
   plugin list              Show installed skills and plugin modules
   plugin remove <name>     Remove an installed plugin
+  review [<ref>]           Review the changes of the workspace and change no file:
+                           the uncommitted changes, or the changes since <ref>
   workflow run <file> [--arg key=value]
                            Run a script that starts agent turns, in sequence or in parallel
   onboard                  First-run setup: connect, model, trust
@@ -660,6 +662,44 @@ async function runPrintMode(
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
   return reportTurn(out, err, parsed, result);
+}
+
+const REVIEW_MAX_DIFF_CHARS = 200_000;
+
+/** `review [<ref>]`: one turn over the diff. The mode is `ask` with no person to ask, so an edit or a command is refused. */
+async function reviewCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const cwd = workspaceRootOf(parsed, deps);
+  const ref = parsed.subcommand;
+  const git = (...args: string[]): string => {
+    const done = Bun.spawnSync(["git", ...args], { cwd });
+    if (done.exitCode !== 0)
+      throw new Error(t("cli.error.review_git", { detail: done.stderr.toString().trim() }));
+    return done.stdout.toString();
+  };
+  const diff = ref === undefined ? git("diff", "HEAD") : git("diff", `${ref}...HEAD`);
+  const untracked = ref === undefined ? git("ls-files", "--others", "--exclude-standard").trim() : "";
+  if (diff.trim() === "" && untracked === "") {
+    out(t("cli.review.no_changes"));
+    return 0;
+  }
+  const prompt = [
+    "Review these changes as a careful senior engineer. Read the files around a change when the diff alone does not show if it is correct.",
+    "Report only real problems: bugs, security faults, broken behaviour, missing tests for changed logic. No style notes.",
+    "For each finding give the file and line, what is wrong, and a concrete case that fails. Put the most severe first. If you find nothing, say so in one line.",
+    "Do not change any file.",
+    untracked === "" ? "" : `New files that are not in the diff, read them:\n${untracked}`,
+    diff.length > REVIEW_MAX_DIFF_CHARS
+      ? `The diff is too large to show in full. Its first part:\n${diff.slice(0, REVIEW_MAX_DIFF_CHARS)}`
+      : `The diff:\n${diff}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return runPrintMode({ ...parsed, permissionMode: "ask" }, prompt, deps, out, err);
 }
 
 /** `workflow run <file>`: each `agent()` of the script is one headless turn with a new context, as `-p` runs it. */
@@ -1287,6 +1327,8 @@ Subcommands:
       return pluginCmd(parsed, deps, out, err);
     case "workflow":
       return workflowCmd(parsed, deps, out, err);
+    case "review":
+      return reviewCmd(parsed, deps, out, err);
     default:
       throw new Error(t("cli.error.unknown_command", { command: String(parsed.command) }));
   }
