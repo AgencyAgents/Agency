@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Tokens in the output of a command**: the result of a `bash` or
+  `code` call loses tokens by their shape before the model and the
+  provider get it: keys of Anthropic, OpenAI, OpenRouter, Google,
+  GitHub, AWS, Slack, npm, and private key blocks. Before, only the
+  provider keys of the harness were removed, so the output of
+  `gh auth token` went to the provider as written. A file tool keeps
+  such text. A password with no known shape still passes.
 - **A destructive command asks in spite of a pattern rule**: with a
   rule such as `"git *": "allow"`, the commands `git push --force`,
   `git reset --hard`, `git clean -f`, `git branch -D`, `rm -r`,

@@ -402,7 +402,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
 
           const childTurn = await team.limiter.run(() =>
             runChildTurn(
-              { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactSecrets },
+              { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactToolResult },
               {
                 adapter: adapterFor(childProvider),
                 scheduler: daemon.schedulerFor(childProvider),

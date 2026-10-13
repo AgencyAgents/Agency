@@ -45,7 +45,7 @@ Legacy DPAPI detection: a stale hex-format key that fails to decrypt throws an a
 
 ### Redaction chokepoint
 
-One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values, for each env entry whose name ends in `_API_KEY`, and for each env entry that a `provider.<id>.env` list names; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
+One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values, for each env entry whose name ends in `_API_KEY`, and for each env entry that a `provider.<id>.env` list names; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. A tool result loses the registered values before the model, the hooks and the session get it. The output of a command (`bash`, `code`) also loses tokens by their shape: keys of Anthropic, OpenAI, OpenRouter, Google, GitHub, AWS (key id), Slack, npm, and private key blocks. A file tool (`read`, `grep`) keeps such text, because the model edits what it reads. A password with no known shape passes. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
 
 ### Network
 

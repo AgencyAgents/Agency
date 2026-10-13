@@ -142,7 +142,7 @@ export interface RunTurnOptions {
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
   /** Applied to the text of each tool result before the model, the hooks and the session get it. */
-  redactToolResult?: (text: string) => string;
+  redactToolResult?: (text: string, tool?: string) => string;
   eventBus?: {
     emit: (event: string, payload: unknown) => void;
     emitAsync?: (event: string, payload: unknown) => Promise<void>;
@@ -883,7 +883,8 @@ async function executeOne(
   } catch (error) {
     result = { content: error instanceof Error ? error.message : String(error), isError: true };
   }
-  if (options.redactToolResult) result = { ...result, content: options.redactToolResult(result.content) };
+  if (options.redactToolResult)
+    result = { ...result, content: options.redactToolResult(result.content, resolved.name) };
 
   if (options.eventBus) {
     const afterPayload = {
