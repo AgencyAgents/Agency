@@ -52,7 +52,7 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
       callTool?: (
         name: string,
         input: Record<string, unknown>,
-      ) => Promise<{ content: string; isError: boolean }>;
+      ) => Promise<{ content: string; isError: boolean; images?: ImageBlock[] }>;
     },
   ): Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
   renderCall?(input: Input & Record<string, unknown>): string;
@@ -738,14 +738,16 @@ async function executeOne(
   call: Extract<ContentBlock, { type: "tool_call" }>,
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
+  inner = false,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
   const resolved = spec ?? resolveToolSpec(options.tools, call.name);
   if (!resolved) {
     const available = options.tools.map((t) => t.name).join(", ");
     return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
   }
-  if (resolved.hidden?.()) {
-    const hint = `the tool "${resolved.name}" is not loaded: load it with tool_search, then call it again`;
+  // A hidden tool is out of the tool list of the request. A call from another tool (call_tool, code) can reach it.
+  if (!inner && resolved.hidden?.()) {
+    const hint = `the tool "${resolved.name}" is not loaded: find it with tool_search, then call it with call_tool`;
     return { content: hint, isError: true };
   }
 
@@ -861,7 +863,7 @@ async function executeOne(
     callTool: (name: string, input: Record<string, unknown>) => {
       innerCalls += 1;
       const inner = { type: "tool_call" as const, id: `${call.id}.${innerCalls}`, name, input };
-      return executeOne(undefined, inner, options, signal);
+      return executeOne(undefined, inner, options, signal, true);
     },
     signal: toolSignal,
     turnId: options.turnId,

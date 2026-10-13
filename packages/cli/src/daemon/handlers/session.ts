@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   buildEnvironmentBlock,
+  CALL_TOOL,
   CODE_TOOL,
   compact,
   composeSystemPrompt,
@@ -376,7 +377,7 @@ export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): r
   const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
   if (offered.length === list.length) return "*" as const;
   // The tools that a turn adds are not in `list`. A turn adds one only when the gate offers it.
-  return [...offered.map((t) => t.name), TOOL_SEARCH, CODE_TOOL, STRUCTURED_OUTPUT_TOOL];
+  return [...offered.map((t) => t.name), TOOL_SEARCH, CALL_TOOL, CODE_TOOL, STRUCTURED_OUTPUT_TOOL];
 }
 
 export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {

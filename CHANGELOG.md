@@ -8,6 +8,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Deferred MCP tools keep the tool list fixed**: `tool_search` now
+  gives the input schema of a found tool as text, and the model
+  calls the tool with the new `call_tool` (`name`, `input`). Before,
+  a found tool joined the tool list, so the next request got no hit
+  in the prompt cache of the provider. Measured on one task with one
+  MCP call (3 runs against 2): 8704 to 9472 input tokens from the
+  cache, against 4352. The cost that the provider reported did not
+  fall in these runs; the cause is not known. A `code` script can
+  call a deferred MCP tool with no search.
 - **Tokens in the output of a command**: the result of a `bash` or
   `code` call loses tokens by their shape before the model and the
   provider get it: keys of Anthropic, OpenAI, OpenRouter, Google,

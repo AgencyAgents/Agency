@@ -3,7 +3,7 @@ import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, ProviderRequest, StreamEvent } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
-import { deferTools, TOOL_SEARCH } from "../src/tool-search.ts";
+import { CALL_TOOL, deferTools, TOOL_SEARCH } from "../src/tool-search.ts";
 
 const usage = { inputTokens: 1, outputTokens: 1 };
 const signal = new AbortController().signal;
@@ -27,20 +27,18 @@ const many = (count: number): ToolSpec[] =>
 describe("deferTools", () => {
   test("a small set of MCP tools stays as it is, and so does a set in the never mode", () => {
     const tools = [tool("read", "Reads a file."), ...many(3)];
-    expect(deferTools(tools, "auto", new Set())).toBe(tools);
+    expect(deferTools(tools, "auto")).toBe(tools);
     const big = [tool("read", "Reads a file."), ...many(30)];
-    expect(deferTools(big, "never", new Set())).toBe(big);
+    expect(deferTools(big, "never")).toBe(big);
   });
 
   test("a large set of MCP tools is hidden behind tool_search, and other tools are not", async () => {
-    const loaded = new Set<string>();
     const tools = deferTools(
       [tool("read", "Reads a file."), ...many(30), tool("billing_refund", "Refunds an invoice.", "mcp")],
       "auto",
-      loaded,
     );
     const visible = tools.filter((t) => !t.hidden?.()).map((t) => t.name);
-    expect(visible).toEqual(["read", TOOL_SEARCH]);
+    expect(visible).toEqual(["read", TOOL_SEARCH, CALL_TOOL]);
     const search = tools.find((t) => t.name === TOOL_SEARCH) as ToolSpec;
     // The names are in the description of the tool: the model can see what there is, with no schema.
     expect(search.description).toContain("billing_refund");
@@ -48,12 +46,12 @@ describe("deferTools", () => {
 
     const found = await search.handler({ query: "refund an invoice" }, { signal });
     expect(found.content).toContain("billing_refund: Refunds an invoice.");
-    expect([...loaded]).toContain("billing_refund");
-    expect(tools.filter((t) => !t.hidden?.()).map((t) => t.name)).toContain("billing_refund");
+    // The schema is in the text, and the tool list does not change: the prompt cache of the provider holds.
+    expect(found.content).toContain('input schema: {"type":"object","properties":{"id":{"type":"string"}}}');
+    expect(tools.filter((t) => !t.hidden?.()).map((t) => t.name)).not.toContain("billing_refund");
 
     const byName = await search.handler({ query: "tracker_tool_7" }, { signal });
     expect(byName.content).toContain("tracker_tool_7");
-    expect(loaded.has("tracker_tool_7")).toBe(true);
 
     const none = await search.handler({ query: "zzzz" }, { signal });
     expect(none.isError).toBe(true);
@@ -61,14 +59,15 @@ describe("deferTools", () => {
 });
 
 describe("hidden tools in the loop", () => {
-  test("a hidden tool is not in the request, a call of it is refused, and it is in the request after a load", async () => {
-    const loaded = new Set<string>();
-    const tools = deferTools([tool("read", "Reads a file."), ...many(12)], "auto", loaded);
+  test("a hidden tool is never in a request; a direct call is refused and a call through call_tool runs", async () => {
+    const tools = deferTools([tool("read", "Reads a file."), ...many(12)], "auto");
     const requests: ProviderRequest[] = [];
     const calls = [
       { name: "tracker_tool_3", input: { id: "a" } },
       { name: TOOL_SEARCH, input: { query: "tracker_tool_3" } },
-      { name: "tracker_tool_3", input: { id: "b" } },
+      { name: CALL_TOOL, input: { name: "tracker_tool_3", input: { id: "b" } } },
+      { name: CALL_TOOL, input: { name: "tracker_tool_3", input: { id: 5 } } },
+      { name: CALL_TOOL, input: { name: "read", input: {} } },
     ];
     const adapter: ProviderAdapter = {
       family: "fake",
@@ -102,10 +101,14 @@ describe("hidden tools in the loop", () => {
       session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
     });
     const names = (index: number) => (requests[index]?.tools ?? []).map((t) => t.name);
-    expect(names(0)).toEqual(["read", TOOL_SEARCH]);
+    // The same tool list in each request.
+    for (let i = 0; i < requests.length; i++) expect(names(i)).toEqual(["read", TOOL_SEARCH, CALL_TOOL]);
     const text = JSON.stringify(result.messages);
     expect(text).toContain("is not loaded");
-    expect(names(2)).toContain("tracker_tool_3");
+    // The inner call meets the schema check of the tool, and call_tool is only for the hidden tools.
+    expect(text).toContain("id");
+    expect(text).not.toContain('ran with {\\"id\\":5}');
+    expect(text).toContain("is not a tool of tool_search");
     expect(text).toContain('tracker_tool_3 ran with {\\"id\\":\\"b\\"}');
     expect(text).not.toContain('ran with {\\"id\\":\\"a\\"}');
   });

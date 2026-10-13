@@ -587,8 +587,6 @@ export interface DaemonContext {
   activeControllers: Map<string, AbortController>;
   turnOwners: Map<string, string>;
   activeTurnMeta: Map<string, ActiveTurnMeta>;
-  /** For each session, the MCP tools that the model loaded with tool_search. */
-  loadedTools: Map<string, Set<string>>;
   /** For each session, the environment block of its first turn. */
   sessionEnvironments: EnvironmentStore;
   commands: CommandTemplate[];

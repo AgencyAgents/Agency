@@ -16,6 +16,7 @@ test("a caller with a denied tool can still call the tools that the harness adds
   expect(names).toContain("read");
   expect(names).not.toContain("write");
   // Live: with `write` denied in the config, structured_output was refused as "outside this caller's allowed tools".
-  for (const added of ["structured_output", "tool_search", "code"]) expect(names).toContain(added);
+  for (const added of ["structured_output", "tool_search", "call_tool", "code"])
+    expect(names).toContain(added);
   expect(sessionToolsFor([tool("read")], gate)).toBe("*");
 });

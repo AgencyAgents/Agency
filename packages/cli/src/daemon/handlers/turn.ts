@@ -436,8 +436,6 @@ export async function executeTurn(
           if (isolatedRunner) return [codeTool(() => ({ PATH: "/usr/bin:/bin" }), isolatedRunner)];
           return hostCode ? [codeTool(() => modelCommandEnv())] : [];
         };
-        const sessionLoaded = ctx.loadedTools.get(sessionId) ?? new Set<string>();
-        ctx.loadedTools.set(sessionId, sessionLoaded);
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -455,7 +453,7 @@ export async function executeTurn(
               ? gatedTools.filter((t) => !withheld.has(t.name))
               : gatedTools;
           const effectiveTools = [
-            ...deferTools(offeredTools, deferMode, sessionLoaded),
+            ...deferTools(offeredTools, deferMode),
             ...codeTools(sessionGate),
             ...structuredTools,
           ];
@@ -603,7 +601,6 @@ export async function executeTurn(
                   ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
                   : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier)),
                 deferMode,
-                sessionLoaded,
               ),
               ...codeTools(sessionGate),
               ...structuredTools,
