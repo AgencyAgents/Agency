@@ -99,6 +99,48 @@ describe("code tool", () => {
     expect(broken.isError).toBe(true);
   });
 
+  // Measured on Windows with Bun 1.4.0: the child of a stopped script ends with it, with no job object of ours.
+  // On POSIX a host script can leave a child: the OS sandbox of `codeMode: true` ends them there.
+  test.skipIf(process.platform !== "win32")(
+    "a cancel ends the processes that a script started, and the model sees each inner call as progress",
+    async () => {
+      const stop = new AbortController();
+      const progress: string[] = [];
+      let childPid = 0;
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const code =
+        `const child = Bun.spawn([${JSON.stringify(process.execPath)}, "-e", "setTimeout(() => {}, 60000)"]);\n` +
+        "await tools.echo({ text: String(child.pid) });\nawait new Promise(() => {});";
+      const result = await codeTool(() => ({ ...process.env }) as Record<string, string>).handler(
+        { code },
+        {
+          signal: stop.signal,
+          onProgress: (message) => progress.push(message),
+          callTool: async (_name, input) => {
+            childPid = Number(input.text);
+            setTimeout(() => stop.abort(), 50);
+            return { content: "ok", isError: false };
+          },
+        },
+      );
+      expect(result.isError).toBe(true);
+      expect(childPid).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const left = alive(childPid);
+      if (left) process.kill(childPid);
+      expect(left).toBe(false);
+      expect(progress).toEqual(["tools.echo"]);
+    },
+    20_000,
+  );
+
   test("a denied code tool starts no process", async () => {
     const result = await run("return 1;", ["code"]);
     expect(result.content).toContain("permission denied");

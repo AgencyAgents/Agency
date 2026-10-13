@@ -120,6 +120,7 @@ export function codeTool(env: () => Record<string, string>, runner: string[] = c
             send({ id, content: refused, isError: true });
             continue;
           }
+          ctx.onProgress?.(`tools.${message.name}`);
           void callTool(message.name, message.input as Record<string, unknown>).then(
             (result) => send({ id, content: result.content, isError: result.isError }),
             (error) => send({ id, content: String(error), isError: true }),
