@@ -22,7 +22,8 @@ export interface AgencyEvents {
     turnId?: string;
   };
   "session.created": { sessionId: string };
-  "session.compacted": { sessionId: string; tipId: string };
+  "session.compacting": { sessionId: string; trigger: "manual" | "auto" };
+  "session.compacted": { sessionId: string; tipId: string; trigger?: "manual" | "auto" };
   "session.idle": { sessionId?: string };
   "file.edited": { path: string };
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };

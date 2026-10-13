@@ -48,7 +48,7 @@ function makePonytailFixture(sourceDir: string): void {
           hooks: [{ type: "command", command: "node hooks/activate.js", timeout: 5 }],
         },
       ],
-      SubagentStart: [
+      SessionEnd: [
         {
           hooks: [{ type: "command", command: "node hooks/subagent.js", timeout: 5 }],
         },
@@ -159,7 +159,7 @@ function makeUnknownHooksFixture(sourceDir: string): void {
       SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }],
       UnknownEvent: [{ hooks: [{ type: "command", command: "echo unknown" }] }],
       PreToolUse: [{ hooks: [{ type: "command", command: "echo pretool" }] }],
-      SubagentStart: [{ hooks: [{ type: "command", command: "echo sub" }] }],
+      SessionEnd: [{ hooks: [{ type: "command", command: "echo sub" }] }],
     },
   });
 }
@@ -360,7 +360,7 @@ describe("importClaudePlugin", () => {
       // Hooks
       expect(report.hooksInstalled).toEqual(["SessionStart", "UserPromptSubmit"]);
       expect(report.hooksSkipped).toEqual([
-        { event: "SubagentStart", reason: 'unsupported event "SubagentStart"' },
+        { event: "SessionEnd", reason: 'unsupported event "SessionEnd"' },
       ]);
 
       // MCP
@@ -470,8 +470,8 @@ describe("importClaudePlugin", () => {
         reason: 'unsupported event "UnknownEvent"',
       });
       expect(report.hooksSkipped).toContainEqual({
-        event: "SubagentStart",
-        reason: 'unsupported event "SubagentStart"',
+        event: "SessionEnd",
+        reason: 'unsupported event "SessionEnd"',
       });
     } finally {
       rmSync(src, { recursive: true, force: true });

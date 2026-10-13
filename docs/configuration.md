@@ -285,19 +285,26 @@ The model of the session writes the summary: one more request, on the transcript
 | Event | When it runs | Effect of a block |
 |---|---|---|
 | `PreToolUse` | Before each tool call | The tool does not run. The model gets the reason as the tool result. |
-| `PostToolUse` | After each tool call | The reason is added to the tool result. |
+| `PostToolUse` | After each tool call that succeeded | The reason is added to the tool result. |
+| `PostToolUseFailure` | After each tool call that failed | The reason is added to the tool result. |
 | `UserPromptSubmit` | Before the model sees a prompt | The turn fails with the reason, and the prompt is removed from the session. |
 | `SessionStart` | Before the first prompt of a session | None. |
 | `Stop` | When the model ends its turn | The turn goes on. The model gets the reason as a message. |
+| `SubagentStart` | When `spawn` or `dispatch` starts a worker | None. |
+| `SubagentStop` | When a worker ends its turn | The worker goes on. It gets the reason as a message. |
+| `PreCompact` | Before a compaction of a session | The session is not compacted. |
+| `PostCompact` | After a compaction of a session | None. |
+| `Notification` | When a turn waits for your answer to an approval | None. |
 
-Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `prompt`, `stop_hook_active`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace, in the shell of the `bash` tool: `sh` on Linux and macOS, and the shell of `windowsShell` on Windows (Git Bash when it is installed). A hook that is a shell script thus runs on Windows too.
+Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `error`, `prompt`, `stop_hook_active`, `agent_type`, `trigger`, `notification_type`, `message`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace, in the shell of the `bash` tool: `sh` on Linux and macOS, and the shell of `windowsShell` on Windows (Git Bash when it is installed). A hook that is a shell script thus runs on Windows too.
 
 - Exit code 2 is a block, and stderr is the reason. So is exit code 0 with `{"decision": "block", "reason": "..."}` on stdout, or with `hookSpecificOutput.permissionDecision` set to `deny`.
 - Any other exit code that is not 0 is a failed hook. It does not block.
 - Stdout of a `UserPromptSubmit` or `SessionStart` command is given to the model as context and stays in the session. `hookSpecificOutput.additionalContext` does the same.
-- `matcher` is a regular expression on the tool name, with no regard to case, so `Bash` matches the `bash` tool and `Edit|Write` matches `edit` and `write`. With no matcher, the commands run for every tool.
+- `matcher` is a regular expression on the tool name, with no regard to case, so `Bash` matches the `bash` tool and `Edit|Write` matches `edit` and `write`. With no matcher, the commands run for every tool. For the events that are not tool events, the matcher tests another value: the agent type for `SubagentStart`, `manual` or `auto` for `PreCompact` and `PostCompact`, and `permission_prompt` for `Notification`. `SubagentStop` has no agent type, so its matcher matches every worker.
 - `timeout` is in seconds. The default is 60. A command that runs longer is stopped, and it does not block.
-- `Stop` hooks do not run for subagents. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
+- `Stop` hooks do not run for subagents: `SubagentStop` hooks do. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
+- Claude Code has more events than these eleven (`SessionEnd`, `PermissionRequest`, `InstructionsLoaded` and others). A hook on an event that is not in the table does not run, and `agency plugin install` names each such event.
 
 Hooks come from two places, and the daemon runs those of the user config first:
 

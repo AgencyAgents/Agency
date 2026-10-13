@@ -7,14 +7,20 @@ import { type EventBus, HookBlock } from "../events.ts";
 export const COMMAND_HOOK_EVENTS = [
   "PreToolUse",
   "PostToolUse",
+  "PostToolUseFailure",
   "UserPromptSubmit",
   "Stop",
+  "SubagentStart",
+  "SubagentStop",
+  "PreCompact",
+  "PostCompact",
+  "Notification",
   "SessionStart",
 ] as const;
 export type CommandHookEvent = (typeof COMMAND_HOOK_EVENTS)[number];
 
 const GroupSchema = z.object({
-  /** Regular expression on the tool name, no regard to case. Absent, "" and "*" match every tool. */
+  /** Regular expression on the subject of the event (the tool name of a tool event), no regard to case. Absent, "" and "*" match all. */
   matcher: z.string().optional(),
   hooks: z.array(
     z.object({
@@ -27,13 +33,12 @@ const GroupSchema = z.object({
 });
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
-export const CommandHooksSchema = z.object({
-  PreToolUse: z.array(GroupSchema).optional(),
-  PostToolUse: z.array(GroupSchema).optional(),
-  UserPromptSubmit: z.array(GroupSchema).optional(),
-  Stop: z.array(GroupSchema).optional(),
-  SessionStart: z.array(GroupSchema).optional(),
-});
+export const CommandHooksSchema = z.object(
+  Object.fromEntries(COMMAND_HOOK_EVENTS.map((event) => [event, z.array(GroupSchema).optional()])) as Record<
+    CommandHookEvent,
+    z.ZodOptional<z.ZodArray<typeof GroupSchema>>
+  >,
+);
 export type CommandHooks = z.infer<typeof CommandHooksSchema>;
 
 export interface HookOutcome {
@@ -46,10 +51,10 @@ export interface HookOutcome {
 const DEFAULT_TIMEOUT_S = 60;
 const MAX_OUTPUT_CHARS = 10_000;
 
-function matches(matcher: string | undefined, toolName: string | undefined): boolean {
-  if (matcher === undefined || matcher === "" || matcher === "*" || toolName === undefined) return true;
+function matches(matcher: string | undefined, subject: string | undefined): boolean {
+  if (matcher === undefined || matcher === "" || matcher === "*" || subject === undefined) return true;
   try {
-    return new RegExp(`^(?:${matcher})$`, "i").test(toolName);
+    return new RegExp(`^(?:${matcher})$`, "i").test(subject);
   } catch {
     return false;
   }
@@ -130,11 +135,14 @@ export async function runCommandHooks(
   input: Record<string, unknown>,
   opts: HookRunOptions,
 ): Promise<HookOutcome> {
-  const toolName = typeof input.tool_name === "string" ? input.tool_name : undefined;
+  // What a matcher tests: the tool, the trigger of a compaction, the agent type, or the type of a notification.
+  const subject = [input.tool_name, input.trigger, input.agent_type, input.notification_type].find(
+    (value): value is string => typeof value === "string",
+  );
   const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
   const context: string[] = [];
   for (const group of hooks[event] ?? []) {
-    if (!matches(group.matcher, toolName)) continue;
+    if (!matches(group.matcher, subject)) continue;
     for (const entry of group.hooks) {
       const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
@@ -170,26 +178,43 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
     }),
     bus.on("tool.execute.after", async (payload) => {
       const p = payload as ToolPayload;
-      const out = await runCommandHooks(
-        hooks,
-        "PostToolUse",
-        { session_id: p.sessionId, tool_name: p.tool, tool_input: p.input, tool_response: p.result },
-        opts,
-      );
+      const result = p.result as { content?: unknown; isError?: boolean } | undefined;
+      const base = { session_id: p.sessionId, tool_name: p.tool, tool_input: p.input };
+      // As in Claude Code: PostToolUse is for a call that succeeded, and a failed call has its own event.
+      const out = result?.isError
+        ? await runCommandHooks(hooks, "PostToolUseFailure", { ...base, error: result.content }, opts)
+        : await runCommandHooks(hooks, "PostToolUse", { ...base, tool_response: p.result }, opts);
       const text = out.block ?? out.context;
       if (text !== undefined) throw new HookBlock(text);
     }),
     bus.on("turn.stop", async (payload) => {
       const p = payload as { sessionId?: string; taskDepth: number; stopHookActive: boolean };
-      // A subagent is not the session: its end is not the end of the user's turn.
-      if (p.taskDepth > 0) return;
+      // A subagent is not the session: its end has its own event.
       const out = await runCommandHooks(
         hooks,
-        "Stop",
+        p.taskDepth > 0 ? "SubagentStop" : "Stop",
         { session_id: p.sessionId, stop_hook_active: p.stopHookActive },
         opts,
       );
       if (out.block !== undefined) throw new HookBlock(out.block);
+    }),
+    bus.on("subagent.start", async (payload) => {
+      const p = payload as { sessionId: string; handle: string };
+      await runCommandHooks(hooks, "SubagentStart", { session_id: p.sessionId, agent_type: p.handle }, opts);
+    }),
+    bus.on("session.compacting", async (payload) => {
+      const p = payload as { sessionId: string; trigger: string };
+      const out = await runCommandHooks(
+        hooks,
+        "PreCompact",
+        { session_id: p.sessionId, trigger: p.trigger },
+        opts,
+      );
+      if (out.block !== undefined) throw new HookBlock(out.block);
+    }),
+    bus.on("session.compacted", async (payload) => {
+      const p = payload as { sessionId: string; trigger?: string };
+      await runCommandHooks(hooks, "PostCompact", { session_id: p.sessionId, trigger: p.trigger }, opts);
     }),
   ];
   return () => {

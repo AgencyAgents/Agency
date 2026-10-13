@@ -1,15 +1,17 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FULL_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
-import { Scheduler } from "@agency/providers";
+import { createApproximateTokenizer, Scheduler } from "@agency/providers";
 import { EventBus, HookBlock } from "../src/events.ts";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
 import { attachCommandHooks, type CommandHooks, runCommandHooks } from "../src/plugins/command-hooks.ts";
 import { loadPlugins, unloadPlugins } from "../src/plugins/loader.ts";
+import { compact } from "../src/sessions/compaction.ts";
+import { SessionStore } from "../src/sessions/store.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "agency-cmdhooks-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -82,7 +84,34 @@ describe("runCommandHooks", () => {
     const hooks: CommandHooks = { Stop: [{ hooks: [{ type: "command", command: cmd, timeout: 1 }] }] };
     expect(await run(hooks, "Stop")).toEqual({});
   });
+
+  test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
+    const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');
+    const compaction = on("PreCompact", cmd, "manual");
+    expect(await run(compaction, "PreCompact", { trigger: "manual" })).toEqual({ block: "blocked" });
+    expect(await run(compaction, "PreCompact", { trigger: "auto" })).toEqual({});
+    const notification = on("Notification", cmd, "permission_prompt");
+    expect(await run(notification, "Notification", { notification_type: "idle_prompt" })).toEqual({});
+    expect(await run(notification, "Notification", { notification_type: "permission_prompt" })).toEqual({
+      block: "blocked",
+    });
+  });
 });
+
+/** A hook command that writes the event that it got on stdin to a file. */
+function capture(name: string): { cmd: string; read: () => Promise<Record<string, unknown>> } {
+  const out = join(dir, `${name}.json`);
+  const cmd = hook(
+    name,
+    `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => require("node:fs").writeFileSync(${JSON.stringify(out)}, s));`,
+  );
+  const read = async (): Promise<Record<string, unknown>> => {
+    // The bus does not wait for a hook that cannot block: the file comes a moment later.
+    for (let i = 0; i < 100 && !existsSync(out); i++) await new Promise((r) => setTimeout(r, 50));
+    return JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown>;
+  };
+  return { cmd, read };
+}
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const usage = { inputTokens: 1, outputTokens: 1 };
@@ -192,6 +221,97 @@ describe("hooks in the loop", () => {
       taskDepth: 1,
     });
     expect(script.requests()).toBe(1);
+  });
+
+  test("a SubagentStop hook that blocks keeps the subagent at work", async () => {
+    const bus = new EventBus();
+    const marker = JSON.stringify(join(dir, "substop.marker"));
+    const cmd = hook(
+      "substop",
+      `const fs = require("node:fs"); if (!fs.existsSync(${marker})) { fs.writeFileSync(${marker}, ""); console.error("check the result again"); process.exit(2); }`,
+    );
+    attachCommandHooks(bus, on("SubagentStop", cmd), { cwd: dir });
+    const script = scripted(0);
+    const result = await runTurn(script.adapter, new Scheduler(), noopHttp, {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "m",
+      apiKey: "k",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      eventBus: bus,
+      taskDepth: 1,
+    });
+    expect(script.requests()).toBe(2);
+    expect(result.messages[2]?.content).toEqual([{ type: "text", text: "check the result again" }]);
+  });
+
+  test("a failed tool call runs PostToolUseFailure, and a call that succeeded runs PostToolUse", async () => {
+    const hooks: CommandHooks = {
+      ...on("PostToolUse", hook("post-ok", 'console.error("hook: it worked"); process.exit(2);')),
+      ...on("PostToolUseFailure", hook("post-fail", 'console.error("hook: it failed"); process.exit(2);')),
+    };
+    const texts = async (tool: ToolSpec): Promise<string> => {
+      const bus = new EventBus();
+      attachCommandHooks(bus, hooks, { cwd: dir });
+      return resultText((await turn(scripted(1).adapter, bus, [tool])).messages).join("\n");
+    };
+    const failed = await texts({
+      ...bashTool([]),
+      handler: async () => ({ content: "no such file", isError: true }),
+    });
+    expect(failed).toContain("hook: it failed");
+    expect(failed).not.toContain("hook: it worked");
+    const worked = await texts(bashTool([]));
+    expect(worked).toContain("hook: it worked");
+    expect(worked).not.toContain("hook: it failed");
+  });
+
+  test("a PreCompact hook refuses a compaction, and a PostCompact hook gets the trigger", async () => {
+    const compactWith = async (hooks: CommandHooks): Promise<boolean> => {
+      const bus = new EventBus();
+      attachCommandHooks(bus, hooks, { cwd: dir });
+      const store = new SessionStore(mkdtempSync(join(dir, "sessions-")), { bus });
+      const meta = store.create("s1");
+      let parentId: string | null = null;
+      for (const text of ["x", "y", "z"]) {
+        const message = {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: text.repeat(50) }],
+        };
+        parentId = (await store.append(meta.id, { type: "message", message, parentId })).id;
+      }
+      const outcome = await compact(
+        store,
+        meta.id,
+        parentId ?? "",
+        createApproximateTokenizer(1),
+        { contextWindow: 100, proactiveRatio: 0.5 },
+        async () => "summary of old messages",
+        1,
+        { trigger: "manual" },
+      );
+      return outcome.compacted;
+    };
+    const deny = hook("precompact", 'console.error("not now"); process.exit(2);');
+    expect(await compactWith(on("PreCompact", deny, "manual"))).toBe(false);
+    expect(await compactWith(on("PreCompact", deny, "auto"))).toBe(true);
+    const after = capture("postcompact");
+    expect(await compactWith(on("PostCompact", after.cmd))).toBe(true);
+    expect(await after.read()).toMatchObject({ hook_event_name: "PostCompact", trigger: "manual" });
+  });
+
+  test("a SubagentStart hook gets the type of the agent", async () => {
+    const bus = new EventBus();
+    const started = capture("substart");
+    attachCommandHooks(bus, on("SubagentStart", started.cmd, "reviewer"), { cwd: dir });
+    bus.emit("subagent.start", { sessionId: "child-1", handle: "reviewer", parentSessionId: "s1" });
+    expect(await started.read()).toMatchObject({
+      hook_event_name: "SubagentStart",
+      session_id: "child-1",
+      agent_type: "reviewer",
+    });
   });
 
   test("a plugin hook that returns a block refuses the tool call", async () => {

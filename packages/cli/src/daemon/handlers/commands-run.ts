@@ -103,7 +103,7 @@ const BUILTINS: Record<string, BuiltinFn> = {
       ref ? sessionSummarizer(ctx, ref.provider, ref.model) : async (text) => summarizeTranscript(text),
       4,
       // The user asked for it: the size of the session does not decide.
-      { force: true },
+      { force: true, trigger: "manual" },
     );
     return {
       text: outcome.compacted

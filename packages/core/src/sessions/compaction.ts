@@ -1,6 +1,7 @@
 import type { AsyncTokenizer, Tokenizer } from "@agency/providers";
 import { isAsyncTokenizer } from "@agency/providers";
 import { ErrorCode, type Message } from "@agency/schema";
+import { HookBlock } from "../events.ts";
 import { compactionPrompt } from "../prompt/compaction.ts";
 import type { MessageEntry, SessionEntry } from "./entry.ts";
 import { isItemStateEntry, isMessageEntry, isTodoStateEntry } from "./entry.ts";
@@ -537,7 +538,7 @@ export async function compact(
   threshold: CompactionThreshold,
   summarize: Summarizer,
   keepLastN = 4,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; trigger?: "manual" | "auto" } = {},
 ): Promise<CompactionResult> {
   const entries = store.load(sessionId);
   const chain = store.chainFor(entries, tipId);
@@ -545,6 +546,10 @@ export async function compact(
   if (!opts.force && !shouldCompact(tokenCount, threshold)) {
     return { compacted: false, tipId };
   }
+  // A PreCompact hook can refuse the compaction.
+  const trigger = opts.trigger ?? "auto";
+  const asked = await store.getBus?.()?.emitCollect?.("session.compacting", { sessionId, trigger });
+  if (asked?.errors.some((error) => error instanceof HookBlock)) return { compacted: false, tipId };
 
   const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
   if (folded === undefined) return { compacted: false, tipId };
@@ -572,8 +577,8 @@ export async function compact(
 
   try {
     const bus = store.getBus?.();
-    bus?.emit("session.compacted", { sessionId, tipId: parentId });
-    bus?.emit("event", { event: "session.compacted", payload: { sessionId, tipId: parentId } });
+    bus?.emit("session.compacted", { sessionId, tipId: parentId, trigger });
+    bus?.emit("event", { event: "session.compacted", payload: { sessionId, tipId: parentId, trigger } });
   } catch {}
 
   return { compacted: true, tipId: parentId };

@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`PostToolUse` hooks**: a `PostToolUse` hook runs only for a tool
+  call that succeeded, as in Claude Code. A failed call runs the
+  `PostToolUseFailure` hooks. Before, `PostToolUse` ran for both.
 - **Shell of a hook command**: a hook command runs in the shell of the
   `bash` tool (Git Bash on Windows when it is installed). It was
   `cmd.exe` on Windows, where a hook that is a shell script did not
@@ -592,6 +595,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **Six more hook events of Claude Code**: `PostToolUseFailure`,
+  `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact` and
+  `Notification` (when a turn waits for an approval). A `PreCompact`
+  hook can refuse a compaction, and a `SubagentStop` hook can keep a
+  worker at work.
 - **MCP resources and prompts**: a server that declares resources
   gives the model the `mcp_list_resources` and `mcp_read_resource`
   tools. A prompt of a server is the slash command

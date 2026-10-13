@@ -194,6 +194,40 @@ describe("createAgentDaemon", () => {
     expect(result.cancelled).toBe(true);
   }, 30_000);
 
+  test("a Notification hook runs when a turn waits for an approval", async () => {
+    const dir = tempRoot();
+    const out = join(dir, "notified.json");
+    const script = join(dir, "notify.js");
+    writeFileSync(
+      script,
+      `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => require("node:fs").writeFileSync(${JSON.stringify(out)}, s));`,
+    );
+    const command = `"${process.execPath.replaceAll("\\", "/")}" "${script.replaceAll("\\", "/")}"`;
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
+      tools: [dangerousTool],
+      configDir: writeConfigDir({
+        hooks: { Notification: [{ matcher: "permission_prompt", hooks: [{ type: "command", command }] }] },
+      }),
+    });
+    const runPromise = client.call("run_turn", {
+      turnId: "ask-notify",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && !existsSync(out)) await new Promise((r) => setTimeout(r, 50));
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({
+      hook_event_name: "Notification",
+      notification_type: "permission_prompt",
+    });
+    await client.call("cancel_turn", { turnId: "ask-notify" });
+    await runPromise;
+  }, 30_000);
+
   test("cancel_turn for an unknown turnId reports not cancelled instead of erroring", async () => {
     const { client } = await startFakeDaemon();
     const result = await client.call("cancel_turn", { turnId: "does-not-exist" });

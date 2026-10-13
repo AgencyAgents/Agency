@@ -33,6 +33,12 @@ export interface SessionMeta {
 /** Best-effort observer of successful appends (memory indexing lives here). */
 export type SessionAppendListener = (sessionId: string, entry: SessionEntry) => void;
 
+/** The part of the event bus that the store and the compaction use. emitCollect lets a hook refuse. */
+export interface SessionBus {
+  emit: (event: string, payload: unknown) => void;
+  emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
+}
+
 function sessionPath(sessionsDir: string, sessionId: string): string {
   return join(sessionsDir, `${sessionId}.jsonl`);
 }
@@ -77,23 +83,23 @@ interface LoadCache {
 export class SessionStore {
   private readonly caches = new Map<string, LoadCache>();
   private readonly appendListeners = new Set<SessionAppendListener>();
-  private bus?: { emit: (event: string, payload: unknown) => void };
+  private bus?: SessionBus;
   private logger?: Logger;
 
   constructor(
     private readonly sessionsDir: string,
-    opts?: { bus?: { emit: (event: string, payload: unknown) => void }; logger?: Logger },
+    opts?: { bus?: SessionBus; logger?: Logger },
   ) {
     this.bus = opts?.bus;
     this.logger = opts?.logger;
   }
 
-  setBus(bus: { emit: (event: string, payload: unknown) => void }): void {
+  setBus(bus: SessionBus): void {
     this.bus = bus;
   }
 
   /** Returns the event bus if one was set via constructor or setBus(). */
-  getBus(): { emit: (event: string, payload: unknown) => void } | undefined {
+  getBus(): SessionBus | undefined {
     return this.bus;
   }
 

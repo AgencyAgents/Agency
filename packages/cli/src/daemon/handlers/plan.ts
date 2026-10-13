@@ -1,3 +1,4 @@
+import { runCommandHooks } from "@agency/core";
 import { type ApprovalRequest, approvalArgsSummary, type RequestApproval } from "@agency/guard";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -83,6 +84,13 @@ export function createTurnApproval(
       reply("reject", "non-interactive");
       return "reject";
     }
+    // A person must answer now: a Notification hook can tell them, for example with a sound.
+    void runCommandHooks(
+      ctx.commandHooks,
+      "Notification",
+      { session_id: sessionId, notification_type: "permission_prompt", message: title },
+      ctx.hookRun,
+    );
     const decision = await promise;
     reply(decision, approvals.closeReason(id) ?? "answered");
     return decision;

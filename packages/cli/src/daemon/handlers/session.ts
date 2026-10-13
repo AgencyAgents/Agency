@@ -498,6 +498,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       } catch (error: unknown) {
         warnPersistence("todoStore.create", error);
       }
+      try {
+        const started = { sessionId: childSessionId, handle: agentType?.name ?? "worker", parentSessionId };
+        eventBus.emit("subagent.start", started);
+        eventBus.emit("event", { event: "subagent.start", payload: started });
+      } catch {}
       await getOrCreateScope(childSessionId);
 
       // A worker has the permission mode of the run that started it: no more, and no less.
