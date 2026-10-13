@@ -203,6 +203,7 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 - **Cost limit.** `--max-cost <usd>` stops the turn when its cost reaches the amount. The run prints `budget_exceeded` and exits with code 1. The cost is the provider's own charge when it reports one (OpenRouter), and the price table of the model if not. A model with no price never reaches the limit. `budgets.dailyUsd` and `budgets.monthlyUsd` in the config are limits for the daemon as a whole.
 - **Goal.** `--goal` keeps a turn going until a condition is met (see Session goal).
 - **Events for a script.** `--format stream-json` with `-p` prints one JSON line for each event of the turn (`text_delta`, `tool_start`, `tool_result`, `turn_complete`, `retry` and the others), and then the result as the last line, with `"type": "result"`.
+- **See and stop a run from another terminal.** `agency daemon status` lists the turns that run in the daemon of the workspace: the id of each turn, its session, its model and its start time. `agency daemon cancel <turn>` stops one. The run that started the turn then ends as a cancelled turn.
 - **Continue.** A turn that reached a limit keeps its steps in the session. `--continue` or `--session <id>` goes on from there.
 - **Request rate.** The daemon sends at most 60 requests a minute to one provider, for all turns and workers together. `provider.<id>.requestsPerMinute` sets another rate. Several workers at one time on a fast model reach the default.
 

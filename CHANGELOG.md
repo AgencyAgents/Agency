@@ -87,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A cancelled command left a program of Git Bash alive**: on Windows a
+  cancel or a time limit stopped the shell with `taskkill /T`, which
+  follows parent links. A program of Git Bash (`sleep`, a shell script)
+  has a parent that is already gone, so it stayed alive. Each command
+  now runs in a Windows job object, and a kill stops the whole job.
 - **Project instructions of a spawned worker**: a worker did not get
   `AGENTS.md`, `CLAUDE.md` or the rules of the workspace, so it could
   not follow the rules of the project. In a trusted workspace a worker
@@ -573,6 +578,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`agency daemon status` lists the turns that run**, and
+  **`agency daemon cancel <turn>`** stops one, so a long run can be seen
+  and stopped from another terminal. The `turns_list` RPC gives the
+  same list.
 - **`agency workflow run <file>`**: runs a JavaScript or TypeScript
   script that starts agent turns with `agent()`, in sequence or with
   `parallel()`, and prints the value that the script returns.
