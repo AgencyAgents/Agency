@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { loadHookFiles } from "../src/plugins/command-hooks.ts";
@@ -257,6 +257,33 @@ describe("what an install makes runnable", () => {
       writeText(join(src, "skills", "writing", "references", "style.md"), "STYLE-RULES");
       importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
       expect(existsSync(join(ws, ".agency", "skills", "writing", "references", "style.md"))).toBe(true);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("the MCP servers of a plugin go to an MCP file, with the plugin root as a real folder", () => {
+    const src = makeDir("mcp-src");
+    const ws = makeDir("mcp-ws");
+    try {
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "tools" });
+      writeText(join(src, "server", "index.js"), "// server");
+      writeJson(join(src, ".mcp.json"), {
+        mcpServers: {
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code plugin
+          local: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server/index.js"] },
+        },
+      });
+      const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+      expect(Object.keys(report.mcpServers)).toEqual(["local"]);
+      const file = JSON.parse(readFileSync(join(ws, ".agency", "mcp", "tools.json"), "utf8")) as {
+        mcpServers: { local: { args: string[] } };
+      };
+      const script = file.mcpServers.local.args[0] ?? "";
+      expect(script).not.toContain("CLAUDE_PLUGIN_ROOT");
+      rmSync(src, { recursive: true, force: true });
+      expect(existsSync(script)).toBe(true);
     } finally {
       rmSync(src, { recursive: true, force: true });
       rmSync(ws, { recursive: true, force: true });

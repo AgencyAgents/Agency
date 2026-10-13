@@ -14,6 +14,8 @@ describe("hasTrustGatedContent", () => {
       agents: join(".agency", "agents", "coder.md"),
       commands: join(".agency", "commands", "deploy.md"),
       hooks: join(".agency", "hooks", "guard.json"),
+      "plugin mcp": join(".agency", "mcp", "tools.json"),
+      ".mcp.json": ".mcp.json",
     };
     const found: Record<string, boolean> = {};
     for (const [kind, file] of Object.entries(kinds)) {
@@ -35,6 +37,8 @@ describe("hasTrustGatedContent", () => {
       agents: true,
       commands: true,
       hooks: true,
+      "plugin mcp": true,
+      ".mcp.json": true,
       none: false,
     });
   });

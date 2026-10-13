@@ -35,7 +35,7 @@ export interface ImportClaudePluginReport {
   hooksInstalled: string[];
   /** Events that were not installed: no such event here, or entries that are not commands. */
   hooksSkipped: Array<{ event: string; reason: string }>;
-  /** Validated MCP server entries (caller should merge into config). */
+  /** The MCP servers that are now in .agency/mcp/<plugin>.json, where the daemon loads them. */
   mcpServers: Record<string, unknown>;
   /** Agent definition filenames found (informational; see agentsInstalled). */
   agentsFound: string[];
@@ -112,6 +112,11 @@ function readManifest(
 /** Where the files of an installed plugin stay, for the hook commands that name them. */
 export function pluginRootDir(workspaceRoot: string, pluginName: string): string {
   return join(workspaceRoot, ".agency", "plugin-roots", pluginName);
+}
+
+/** The MCP file that `plugin install` writes for one plugin. */
+export function pluginMcpFile(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "mcp", `${pluginName}.json`);
 }
 
 /** The hook file that `plugin install` writes for one plugin. */
@@ -333,20 +338,24 @@ export function importClaudePlugin(
   // -----------------------------------------------------------------------
   // 3. Hooks: hooks/hooks.json or inline in plugin.json
   // -----------------------------------------------------------------------
+  const copyTo = pluginRootDir(workspaceRoot, manifest.name);
+  // A plugin that is installed from the workspace itself cannot be copied into its own subfolder: its files stay where they are.
+  const inPlace = resolve(copyTo).startsWith(`${resolve(sourceDir)}${sep}`);
+  const root = inPlace ? sourceDir : copyTo;
+  let copied = inPlace;
+  // Hook commands and MCP servers name files of the plugin: its files stay in the workspace, as the source folder can go away.
+  const keepPluginFiles = (): void => {
+    if (copied) return;
+    cpSync(sourceDir, root, { recursive: true, filter: (path) => basename(path) !== ".git" });
+    copied = true;
+  };
   const hooksSource = resolveHooks(sourceDir, manifest, logger);
   if (hooksSource) {
-    const copyTo = pluginRootDir(workspaceRoot, manifest.name);
-    // A plugin that is installed from the workspace itself cannot be copied into its own subfolder: its files stay where they are.
-    const inPlace = resolve(copyTo).startsWith(`${resolve(sourceDir)}${sep}`);
-    const root = inPlace ? sourceDir : copyTo;
     const { hooks, skipped } = parseHooks(hooksSource, root);
     report.hooksSkipped = skipped;
     report.hooksInstalled = Object.keys(hooks);
     if (report.hooksInstalled.length > 0) {
-      // The commands name scripts of the plugin: its files stay in the workspace, as the source folder can go away.
-      if (!inPlace) {
-        cpSync(sourceDir, root, { recursive: true, filter: (path) => basename(path) !== ".git" });
-      }
+      keepPluginFiles();
       const file = pluginHooksFile(workspaceRoot, manifest.name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ hooks }, null, 2)}\n`, "utf8");
@@ -356,10 +365,20 @@ export function importClaudePlugin(
   // -----------------------------------------------------------------------
   // 4. MCP servers: .mcp.json
   // -----------------------------------------------------------------------
-  const mcpPath = join(sourceDir, ".mcp.json");
-  const mcpRaw = readJsonFile(mcpPath);
+  // The file of the plugin, with or with no `mcpServers` key, or the same key of the manifest.
+  const mcpFile = readJsonFile(join(sourceDir, ".mcp.json"));
+  const mcpRaw = isRecord(mcpFile) ? (mcpFile.mcpServers ?? mcpFile) : manifest.mcpServers;
   if (isRecord(mcpRaw)) {
-    report.mcpServers = parseMcpServers(mcpRaw, logger);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code plugin
+    const placeholder = "${CLAUDE_PLUGIN_ROOT}";
+    const text = JSON.stringify(mcpRaw).replaceAll(placeholder, root.replaceAll("\\", "/"));
+    report.mcpServers = parseMcpServers(JSON.parse(text), logger);
+    if (Object.keys(report.mcpServers).length > 0) {
+      keepPluginFiles();
+      const file = pluginMcpFile(workspaceRoot, manifest.name);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, `${JSON.stringify({ mcpServers: report.mcpServers }, null, 2)}\n`, "utf8");
+    }
   }
 
   // -----------------------------------------------------------------------

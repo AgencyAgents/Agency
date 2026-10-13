@@ -1,6 +1,6 @@
 ﻿import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { importClaudePlugin, Logger, pluginHooksFile, pluginRootDir } from "@agency/core";
+import { importClaudePlugin, Logger, pluginHooksFile, pluginMcpFile, pluginRootDir } from "@agency/core";
 
 // ---------------------------------------------------------------------------
 // Install receipt shape
@@ -75,7 +75,7 @@ export function pluginInstallCmd(
   const mcpKeys = Object.keys(report.mcpServers);
   if (mcpKeys.length > 0) {
     lines.push("");
-    lines.push("MCP servers found -- manually merge into config.mcpServers:");
+    lines.push(`MCP servers installed (.agency/mcp/${report.pluginName}.json, they start programs):`);
     for (const key of mcpKeys) lines.push(`  - ${key}`);
   }
 
@@ -229,6 +229,11 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   if (existsSync(hooksFile)) {
     rmSync(hooksFile);
     lines.push("Deleted its hooks.");
+  }
+  const mcpFile = pluginMcpFile(workspaceRoot, pluginName);
+  if (existsSync(mcpFile)) {
+    rmSync(mcpFile);
+    lines.push("Deleted its MCP servers.");
   }
   rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
 

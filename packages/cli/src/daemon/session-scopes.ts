@@ -24,6 +24,8 @@ import type { AgentDaemonOptions, DaemonContext } from "./types.ts";
 export interface SessionScopeFactoryDeps {
   options: AgentDaemonOptions;
   config: Config;
+  /** The servers of the config and, in a trusted workspace, those of its MCP files. */
+  mcpServers: Record<string, unknown> | undefined;
   http: HttpClient;
   identity: CallerIdentity;
   sandbox: SandboxBackend;
@@ -46,6 +48,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
   const {
     options,
     config,
+    mcpServers,
     http,
     identity,
     sandbox,
@@ -85,11 +88,11 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         windowsShell: config.windowsShell,
         ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
         todoPersistence,
-        mcpServers: teamMcpDedicatedServers(config.mcpServers, teamParent),
+        mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),
         lspServers: config.lspServers,
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
       });
-      await attachTeamMcpPool(teamMcpPools, config.mcpServers, scope, {
+      await attachTeamMcpPool(teamMcpPools, mcpServers, scope, {
         teamParent,
         ...(handle ? { handle } : {}),
       });

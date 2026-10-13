@@ -62,7 +62,7 @@ import {
   writeInstanceFile,
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
-import { resolveConfiguredShell, type TeamMcpPool } from "@agency/tools";
+import { loadProjectMcpServers, resolveConfiguredShell, type TeamMcpPool } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
@@ -254,14 +254,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
+  const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
+  const filesOf = (dir: string): string[] =>
+    existsSync(dir) ? readdirSync(dir).map((file) => join(dir, file)) : [];
   const configFingerprint = createConfigFingerprint([
     join(options.configDir ?? configDir(), "config.jsonc"),
     join(options.workspaceRoot, ".agency", "config.jsonc"),
     // The executable too: after an update, an idle daemon from the old binary leaves.
     process.execPath,
-    // The hook folder for a new or a removed file, and each file for an edit: an edit does not change the folder.
+    // The hook and MCP folders for a new or a removed file, and each file for an edit: an edit does not change the folder.
     hooksDir,
-    ...(existsSync(hooksDir) ? readdirSync(hooksDir).map((file) => join(hooksDir, file)) : []),
+    ...filesOf(hooksDir),
+    mcpDir,
+    ...filesOf(mcpDir),
+    join(options.workspaceRoot, ".mcp.json"),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
@@ -442,9 +448,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     return team;
   };
+  // The servers of the user's config win on a name: a workspace cannot take the place of one.
+  const mcpServers = {
+    ...(projectTrusted
+      ? loadProjectMcpServers(options.workspaceRoot, (message) => logger.warn(message))
+      : {}),
+    ...config.mcpServers,
+  };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({
     options,
     config,
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     http,
     identity,
     sandbox,

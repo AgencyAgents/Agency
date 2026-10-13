@@ -696,11 +696,12 @@ describe("createAgentDaemon", () => {
     expect(shutdownCalled).toBe(true);
   });
 
-  test("an idle daemon leaves when a hook file of its workspace changes, and when a new one comes", async () => {
+  test("an idle daemon leaves when a hook file or an MCP file of its workspace changes, and when a new one comes", async () => {
     const left: Record<string, boolean> = {};
     for (const [change, file] of [
       ["edit", "a.json"],
       ["add", "b.json"],
+      ["mcp", join("..", "..", ".mcp.json")],
     ] as const) {
       const workspaceRoot = tempRoot();
       const hooksDir = join(workspaceRoot, ".agency", "hooks");
@@ -717,8 +718,37 @@ describe("createAgentDaemon", () => {
       writeFileSync(join(hooksDir, file), '{"hooks":{}}');
       await new Promise((r) => setTimeout(r, 1_500));
     }
-    expect(left).toEqual({ edit: true, add: true });
-  }, 15_000);
+    expect(left).toEqual({ edit: true, add: true, mcp: true });
+  }, 20_000);
+
+  test("the MCP servers of a workspace start only in a trusted workspace", async () => {
+    const failures = async (trusted: boolean): Promise<string[]> => {
+      const workspaceRoot = tempRoot();
+      // A server that cannot start is in the failure list: the list shows which servers the daemon tried.
+      writeFileSync(
+        join(workspaceRoot, ".mcp.json"),
+        JSON.stringify({ mcpServers: { projectserver: { command: "agency-no-such-mcp-server" } } }),
+      );
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, tools: undefined });
+      await client.call("run_turn", {
+        turnId: `mcp-${trusted}`,
+        sessionId: "s1",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+      const status = (await client.call("mcp_status", { sessionId: "s1" })) as {
+        failures: Record<string, string>;
+      };
+      return Object.keys(status.failures);
+    };
+    expect(await failures(false)).toEqual([]);
+    expect(await failures(true)).toEqual(["projectserver"]);
+  }, 60_000);
 
   test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
     const instanceFile = tempInstanceFile();
