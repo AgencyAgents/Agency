@@ -1,4 +1,4 @@
-import type { CallerIdentity, Capabilities, ToolPolicy } from "@agency/guard";
+import type { CallerIdentity, Capabilities, RequestApproval, ToolPolicy } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { CacheSegment, ProviderAdapter, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
@@ -34,6 +34,8 @@ export interface ChildTurnSpec {
   identity: CallerIdentity;
   capabilities: Capabilities;
   toolPolicy: ToolPolicy;
+  /** The approval surface of the turn that started the child. Absent means each ask of the child is refused. */
+  requestApproval?: RequestApproval;
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
@@ -76,6 +78,7 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       identity: spec.identity,
       capabilities: spec.capabilities,
       toolPolicy: spec.toolPolicy,
+      ...(spec.requestApproval !== undefined ? { requestApproval: spec.requestApproval } : {}),
       eventBus: deps.eventBus,
       systemPrompt: spec.systemPrompt,
       ...(spec.systemSegments !== undefined ? { systemSegments: spec.systemSegments } : {}),

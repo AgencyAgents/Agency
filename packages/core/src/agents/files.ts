@@ -13,6 +13,10 @@ export const AGENT_FILE_FIELDS = [
   "permissions",
   "pathScope",
   "replace",
+  "description",
+  // A Claude Code agent file carries these two. The handle is the file name, and there is no color here.
+  "name",
+  "color",
 ] as const;
 
 export type AgentFileField = (typeof AGENT_FILE_FIELDS)[number];
@@ -20,11 +24,28 @@ export type AgentFileField = (typeof AGENT_FILE_FIELDS)[number];
 const EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
 const HANDLE_RE = /^[a-z][a-z0-9-]*$/;
 
+/** The tool names of a Claude Code agent file, as the names of the same tools here. */
+const CLAUDE_TOOL_NAMES: Record<string, string> = {
+  Read: "read",
+  Write: "write",
+  Edit: "edit",
+  Glob: "glob",
+  Grep: "grep",
+  Bash: "bash",
+  WebFetch: "fetch",
+  WebSearch: "websearch",
+  TodoWrite: "todo_write",
+};
+/** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
+const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);
+
 export type AgentSource = "project" | "user" | "config" | "seed" | "plugin";
 
 export interface FileAgentDef {
   handle: string;
   role: string;
+  /** When to use the agent. With one, the agent is a type of the spawn tool. */
+  description?: string;
   provider?: string;
   model?: string;
   effort?: AgentConfig["effort"];
@@ -96,10 +117,11 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     def.provider = provider;
   }
   const model = split.fields.model;
-  if (model !== undefined) {
+  if (model !== undefined && !CLAUDE_MODEL_ALIASES.has(model)) {
     if (model.length === 0) fail(file, "model", "must be non-empty");
     def.model = model;
   }
+  if (split.fields.description !== undefined) def.description = split.fields.description;
   const effort = split.fields.effort;
   if (effort !== undefined) {
     if (!EFFORTS.has(effort)) {
@@ -107,7 +129,11 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     }
     def.effort = effort as AgentConfig["effort"];
   }
-  if (split.fields.tools !== undefined) def.tools = parseStringList(split.fields.tools, file, "tools");
+  if (split.fields.tools !== undefined) {
+    def.tools = parseStringList(split.fields.tools, file, "tools").map(
+      (name) => CLAUDE_TOOL_NAMES[name] ?? name,
+    );
+  }
   if (split.fields.permissions !== undefined) {
     let parsed: unknown;
     try {

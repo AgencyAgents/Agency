@@ -441,6 +441,76 @@ describe("phase 8 cheap routing on the child-turn assembly plus titles", () => {
     expect(routed?.model).toBe("cheap/m");
   });
 
+  it("an ask of a child turn goes to the approval surface that the parent gave it", async () => {
+    const { Scheduler } = await import("@agency/providers");
+    const asked: string[] = [];
+    let ran = 0;
+    let calls = 0;
+    const outcome = await runChildTurn(
+      { http: noFetchHttp(), createTraceRecorder: () => undefined },
+      {
+        adapter: {
+          family: "fake",
+          async *stream() {
+            calls += 1;
+            if (calls === 1) {
+              yield { type: "tool_call_start", id: "c1", name: "write" };
+              yield { type: "tool_call_delta", id: "c1", inputJsonDelta: '{"path":"a.txt"}' };
+              yield { type: "tool_call_end", id: "c1" };
+              yield {
+                type: "message_stop",
+                stopReason: "tool_use",
+                usage: { inputTokens: 1, outputTokens: 1 },
+              };
+              return;
+            }
+            yield { type: "text_delta", text: "done" };
+            yield {
+              type: "message_stop",
+              stopReason: "end_turn",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+          },
+        },
+        scheduler: new Scheduler({ maxAttempts: 1 }),
+        session: [{ role: "user", content: [{ type: "text", text: "write it" }] }],
+        systemPrompt: "sys",
+        tools: [
+          {
+            name: "write",
+            description: "writes a file",
+            inputSchema: {},
+            handler: async () => {
+              ran += 1;
+              return { content: "written" };
+            },
+          },
+        ],
+        model: "m",
+        apiKey: "k",
+        provider: "p",
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        // A policy that asks for each call, as the gate does in the ask mode.
+        toolPolicy: {
+          check: async (request, ask) =>
+            ask && (await ask({ tool: request.tool, title: "write?" })) !== "reject" ? "allow" : "deny",
+        },
+        requestApproval: async (request) => {
+          asked.push(request.tool);
+          return "once";
+        },
+        turnId: "t-ask",
+        sessionId: "s-ask",
+        cwd: ".",
+        taskDepth: 1,
+      },
+    );
+    expect(outcome.error).toBeUndefined();
+    expect(asked).toEqual(["write"]);
+    expect(ran).toBe(1);
+  });
+
   it("a child turn that overflows folds to the context window of its own model", async () => {
     const { Scheduler } = await import("@agency/providers");
     const { AgencyError, ErrorCode } = await import("@agency/schema");

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildEnvironmentBlock,
   compact,
   composeSystemPrompt,
+  gatherEnvironmentInfo,
   generateTitle,
   getSessionTitle,
   modelSummarizer,
@@ -413,9 +415,28 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     warnPersistence,
   } = daemon;
   const spawnMaxDepth = (config as unknown as { spawn?: { maxDepth?: number } }).spawn?.maxDepth ?? 1;
+  // An agent with a description is a type that the model can choose: the roster holds the files of the config folder and the workspace.
+  type AgentType = {
+    description?: string;
+    provider?: string;
+    model?: string;
+    tools?: string[];
+    systemPrompt?: string;
+  };
+  const agentTypes = Object.entries(
+    (config as unknown as { agents?: Record<string, AgentType> }).agents ?? {},
+  )
+    .filter(([, agent]) => agent.description)
+    .map(([name, agent]) => ({ ...agent, name, description: agent.description ?? "" }));
   return createSpawnTool({
     maxDepth: spawnMaxDepth,
+    agentTypes,
     runTask: async (input, ctx) => {
+      const agentType = agentTypes.find((type) => type.name === input.agent);
+      if (input.agent !== undefined && agentType === undefined) {
+        const names = agentTypes.map((type) => type.name).join(", ") || "none";
+        return { content: `unknown agent type: ${input.agent}. The types are: ${names}`, isError: true };
+      }
       const parentTurnId = ctx.turnId;
       const parentSessionId = ctx.sessionId ?? "default";
       const meta = parentTurnId ? activeTurnMeta.get(parentTurnId) : undefined;
@@ -426,8 +447,8 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
       const parentTools = meta?.tools ?? scope.registry.list();
 
-      let childProvider = parentProvider;
-      let childModel = parentModel;
+      let childProvider = agentType?.provider ?? parentProvider;
+      let childModel = agentType?.model ?? parentModel;
       if (typeof input.model === "string" && input.model.length > 0) {
         const slash = input.model.indexOf("/");
         if (slash > 0) {
@@ -470,16 +491,20 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       }
       await getOrCreateScope(childSessionId);
 
+      // A worker has the permission mode of the run that started it: no more, and no less.
+      const workerGate = gate.withMode(meta?.permissionMode ?? "ask");
       const baseTools = parentTools;
+      const wantedTools =
+        Array.isArray(input.tools) && input.tools.length > 0 ? input.tools : agentType?.tools;
       let childTools: ToolSpec[];
-      if (Array.isArray(input.tools) && input.tools.length > 0) {
-        const allow = new Set(input.tools);
+      if (wantedTools !== undefined) {
+        const allow = new Set(wantedTools);
         childTools = baseTools.filter((t) => allow.has(t.name));
         if (!allow.has("spawn") && childTools.some((t) => t.name === "spawn")) {
           childTools = childTools.filter((t) => t.name !== "spawn");
         }
       } else {
-        childTools = baseTools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+        childTools = baseTools.filter((t) => workerGate.toolOffered(t.name, t.riskTier));
       }
       // Depth-0 child isolation: subagents cannot dispatch or spawn.
       childTools = childTools.filter((t) => t.name !== "dispatch" && t.name !== "spawn");
@@ -492,9 +517,15 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       };
 
       const workerPrompt = composeSystemPrompt({
-        base: "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
+        base:
+          agentType?.systemPrompt ??
+          "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
         instructions: [],
         toolDescriptions: [],
+        // Without it a worker does not know its folder, its shell or the date.
+        context: buildEnvironmentBlock(
+          gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
+        ),
       });
 
       const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
@@ -514,7 +545,8 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           provider: childProvider,
           identity,
           capabilities: childCaps,
-          toolPolicy: gate,
+          toolPolicy: workerGate,
+          ...(ctx.requestApproval === undefined ? {} : { requestApproval: ctx.requestApproval }),
           budget: meta?.budget,
           ...modelRunOptions(childModelInfo),
           turnId: childTurnId,

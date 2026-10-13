@@ -31,6 +31,7 @@ type FileBackedAgent = AgentConfig & {
   replace?: boolean;
   tools?: string[];
   pathScope?: string[];
+  description?: string;
 };
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
@@ -65,6 +66,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         ...(def.replace !== undefined ? { replace: def.replace } : {}),
         ...(def.tools !== undefined ? { tools: def.tools } : {}),
         ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
+        ...(def.description !== undefined ? { description: def.description } : {}),
       };
     }
     cfg.agents = merged;
