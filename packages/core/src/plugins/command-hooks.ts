@@ -15,6 +15,7 @@ export const COMMAND_HOOK_EVENTS = [
   "PreCompact",
   "PostCompact",
   "Notification",
+  "PermissionRequest",
   "SessionStart",
 ] as const;
 export type CommandHookEvent = (typeof COMMAND_HOOK_EVENTS)[number];
@@ -46,6 +47,8 @@ export interface HookOutcome {
   block?: string;
   /** Text that the hook adds for the model. */
   context?: string;
+  /** A PermissionRequest hook answered the ask with allow. */
+  allow?: true;
 }
 
 const DEFAULT_TIMEOUT_S = 60;
@@ -149,7 +152,10 @@ export async function runCommandHooks(
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);
       const specific = (json?.hookSpecificOutput ?? {}) as Record<string, unknown>;
-      if (json?.decision === "block" || specific.permissionDecision === "deny") {
+      // The answer of a PermissionRequest hook, in the form of Claude Code.
+      const behavior = (specific.decision as { behavior?: unknown } | undefined)?.behavior;
+      if (event === "PermissionRequest" && behavior === "allow") return { allow: true };
+      if (json?.decision === "block" || specific.permissionDecision === "deny" || behavior === "deny") {
         const reason = json?.reason ?? specific.permissionDecisionReason;
         return { block: typeof reason === "string" && reason ? reason : `blocked by a ${event} hook` };
       }
@@ -165,6 +171,8 @@ export async function runCommandHooks(
 /** Connects the tool and stop events of the bus to the command hooks. Returns the function that disconnects them. */
 export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: HookRunOptions): () => void {
   type ToolPayload = { tool: string; input: unknown; result?: unknown; sessionId?: string };
+  // The stop event of a subagent has no agent type: the start event gave it.
+  const agentTypes = new Map<string, string>();
   const offs = [
     bus.on("tool.execute.before", async (payload) => {
       const p = payload as ToolPayload;
@@ -193,14 +201,44 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       const out = await runCommandHooks(
         hooks,
         p.taskDepth > 0 ? "SubagentStop" : "Stop",
-        { session_id: p.sessionId, stop_hook_active: p.stopHookActive },
+        {
+          session_id: p.sessionId,
+          stop_hook_active: p.stopHookActive,
+          ...(p.taskDepth > 0 && p.sessionId ? { agent_type: agentTypes.get(p.sessionId) } : {}),
+        },
         opts,
       );
       if (out.block !== undefined) throw new HookBlock(out.block);
     }),
     bus.on("subagent.start", async (payload) => {
       const p = payload as { sessionId: string; handle: string };
+      agentTypes.set(p.sessionId, p.handle);
       await runCommandHooks(hooks, "SubagentStart", { session_id: p.sessionId, agent_type: p.handle }, opts);
+    }),
+    bus.on("permission.request", async (payload) => {
+      const p = payload as {
+        sessionId?: string;
+        tool: string;
+        command?: string;
+        path?: string;
+        decision?: "allow" | "deny";
+      };
+      const out = await runCommandHooks(
+        hooks,
+        "PermissionRequest",
+        {
+          session_id: p.sessionId,
+          tool_name: p.tool,
+          tool_input: {
+            ...(p.command === undefined ? {} : { command: p.command }),
+            ...(p.path === undefined ? {} : { path: p.path }),
+          },
+        },
+        opts,
+      );
+      // A deny of one hook set holds against an allow of another.
+      if (out.block !== undefined) p.decision = "deny";
+      else if (out.allow && p.decision === undefined) p.decision = "allow";
     }),
     bus.on("session.compacting", async (payload) => {
       const p = payload as { sessionId: string; trigger: string };

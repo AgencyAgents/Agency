@@ -665,6 +665,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`PermissionRequest` hooks**: a command hook that runs when a tool
+  call needs an approval, before the user is asked. It can approve
+  the call, refuse it, or give no answer. It also runs in a run with
+  no person to ask, so a script can decide there. `SubagentStop`
+  hooks now get the agent type, and their matcher tests it.
 - **`compactionInstructions`**: text in the config for the model that
   writes the summary of a compaction, for example which facts the
   summary must keep. Claude Code and Codex have the same control.

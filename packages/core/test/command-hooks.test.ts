@@ -314,6 +314,94 @@ describe("hooks in the loop", () => {
     });
   });
 
+  test("a PermissionRequest hook answers an ask: allow runs the tool, deny refuses it, no answer goes to the user", async () => {
+    const ask = {
+      check: async (_request: unknown, approve?: (r: never) => Promise<string>) =>
+        approve && (await approve({ tool: "bash", title: "ls", command: "ls" } as never)) !== "reject"
+          ? ("allow" as const)
+          : ("deny" as const),
+    };
+    const cases: Array<[string, string, string[]]> = [
+      [
+        'console.log(JSON.stringify({ hookSpecificOutput: { decision: { behavior: "allow" } } }));',
+        "hook",
+        ["bash"],
+      ],
+      [
+        'console.log(JSON.stringify({ hookSpecificOutput: { decision: { behavior: "deny" } } }));',
+        "hook",
+        [],
+      ],
+      ["process.exit(2);", "hook", []],
+      ["", "user", ["bash"]],
+    ];
+    for (const [index, [body, who, expected]] of cases.entries()) {
+      const bus = new EventBus();
+      const seen = capture(`perm-seen-${index}`);
+      attachCommandHooks(
+        bus,
+        {
+          PermissionRequest: [
+            {
+              matcher: "Bash",
+              hooks: [
+                { type: "command", command: seen.cmd },
+                { type: "command", command: hook(`perm-${index}`, body) },
+              ],
+            },
+          ],
+        },
+        { cwd: dir },
+      );
+      const ran: string[] = [];
+      let asked = 0;
+      await runTurn(scripted(1).adapter, new Scheduler(), noopHttp, {
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [bashTool(ran)],
+        model: "m",
+        apiKey: "k",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        eventBus: bus,
+        sessionId: "s1",
+        toolPolicy: ask,
+        requestApproval: async () => {
+          asked += 1;
+          return "once";
+        },
+      });
+      expect(ran).toEqual(expected);
+      expect(asked).toBe(who === "user" ? 1 : 0);
+      expect(await seen.read()).toMatchObject({
+        hook_event_name: "PermissionRequest",
+        session_id: "s1",
+        tool_name: "bash",
+        tool_input: { command: "ls" },
+      });
+    }
+  });
+
+  test("a SubagentStop hook gets the type of the agent, and its matcher tests it", async () => {
+    const bus = new EventBus();
+    const stopped = capture("substop-type");
+    const other = capture("substop-other");
+    attachCommandHooks(
+      bus,
+      {
+        SubagentStop: [
+          { matcher: "reviewer", hooks: [{ type: "command", command: stopped.cmd }] },
+          { matcher: "planner", hooks: [{ type: "command", command: other.cmd }] },
+        ],
+      },
+      { cwd: dir },
+    );
+    bus.emit("subagent.start", { sessionId: "child-9", handle: "reviewer", parentSessionId: "s1" });
+    await bus.emitCollect("turn.stop", { sessionId: "child-9", taskDepth: 1, stopHookActive: false });
+    expect(await stopped.read()).toMatchObject({ hook_event_name: "SubagentStop", agent_type: "reviewer" });
+    expect(existsSync(join(dir, "substop-other.json"))).toBe(false);
+  });
+
   test("a plugin hook that returns a block refuses the tool call", async () => {
     const root = mkdtempSync(join(dir, "ws-"));
     const pluginDir = join(root, ".agency", "plugins");

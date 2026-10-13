@@ -808,9 +808,26 @@ async function executeOne(
       // The user who is asked must see the script, not only the name of the tool.
       const title =
         resolved.name === CODE_TOOL && typeof call.input.code === "string" ? { title: call.input.code } : {};
+      // A PermissionRequest hook can answer an ask before the user gets it.
+      const askUser = options.requestApproval;
+      const ask: typeof askUser =
+        askUser === undefined || bus?.emitCollect === undefined
+          ? askUser
+          : async (request) => {
+              const asked: { decision?: "allow" | "deny" } & Record<string, unknown> = {
+                sessionId: options.sessionId,
+                tool: request.tool,
+                command: request.command,
+                path: request.path,
+              };
+              await bus.emitCollect?.("permission.request", asked);
+              if (asked.decision === "allow") return "once";
+              if (asked.decision === "deny") return "reject";
+              return askUser(request);
+            };
       const verdict = await options.toolPolicy.check(
         { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title },
-        options.requestApproval,
+        ask,
       );
       if (bus) {
         try {
