@@ -98,6 +98,7 @@ Options:
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
+  --max-total-cost <usd>   With workflow run: no turn starts after the turns cost this much
   --system-prompt <text>   With -p: use this text in place of the built-in base prompt
   --append-system-prompt <text>
                            With -p: add this text after the base prompt
@@ -149,6 +150,7 @@ export interface ParsedArgv {
   jsonSchema: string | undefined;
   appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
+  maxTotalCost: number | undefined;
   /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
   streamJson: boolean;
   format: "text" | "json";
@@ -225,6 +227,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     jsonSchema: undefined,
     appendSystemPrompt: undefined,
     maxCost: undefined,
+    maxTotalCost: undefined,
     streamJson: false,
     format: "text",
     retention: undefined,
@@ -321,10 +324,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--append-system-prompt":
         parsed.appendSystemPrompt = value();
         break;
-      case "--max-cost": {
+      case "--max-cost":
+      case "--max-total-cost": {
         const cost = Number(value());
         if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
-        parsed.maxCost = cost;
+        if (name === "--max-cost") parsed.maxCost = cost;
+        else parsed.maxTotalCost = cost;
         break;
       }
       case "--max-age-days":
@@ -760,6 +765,8 @@ async function workflowCmd(
   const workspaceRoot = workspaceRootOf(parsed, deps);
   const config = loadConfig({ globalDir: deps.configDir, env: envOf(deps), flags: flagsFor(parsed) });
   let started = 0;
+  // Turns in parallel each get what is left at their start, so they can go over the total together.
+  let spent = 0;
   const result = await runWorkflow(file, {
     args,
     log: err,
@@ -771,7 +778,18 @@ async function workflowCmd(
       await validateTurnKey(ref.provider, config, deps);
       const n = ++started;
       err(t("cli.workflow.agent_start", { n: String(n), prompt: prompt.replace(/\s+/g, " ").slice(0, 80) }));
-      const maxCost = options.maxCost ?? parsed.maxCost;
+      const left = parsed.maxTotalCost === undefined ? undefined : parsed.maxTotalCost - spent;
+      if (left !== undefined && left <= 0) {
+        err(t("cli.workflow.agent_end", { n: String(n), reason: "total_cost_limit" }));
+        return {
+          text: "",
+          stopReason: "total_cost_limit",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          ok: false,
+        };
+      }
+      const turnCost = options.maxCost ?? parsed.maxCost;
+      const maxCost = left === undefined ? turnCost : Math.min(turnCost ?? left, left);
       const turn = await (deps.runHeadless ?? runHeadless)({
         workspaceRoot,
         instanceDir: deps.instanceDir,
@@ -783,6 +801,7 @@ async function workflowCmd(
         maxToolIterations: options.maxSteps ?? parsed.maxSteps,
         ...(maxCost === undefined ? {} : { budget: { maxCostUsd: maxCost } }),
       });
+      spent += turn.usage.costUsd ?? 0;
       err(t("cli.workflow.agent_end", { n: String(n), reason: turn.error?.code ?? turn.stopReason }));
       return {
         text: assistantText(turn.messages),

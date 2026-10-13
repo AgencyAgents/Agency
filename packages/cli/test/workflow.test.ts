@@ -105,6 +105,36 @@ describe("agency workflow run", () => {
     expect(s.most()).toBe(2);
   });
 
+  test("--max-total-cost: a turn gets what is left of the total, and no turn starts when nothing is left", async () => {
+    const s = setup(`
+      export default async ({ agent }) => {
+        const results = [];
+        for (const name of ["a", "b", "c", "d", "e"]) results.push(await agent(name));
+        return results.map((r) => r.ok + ":" + r.stopReason).join(" ");
+      };
+    `);
+    // Each turn of the fake costs 0.01 USD.
+    const argv = [
+      "workflow",
+      "run",
+      s.file,
+      "--model",
+      "openai/fake-1",
+      "--max-total-cost",
+      "0.025",
+      "--max-cost",
+      "0.02",
+    ];
+    expect(await runEntrypoint(argv, s.deps)).toBe(0);
+    expect(s.out).toEqual([
+      "true:end_turn true:end_turn true:end_turn false:total_cost_limit false:total_cost_limit",
+    ]);
+    expect(s.calls.length).toBe(3);
+    // The limit of a turn is the smaller of --max-cost and what is left.
+    expect(s.calls.map((c) => Number(c.budget?.maxCostUsd?.toFixed(3)))).toEqual([0.02, 0.015, 0.005]);
+    expect(await runEntrypoint(["workflow", "run", s.file, "--max-total-cost", "0"], s.deps)).toBe(1);
+  });
+
   test("a turn that failed has ok false, and an error of the script is exit code 1", async () => {
     const s = setup(`
       export default async ({ agent }) => {

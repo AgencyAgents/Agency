@@ -245,7 +245,7 @@ export default async ({ agent, parallel, args, log }) => {
 - `parallel(tasks, limit)` runs functions at the same time, at most `limit` at one time (4 with no value), and gives their results in the order of the tasks.
 - `args` holds the `--arg key=value` pairs of the command line. `log(text)` prints a line on stderr.
 - The value that the function returns is the output: a string as it is, and another value as JSON. An error of the script ends the command with exit code 1.
-- `--max-cost` is a limit for each turn, not for the workflow. Each result has `usage`, with `costUsd` when the provider reports its charge, so a script can add the costs and stop.
+- `--max-cost` is a limit for each turn. `--max-total-cost <usd>` is a limit for the workflow: a turn gets the smaller of `--max-cost` and what is left of the total, and when nothing is left `agent()` starts no turn and gives `ok: false` with the stop reason `total_cost_limit`. Turns in parallel each get what is left at their start, so together they can go over the total. The limit counts `costUsd`, which a result has only when the provider reports its charge.
 
 The script is your code. It runs in the `agency` process with your rights, and it needs no trust of the workspace. An agent of a workflow has the permissions of a `-p` run.
 

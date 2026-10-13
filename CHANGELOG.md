@@ -665,6 +665,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`--max-total-cost <usd>` for `workflow run`**: a cost limit for
+  the whole workflow. A turn gets what is left of the total, and no
+  turn starts when nothing is left. `--max-cost` stays the limit of
+  one turn.
 - **`code` tool (`codeMode`)**: the model writes one JavaScript script
   that calls the other tools as functions (`await tools.read({...})`),
   also in parallel, and gets back only what the script prints and
