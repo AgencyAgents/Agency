@@ -68,6 +68,22 @@ describe("ensureDaemon", () => {
     expect(await client.call("ping", {})).toBe("pong");
   });
 
+  test("two calls at the same time in one process start one daemon", async () => {
+    const instanceDir = tempDir();
+    let spawns = 0;
+    const spawnDaemon = (instanceFile: string): void => {
+      spawns += 1;
+      fakeSpawnDaemon(instanceFile);
+    };
+    const [a, b] = await Promise.all([
+      ensureDaemon({ workspaceRoot: "/repo/two-at-once", instanceDir, spawnDaemon }),
+      ensureDaemon({ workspaceRoot: "/repo/two-at-once", instanceDir, spawnDaemon }),
+    ]);
+    clients.push(a.client, b.client);
+    expect(spawns).toBe(1);
+    expect(a.port).toBe(b.port);
+  });
+
   test("spawns on a first run, when the instance dir does not exist yet", async () => {
     const { client } = await ensureDaemon({
       workspaceRoot: "/repo/first-run",

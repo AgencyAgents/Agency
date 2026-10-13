@@ -205,6 +205,24 @@ export interface EnsureDaemonOptions {
 export async function ensureDaemon(
   options: EnsureDaemonOptions,
 ): Promise<{ port: number; client: DaemonClient }> {
+  const instanceFile = instanceFilePath(options.instanceDir, options.workspaceRoot);
+  const run = (inProcess.get(instanceFile) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => ensureDaemonAlone(options));
+  inProcess.set(instanceFile, run);
+  try {
+    return await run;
+  } finally {
+    if (inProcess.get(instanceFile) === run) inProcess.delete(instanceFile);
+  }
+}
+
+/** The calls of this process for one workspace, in a line: the spawn lock takes a holder with this pid for a leftover, so two calls would each spawn. */
+const inProcess = new Map<string, Promise<unknown>>();
+
+async function ensureDaemonAlone(
+  options: EnsureDaemonOptions,
+): Promise<{ port: number; client: DaemonClient }> {
   const connect = options.connect ?? connectToDaemon;
   const instanceFile = instanceFilePath(options.instanceDir, options.workspaceRoot);
   const lockFile = spawnLockPath(instanceFile);
