@@ -6,6 +6,7 @@ import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { CWD_MARKER, EXIT_MARKER, modelCommandEnv, parseShellOutput, type ShellConfig } from "../shell.ts";
 import { truncateWithSpill } from "../truncate.ts";
+import { trackJob } from "../win-job.ts";
 
 /**
  * Byte cap for a single bash result. The session-wide caps in
@@ -248,6 +249,7 @@ export function createBashTool(
         stdout: "pipe",
         stderr: "pipe",
       });
+      trackJob(proc.pid, proc.exited);
 
       // Reads start immediately and stay in flight across the race below:
       // when the kill lands the pipes close and they settle with whatever

@@ -354,5 +354,48 @@ describe.skipIf(process.platform !== "win32" || Bun.which("bash") === null)(
       await new Promise((r) => setTimeout(r, 500));
       expect(readFileSync(beat, "utf8")).toBe(after);
     }, 60_000);
+
+    test("aborting stops a program of Git Bash itself, which the tree of Windows does not show as a child", async () => {
+      // Live: after a cancel, `sleep.exe` of a command was alive and its parent was gone. `taskkill /T` follows parents.
+      const root = mkdtempSync(join(tmpdir(), "agency-bash-test-"));
+      dirs.push(root);
+      const deps: ToolDeps = {
+        identity: { type: "user" },
+        capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },
+        sandbox: new SandboxBoundary(root),
+      };
+      const manager = new ProcessManager();
+      managers.push(manager);
+      const tool = createBashTool(deps, resolveConfiguredShell("win32", "gitbash"), { cwd: root }, manager);
+      const seconds = String(7000 + Math.floor(Math.random() * 2000));
+      const alive = (): boolean => {
+        const query = `Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | ForEach-Object { $_.CommandLine }`;
+        const out = Bun.spawnSync(["powershell", "-NoProfile", "-Command", query]).stdout.toString();
+        return out.includes(` ${seconds}`);
+      };
+      const controller = new AbortController();
+      const resultPromise = tool.handler(
+        { command: `sleep ${seconds} && echo finished` },
+        { signal: controller.signal },
+      );
+      const deadline = Date.now() + 20_000;
+      while (!alive()) {
+        if (Date.now() > deadline) throw new Error("the child never started");
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      controller.abort();
+      await resultPromise;
+      await new Promise((r) => setTimeout(r, 1000));
+      const left = alive();
+      // The test must not leave its own process on the machine when it fails.
+      if (left)
+        Bun.spawnSync([
+          "powershell",
+          "-NoProfile",
+          "-Command",
+          `Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -like '* ${seconds}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+        ]);
+      expect(left).toBe(false);
+    }, 60_000);
   },
 );
