@@ -670,6 +670,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **Old tool output is removed before a summary**: a compaction first
+  changes each old tool result to one line and keeps the newest
+  results. If that is enough, no model writes a summary, and all
+  texts stay word for word. The idea is from a study of harness
+  design (arXiv 2609.20804), where this order had the lowest cost. One
+  live run each on a 12000-token window: the turn after the
+  compaction had 4375 input tokens against 10987, with the same
+  right answer.
 - **`compactionInstructions`**: text in the config for the model that
   writes the summary of a compaction, for example which facts the
   summary must keep. Claude Code and Codex have the same control.

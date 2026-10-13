@@ -943,3 +943,86 @@ describe("U8 overflow compact and single retry", () => {
     expect(state.runs).toBe(6);
   });
 });
+
+describe("removal of old tool output before a summary", () => {
+  const noSummary = async (): Promise<string> => {
+    throw new Error("the summarizer must not run");
+  };
+  const tokenizer = createApproximateTokenizer();
+  async function longSession(store: SessionStore): Promise<string> {
+    store.create("s");
+    let tip = (await store.append("s", { type: "message", parentId: null, message: userMsg("the task") })).id;
+    for (let i = 0; i < 6; i++) {
+      const id = `c${i}`;
+      tip = (
+        await store.append("s", {
+          type: "message",
+          parentId: tip,
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_call", id, name: "read", input: { path: id } }],
+          },
+        })
+      ).id;
+      tip = (
+        await store.append("s", {
+          type: "message",
+          parentId: tip,
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", toolCallId: id, content: `${id} `.repeat(1000), isError: false },
+            ],
+          },
+        })
+      ).id;
+    }
+    return tip;
+  }
+  const resultTexts = (store: SessionStore, tipId: string): string[] =>
+    store
+      .messagesFor(store.load("s"), tipId)
+      .flatMap((message) => message.content)
+      .flatMap((block) => (block.type === "tool_result" ? [block.content] : []));
+
+  test("old results become one line each with no model call; the newest stay, and so does the user text", async () => {
+    const store = setup();
+    const tip = await longSession(store);
+    const before = countChainTokens(store.chainFor(store.load("s"), tip), tokenizer);
+    const threshold = { contextWindow: Math.ceil(before / 0.95) };
+    const outcome = await compact(store, "s", tip, tokenizer, threshold, noSummary);
+    expect(outcome.compacted).toBe(true);
+    const chain = store.chainFor(store.load("s"), outcome.tipId);
+    expect(countChainTokens(chain, tokenizer)).toBeLessThanOrEqual(targetTokens(threshold));
+    expect(chain.some((entry) => entry.type === "compaction_summary")).toBe(false);
+    const texts = resultTexts(store, outcome.tipId);
+    expect(texts).toHaveLength(6);
+    expect(texts[0]).toMatch(/^\[output removed to save context: 3000 chars/);
+    expect(texts[5]).toBe("c5 ".repeat(1000));
+    expect(store.messagesFor(store.load("s"), outcome.tipId)[0]).toEqual(userMsg("the task"));
+    // A second call has nothing more to remove and is under the trigger.
+    const again = await compact(store, "s", outcome.tipId, tokenizer, threshold, noSummary);
+    expect(again.compacted).toBe(false);
+  });
+
+  test("a compaction that the user asked for summarizes, and so does one where removal is not enough", async () => {
+    const store = setup();
+    const tip = await longSession(store);
+    let calls = 0;
+    const summarize = async (): Promise<string> => {
+      calls += 1;
+      return "summary";
+    };
+    const manual = await compact(store, "s", tip, tokenizer, { contextWindow: 10_000 }, summarize, 4, {
+      force: true,
+      trigger: "manual",
+    });
+    expect(manual.compacted).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+    calls = 0;
+    // The window is too small for the texts that removal leaves.
+    const small = await compact(store, "s", tip, tokenizer, { contextWindow: 40 }, summarize);
+    expect(small.compacted).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+  });
+});

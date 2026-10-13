@@ -284,6 +284,8 @@ The team report that `/goal` showed before is now `/report [outcome]`.
 
 A session is compacted when its history reaches 90 percent of the model's context window, and again when the provider reports a context overflow in the middle of a turn. The older messages become one summary, and the newest messages stay as they are. Task lists always stay.
 
+Before a summary, the old tool output is removed: each old result becomes one line that gives its size, and the newest results stay, up to 35 percent of the window. No model writes this, and your messages, the model's texts and the tool inputs stay word for word. If this brings the history to 70 percent of the window, there is no summary. `/compact` always writes the summary.
+
 The model of the session writes the summary: one more request, on the transcript of the older messages with long tool results cut short. The summary has fixed sections: the user's requests and rules, decisions, files read and changed, commands and results, errors and fixes, the state of the work, and the next step. If that request fails, or no key resolves for the provider, the daemon uses an offline summary that keeps only the first and the last lines of the transcript.
 
 `/compact <session> [provider/model]` compacts a session at any size.

@@ -546,6 +546,64 @@ async function foldChain(
   return { summaryText, summarized, carryForward };
 }
 
+// A result at most this long stays: the marker would save nothing.
+const ELIDE_MIN_CHARS = 400;
+
+/**
+ * The stage before a summary, with no model call: old tool results become one line each, and the newest stay up to
+ * `keepTokens`. Gives the new chain and the index of its first changed entry, or undefined when nothing changed.
+ */
+async function elideOldToolResults(
+  chain: SessionEntry[],
+  countText: (text: string) => number | Promise<number>,
+  keepTokens: number,
+): Promise<{ chain: SessionEntry[]; first: number } | undefined> {
+  const out = [...chain];
+  let kept = 0;
+  let first = -1;
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const entry = chain[i];
+    if (entry === undefined || !isMessageEntry(entry)) continue;
+    let changed = false;
+    const content: Message["content"] = [];
+    for (const block of entry.message.content) {
+      if (block.type === "tool_result" && block.content.length > ELIDE_MIN_CHARS) {
+        if (kept <= keepTokens) kept += await countText(block.content);
+        if (kept > keepTokens) {
+          const { images: _images, ...rest } = block;
+          const chars = block.content.length;
+          content.push({
+            ...rest,
+            content: `[output removed to save context: ${chars} chars. Run the tool again if you need it.]`,
+          });
+          changed = true;
+          continue;
+        }
+      }
+      content.push(block);
+    }
+    if (!changed) continue;
+    out[i] = { ...entry, message: { ...entry.message, content } };
+    first = i;
+  }
+  return first === -1 ? undefined : { chain: out, first };
+}
+
+/** The chain after the removal stage, when that alone brings it to the target. */
+async function elideToTarget(
+  chain: SessionEntry[],
+  tokenizer: Tokenizer | AsyncTokenizer,
+  threshold: CompactionThreshold,
+): Promise<{ chain: SessionEntry[]; first: number } | undefined> {
+  const target = targetTokens(threshold);
+  const countText = (text: string): number | Promise<number> =>
+    isAsyncTokenizer(tokenizer) ? tokenizer.count(text) : tokenizer.count(text);
+  // Half of the target for results: the texts and the tool inputs need the rest.
+  const elided = await elideOldToolResults(chain, countText, target / 2);
+  if (elided === undefined) return undefined;
+  return (await countChainTokensAsync(elided.chain, tokenizer)) <= target ? elided : undefined;
+}
+
 /** compact() for a transcript with no store behind it. Undefined when there is nothing to fold. */
 export async function compactMessages(
   messages: Message[],
@@ -564,6 +622,8 @@ export async function compactMessages(
       message,
     }),
   );
+  const elided = await elideToTarget(chain, tokenizer, threshold);
+  if (elided !== undefined) return elided.chain.filter(isMessageEntry).map((entry) => entry.message);
   const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
   if (folded === undefined) return undefined;
   return [
@@ -598,28 +658,38 @@ export async function compact(
   const asked = await store.getBus?.()?.emitCollect?.("session.compacting", { sessionId, trigger });
   if (asked?.errors.some((error) => error instanceof HookBlock)) return { compacted: false, tipId };
 
-  const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
-  if (folded === undefined) return { compacted: false, tipId };
-  const { summaryText, summarized, carryForward } = folded;
-
-  const summaryEntry = await store.append(sessionId, {
-    type: "compaction_summary",
-    parentId: null,
-    summary: summaryText,
-    replacedEntryIds: [...summarized],
-  });
-
-  let parentId: string = summaryEntry.id;
-  for (const entry of carryForward) {
-    const {
-      id: _id,
-      parentId: _parentId,
-      createdAt: _createdAt,
-      schemaVersion: _schemaVersion,
-      ...rest
-    } = entry;
-    const appended = await store.append(sessionId, { ...rest, parentId });
-    parentId = appended.id;
+  /** Appends the entries as a new branch on `from`, and gives its tip. */
+  const rebase = async (from: string | null, moved: SessionEntry[]): Promise<string | null> => {
+    let parent = from;
+    for (const entry of moved) {
+      const {
+        id: _id,
+        parentId: _parentId,
+        createdAt: _createdAt,
+        schemaVersion: _schemaVersion,
+        ...rest
+      } = entry;
+      parent = (await store.append(sessionId, { ...rest, parentId: parent })).id;
+    }
+    return parent;
+  };
+  // A person who asks for a compaction wants the summary.
+  const elided = trigger === "manual" ? undefined : await elideToTarget(chain, tokenizer, threshold);
+  let parentId: string;
+  if (elided !== undefined) {
+    // The entries before the first changed one stay as they are: the new branch starts there.
+    const from = elided.chain[elided.first]?.parentId ?? null;
+    parentId = (await rebase(from, elided.chain.slice(elided.first))) ?? tipId;
+  } else {
+    const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
+    if (folded === undefined) return { compacted: false, tipId };
+    const summaryEntry = await store.append(sessionId, {
+      type: "compaction_summary",
+      parentId: null,
+      summary: folded.summaryText,
+      replacedEntryIds: [...folded.summarized],
+    });
+    parentId = (await rebase(summaryEntry.id, folded.carryForward)) ?? summaryEntry.id;
   }
 
   try {
