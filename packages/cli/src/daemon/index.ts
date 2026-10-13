@@ -657,6 +657,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       return true;
     },
   });
+  if (options.idleFromStart) {
+    idleTimer = setTimeout(leave, idleLingerMs);
+    idleTimer.unref?.();
+  }
 
   // Mount the HTTP+SSE gateway on the same handler table and auth token as
   // the TCP transport, so both transports answer the same RPC surface.

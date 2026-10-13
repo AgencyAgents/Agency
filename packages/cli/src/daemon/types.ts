@@ -310,6 +310,8 @@ export interface AgentDaemonOptions {
   instanceFile: string;
   /** How long to stay alive after the last client disconnects before exiting. */
   idleLingerMs?: number;
+  /** The linger also runs from the start: a daemon that no client reaches (its starter died) then leaves. */
+  idleFromStart?: boolean;
   /** Defaults to the real built-in adapters; tests substitute fakes here. */
   adapterFor?: (provider: string) => ProviderAdapter;
   http?: HttpClient;

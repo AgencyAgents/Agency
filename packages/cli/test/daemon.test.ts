@@ -680,6 +680,25 @@ describe("createAgentDaemon", () => {
     void daemon;
   });
 
+  test("a spawned daemon that no client reaches leaves after the linger", async () => {
+    const left = { spawned: false, embedded: false };
+    for (const kind of ["spawned", "embedded"] as const) {
+      const daemon = await createAgentDaemon({
+        workspaceRoot: tempRoot(),
+        instanceFile: tempInstanceFile(),
+        adapterFor: () => textAdapter("unused"),
+        http: noopHttp,
+        idleLingerMs: 30,
+        idleFromStart: kind === "spawned",
+        onIdleShutdown: () => (left[kind] = true),
+      });
+      daemons.push(daemon);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    // An embedded daemon (serve, the SDK) can have HTTP clients only: it stays.
+    expect(left).toEqual({ spawned: true, embedded: false });
+  });
+
   test("an idle daemon leaves when its config changes, so the next run loads the new config", async () => {
     let shutdownCalled = false;
     const { client, workspaceRoot } = await startFakeDaemon({
