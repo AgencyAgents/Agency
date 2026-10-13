@@ -66,6 +66,67 @@ export function buildSeatbeltProfile(root: string, allowNetwork: boolean, tmpDir
 }
 
 /**
+ * The argv that runs a script process with no network, no write access and no view of the user's files: it talks
+ * only on its stdin and stdout. `readPaths` are the files of the runner. Undefined where there is no backend (Windows).
+ */
+export function buildScriptSandboxArgv(
+  argv: string[],
+  readPaths: string[],
+  platform: NodeJS.Platform = process.platform,
+): string[] | undefined {
+  if (platform === "linux") {
+    const system = ["/usr", "/lib", "/lib64", "/bin", "/etc/ld.so.cache"];
+    return [
+      "bwrap",
+      ...system.flatMap((path) => ["--ro-bind-try", path, path]),
+      ...readPaths.flatMap((path) => ["--ro-bind", path, path]),
+      "--dev",
+      "/dev",
+      "--proc",
+      "/proc",
+      "--tmpfs",
+      "/tmp",
+      "--unshare-all",
+      "--die-with-parent",
+      "--new-session",
+      "--chdir",
+      "/tmp",
+      "--",
+      ...argv,
+    ];
+  }
+  if (platform === "darwin") {
+    const profile = [
+      "(version 1)",
+      "(allow default)",
+      "(deny network*)",
+      "(deny file-write*)",
+      '(allow file-write* (literal "/dev/null"))',
+      '(deny file-read* (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/root") (subpath "/private/var/folders"))',
+      ...readPaths.map((path) => `(allow file-read* (subpath ${quote(path)}))`),
+    ].join("\n");
+    return ["/usr/bin/sandbox-exec", "-p", profile, ...argv];
+  }
+  return undefined;
+}
+
+let scriptSandboxProbe: Promise<boolean> | undefined;
+
+/** True when the script sandbox of this platform starts a process. One probe for the life of the daemon. */
+export function scriptSandboxAvailable(): Promise<boolean> {
+  scriptSandboxProbe ??= (async () => {
+    const argv = buildScriptSandboxArgv(["/usr/bin/true"], []);
+    if (argv === undefined) return false;
+    try {
+      return (await Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).exited) === 0;
+    } catch {
+      return false;
+    }
+  })();
+  return scriptSandboxProbe;
+}
+
+/**
  * Runs each shell command in a sandbox of the operating system: bubblewrap on Linux, Seatbelt on macOS.
  * Paths and permission rules are those of the software boundary. There is no backend for Windows.
  */

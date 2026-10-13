@@ -28,6 +28,7 @@ import {
   type Message,
   type StopReason,
 } from "@agency/schema";
+import { CODE_TOOL } from "./codemode.ts";
 import { HookBlock } from "./events.ts";
 import { compactMessages, isContextOverflowError } from "./sessions/compaction.ts";
 import { modelSummarizer } from "./sessions/summarize.ts";
@@ -47,6 +48,11 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
       toolCallId?: string;
       requestApproval?: RequestApproval;
       onProgress?: (message: string) => void;
+      /** Runs another tool of this turn through the same checks as a call of the model. */
+      callTool?: (
+        name: string,
+        input: Record<string, unknown>,
+      ) => Promise<{ content: string; isError: boolean }>;
     },
   ): Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
   renderCall?(input: Input & Record<string, unknown>): string;
@@ -792,8 +798,11 @@ async function executeOne(
           });
         } catch {}
       }
+      // The user who is asked must see the script, not only the name of the tool.
+      const title =
+        resolved.name === CODE_TOOL && typeof call.input.code === "string" ? { title: call.input.code } : {};
       const verdict = await options.toolPolicy.check(
-        { tool: resolved.name, riskTier: resolved.riskTier, ...subject },
+        { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title },
         options.requestApproval,
       );
       if (bus) {
@@ -847,7 +856,13 @@ async function executeOne(
 
   const toolSignal = signal ?? NEVER_ABORTED;
   const onEvent = options.onEvent;
+  let innerCalls = 0;
   const toolCtx = {
+    callTool: (name: string, input: Record<string, unknown>) => {
+      innerCalls += 1;
+      const inner = { type: "tool_call" as const, id: `${call.id}.${innerCalls}`, name, input };
+      return executeOne(undefined, inner, options, signal);
+    },
     signal: toolSignal,
     turnId: options.turnId,
     cwd: options.cwd,

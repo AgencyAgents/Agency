@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  CODE_COMMAND,
   type Config,
   cacheDir,
   dataDir,
@@ -12,6 +13,7 @@ import {
   parseModelRef,
   type RetentionPolicy,
   reportStorage,
+  runCodeChild,
   SessionStore,
   storagePaths,
 } from "@agency/core";
@@ -1413,6 +1415,7 @@ if (import.meta.main) {
   if (process.argv[2] === DAEMON_COMMAND) {
     await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
   }
+  if (process.argv[2] === CODE_COMMAND) await runCodeChild();
   await noteAvailableUpdate(process.argv.slice(2));
   // Awaited: a bare promise does not hold the process open, and an empty stdin read then exits 0 with no output.
   process.exit(await runEntrypoint());

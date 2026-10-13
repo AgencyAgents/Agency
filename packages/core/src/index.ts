@@ -1,5 +1,6 @@
 export * from "./agents/files.ts";
 export * from "./cassette.ts";
+export * from "./codemode.ts";
 export * from "./commands/loader.ts";
 export * from "./commands/runtime.ts";
 export * from "./config/loader.ts";

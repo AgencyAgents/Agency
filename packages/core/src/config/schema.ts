@@ -132,6 +132,11 @@ export const ConfigSchema = z
     mcpServers: z.record(z.string(), z.unknown()).optional(),
     /** `auto` keeps the schemas of the MCP tools out of a request when there are more than 10, until the model loads them. */
     mcpDeferTools: z.enum(["auto", "always", "never"]).optional(),
+    /**
+     * Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox
+     * (Linux, macOS). `"host"` runs it with the authority of a shell command.
+     */
+    codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
     lspServers: z.record(z.string(), z.unknown()).optional(),
     /**
      * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the

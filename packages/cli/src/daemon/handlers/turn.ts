@@ -1,6 +1,10 @@
 import {
   addUsage,
+  CODE_TOOL,
   type ToolSpec as CoreToolSpec,
+  codeRunner,
+  codeRunnerReadPaths,
+  codeTool,
   deferTools,
   isTeamLive,
   LEAD_WITHHELD_TOOLS,
@@ -11,10 +15,11 @@ import {
   TraceRecorder,
   withTrace,
 } from "@agency/core";
+import { buildScriptSandboxArgv, scriptSandboxAvailable } from "@agency/guard";
 import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import type { SessionScope } from "@agency/tools";
+import { modelCommandEnv, type SessionScope } from "@agency/tools";
 import {
   assertPreflightCaps,
   estimatePreflightTurnCostUsd,
@@ -417,6 +422,20 @@ export async function executeTurn(
                   handler: async () => ({ content: "The answer is recorded. End the turn now." }),
                 },
               ];
+        // `true` needs the script sandbox. `"host"` runs the script with the authority of a shell command, so it is
+        // only for the software backend: a sandbox for commands must not have a tool that goes around it.
+        const isolatedRunner =
+          config.codeMode === true && (await scriptSandboxAvailable())
+            ? buildScriptSandboxArgv(codeRunner(), codeRunnerReadPaths())
+            : undefined;
+        const hostCode = config.codeMode === "host" && (config.sandbox?.backend ?? "software") === "software";
+        const codeTools = (gate: {
+          toolOffered(tool: string, riskTier?: "dangerous"): boolean;
+        }): CoreToolSpec[] => {
+          if (!gate.toolOffered(CODE_TOOL, "dangerous")) return [];
+          if (isolatedRunner) return [codeTool(() => ({ PATH: "/usr/bin:/bin" }), isolatedRunner)];
+          return hostCode ? [codeTool(() => modelCommandEnv())] : [];
+        };
         const sessionLoaded = ctx.loadedTools.get(sessionId) ?? new Set<string>();
         ctx.loadedTools.set(sessionId, sessionLoaded);
         try {
@@ -435,7 +454,11 @@ export async function executeTurn(
             leadTurn && isTeamLive(boardStore.list())
               ? gatedTools.filter((t) => !withheld.has(t.name))
               : gatedTools;
-          const effectiveTools = [...deferTools(offeredTools, deferMode, sessionLoaded), ...structuredTools];
+          const effectiveTools = [
+            ...deferTools(offeredTools, deferMode, sessionLoaded),
+            ...codeTools(sessionGate),
+            ...structuredTools,
+          ];
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
             tools: effectiveTools,
@@ -582,6 +605,7 @@ export async function executeTurn(
                 deferMode,
                 sessionLoaded,
               ),
+              ...codeTools(sessionGate),
               ...structuredTools,
             ];
             activeTurnMeta.set(params.turnId, {

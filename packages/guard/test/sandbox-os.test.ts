@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { ensureSandboxAvailable } from "../src/sandbox-docker.ts";
-import { buildBwrapArgs, buildSeatbeltProfile, OsSandboxBackend } from "../src/sandbox-os.ts";
+import {
+  buildBwrapArgs,
+  buildScriptSandboxArgv,
+  buildSeatbeltProfile,
+  OsSandboxBackend,
+} from "../src/sandbox-os.ts";
 
 // No Linux or macOS machine ran these backends: the tests cover the arguments and the profile text only.
 describe("OS sandbox arguments", () => {
@@ -42,6 +47,27 @@ describe("OS sandbox arguments", () => {
     const wrapped = mac.wrap(["sh", "-c", "ls"]);
     expect(wrapped.slice(0, 2)).toEqual(["/usr/bin/sandbox-exec", "-p"]);
     expect(wrapped.slice(-3)).toEqual(["sh", "-c", "ls"]);
+  });
+
+  test("script sandbox: no network, nothing writable, and of the user's disk only the files of the runner", () => {
+    const linux = buildScriptSandboxArgv(["/opt/agency", "__code"], ["/opt/agency"], "linux") ?? [];
+    const text = linux.join(" ");
+    expect(text).toContain("--unshare-all");
+    expect(text).toContain("--ro-bind /opt/agency /opt/agency");
+    // No bind of the root and no writable bind: the home folder is not in the view of the process.
+    expect(text).not.toContain("--ro-bind / /");
+    expect(linux).not.toContain("--bind");
+    expect(linux.slice(-3)).toEqual(["--", "/opt/agency", "__code"]);
+
+    const mac = buildScriptSandboxArgv(["/opt/agency", "__code"], ["/opt/agency"], "darwin") ?? [];
+    const lines = (mac[2] ?? "").split("\n");
+    expect(lines).toContain("(deny network*)");
+    expect(lines).toContain("(deny file-write*)");
+    const denyRead = lines.findIndex((l) => l.startsWith('(deny file-read* (subpath "/Users")'));
+    expect(denyRead).toBeGreaterThan(-1);
+    expect(lines.indexOf('(allow file-read* (subpath "/opt/agency"))')).toBeGreaterThan(denyRead);
+
+    expect(buildScriptSandboxArgv(["x"], [], "win32")).toBeUndefined();
   });
 
   test("on Windows the backend is not available, and the daemon start fails with the reason", async () => {

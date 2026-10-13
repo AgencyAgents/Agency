@@ -64,6 +64,8 @@ export interface ToolCallPolicyRequest {
   path?: string;
   /** Raw command argument (bash). */
   command?: string;
+  /** What an ask shows when the tool has no command and no path. No rule reads it. */
+  title?: string;
 }
 
 /**
@@ -631,7 +633,7 @@ export class PermissionsGate implements ToolPolicy {
     const source = this.askSource(request);
     const response = await ask({
       tool: request.tool,
-      title: request.command ?? request.path ?? request.tool,
+      title: request.command ?? request.path ?? request.title ?? request.tool,
       command: request.command,
       path: request.path,
       riskTier: request.riskTier,

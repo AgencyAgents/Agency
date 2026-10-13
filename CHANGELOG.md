@@ -619,6 +619,19 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`code` tool (`codeMode`)**: the model writes one JavaScript script
+  that calls the other tools as functions (`await tools.read({...})`),
+  also in parallel, and gets back only what the script prints and
+  returns. Each inner call meets the same permission rules, schema
+  check and hooks as a direct call. A script has at most 120 seconds
+  and 100 tool calls. `codeMode: true` runs the script in an OS sandbox
+  with no network, no write access and no view of the user's files
+  (bubblewrap on Linux, Seatbelt on macOS; on Windows the tool is not
+  offered). That sandbox was never run: tests cover its arguments
+  only. `codeMode: "host"` runs the script with no isolation: it then
+  has the authority of a shell command, asks like one, and the ask
+  shows the script. Default: off.
+
 - **`sandbox.backend: "os"`** (not run yet on Linux or macOS): shell
   commands in bubblewrap on Linux and in Seatbelt on macOS. Read-only
   disk, writable workspace, no network unless `sandbox.allowNetwork`.
