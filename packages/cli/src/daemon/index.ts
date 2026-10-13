@@ -68,6 +68,7 @@ import {
   startBoardFileSync,
   syncBoardFile,
 } from "./handlers/detach.ts";
+import { registerGoalCheck } from "./handlers/goal.ts";
 import { registerPlanHandlers } from "./handlers/plan.ts";
 import {
   registerSessionHandlers,
@@ -573,6 +574,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerTeamSurfaceHandlers(handlers, ctx);
   registerTeamRunHandlers(handlers, ctx);
   registerCommandRunHandler(handlers, ctx);
+  registerGoalCheck(ctx);
   registerDetachHandlers(handlers, ctx);
 
   /** A client that is gone cannot use its turn's result: the turn stops, on the TCP and the HTTP transport. */

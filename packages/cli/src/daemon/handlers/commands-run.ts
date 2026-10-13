@@ -1,7 +1,9 @@
 import {
+  BUILTIN_COMMANDS,
   compact,
   defaultGitRunner,
   expandCommand,
+  getSessionGoal,
   initDeep,
   parseModelRef,
   renderCommandHelp,
@@ -14,6 +16,7 @@ import { tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { DaemonContext } from "../types.ts";
+import { setSessionGoal } from "./goal.ts";
 import { sessionSummarizer } from "./session.ts";
 
 export interface CommandRunResult {
@@ -58,7 +61,10 @@ function textOf(value: unknown): string {
 const BUILTINS: Record<string, BuiltinFn> = {
   help: async (ctx) => {
     const text = renderCommandHelp({ templates: ctx.commands, pluginCommands: ctx.pluginCommands });
-    return { text, data: { count: 33 + ctx.commands.length + ctx.pluginCommands.length } };
+    return {
+      text,
+      data: { count: BUILTIN_COMMANDS.length + ctx.commands.length + ctx.pluginCommands.length },
+    };
   },
   init: async (ctx) => {
     const result = initDeep(ctx.options.workspaceRoot);
@@ -359,7 +365,15 @@ const BUILTINS: Record<string, BuiltinFn> = {
       data: { checks },
     };
   },
-  goal: async (_ctx, handlers, args) => {
+  goal: async (ctx, _handlers, args) => {
+    const sessionId = args[0];
+    if (!sessionId) fail("goal requires a session id (/goal <session> [condition|clear])");
+    const wanted = args.slice(1).join(" ");
+    if (wanted.length > 0) await setSessionGoal(ctx, sessionId, wanted === "clear" ? "" : wanted);
+    const goal = getSessionGoal(ctx.todoStore.load(sessionId));
+    return { text: goal ? `goal: ${goal}` : "no goal", data: { sessionId, goal: goal ?? null } };
+  },
+  report: async (_ctx, handlers, args) => {
     const data = await call<{ goal?: string; outcome?: string }>(
       handlers,
       "report_get",

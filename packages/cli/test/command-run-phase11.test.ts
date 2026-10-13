@@ -346,9 +346,9 @@ describe("command_run Tier 3 goldens", () => {
     ]);
   });
 
-  test("/goal returns the team report goal", async () => {
+  test("/report returns the team report goal", async () => {
     const { base, token } = await boot();
-    const out = await run(base, token, "goal");
+    const out = await run(base, token, "report");
     expect(typeof out.data.goal).toBe("string");
   });
 });

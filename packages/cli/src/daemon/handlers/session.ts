@@ -35,6 +35,7 @@ import {
   type SessionSendParams,
   type SessionSendResult,
 } from "../types.ts";
+import { setSessionGoal } from "./goal.ts";
 import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 
 /** Fallback window for daemon-side proactive compaction, matching the
@@ -256,6 +257,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     const window = p.contextWindow ?? ctx.catalogModel(p.provider, p.model)?.contextWindow;
     const threshold = { contextWindow: window ?? DEFAULT_SESSION_CONTEXT_WINDOW };
     const summarize = sessionSummarizer(ctx, p.provider, p.model);
+    if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
     // undo_run restores this tip, so the whole turn (user text included) rolls back.

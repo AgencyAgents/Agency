@@ -88,6 +88,8 @@ Options:
   --session <id>           With -p: run in (creating if needed) this session
   --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
   --max-steps <n>          With -p: tool steps one turn may take (default: 25)
+  --goal <condition>       With -p and a session: the turn goes on until the model
+                           judges the condition met, or the step limit
   --image <path>           With -p: send an image file with the prompt (repeat for more)
   --format <text|json>     Output format (default: text; json is for scripting)
   --max-age-days <days>    With storage prune: delete sessions older than this
@@ -116,6 +118,7 @@ export interface ParsedArgv {
   permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
+  goal: string | undefined;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -184,6 +187,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     session: undefined,
     permissionMode: "ask",
     maxSteps: undefined,
+    goal: undefined,
     format: "text",
     retention: undefined,
     help: false,
@@ -264,6 +268,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.maxSteps = steps;
         break;
       }
+      case "--goal":
+        parsed.goal = value();
+        break;
       case "--max-age-days":
         parsed.retention ??= {};
         parsed.retention.maxAgeDays = numberValue(name, value());
@@ -547,6 +554,9 @@ async function runPrintMode(
           }
         };
 
+  if (parsed.goal !== undefined && !parsed.continueLast && parsed.session === undefined) {
+    throw new Error(t("cli.error.goal_needs_session"));
+  }
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
       bus: deps.bus ?? new EventBus(),
@@ -572,6 +582,7 @@ async function runPrintMode(
         onEvent,
         permissionMode: parsed.permissionMode,
         maxToolIterations: parsed.maxSteps,
+        ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         nonInteractive: true,
       });
       return reportTurn(out, err, parsed.format, { sessionId, tipId, ...result });

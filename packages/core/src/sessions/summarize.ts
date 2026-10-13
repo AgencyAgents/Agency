@@ -2,36 +2,43 @@ import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter } from "@agency/providers";
 import type { Summarizer } from "./compaction.ts";
 
-/**
- * A summarizer where the model writes the summary. A failed request or a reply with no text gives the
- * extractive summary: a compaction must not fail the turn that needs it.
- */
-export function modelSummarizer(opts: {
+export interface ModelAsk {
   adapter: ProviderAdapter;
   http: HttpClient;
   model: string;
   apiKey: string;
   maxTokens?: number;
   signal?: AbortSignal;
-}): Summarizer {
-  const summarize: Summarizer = async (transcript, instructions) => {
-    try {
-      let text = "";
-      const request = {
-        model: opts.model,
-        apiKey: opts.apiKey,
-        system: instructions,
-        messages: [{ role: "user" as const, content: [{ type: "text" as const, text: transcript }] }],
-        maxTokens: opts.maxTokens ?? 8192,
-        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-      };
-      for await (const event of opts.adapter.stream(request, opts.http)) {
-        if (event.type === "text_delta") text += event.text;
-      }
-      if (text.trim() !== "") return text.trim();
-    } catch {}
-    return summarizeTranscript(transcript);
-  };
+}
+
+/** One request with no tools, for the harness's own questions. Undefined for a failed request or a reply with no text. */
+export async function askModel(opts: ModelAsk, system: string, text: string): Promise<string | undefined> {
+  try {
+    let reply = "";
+    const request = {
+      model: opts.model,
+      apiKey: opts.apiKey,
+      system,
+      messages: [{ role: "user" as const, content: [{ type: "text" as const, text }] }],
+      maxTokens: opts.maxTokens ?? 8192,
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    };
+    for await (const event of opts.adapter.stream(request, opts.http)) {
+      if (event.type === "text_delta") reply += event.text;
+    }
+    return reply.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A summarizer where the model writes the summary. A failed request or a reply with no text gives the
+ * extractive summary: a compaction must not fail the turn that needs it.
+ */
+export function modelSummarizer(opts: ModelAsk): Summarizer {
+  const summarize: Summarizer = async (transcript, instructions) =>
+    (await askModel(opts, instructions, transcript)) ?? summarizeTranscript(transcript);
   summarize.detailed = true;
   return summarize;
 }

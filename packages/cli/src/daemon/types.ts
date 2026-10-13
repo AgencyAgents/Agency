@@ -213,6 +213,8 @@ export interface SessionSendParams {
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
   contextWindow?: number;
+  /** Sets the goal of the session before this turn. An empty string clears it. */
+  goal?: string;
 }
 
 export interface SessionSendResult extends RunTurnRpcResult {

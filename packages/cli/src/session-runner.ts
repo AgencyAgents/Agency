@@ -20,6 +20,8 @@ export interface RunSessionTurnOptions {
   contextWindow?: number;
   permissionMode?: PermissionMode;
   maxToolIterations?: number;
+  /** Sets the goal of the session before this turn. */
+  goal?: string;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
   /** Caller-supplied for pre-subscribe streaming; generated when absent. */
@@ -61,6 +63,7 @@ export async function runSessionTurn(
       permissionMode: options.permissionMode,
       maxToolIterations: options.maxToolIterations,
       nonInteractive: options.nonInteractive,
+      ...(options.goal === undefined ? {} : { goal: options.goal }),
       ...(options.images?.length ? { images: options.images } : {}),
     })) as SessionSendResult;
     const { sessionId: _sessionId, turnId: _turnId, tipId, compacted: _compacted, ...result } = response;

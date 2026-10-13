@@ -119,7 +119,13 @@ const TIER_3: BuiltinCommand[] = [
     description: "Connectivity, catalog, trust, and session checks.",
     usage: "/doctor",
   },
-  { name: "goal", tier: 3, description: "Team goal, outcome, and cost.", usage: "/goal [outcome]" },
+  {
+    name: "goal",
+    tier: 3,
+    description: "Show, set or clear the condition a session must meet before a turn ends.",
+    usage: "/goal <session> [condition|clear]",
+  },
+  { name: "report", tier: 3, description: "Team goal, outcome, and cost.", usage: "/report [outcome]" },
 ];
 
 /** Every built-in the runtime resolves, in tier order. */
