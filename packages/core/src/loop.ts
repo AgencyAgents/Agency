@@ -137,6 +137,8 @@ export interface RunTurnOptions {
   /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
+  /** What the user wants the summary of a compaction to keep. */
+  compactionInstructions?: string;
   /** Longest silence allowed on a provider stream before the request is cut. Default 5 minutes. */
   streamIdleMs?: number;
   signal?: AbortSignal;
@@ -334,6 +336,9 @@ export async function runTurn(
         apiKey: options.apiKey,
         ...(options.maxTokensPerRequest === undefined ? {} : { maxTokens: options.maxTokensPerRequest }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.compactionInstructions === undefined
+          ? {}
+          : { instructions: options.compactionInstructions }),
       }),
     );
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {

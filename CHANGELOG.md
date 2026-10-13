@@ -665,6 +665,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Added
 
+- **`compactionInstructions`**: text in the config for the model that
+  writes the summary of a compaction, for example which facts the
+  summary must keep. Claude Code and Codex have the same control.
 - **`--max-total-cost <usd>` for `workflow run`**: a cost limit for
   the whole workflow. A turn gets what is left of the total, and no
   turn starts when nothing is left. `--max-cost` stays the limit of

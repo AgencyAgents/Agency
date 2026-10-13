@@ -9,6 +9,8 @@ export interface ModelAsk {
   apiKey: string;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** `compactionInstructions` of the config: what the user wants a summary to keep. */
+  instructions?: string;
 }
 
 /** One request with no tools, for the harness's own questions. Undefined for a failed request or a reply with no text. */
@@ -37,8 +39,11 @@ export async function askModel(opts: ModelAsk, system: string, text: string): Pr
  * extractive summary: a compaction must not fail the turn that needs it.
  */
 export function modelSummarizer(opts: ModelAsk): Summarizer {
+  const extra = opts.instructions?.trim()
+    ? `\n\nInstructions of the user for this summary. They come first where they disagree with the rules above:\n${opts.instructions.trim()}`
+    : "";
   const summarize: Summarizer = async (transcript, instructions) =>
-    (await askModel(opts, instructions, transcript)) ?? summarizeTranscript(transcript);
+    (await askModel(opts, `${instructions}${extra}`, transcript)) ?? summarizeTranscript(transcript);
   summarize.detailed = true;
   return summarize;
 }

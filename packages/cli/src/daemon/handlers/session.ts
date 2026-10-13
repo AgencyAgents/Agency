@@ -69,6 +69,7 @@ export function sessionSummarizer(ctx: DaemonContext, provider: string, model: s
             model,
             apiKey,
             ...(maxTokens ? { maxTokens } : {}),
+            ...(ctx.config.compactionInstructions ? { instructions: ctx.config.compactionInstructions } : {}),
           })
         : async (text) => summarizeTranscript(text);
     }

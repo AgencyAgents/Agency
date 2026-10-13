@@ -53,6 +53,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only. With no value: `gitbash` when Git for Windows is installed (its `bin\bash.exe`, found from `git` on PATH), otherwise `powershell`. Models write bash with far fewer errors than Windows PowerShell 5.1 |
 | `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
+| `compactionInstructions` | string | — | Text for the model that writes the summary of a compaction: what the summary must keep. It goes after the built-in rules and comes first where the two disagree. It has no effect on the offline summary |
 | `maxSteps` | number | — | Tool steps that one turn may take when the caller sets no limit. With no value: 100 |
 | `hooks` | `Record<event, {matcher?, hooks: {type: "command", command, timeout?}[]}[]>` | — | Shell commands that run on agent events (see Hooks) |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |

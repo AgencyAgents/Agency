@@ -208,6 +208,8 @@ export const ConfigSchema = z
     fallback_model: z.string().optional(),
     /** Tool steps that one turn may take when the caller sets no limit. Absent means the loop default. */
     maxSteps: z.number().int().positive().optional(),
+    /** Text for the model that writes the summary of a compaction: what the summary must keep. */
+    compactionInstructions: z.string().optional(),
     trace: z
       .object({
         export: z

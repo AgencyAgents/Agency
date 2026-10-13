@@ -550,6 +550,9 @@ export async function executeTurn(
               sessionId: params.sessionId,
               cwd: options.workspaceRoot,
               maxToolIterations: params.maxToolIterations ?? config.maxSteps,
+              ...(config.compactionInstructions
+                ? { compactionInstructions: config.compactionInstructions }
+                : {}),
               signal: controller.signal,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
@@ -652,6 +655,9 @@ export async function executeTurn(
                   sessionId: params.sessionId,
                   cwd: options.workspaceRoot,
                   maxToolIterations: params.maxToolIterations ?? config.maxSteps,
+                  ...(config.compactionInstructions
+                    ? { compactionInstructions: config.compactionInstructions }
+                    : {}),
                   signal: controller.signal,
                   taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
                   provider: fallbackRef.provider,

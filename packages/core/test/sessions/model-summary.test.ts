@@ -123,3 +123,16 @@ describe("the fold of a turn that has no session owner", () => {
     );
   });
 });
+
+test("the instructions of the user for a summary go to the summarizer after the built-in rules", async () => {
+  const seen: ProviderRequest[] = [];
+  const ask = { adapter: fixedAdapter("a summary", seen), http: noopHttp, model: "m", apiKey: "k" };
+  await modelSummarizer({ ...ask, instructions: "Keep every file path. Write in German." })(
+    "the transcript",
+    "RULES",
+  );
+  expect(seen[0]?.system).toStartWith("RULES");
+  expect(seen[0]?.system).toContain("Keep every file path. Write in German.");
+  await modelSummarizer(ask)("the transcript", "RULES");
+  expect(seen[1]?.system).toBe("RULES");
+});
