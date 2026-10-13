@@ -182,7 +182,26 @@ export function collapseTranscript(chain: SessionEntry[], keepAssistantTexts = 3
   return { text: lines.join("\n"), verbatimAssistantTexts, collapsedToolPairs, strippedAttachments };
 }
 
-const CONTRACT_RE = /\[Compacted: \d+ turns -> \d+ sections\]\s*$/;
+const cutTo = (text: string, max: number): string =>
+  text.length > max ? `${text.slice(0, max)}… [${text.length - max} more chars]` : text;
+
+/** The transcript for a summarizer that reads: texts in full, tool inputs, the start of each tool result. No thinking. */
+export function renderTranscript(messages: Message[]): string {
+  const lines: string[] = [];
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "text") lines.push(`[${message.role}] ${block.text}`);
+      else if (block.type === "tool_call")
+        lines.push(`[tool call] ${block.name} ${cutTo(JSON.stringify(block.input), 400)}`);
+      else if (block.type === "tool_result")
+        lines.push(`[tool result${block.isError ? ", error" : ""}] ${cutTo(block.content, 600)}`);
+      else if (block.type === "image") lines.push("[image]");
+    }
+  }
+  return lines.join("\n");
+}
+
+const CONTRACT_RE = /\[Compacted: \d+ turns? -> \d+ sections?\]\s*$/;
 
 /** The output contract suffix for a summary of `turns` folded into `sections`. */
 export function outputContractSuffix(turns: number, sections: number): string {
@@ -402,8 +421,11 @@ export interface CompactionResult {
 /**
  * Turns one transcript chunk into summary text. The instructions come apart from the chunk:
  * an extractive summarizer would copy them into the summary, and the model reads that as a user message.
+ * `detailed` is for a summarizer that reads, a model: its transcript keeps tool inputs and results.
  */
-export type Summarizer = (transcript: string, instructions: string) => Promise<string>;
+export type Summarizer = ((transcript: string, instructions: string) => Promise<string>) & {
+  detailed?: boolean;
+};
 
 /** The store-free half of compact: which entries fold into the summary, its text, and what stays. */
 async function foldChain(
@@ -425,12 +447,28 @@ async function foldChain(
   let carryForward = plan.carryForward;
   let summaryText = "";
   let passes = 0;
+  // A call moves with its results, and at least one message stays.
+  const moveOldest = (): boolean => {
+    const movable = carryForward.filter(isMessageEntry);
+    let take = 1;
+    while (take < movable.length && hasToolResult(movable[take])) take += 1;
+    if (take >= movable.length) return false;
+    for (const entry of movable.slice(0, take)) summarized.add(entry.id);
+    carryForward = plan.carryForward.filter((e) => !summarized.has(e.id));
+    return true;
+  };
+  // A pass is a request when a model summarizes: the kept tail is cut to the target before the first one.
+  if (summarize.detailed) {
+    while ((await countChainTokensAsync(carryForward, tokenizer)) > target && moveOldest()) {}
+  }
 
   for (;;) {
     passes += 1;
     const summarizeSet = chain.filter((e) => summarized.has(e.id)).filter(isMessageEntry);
-    const collapsed = collapseTranscript(summarizeSet);
-    const chunks = await splitTranscriptToCapAsync(collapsed.text, countText, cap);
+    const transcript = summarize.detailed
+      ? renderTranscript(summarizeSet.map((entry) => entry.message))
+      : collapseTranscript(summarizeSet).text;
+    const chunks = await splitTranscriptToCapAsync(transcript, countText, cap);
     const parts: string[] = [];
     for (const chunk of chunks) {
       parts.push(await summarize(chunk, prompt));
@@ -455,13 +493,7 @@ async function foldChain(
     };
     const probeCount = await countChainTokensAsync([probe, ...carryForward], tokenizer);
     if (probeCount <= target) break;
-    const movable = carryForward.filter(isMessageEntry);
-    // A call moves with its results, and at least one message stays.
-    let take = 1;
-    while (take < movable.length && hasToolResult(movable[take])) take += 1;
-    if (passes > MAX_TARGET_PASSES || take >= movable.length) break;
-    for (const entry of movable.slice(0, take)) summarized.add(entry.id);
-    carryForward = plan.carryForward.filter((e) => !summarized.has(e.id));
+    if (passes > MAX_TARGET_PASSES || !moveOldest()) break;
   }
   return { summaryText, summarized, carryForward };
 }

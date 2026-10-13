@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionStore, type ToolSpec } from "@agency/core";
+import { compactionPrompt, SessionStore, type ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
@@ -167,6 +167,66 @@ describe("compact-and-retry branch", () => {
     const stored = JSON.stringify(store.messagesFor(store.load("s1"), tipId));
     expect(stored).toContain("run 1");
     expect(stored).toContain("done after compaction");
+  }, 15000);
+
+  /** A session of six long messages, and a model that writes "MODEL-SUMMARY" when asked for a summary. */
+  async function summarySetup() {
+    const ws = tmp("agency-summary-ws-");
+    const sessionsDir = tmp("agency-summary-sess-");
+    const seed = new SessionStore(sessionsDir);
+    seed.create("s1");
+    let parent: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const e = await seed.append("s1", {
+        type: "message",
+        parentId: parent,
+        message: {
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: [{ type: "text", text: `history ${i} ${"word ".repeat(300)}` }],
+        },
+      });
+      parent = e.id;
+    }
+    const summaryInputs: string[] = [];
+    const turnInputs: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const summary = request.system === compactionPrompt();
+        (summary ? summaryInputs : turnInputs).push(JSON.stringify(request.messages));
+        yield { type: "text_delta", text: summary ? "MODEL-SUMMARY of the port change" : "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    return { client: await daemon(ws, adapter, sessionsDir), sessionsDir, summaryInputs, turnInputs };
+  }
+
+  test("a session near its window is compacted with a summary that the model wrote", async () => {
+    const { client, summaryInputs, turnInputs } = await summarySetup();
+    await runSessionTurn(client, {
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "go on",
+      // Six messages of about 300 tokens each are above 90 percent of this window.
+      contextWindow: 1500,
+    });
+    expect(summaryInputs).toHaveLength(1);
+    expect(summaryInputs[0]).toContain("history 0");
+    expect(turnInputs[0]).toContain("MODEL-SUMMARY of the port change");
+    expect(turnInputs[0]).not.toContain("history 0");
+  }, 15000);
+
+  test("the compact command compacts a session that is far below its window", async () => {
+    const { client, sessionsDir, summaryInputs } = await summarySetup();
+    const out = (await client.call("command_run", { name: "compact", args: "s1 anthropic/test-model" })) as {
+      data: { compacted: boolean; tipId: string };
+    };
+    expect(out.data.compacted).toBe(true);
+    expect(summaryInputs).toHaveLength(1);
+    const store = new SessionStore(sessionsDir);
+    expect(JSON.stringify(store.messagesFor(store.load("s1"), out.data.tipId))).toContain("MODEL-SUMMARY");
   }, 15000);
 
   test("session_send takes the caller's step limit and reports when the turn reaches it", async () => {

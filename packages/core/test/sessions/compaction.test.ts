@@ -637,6 +637,9 @@ describe("U8 output contract", () => {
     expect(ensureOutputContract("digest", 5, 2)).toBe("digest\n[Compacted: 5 turns -> 2 sections]");
     const once = ensureOutputContract("digest", 5, 2);
     expect(ensureOutputContract(once, 5, 2)).toBe(once);
+    // Seen from a live model: one turn and one section, written in the singular.
+    const singular = "digest\n[Compacted: 1 turn -> 1 section]";
+    expect(ensureOutputContract(singular, 5, 2)).toBe(singular);
   });
 });
 
@@ -880,7 +883,9 @@ describe("U8 overflow compact and single retry", () => {
     const retried = JSON.stringify(state.requests.at(-1));
     expect(retried).toContain("[earlier conversation compacted]");
     expect(retried).toContain("run 3");
-    expect(state.requests.at(-1)?.length).toBeLessThan(state.requests.at(-2)?.length ?? 0);
+    // The request before the retry is the summary request: the one that overflowed is the longest.
+    const overflowed = Math.max(...state.requests.map((request) => request.length));
+    expect(state.requests.at(-1)?.length).toBeLessThan(overflowed);
   });
 
   test("a long turn can fold more than once: the limit is one fold for each request", async () => {

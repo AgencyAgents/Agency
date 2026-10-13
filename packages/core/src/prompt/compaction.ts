@@ -13,8 +13,10 @@ export function compactionPrompt(): string {
     "structured summary with preserved verbatim blocks.\n\n" +
     "1. Identify all todo_state entries in the transcript and preserve them verbatim.\n" +
     "2. Preserve the last 3 assistant response texts verbatim.\n" +
-    "3. Summarize earlier turns into a structured digest (decisions, files touched, " +
-    "key observations).\n" +
+    "3. Summarize earlier turns into a structured digest with these sections: the user's " +
+    "requests and rules in their own words; decisions and their reasons; files read and " +
+    "changed, with what changed; commands run and their results; errors and their fixes; " +
+    "the state of the work; the next step.\n" +
     "4. Keep this chunk under 4000 tokens (the harness enforces the 20K total)."
   );
 }

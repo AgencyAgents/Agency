@@ -30,7 +30,7 @@ import {
 } from "@agency/schema";
 import { HookBlock } from "./events.ts";
 import { compactMessages, isContextOverflowError } from "./sessions/compaction.ts";
-import { summarizeTranscript } from "./sessions/summarize.ts";
+import { modelSummarizer } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -315,7 +315,14 @@ export async function runTurn(
       messages,
       tokenizerFor(options.provider ?? ""),
       { contextWindow: options.contextWindow ?? 200_000 },
-      async (text) => summarizeTranscript(text),
+      modelSummarizer({
+        adapter,
+        http,
+        model: options.model,
+        apiKey: options.apiKey,
+        ...(options.maxTokensPerRequest === undefined ? {} : { maxTokens: options.maxTokensPerRequest }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }),
     );
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     // One fold for each request: a long turn can fill the window more than once.

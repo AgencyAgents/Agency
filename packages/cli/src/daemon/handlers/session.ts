@@ -4,10 +4,12 @@ import {
   composeSystemPrompt,
   generateTitle,
   getSessionTitle,
+  modelSummarizer,
   newEntryId,
   projectSessionView,
   resolveSmallModel,
   runChildTurn,
+  type Summarizer,
   summarizeTranscript,
   type ToolSpec,
 } from "@agency/core";
@@ -38,6 +40,35 @@ import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 /** Fallback window for daemon-side proactive compaction, matching the
  *  former client default until the catalog supplies a real one. */
 const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
+
+/** The summarizer of a session's compaction: its own model writes the summary. With no key, the offline one. */
+export function sessionSummarizer(ctx: DaemonContext, provider: string, model: string): Summarizer {
+  let inner: Summarizer | undefined;
+  const summarize: Summarizer = async (transcript, instructions) => {
+    if (inner === undefined) {
+      const apiKey = await resolveApiKey({
+        provider,
+        env: process.env,
+        keychain: await ctx.getKeychain().catch(() => undefined),
+        config: ctx.providers[provider]?.apiKey,
+        ...keySourcesFor(provider, ctx.providers),
+      }).catch(() => undefined);
+      const maxTokens = ctx.catalogModel(provider, model)?.maxOutputTokens;
+      inner = apiKey
+        ? modelSummarizer({
+            adapter: ctx.adapterFor(provider),
+            http: ctx.http,
+            model,
+            apiKey,
+            ...(maxTokens ? { maxTokens } : {}),
+          })
+        : async (text) => summarizeTranscript(text);
+    }
+    return inner(transcript, instructions);
+  };
+  summarize.detailed = true;
+  return summarize;
+}
 
 export async function generateSessionTitle(
   ctx: DaemonContext,
@@ -224,7 +255,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     // The model's own window, not a fixed guess: a small-window model overflows long before 200k tokens.
     const window = p.contextWindow ?? ctx.catalogModel(p.provider, p.model)?.contextWindow;
     const threshold = { contextWindow: window ?? DEFAULT_SESSION_CONTEXT_WINDOW };
-    const summarize = (text: string): Promise<string> => Promise.resolve(summarizeTranscript(text));
+    const summarize = sessionSummarizer(ctx, p.provider, p.model);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
     // undo_run restores this tip, so the whole turn (user text included) rolls back.

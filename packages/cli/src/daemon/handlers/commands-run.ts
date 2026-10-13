@@ -3,6 +3,7 @@ import {
   defaultGitRunner,
   expandCommand,
   initDeep,
+  parseModelRef,
   renderCommandHelp,
   resolveCommand,
   splitCommandArgs,
@@ -13,6 +14,7 @@ import { tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { DaemonContext } from "../types.ts";
+import { sessionSummarizer } from "./session.ts";
 
 export interface CommandRunResult {
   name: string;
@@ -79,6 +81,7 @@ const BUILTINS: Record<string, BuiltinFn> = {
     if (!tip) return { text: `session ${sessionId} is empty, nothing to compact`, data: { sessionId } };
     const model = args[1] ?? textOf((ctx.config as { model?: unknown }).model) ?? "";
     const catalogHit = ctx.listModels().find((m) => m.id === model);
+    const ref = parseModelRef(model);
     const slash = model.indexOf("/");
     const family =
       catalogHit?.family ??
@@ -91,10 +94,15 @@ const BUILTINS: Record<string, BuiltinFn> = {
       tip,
       tokenizerFor(family),
       { contextWindow: 200_000 },
-      (text: string) => Promise.resolve(summarizeTranscript(text)),
+      ref ? sessionSummarizer(ctx, ref.provider, ref.model) : async (text) => summarizeTranscript(text),
+      4,
+      // The user asked for it: the size of the session does not decide.
+      { force: true },
     );
     return {
-      text: outcome.compacted ? `compacted ${sessionId} to ${outcome.tipId}` : `${sessionId} below threshold`,
+      text: outcome.compacted
+        ? `compacted ${sessionId} to ${outcome.tipId}`
+        : `${sessionId} is too short to compact`,
       data: { sessionId, ...outcome },
     };
   },
