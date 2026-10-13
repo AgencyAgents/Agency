@@ -87,6 +87,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **Provider keys in tool results**: a tool result that held a
+  provider key (the output of `env`, a config file that the model
+  read) went to the model and into the result of the turn as it was.
+  The keys that the daemon knows are now replaced with `[REDACTED]`
+  in each tool result, for the main turn and for workers.
 - **Provider keys in the environment of a shell command**: a command
   of the `bash` tool had the provider keys of the harness
   (`AGENCY_<ID>_API_KEY`) in its environment, so a command could print
