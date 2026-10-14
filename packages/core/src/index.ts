@@ -14,6 +14,7 @@ export * from "./logger.ts";
 export * from "./loop.ts";
 export * from "./paths.ts";
 export * from "./plugins/command-hooks.ts";
+export * from "./plugins/env-file.ts";
 export * from "./plugins/foreign-hooks.ts";
 export * from "./plugins/importer.ts";
 export * from "./plugins/loader.ts";

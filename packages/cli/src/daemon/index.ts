@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   AgentRegistry,
@@ -31,6 +32,7 @@ import {
   memoryFile,
   mergeCommandHooks,
   outputStyleInstructions,
+  parseEnvFile,
   SessionStore,
   storagePaths,
   type ToolSpec,
@@ -384,10 +386,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     // The hooks that Claude Code, Codex, Cursor and Gemini CLI keep in the workspace.
     projectTrusted ? loadForeignHooks(options.workspaceRoot, (message) => logger.warn(message)) : {},
   );
+  // The CLAUDE_ENV_FILE of a session, named by a hash: a session id is not a safe file name.
+  const envFileOf = (sessionId: string): string =>
+    join(dataDir(), "session-env", `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.sh`);
   // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
   const hookRun: HookRunOptions = {
     cwd: options.workspaceRoot,
     shell,
+    envFile: envFileOf,
     askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
     askAgent: agentHookModel({
       config,
@@ -422,6 +428,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   };
   attachCommandHooks(eventBus, commandHooks, hookRun);
+  // The variables that the SessionStart hooks of a session wrote to its CLAUDE_ENV_FILE reach each of its shell commands.
+  eventBus.on("shell.env", (payload) => {
+    const { env, sessionId } = payload as { env: Record<string, string>; sessionId?: string };
+    const file = sessionId === undefined ? undefined : envFileOf(sessionId);
+    if (file === undefined || !existsSync(file)) return;
+    Object.assign(env, parseEnvFile(readFileSync(file, "utf8"), { ...process.env, ...env }));
+  });
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];

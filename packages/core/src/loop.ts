@@ -872,7 +872,7 @@ async function executeOne(
   let shellEnv: Record<string, string> | undefined;
   if (options.eventBus && resolved.name === "bash") {
     try {
-      const envPayload = { env: {} as Record<string, string> };
+      const envPayload = { env: {} as Record<string, string>, sessionId: options.sessionId };
       // A listener can be async (an OpenCode plugin): its variables count only once it has run.
       if (options.eventBus.emitAsync) await options.eventBus.emitAsync("shell.env", envPayload);
       else options.eventBus.emit("shell.env", envPayload);

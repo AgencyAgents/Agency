@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`CLAUDE_ENV_FILE`**: a `SessionStart` hook gets it, as in Claude Code, and the
+  `export` lines that it writes there become variables of the later shell commands of
+  the session.
 - **Permission rules of Claude Code**: the `permissions` of `~/.claude/settings.json`
   and, in a trusted workspace, of `.claude/settings.json` and `.claude/settings.local.json`
   apply (`Bash(git push *)`, `Edit(src/**)`, MCP tools), with deny winning, under

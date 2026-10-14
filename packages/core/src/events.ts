@@ -56,7 +56,7 @@ export interface AgencyEvents {
     turnId?: string;
     agentHandle?: string;
   };
-  "shell.env": { env: Record<string, string> };
+  "shell.env": { env: Record<string, string>; sessionId?: string };
   "session.start": { sessionId: string; workspaceRoot: string };
   "session.end": { sessionId: string; reason: string };
   "prompt.submit": { sessionId: string; prompt: string };

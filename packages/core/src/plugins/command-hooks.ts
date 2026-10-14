@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { globToRegExpSource, splitCommand, unwrapCommand } from "@agency/guard";
 import { z } from "zod";
 import { type AgencyEvents, type EventBus, HookBlock, HookStop } from "../events.ts";
@@ -205,6 +205,8 @@ export interface HookRunOptions {
     signal: AbortSignal,
     sessionId: string | undefined,
   ) => Promise<string>;
+  /** The CLAUDE_ENV_FILE of a session: the variables that its SessionStart hooks write there reach its shell commands. */
+  envFile?: (sessionId: string) => string;
   /** Calls a tool of an MCP server of the session. Absent: an `mcp_tool` hook fails, and does not block. */
   callMcpTool?: (call: {
     sessionId: string | undefined;
@@ -515,6 +517,15 @@ export async function runCommandHooks(
   const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
   const context: string[] = [];
   let retry = false;
+  // As in Claude Code: a SessionStart hook writes `export` lines to CLAUDE_ENV_FILE for the shell commands of the session.
+  const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
+  const envFile = event === "SessionStart" && sessionId !== undefined ? opts.envFile?.(sessionId) : undefined;
+  if (envFile !== undefined) {
+    mkdirSync(dirname(envFile), { recursive: true });
+    writeFileSync(envFile, "");
+  }
+  const envOf = (entry: { env?: Record<string, string> }) =>
+    envFile === undefined ? entry.env : { ...entry.env, CLAUDE_ENV_FILE: envFile };
   for (const group of hooks[event] ?? []) {
     if (!matches(group.matcher, subject)) continue;
     for (const entry of group.hooks) {
@@ -531,7 +542,7 @@ export async function runCommandHooks(
           stdin,
           opts,
           rewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
-          entry.env,
+          envOf(entry),
         ).then((out) => {
           const text = backgroundOutput(out, rewake);
           const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
@@ -556,8 +567,8 @@ export async function runCommandHooks(
             : entry.type === "mcp_tool"
               ? await runMcpTool(entry, { hook_event_name: event, cwd: opts.cwd, ...input }, opts, timeoutS)
               : entry.cursor !== undefined
-                ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, entry.env)
-                : await runOne(entry.command, stdin, opts, timeoutS, entry.env);
+                ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, envOf(entry))
+                : await runOne(entry.command, stdin, opts, timeoutS, envOf(entry));
       // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
       if (event === "PermissionDenied") {
         if (

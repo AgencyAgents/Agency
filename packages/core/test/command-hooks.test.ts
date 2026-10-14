@@ -14,6 +14,7 @@ import {
   CommandHooksSchema,
   runCommandHooks,
 } from "../src/plugins/command-hooks.ts";
+import { parseEnvFile } from "../src/plugins/env-file.ts";
 import { loadPlugins, unloadPlugins } from "../src/plugins/loader.ts";
 import { compact } from "../src/sessions/compaction.ts";
 import { SessionStore } from "../src/sessions/store.ts";
@@ -975,5 +976,61 @@ describe("agent hooks", () => {
     );
     expect(calls).toBe(0);
     expect((await runCommandHooks(stopHook("agent"), "Stop", {}, { cwd: "." })).block).toBeUndefined();
+  });
+});
+
+describe("CLAUDE_ENV_FILE", () => {
+  test("a SessionStart hook writes variables there, and a new start empties the file first", async () => {
+    const file = join(dir, "env", "s1.sh");
+    const hooks = on(
+      "SessionStart",
+      hook(
+        "env-file",
+        'require("fs").appendFileSync(process.env.CLAUDE_ENV_FILE, "export FROM_HOOK=yes\\n");',
+      ),
+    );
+    const opts = {
+      cwd: dir,
+      envFile: (sessionId: string) => (sessionId === "s1" ? file : join(dir, "other.sh")),
+    };
+    await runCommandHooks(hooks, "SessionStart", { session_id: "s1" }, opts);
+    await runCommandHooks(hooks, "SessionStart", { session_id: "s1" }, opts);
+    expect(readFileSync(file, "utf8")).toBe("export FROM_HOOK=yes\n");
+    // Another event has no CLAUDE_ENV_FILE.
+    const stop = await runCommandHooks(
+      on(
+        "Stop",
+        hook(
+          "env-none",
+          'console.log(JSON.stringify({ decision: "block", reason: String(process.env.CLAUDE_ENV_FILE) }));',
+        ),
+      ),
+      "Stop",
+      { session_id: "s1" },
+      opts,
+    );
+    expect(stop.block).toBe("undefined");
+  });
+
+  test("the lines of the file become variables, with $NAME taken from the environment and the lines before", () => {
+    const text = [
+      "export NODE_ENV=production",
+      'export PATH="$PATH:./node_modules/.bin"',
+      'declare -x NVM_BIN="/n/bin"',
+      "export NVM_PATH=${NVM_BIN}/node",
+      "LITERAL='no $EXPANSION here'",
+      'export PRICE="\\$5 \\"each\\""',
+      "source ~/.nvm/nvm.sh",
+      "# a comment",
+    ].join("\n");
+    const env = parseEnvFile(text, { PATH: "/usr/bin" });
+    expect(env).toEqual({
+      NODE_ENV: "production",
+      PATH: "/usr/bin:./node_modules/.bin",
+      NVM_BIN: "/n/bin",
+      NVM_PATH: "/n/bin/node",
+      LITERAL: "no $EXPANSION here",
+      PRICE: '$5 "each"',
+    });
   });
 });
