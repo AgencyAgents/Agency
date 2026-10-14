@@ -8,7 +8,12 @@ import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer, Scheduler } from "@agency/providers";
 import { EventBus, HookBlock } from "../src/events.ts";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
-import { attachCommandHooks, type CommandHooks, runCommandHooks } from "../src/plugins/command-hooks.ts";
+import {
+  attachCommandHooks,
+  type CommandHooks,
+  CommandHooksSchema,
+  runCommandHooks,
+} from "../src/plugins/command-hooks.ts";
 import { loadPlugins, unloadPlugins } from "../src/plugins/loader.ts";
 import { compact } from "../src/sessions/compaction.ts";
 import { SessionStore } from "../src/sessions/store.ts";
@@ -176,6 +181,89 @@ describe("runCommandHooks", () => {
       ["s2", "build broke"],
     ]);
   }, 20_000);
+
+  test("an http hook gets the event as a JSON POST, its JSON answer blocks, and a header takes only an allowed variable", async () => {
+    const seen: {
+      method: string;
+      type: string | null;
+      auth: string | null;
+      other: string | null;
+      body: unknown;
+    }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        seen.push({
+          method: req.method,
+          type: req.headers.get("content-type"),
+          auth: req.headers.get("authorization"),
+          other: req.headers.get("x-other"),
+          body: await req.json(),
+        });
+        return Response.json({ decision: "block", reason: "no deploys today" });
+      },
+    });
+    process.env.AGENCY_TEST_HOOK_TOKEN = "t1";
+    process.env.AGENCY_TEST_HOOK_OTHER = "secret";
+    try {
+      const hooks = CommandHooksSchema.parse({
+        PreToolUse: [
+          {
+            matcher: "bash",
+            hooks: [
+              {
+                type: "http",
+                url: `http://127.0.0.1:${server.port}/hook`,
+                headers: {
+                  Authorization: "Bearer $AGENCY_TEST_HOOK_TOKEN",
+                  "X-Other": "${AGENCY_TEST_HOOK_OTHER}",
+                },
+                allowedEnvVars: ["AGENCY_TEST_HOOK_TOKEN"],
+              },
+            ],
+          },
+        ],
+      });
+      const out = await run(hooks, "PreToolUse", { tool_name: "bash", tool_input: { command: "deploy" } });
+      expect(out).toEqual({ block: "no deploys today" });
+      expect(seen).toEqual([
+        {
+          method: "POST",
+          type: "application/json",
+          auth: "Bearer t1",
+          other: "",
+          body: {
+            hook_event_name: "PreToolUse",
+            cwd: dir,
+            tool_name: "bash",
+            tool_input: { command: "deploy" },
+          },
+        },
+      ]);
+    } finally {
+      delete process.env.AGENCY_TEST_HOOK_TOKEN;
+      delete process.env.AGENCY_TEST_HOOK_OTHER;
+      server.stop(true);
+    }
+  });
+
+  test("an http hook that fails does not block: an error status, a text body, or no server", async () => {
+    let reply: () => Response = () => new Response("down", { status: 500 });
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => reply() });
+    const at = (url: string): CommandHooks => ({ UserPromptSubmit: [{ hooks: [{ type: "http", url }] }] });
+    const url = `http://127.0.0.1:${server.port}/`;
+    try {
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+      reply = () => new Response("plain text is not context");
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+      reply = () => Response.json({ hookSpecificOutput: { additionalContext: "from the hook" } });
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({ context: "from the hook" });
+    } finally {
+      server.stop(true);
+    }
+    expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+  });
 
   test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
     const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');

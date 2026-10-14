@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **HTTP hooks**: a hook of `"type": "http"` sends the event as a JSON POST to its
+  `url`, and its JSON answer blocks or adds context as the stdout of a command does.
+  Headers can hold the environment variables of `allowedEnvVars`, as in Claude
+  Code. Before, a config with an http hook was not valid, and the daemon did not
+  start. A plugin with http hooks now installs them.
 - **Shell commands can reach a list of hosts**: `sandbox.allowedDomains` with the `os`
   backend gives a command only the hosts in the list (`github.com`, `*.npmjs.org`),
   through a proxy of the daemon, as in Claude Code. Before, a command had all of the

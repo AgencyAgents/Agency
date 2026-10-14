@@ -141,7 +141,7 @@ function parseHooks(
     }
     const parsed = CommandHooksSchema.safeParse({ [event]: groups });
     if (!parsed.success) {
-      skipped.push({ event, reason: "its entries are not command hooks" });
+      skipped.push({ event, reason: "its entries are not command or http hooks" });
       continue;
     }
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code hook command

@@ -29,19 +29,32 @@ const GroupSchema = z.object({
   /** Regular expression on the subject of the event (the tool name of a tool event), no regard to case. Absent, "" and "*" match all. */
   matcher: z.string().optional(),
   hooks: z.array(
-    z.object({
-      type: z.literal("command"),
-      command: z.string().min(1),
-      /** Seconds. */
-      timeout: z.number().positive().optional(),
-      /** One permission rule on the tool call (`Bash(git *)`, `Edit(*.ts)`): the hook runs only for a call that matches. */
-      if: z.string().optional(),
-      /** Runs in the background: the event does not wait, and the hook cannot block it. */
-      async: z.boolean().optional(),
-      asyncRewake: z.boolean().optional(),
-    }),
+    z.discriminatedUnion("type", [
+      z.object({
+        type: z.literal("command"),
+        command: z.string().min(1),
+        /** Seconds. */
+        timeout: z.number().positive().optional(),
+        /** One permission rule on the tool call (`Bash(git *)`, `Edit(*.ts)`): the hook runs only for a call that matches. */
+        if: z.string().optional(),
+        /** Runs in the background: the event does not wait, and the hook cannot block it. */
+        async: z.boolean().optional(),
+        asyncRewake: z.boolean().optional(),
+      }),
+      z.object({
+        type: z.literal("http"),
+        /** Gets the event as a JSON POST; its answer has the JSON form of the stdout of a command. */
+        url: z.string().url(),
+        /** A value can name `$VAR` or `${VAR}` of `allowedEnvVars`; another variable becomes "". */
+        headers: z.record(z.string(), z.string()).optional(),
+        allowedEnvVars: z.array(z.string()).optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+    ]),
   ),
 });
+type HttpHook = Extract<z.infer<typeof GroupSchema>["hooks"][number], { type: "http" }>;
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
 export const CommandHooksSchema = z.object(
@@ -160,6 +173,42 @@ function runOne(
 }
 
 /**
+ * An http hook in the form of a command result, as in Claude Code: a 2xx answer that is empty or a JSON object is
+ * stdout; another status, another body, no connection or the timeout is a failed hook, which does not block.
+ */
+async function runHttp(
+  entry: HttpHook,
+  body: string,
+  timeoutS: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const allowed = new Set(entry.allowedEnvVars ?? []);
+  const headers = Object.fromEntries(
+    Object.entries(entry.headers ?? {}).map(([name, value]) => [
+      name,
+      value.replace(/\$(?:\{(\w+)\}|(\w+))/g, (_, braced?: string, bare?: string) => {
+        const variable = braced ?? bare ?? "";
+        return allowed.has(variable) ? (process.env[variable] ?? "") : "";
+      }),
+    ]),
+  );
+  try {
+    const res = await fetch(entry.url, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(timeoutS * 1000),
+    });
+    const text = (await res.text()).trim();
+    if (!res.ok || (text !== "" && parseJson(text) === undefined)) {
+      return { code: 1, stdout: "", stderr: `${res.status}` };
+    }
+    return { code: 0, stdout: text, stderr: "" };
+  } catch {
+    return { code: null, stdout: "", stderr: "" };
+  }
+}
+
+/**
  * What a background hook that ended gives the model, as in Claude Code: on exit code 2 of `asyncRewake` its stderr
  * (or stdout), otherwise `additionalContext` and `systemMessage` of a JSON answer, alone on stdout or on a line of its own.
  */
@@ -220,7 +269,7 @@ export async function runCommandHooks(
       ) {
         continue;
       }
-      if (entry.async || entry.asyncRewake) {
+      if (entry.type === "command" && (entry.async || entry.asyncRewake)) {
         const rewake = entry.asyncRewake === true;
         void runOne(
           entry.command,
@@ -234,7 +283,11 @@ export async function runCommandHooks(
         });
         continue;
       }
-      const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);
+      const timeoutS = entry.timeout ?? DEFAULT_TIMEOUT_S;
+      const out =
+        entry.type === "http"
+          ? await runHttp(entry, stdin, timeoutS)
+          : await runOne(entry.command, stdin, opts, timeoutS);
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);

@@ -231,9 +231,12 @@ describe("what an install makes runnable", () => {
       });
       const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
       expect(report.hooksInstalled).toEqual(["PreToolUse"]);
-      expect(report.hooksSkipped).toEqual([{ event: "Stop", reason: "its entries are not command hooks" }]);
+      expect(report.hooksSkipped).toEqual([
+        { event: "Stop", reason: "its entries are not command or http hooks" },
+      ]);
       const installed = loadHookFiles(join(ws, ".agency", "hooks"));
-      const command = installed.PreToolUse?.[0]?.hooks[0]?.command ?? "";
+      const entry = installed.PreToolUse?.[0]?.hooks[0];
+      const command = entry?.type === "command" ? entry.command : "";
       expect(command).not.toContain("CLAUDE_PLUGIN_ROOT");
       expect(command.endsWith("/hooks/check.sh")).toBe(true);
       // The script that the command names is in the workspace: the source folder can go away.
@@ -299,7 +302,7 @@ describe("what an install makes runnable", () => {
       });
       const warnings: string[] = [];
       const hooks = loadHookFiles(dir, (message) => warnings.push(message));
-      expect(hooks.Stop?.[0]?.hooks[0]?.command).toBe("true");
+      expect(hooks.Stop?.[0]?.hooks[0]).toEqual({ type: "command", command: "true" });
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("a.json");
     } finally {
