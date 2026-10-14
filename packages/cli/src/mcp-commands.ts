@@ -1,9 +1,64 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { dataDir, loadConfig } from "@agency/core";
+import { configDir, dataDir, loadConfig } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { t } from "@agency/i18n";
 import { createKeychain, type KeychainBackend, openInBrowser } from "@agency/providers";
-import { keychainTokenStore, loadProjectMcpServers, signInMcpServer } from "@agency/tools";
+import {
+  importMcpServers,
+  keychainTokenStore,
+  loadProjectMcpServers,
+  loadUserMcpServers,
+  MCP_IMPORT_SOURCES,
+  type McpImportSource,
+  signInMcpServer,
+} from "@agency/tools";
+
+/** `agency mcp import <client>`: the MCP servers of the user file of another client go to `mcp/<client>.json`. */
+function importCmd(options: {
+  source: string | undefined;
+  configDir: string;
+  env: NodeJS.ProcessEnv;
+  out: (line: string) => void;
+  err: (line: string) => void;
+}): number {
+  const { env, out, err } = options;
+  const where = { home: env.USERPROFILE ?? env.HOME ?? homedir(), env, platform: process.platform };
+  const source = options.source as McpImportSource;
+  if (!MCP_IMPORT_SOURCES.includes(source)) {
+    const found = MCP_IMPORT_SOURCES.map((s) =>
+      importMcpServers(s, where) === undefined ? s : `${s} (found)`,
+    );
+    err(t("cli.mcp.import_usage", { sources: found.join(", ") }));
+    return 1;
+  }
+  let imported: ReturnType<typeof importMcpServers>;
+  try {
+    imported = importMcpServers(source, where, err);
+  } catch (error) {
+    err(
+      t("cli.mcp.import_failed", { source, reason: error instanceof Error ? error.message : String(error) }),
+    );
+    return 1;
+  }
+  if (imported === undefined) {
+    err(t("cli.mcp.import_none", { source }));
+    return 1;
+  }
+  const names = Object.keys(imported.servers);
+  if (names.length === 0) {
+    out(t("cli.mcp.import_empty", { source, file: imported.file }));
+    return 0;
+  }
+  // The file can hold keys of the servers: only the user can read it.
+  const dir = join(options.configDir, "mcp");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const text = `${JSON.stringify({ mcpServers: imported.servers }, null, 2)}\n`;
+  writeFileSync(join(dir, `${source}.json`), text, { mode: 0o600 });
+  out(t("cli.mcp.imported", { source, file: imported.file, names: names.join(", ") }));
+  return 0;
+}
 
 /** `agency mcp login|logout <server>`: the sign-in of an MCP server over HTTP. */
 export async function mcpCmd(options: {
@@ -18,6 +73,8 @@ export async function mcpCmd(options: {
   err: (line: string) => void;
 }): Promise<number> {
   const { action, name, out, err } = options;
+  const userDir = options.configDir ?? configDir(options.env);
+  if (action === "import") return importCmd({ source: name, configDir: userDir, env: options.env, out, err });
   if ((action !== "login" && action !== "logout") || !name) {
     err(t("cli.mcp.usage"));
     return 1;
@@ -29,6 +86,7 @@ export async function mcpCmd(options: {
   );
   const servers = {
     ...(trusted ? loadProjectMcpServers(options.workspaceRoot) : {}),
+    ...loadUserMcpServers(userDir),
     ...config.mcpServers,
   } as Record<string, { url?: string } | undefined>;
   const url = servers[name]?.url;

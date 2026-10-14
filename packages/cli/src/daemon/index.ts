@@ -67,8 +67,10 @@ import {
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import {
+  clientProjectPaths,
   keychainTokenStore,
   loadProjectMcpServers,
+  loadUserMcpServers,
   resolveConfiguredShell,
   setDeniedCommandEnv,
   type TeamMcpPool,
@@ -282,6 +284,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
   const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
+  const userMcpDir = join(options.configDir ?? configDir(), "mcp");
   const filesOf = (dir: string): string[] =>
     existsSync(dir) ? readdirSync(dir).map((file) => join(dir, file)) : [];
   const configFingerprint = createConfigFingerprint([
@@ -295,6 +298,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     mcpDir,
     ...filesOf(mcpDir),
     join(options.workspaceRoot, ".mcp.json"),
+    ...clientProjectPaths(options.workspaceRoot),
+    userMcpDir,
+    ...filesOf(userMcpDir),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
@@ -481,6 +487,12 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...(projectTrusted
       ? loadProjectMcpServers(options.workspaceRoot, (message) => logger.warn(message))
       : {}),
+    ...loadUserMcpServers(
+      options.configDir ?? configDir(),
+      (message) => logger.warn(message),
+      process.env,
+      options.workspaceRoot,
+    ),
     ...config.mcpServers,
   };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({

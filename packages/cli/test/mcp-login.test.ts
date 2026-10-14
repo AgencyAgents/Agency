@@ -98,3 +98,39 @@ test("mcp login names the servers it knows, and refuses a local server", async (
   expect(err.join("\n")).toContain("only a server with a url");
   expect(await runEntrypoint(["mcp", "login"], deps)).toBe(1);
 });
+
+test("mcp import copies the MCP servers of another client to the user config, and login then finds them", async () => {
+  const home = tmp("home");
+  const configDir = tmp("config");
+  const cursor = join(home, ".cursor");
+  require("node:fs").mkdirSync(cursor);
+  writeFileSync(
+    join(cursor, "mcp.json"),
+    JSON.stringify({
+      mcpServers: { docs: { url: "https://docs.test/mcp", headers: { "X-Key": "${env:DOCS_KEY}" } } },
+    }),
+  );
+  const out: string[] = [];
+  const err: string[] = [];
+  const deps: EntrypointDeps = {
+    env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData") },
+    configDir,
+    cwd: tmp("ws"),
+    keychain: createFileFallbackBackend(tmp("keys")),
+    out: (line) => void out.push(line),
+    err: (line) => void err.push(line),
+  };
+  expect(await runEntrypoint(["mcp", "import", "cursor"], deps)).toBe(0);
+  expect(out.at(-1)).toContain("Imported the MCP servers of cursor");
+  const saved = JSON.parse(require("node:fs").readFileSync(join(configDir, "mcp", "cursor.json"), "utf8"));
+  expect(saved).toEqual({
+    mcpServers: { docs: { url: "https://docs.test/mcp", headers: { "X-Key": "${DOCS_KEY}" } } },
+  });
+
+  expect(await runEntrypoint(["mcp", "import", "gemini"], deps)).toBe(1);
+  expect(err.at(-1)).toContain("gemini");
+  expect(await runEntrypoint(["mcp", "import"], deps)).toBe(1);
+  expect(err.at(-1)).toContain("cursor (found)");
+  // The imported server is a server of the user: logout finds it.
+  expect(await runEntrypoint(["mcp", "logout", "docs"], deps)).toBe(0);
+});

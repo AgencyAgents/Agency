@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **MCP servers of other clients**: a trusted workspace now also gives the MCP servers
+  of `.cursor/mcp.json`, `.vscode/mcp.json`, `.gemini/settings.json`, `opencode.json`,
+  `.codex/config.toml`, `.pi/mcp.json` and `.zed/settings.json`, with their keys and
+  variables mapped. `agency mcp import <client>` copies the user-level servers of
+  Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, OpenCode, Pi, VS Code,
+  Windsurf or Zed into the user config of Agency.
 - **Plugins from git and marketplaces**: `agency plugin install` takes a git URL or
   `owner/repo` of GitHub (`#ref` for a branch or tag) as well as a folder. A repository
   with `.claude-plugin/marketplace.json` is a Claude Code marketplace:

@@ -12,6 +12,7 @@ import {
   ensureDaemon,
 } from "@agency/rpc";
 import type { ImageBlock, Message } from "@agency/schema";
+import { clientProjectPaths } from "@agency/tools";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
 export interface RunHeadlessOptions {
@@ -70,7 +71,8 @@ export function hasTrustGatedContent(workspaceRoot: string): boolean {
     ["plugins", "skills", "agents", "commands", "hooks", "mcp"].some((dir) =>
       existsSync(join(workspaceRoot, ".agency", dir)),
     ) ||
-    existsSync(join(workspaceRoot, ".mcp.json"))
+    existsSync(join(workspaceRoot, ".mcp.json")) ||
+    clientProjectPaths(workspaceRoot).some((file) => existsSync(file))
   );
 }
 

@@ -11,6 +11,7 @@
     "@agency/net": "workspace:*",
     "@agency/i18n": "workspace:*",
     "@agency/providers": "workspace:*",
+    "jsonc-parser": "^3",
     "zod": "^4"
   },
   "scripts": {

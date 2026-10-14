@@ -991,6 +991,38 @@ describe("createAgentDaemon", () => {
     ]);
   }, 60_000);
 
+  test("the MCP server of a Codex config.toml in the workspace gives its tools to a turn", async () => {
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
+    // The same server, named by the project config of Codex instead of .mcp.json.
+    rmSync(join(workspaceRoot, ".mcp.json"));
+    mkdirSync(join(workspaceRoot, ".codex"));
+    const toml = (value: string) => JSON.stringify(value);
+    writeFileSync(
+      join(workspaceRoot, ".codex", "config.toml"),
+      `[mcp_servers.cdx]\ncommand = ${toml(process.execPath)}\nargs = [${toml(join(workspaceRoot, "server.js"))}]\n`,
+    );
+    let tools: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        tools = (request.tools ?? []).map((t) => t.name);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, adapterFor: () => adapter });
+    await client.call("run_turn", {
+      turnId: "t-mcp-codex",
+      sessionId: "s-mcp-codex",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(tools).toContain("cdx_ping");
+  }, 60_000);
+
   test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
     const instanceFile = tempInstanceFile();
     const { daemon, client } = await startFakeDaemon({ instanceFile });

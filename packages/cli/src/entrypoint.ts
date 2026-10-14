@@ -85,6 +85,8 @@ Commands:
   auth list                Show which providers have a resolvable key
   auth logout <provider>   Remove the key or sign-in of a provider (a ChatGPT sign-in is revoked)
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
+  mcp import <client>      Copy the MCP servers of Claude Code, Cursor, Codex, Gemini,
+                           OpenCode, Pi, VS Code, Windsurf, Zed or Claude Desktop
   mcp logout <server>      Remove the sign-in of an MCP server
   plugin install <source> [plugin] [--overwrite]
                            Install a Claude Code / Codex plugin from a folder, a git URL
