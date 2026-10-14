@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
-import { configDir } from "../paths.ts";
+import { configDir, foreignHome } from "../paths.ts";
 import { expandAtFiles, parseCommandFile, runShellBlocks, substituteArgs } from "./runtime.ts";
 
 export interface CommandTemplate {
@@ -50,7 +50,7 @@ export function geminiTemplate(prompt: string): string {
 }
 
 /** The TOML commands of Gemini CLI: a file in a subfolder is `<folder>:<name>`. */
-function parseGeminiCommands(dir: string): CommandTemplate[] {
+function parseGeminiCommands(dir: string, source: "project" | "user"): CommandTemplate[] {
   if (!existsSync(dir)) return [];
   const out: CommandTemplate[] = [];
   for (const entry of readdirSync(dir, { recursive: true, encoding: "utf8" })) {
@@ -66,13 +66,22 @@ function parseGeminiCommands(dir: string): CommandTemplate[] {
         name,
         content: geminiTemplate(raw.prompt),
         path: full,
-        source: "project",
+        source,
         ...(typeof raw.description === "string" ? { description: raw.description } : {}),
       });
     } catch {}
   }
   return out;
 }
+
+/** The user command folders of other agents, in Markdown with the syntax of Claude Code. */
+const FOREIGN_USER_COMMAND_DIRS = [
+  [".claude", "commands"],
+  [".cursor", "commands"],
+  [".codex", "prompts"],
+  [".pi", "agent", "prompts"],
+  [".config", "opencode", "commands"],
+];
 
 /** The command folders of other agents in the project, in Markdown with the syntax of Claude Code. */
 const FOREIGN_COMMAND_DIRS = [
@@ -95,12 +104,22 @@ export function loadCommands(options: {
     options.projectTrusted === false
       ? []
       : [
-          ...parseGeminiCommands(join(root, ".gemini", "commands")),
+          ...parseGeminiCommands(join(root, ".gemini", "commands"), "project"),
           ...FOREIGN_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(root, ...parts), "project")),
           // Last: `.agency/commands` wins on a name.
           ...parseCommandFiles(projectDir, "project"),
         ];
-  const user = parseCommandFiles(userDir, "user");
+  // The user commands of other agents first: those of Agency win on a name.
+  const home = foreignHome();
+  const user = [
+    ...(home === undefined
+      ? []
+      : [
+          ...parseGeminiCommands(join(home, ".gemini", "commands"), "user"),
+          ...FOREIGN_USER_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(home, ...parts), "user")),
+        ]),
+    ...parseCommandFiles(userDir, "user"),
+  ];
   // project wins on name collision
   const map = new Map<string, CommandTemplate>();
   for (const c of user) map.set(c.name, c);

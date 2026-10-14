@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **User files of other agents**: the user skills, commands and agent files of Claude
+  Code, Codex, Cursor, Pi, OpenCode, Gemini CLI and the shared `~/.agents` load in every
+  workspace, below those of Agency. `AGENCY_AGENTS_HOME=off` turns this off.
 - **Code plugins of OpenCode and Pi**: the plugins of `.opencode/plugins/` and the
   extensions of `.pi/extensions/` run in a trusted workspace through a shim of their
   API: tools, the tool-call hooks that block, `shell.env`, events, and Pi's `exec`.

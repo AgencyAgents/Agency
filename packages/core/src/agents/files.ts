@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type AgentConfig, DEFAULT_ROSTER, ToolPermissionSchema } from "../config/schema.ts";
-import { configDir } from "../paths.ts";
+import { configDir, foreignHome } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 
 export const AGENT_FILE_FIELDS = [
@@ -289,6 +289,13 @@ export interface FileRoster {
   seeded: boolean;
 }
 
+const FOREIGN_USER_AGENT_DIRS = [
+  [".claude", "agents"],
+  [".cursor", "agents"],
+  [".codex", "agents"],
+  [".config", "opencode", "agents"],
+];
+
 /** Merge order: config/seed base, then user files, then project files. */
 export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const base = opts.configAgents ?? DEFAULT_ROSTER;
@@ -302,6 +309,12 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   }
   const userDir = join(opts.configDirOverride ?? configDir(), "agents");
   const warn = opts.warn ?? (() => {});
+  // The user agent files of other agents, then those of Agency, which win on a handle.
+  const home = foreignHome();
+  for (const parts of home === undefined ? [] : FOREIGN_USER_AGENT_DIRS) {
+    for (const [handle, def] of loadAgentDir(join(home ?? "", ...parts), "user", warn, true))
+      merged.set(handle, def);
+  }
   for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
   if (opts.projectTrusted === false) return { agents: merged, seeded };
   // The agent folders of Claude Code, Cursor, Codex and OpenCode in the project; `.agency/agents` wins on a handle.

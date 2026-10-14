@@ -188,7 +188,12 @@ writeFileSync(join(workspace, "note.txt"), secret);
 
 // A user machine has no bun on PATH; the binary must not need one.
 const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-const env: Record<string, string | undefined> = { ...process.env, AGENCY_HOME: home };
+// Nor the user files of other agents on this machine.
+const env: Record<string, string | undefined> = {
+  ...process.env,
+  AGENCY_HOME: home,
+  AGENCY_AGENTS_HOME: home,
+};
 for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
 env.PATH = process.platform === "win32" ? `${systemRoot}\\System32;${systemRoot}` : "/usr/bin:/bin";
 

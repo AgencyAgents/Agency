@@ -243,6 +243,19 @@ describe("resolveSkillDirs", () => {
       { dir: join(ws, "skills"), tier: "project" },
       ...agents.map((agent) => ({ dir: join(ws, agent, "skills"), tier: "project" as const })),
       { dir: join("/custom/config", "skills"), tier: "user" },
+      // The user folders of other agents, under the home that the test preload gives.
+      ...[
+        ".claude",
+        ".agents",
+        ".codex",
+        ".cursor",
+        join(".pi", "agent"),
+        join(".config", "opencode"),
+        ".gemini",
+      ].map((agent) => ({
+        dir: join(process.env.AGENCY_AGENTS_HOME ?? "", agent, "skills"),
+        tier: "user" as const,
+      })),
     ]);
   });
 });

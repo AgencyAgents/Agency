@@ -131,3 +131,41 @@ test("agent files of Claude Code, Cursor and OpenCode load with their unknown ke
   });
   expect(warnings.join("\n")).toContain("Bad Name");
 });
+
+test("the user files of other agents load at the user tier, and AGENCY_AGENTS_HOME=off reads none", () => {
+  const home = folder({
+    ".claude/skills/mine/SKILL.md": skill("mine"),
+    ".agents/skills/shared/SKILL.md": skill("shared"),
+    ".codex/prompts/draft.md": "Draft $ARGUMENTS",
+    ".gemini/commands/note.toml": 'prompt = "Note {{args}}"\n',
+    ".claude/agents/helper.md": "---\nname: helper\ndescription: Helps\nmaxTurns: 3\n---\nYou help.",
+  });
+  const ws = folder({});
+  const config = folder({});
+  const before = process.env.AGENCY_AGENTS_HOME;
+  try {
+    process.env.AGENCY_AGENTS_HOME = home;
+    const skills = discoverSkills(resolveSkillDirs(ws, config));
+    expect(
+      skills
+        .filter((s) => s.tier === "user")
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(["mine", "shared"]);
+    const commands = loadCommands({ workspaceRoot: ws, configDirOverride: config });
+    expect(commands.map((c) => `${c.name}:${c.source}`)).toEqual(["draft:user", "note:user"]);
+    const roster = resolveFileRoster({
+      workspaceRoot: ws,
+      configDirOverride: config,
+      configAgents: {},
+      seed: false,
+    });
+    expect(roster.agents.get("helper")).toMatchObject({ source: "user", description: "Helps" });
+
+    process.env.AGENCY_AGENTS_HOME = "off";
+    expect(discoverSkills(resolveSkillDirs(ws, config))).toEqual([]);
+    expect(loadCommands({ workspaceRoot: ws, configDirOverride: config })).toEqual([]);
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
+});
