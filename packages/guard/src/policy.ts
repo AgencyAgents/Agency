@@ -245,7 +245,12 @@ export function isDestructiveCommand(command: string): boolean {
   if (program === "git") {
     if (/\sreset\s.*--hard\s/.test(text)) return true;
     if (/\sclean\s/.test(text) && (short("f") || args.includes("--force"))) return true;
-    if (/\spush\s/.test(text)) return short("f") || /\s(--force\S*|\+\S+)\s/.test(text);
+    if (/\spush\s/.test(text))
+      return short("f") || short("d") || /\s(--force\S*|--delete|\+\S+|:\S+)\s/.test(text);
+    // These throw away changes that no commit holds: `git checkout <branch>` and `git restore --staged` do not.
+    if (/\scheckout\s/.test(text)) return /\s(--|\.|-f|--force)\s/.test(text);
+    if (/\srestore\s/.test(text)) return !/\s(--staged|-S)\s/.test(text) || /\s(--worktree|-W)\s/.test(text);
+    if (/\sstash\s(drop|clear)\s/.test(text)) return true;
     return /\sbranch\s(.*\s)?-D\s/.test(text);
   }
   if (program === "find") return args.includes("-delete");

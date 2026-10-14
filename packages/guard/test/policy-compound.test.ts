@@ -115,6 +115,16 @@ describe("a compound shell command", () => {
       "sudo rm -fr /",
       "find . -delete",
       'bash -c "git reset --hard"',
+      "git checkout -- src/a.ts",
+      "git checkout .",
+      "git checkout -f main",
+      "git restore src/a.ts",
+      "git restore --staged --worktree .",
+      "git stash drop",
+      "git stash clear",
+      "git push origin --delete feature",
+      "git push -d origin feature",
+      "git push origin :feature",
     ]) {
       expect(`${command} -> ${verdict(command)}`).toBe(`${command} -> ask`);
     }
@@ -124,6 +134,12 @@ describe("a compound shell command", () => {
       "git status",
       "rm notes.txt",
       "git branch -d x",
+      "git checkout dev",
+      "git checkout -b feature",
+      "git restore --staged src/a.ts",
+      "git stash",
+      "git stash pop",
+      "git push origin HEAD:main",
     ]) {
       expect(`${command} -> ${verdict(command)}`).toBe(`${command} -> allow`);
     }

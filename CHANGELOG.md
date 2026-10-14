@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **More git commands that lose work ask first**: `git checkout` with `--`,
+  `.` or `-f`, `git restore` of the working tree, `git stash drop`,
+  `git stash clear` and a remote branch delete through `git push` now ask in
+  spite of a pattern rule that allows them, as `git reset --hard` did.
 - **A saved key reads in under 15 ms on Windows**: the key store calls DPAPI
   in `crypt32.dll` directly. Before, each read and each save started
   PowerShell: about 430 ms for each turn with a key from `agency auth login`.
