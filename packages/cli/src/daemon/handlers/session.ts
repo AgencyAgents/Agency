@@ -50,8 +50,15 @@ import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
 
 /** The summarizer of a session's compaction: its own model writes the summary. With no key, the offline one. */
-export function sessionSummarizer(ctx: DaemonContext, provider: string, model: string): Summarizer {
+export function sessionSummarizer(
+  ctx: DaemonContext,
+  provider: string,
+  model: string,
+  /** Instructions for this one summary (`/compact <session> <text>`): they go after those of the config. */
+  extraInstructions?: string,
+): Summarizer {
   let inner: Summarizer | undefined;
+  const wanted = [ctx.config.compactionInstructions, extraInstructions].filter(Boolean).join("\n");
   const summarize: Summarizer = async (transcript, instructions) => {
     if (inner === undefined) {
       const apiKey = await resolveApiKey({
@@ -69,7 +76,7 @@ export function sessionSummarizer(ctx: DaemonContext, provider: string, model: s
             model,
             apiKey,
             ...(maxTokens ? { maxTokens } : {}),
-            ...(ctx.config.compactionInstructions ? { instructions: ctx.config.compactionInstructions } : {}),
+            ...(wanted ? { instructions: wanted } : {}),
           })
         : async (text) => summarizeTranscript(text);
     }

@@ -85,7 +85,13 @@ const BUILTINS: Record<string, BuiltinFn> = {
     const entries = ctx.todoStore.load(sessionId);
     const tip = ctx.todoStore.latestTip(entries) ?? null;
     if (!tip) return { text: `session ${sessionId} is empty, nothing to compact`, data: { sessionId } };
-    const model = args[1] ?? textOf((ctx.config as { model?: unknown }).model) ?? "";
+    // The word after the session is a model when it has the form provider/model. All other words are instructions.
+    const named = args[1] !== undefined && parseModelRef(args[1]) !== undefined;
+    const instructions = args
+      .slice(named ? 2 : 1)
+      .join(" ")
+      .trim();
+    const model = (named ? args[1] : undefined) ?? textOf((ctx.config as { model?: unknown }).model) ?? "";
     const catalogHit = ctx.listModels().find((m) => m.id === model);
     const ref = parseModelRef(model);
     const slash = model.indexOf("/");
@@ -99,8 +105,13 @@ const BUILTINS: Record<string, BuiltinFn> = {
       sessionId,
       tip,
       tokenizerFor(family),
-      { contextWindow: 200_000 },
-      ref ? sessionSummarizer(ctx, ref.provider, ref.model) : async (text) => summarizeTranscript(text),
+      {
+        contextWindow: (ref && ctx.catalogModel(ref.provider, ref.model)?.contextWindow) || 200_000,
+        ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
+      },
+      ref
+        ? sessionSummarizer(ctx, ref.provider, ref.model, instructions || undefined)
+        : async (text) => summarizeTranscript(text),
       4,
       // The user asked for it: the size of the session does not decide.
       { force: true, trigger: "manual" },

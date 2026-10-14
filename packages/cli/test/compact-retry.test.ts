@@ -398,3 +398,39 @@ describe("compact-and-retry branch", () => {
     expect(retries.length).toBeGreaterThanOrEqual(1);
   }, 15000);
 });
+
+describe("/compact with instructions", () => {
+  test("the words after the session and the model go to the model that writes the summary", async () => {
+    const ws = tmp("agency-compact-ws-");
+    const sessionsDir = tmp("agency-compact-sess-");
+    const seed = new SessionStore(sessionsDir);
+    seed.create("s1");
+    let parent: string | null = null;
+    for (let i = 0; i < 8; i++) {
+      const e = await seed.append("s1", {
+        type: "message",
+        parentId: parent,
+        message: { role: "user", content: [{ type: "text", text: `history ${i} ${"x".repeat(200)}` }] },
+      });
+      parent = e.id;
+    }
+    const systems: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        systems.push(request.system ?? "");
+        yield { type: "text_delta", text: "the summary" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const client = await daemon(ws, adapter, sessionsDir);
+    const out = (await client.call("command_run", {
+      name: "compact",
+      args: "s1 anthropic/test-model keep every file name",
+    })) as { data: { compacted: boolean } };
+    expect(out.data.compacted).toBe(true);
+    expect(systems.length).toBeGreaterThan(0);
+    expect(systems[0]).toContain("keep every file name");
+    expect(systems[0]).not.toContain("anthropic/test-model");
+  });
+});

@@ -17,7 +17,12 @@ const TIER_1: BuiltinCommand[] = [
   { name: "help", tier: 1, description: "List built-in, file, and plugin commands.", usage: "/help" },
   { name: "init", tier: 1, description: "Scaffold AGENTS.md guidance files.", usage: "/init" },
   { name: "new", tier: 1, description: "Create an empty session.", usage: "/new [id]" },
-  { name: "compact", tier: 1, description: "Compact a session to a new tip.", usage: "/compact <session>" },
+  {
+    name: "compact",
+    tier: 1,
+    description: "Compact a session to a new tip.",
+    usage: "/compact <session> [provider/model] [instructions]",
+  },
   { name: "model", tier: 1, description: "Show or set the active model.", usage: "/model [provider/model]" },
   { name: "sessions", tier: 1, description: "List daemon-known sessions.", usage: "/sessions" },
   {

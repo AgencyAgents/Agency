@@ -672,6 +672,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   hooks now get the agent type, and their matcher tests it.
 - **`SessionEnd` hook**: runs when a session is deleted. 13 of the 33
   hook events of Claude Code now run.
+- **`/compact <session> [provider/model] [instructions]`**: words
+  after the session are instructions for this one summary. The
+  command also uses the window of the model and `compactionLimit`;
+  it used a fixed window of 200000 tokens.
 - **Compaction at a token limit, and inside a turn**: a session is now
   compacted at 220000 tokens when the window of the model is larger
   (`compactionLimit` in the config). Before, a model with a window of

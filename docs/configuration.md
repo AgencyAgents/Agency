@@ -289,7 +289,7 @@ Before a summary, the old tool output is removed: each old result becomes one li
 
 The model of the session writes the summary: one more request, on the transcript of the older messages with long tool results cut short. The summary has fixed sections: the user's requests and rules, decisions, files read and changed, commands and results, errors and fixes, the state of the work, and the next step. If that request fails, or no key resolves for the provider, the daemon uses an offline summary that keeps only the first and the last lines of the transcript.
 
-`/compact <session> [provider/model]` compacts a session at any size.
+`/compact <session> [provider/model] [instructions]` compacts a session at any size. A first word of the form provider/model is the model that writes the summary. All other words are instructions for this one summary, for example `/compact s1 keep every file name`. They go after `compactionInstructions` of the config.
 
 The summary ends with the messages that you wrote in the folded part, word for word, under `[the user's messages, word for word]`. A model can lose or change a rule when it writes a summary, and these lines cannot change. They also go on through later compactions. The newest lines are kept first, up to 10 percent of the size target and at most 20000 tokens, and one message is cut at 4000 characters.
 
