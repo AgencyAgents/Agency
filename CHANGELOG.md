@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Permission rules of Claude Code**: the `permissions` of `~/.claude/settings.json`
+  and, in a trusted workspace, of `.claude/settings.json` and `.claude/settings.local.json`
+  apply (`Bash(git push *)`, `Edit(src/**)`, MCP tools), with deny winning, under
+  those of the config. `-p` takes `--allowed-tools` and `--disallowed-tools` (also
+  `--allowedTools`, `--disallowedTools`) for one run.
 - **Output styles**: `"outputStyle"` names a Markdown style of `.agency/output-styles/`,
   `.claude/output-styles/`, the config folder or `~/.claude/output-styles/`, whose text
   joins the instructions. A plugin installs its `output-styles/`.

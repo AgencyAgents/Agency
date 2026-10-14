@@ -531,6 +531,25 @@ export function relativeWorkspacePath(root: string, candidate: string): string {
  * available an `ask` fails closed (deny); a headless run must never silently
  * approve itself.
  */
+/** `over` on top of `base`: the rules of `over` come after those of `base` for a tool, so they win on a call. */
+export function mergePermissions(
+  base: Record<string, ToolPermissionValue>,
+  over: Record<string, ToolPermissionValue>,
+): Record<string, ToolPermissionValue> {
+  const merged = { ...base };
+  for (const [tool, value] of Object.entries(over)) {
+    const under = merged[tool];
+    if (under === undefined || typeof value === "string") merged[tool] = value;
+    else {
+      const all = isPathPatternTool(tool) ? "**" : "*";
+      const first: Record<string, Decision> = typeof under === "string" ? { [all]: under } : { ...under };
+      for (const key of Object.keys(value)) delete first[key];
+      merged[tool] = { ...first, ...value };
+    }
+  }
+  return merged;
+}
+
 export class PermissionsGate implements ToolPolicy {
   private readonly engine: PolicyEngine;
   private readonly permissions: Record<string, ToolPermissionValue>;
@@ -556,6 +575,18 @@ export class PermissionsGate implements ToolPolicy {
   /** Derives a gate with `mode` applied over the same policy and trust inputs. */
   withMode(mode: PermissionMode): PermissionsGate {
     const next = new PermissionsGate({ ...this.options, permissionMode: mode });
+    if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
+    next.ceiling = this.ceiling;
+    return next;
+  }
+
+  /** Derives a gate whose rules for this run come after those of the config, so they win on a call. */
+  withRules(rules: Record<string, ToolPermissionValue> | undefined): PermissionsGate {
+    if (rules === undefined) return this;
+    const next = new PermissionsGate({
+      ...this.options,
+      permissions: mergePermissions(this.permissions, rules),
+    });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
     next.ceiling = this.ceiling;
     return next;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PermissionMode } from "@agency/guard";
+import type { PermissionMode, ToolPermissionValue } from "@agency/guard";
 import type { ThinkingLevel } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
 import type { ImageBlock } from "@agency/schema";
@@ -19,6 +19,8 @@ export interface RunSessionTurnOptions {
   /** Context window of the active model; feeds daemon-side compaction. */
   contextWindow?: number;
   permissionMode?: PermissionMode;
+  /** Permission rules of this turn: they win over those of the config. */
+  permissions?: Record<string, ToolPermissionValue>;
   maxToolIterations?: number;
   /** Sets the goal of the session before this turn. */
   goal?: string;
@@ -61,6 +63,7 @@ export async function runSessionTurn(
       budget: options.budget,
       contextWindow: options.contextWindow,
       permissionMode: options.permissionMode,
+      ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
       maxToolIterations: options.maxToolIterations,
       nonInteractive: options.nonInteractive,
       ...(options.goal === undefined ? {} : { goal: options.goal }),

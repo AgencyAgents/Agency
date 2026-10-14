@@ -16,11 +16,13 @@ import {
   DispatchStateStore,
   dataDir,
   EventBus,
+  foreignHome,
   foreignHookPaths,
   type HookRunOptions,
   hasBoardItemShape,
   InboxStore,
   Logger,
+  loadClaudePermissions,
   loadCommands,
   loadConfig,
   loadForeignHooks,
@@ -43,6 +45,7 @@ import {
   DockerSandboxBackend,
   type ExternalDirectoryDecision,
   ensureSandboxAvailable,
+  mergePermissions,
   OsSandboxBackend,
   PermissionsGate,
   Redactor,
@@ -212,12 +215,19 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const trustStore: TrustStore = createFileTrustStore(
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   );
+  // The permission rules of Claude Code settings come first: those of the config win on a call.
+  const permissions = mergePermissions(
+    loadClaudePermissions(options.workspaceRoot, trustStore.isTrusted(options.workspaceRoot), (message) =>
+      logger.warn(message),
+    ),
+    config.permissions,
+  );
   const gate = new PermissionsGate({
-    permissions: config.permissions,
+    permissions,
     workspaceRoot: options.workspaceRoot,
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
-  const commandPolicy = commandPolicyFromPermissions(config.permissions);
+  const commandPolicy = commandPolicyFromPermissions(permissions);
   // A key in a variable that `provider.<id>.env` names is a key of the harness too, whatever its name.
   const providerEnv = Object.values(providers ?? {}).flatMap((provider) => provider.env ?? []);
   setDeniedCommandEnv([...(config.sandbox?.denyEnv ?? []), ...providerEnv], config.sandbox?.allowEnv);
@@ -309,6 +319,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     join(options.workspaceRoot, ".mcp.json"),
     ...clientProjectPaths(options.workspaceRoot),
     ...foreignHookPaths(options.workspaceRoot),
+    // The permission rules of the user's Claude Code settings.
+    ...[foreignHome()].flatMap((home) =>
+      home === undefined ? [] : [join(home, ".claude", "settings.json")],
+    ),
     userMcpDir,
     ...filesOf(userMcpDir),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.

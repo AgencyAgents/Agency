@@ -503,7 +503,9 @@ export async function executeTurn(
             params.capabilities ??
             (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
           const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-          const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
+          const sessionGate = gateForSession(sessionId)
+            .withMode(params.permissionMode ?? "ask")
+            .withRules(params.permissions);
           const gatedTools =
             builtinsMode && turnScope
               ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
@@ -658,7 +660,9 @@ export async function executeTurn(
             try {
               eventBus.emit("model.fallback", fbEvent);
             } catch {}
-            const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
+            const sessionGate = gateForSession(sessionId)
+              .withMode(params.permissionMode ?? "ask")
+              .withRules(params.permissions);
             const fallbackCapabilities =
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);

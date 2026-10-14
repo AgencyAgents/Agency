@@ -47,6 +47,7 @@ import {
   type PermissionsGate,
   type Redactor,
   type SandboxBackend,
+  type ToolPermissionValue,
 } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
@@ -165,6 +166,8 @@ export interface RunTurnParams {
    * Every other mode arrives only via the explicit client flag.
    */
   permissionMode?: PermissionMode;
+  /** Permission rules of this turn (`--allowed-tools`, `--disallowed-tools`): they win over those of the config. */
+  permissions?: Record<string, ToolPermissionValue>;
   /** Headless turns have no approval surface: asks refuse at once with a
    *  typed reason instead of waiting on a responder that never comes. */
   nonInteractive?: boolean;
@@ -247,6 +250,7 @@ export interface SessionSendParams {
   thinkingLevel?: ThinkingLevel;
   budget?: Budget;
   permissionMode?: PermissionMode;
+  permissions?: Record<string, ToolPermissionValue>;
   maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;

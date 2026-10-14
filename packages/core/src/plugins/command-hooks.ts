@@ -135,6 +135,20 @@ const TOOL_ALIASES: Record<string, string[]> = {
 };
 const namesOf = (subject: string): string[] => [subject, ...(TOOL_ALIASES[subject] ?? [])];
 
+/** The tool here that a tool name of another agent names: `Bash` is `bash`, `mcp__github__create_issue` is `github_create_issue`. */
+export function agencyToolName(name: string): string | undefined {
+  // `mcp__<server>` alone is every tool of a server: no one tool here.
+  if (name.startsWith("mcp__")) {
+    const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+    return mcp ? `${mcp[1]}_${mcp[2]}` : undefined;
+  }
+  const lower = name.toLowerCase();
+  for (const [tool, aliases] of Object.entries(TOOL_ALIASES)) {
+    if (tool === lower || aliases.some((alias) => alias.toLowerCase() === lower)) return tool;
+  }
+  return /^[a-z][a-z0-9_]*$/.test(lower) ? lower : undefined;
+}
+
 function matches(matcher: string | undefined, subject: string | undefined): boolean {
   if (matcher === undefined || matcher === "" || matcher === "*" || subject === undefined) return true;
   try {

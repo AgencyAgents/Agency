@@ -13,13 +13,20 @@ import {
   OUTPUT_CUT_NOTE,
   ownerOnlyDirs,
   parseModelRef,
+  permissionsFromRules,
   type RetentionPolicy,
   reportStorage,
   runCodeChild,
   SessionStore,
   storagePaths,
 } from "@agency/core";
-import { PERMISSION_MODES, type PermissionMode, runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
+import {
+  PERMISSION_MODES,
+  type PermissionMode,
+  runSandboxChild,
+  SANDBOX_COMMAND,
+  type ToolPermissionValue,
+} from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
@@ -115,6 +122,8 @@ Options:
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
   --permission-mode <mode> With -p: ask (default), allow-edits, auto, allow-all, or deny
+  --allowed-tools <rules>  With -p: these tools run with no ask, as rules of Claude Code
+                           (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
@@ -163,6 +172,9 @@ export interface ParsedArgv {
   continueLast: boolean;
   session: string | undefined;
   permissionMode: PermissionMode;
+  /** Permission rules of Claude Code for this run: `--allowed-tools` allows, `--disallowed-tools` denies. */
+  allowedTools: string[];
+  disallowedTools: string[];
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
@@ -247,6 +259,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
+    allowedTools: [],
+    disallowedTools: [],
     maxSteps: undefined,
     goal: undefined,
     systemPrompt: undefined,
@@ -330,6 +344,20 @@ export function parseArgv(argv: string[]): ParsedArgv {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
         parsed.permissionMode = mode as PermissionMode;
+        break;
+      }
+      // Claude Code spells them `--allowedTools` and `--disallowedTools`. A value holds rules split by commas.
+      case "--allowed-tools":
+      case "--allowedTools":
+      case "--disallowed-tools":
+      case "--disallowedTools": {
+        const rules = value()
+          .split(/,(?![^(]*\))/)
+          .map((rule) => rule.trim())
+          .filter(Boolean);
+        (name.toLowerCase().startsWith("--allowed") ? parsed.allowedTools : parsed.disallowedTools).push(
+          ...rules,
+        );
         break;
       }
       case "--max-steps": {
@@ -608,6 +636,14 @@ async function runPrintMode(
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
+  // Each rule of a run must hold: a rule that maps to nothing here would let through a call that the user denied.
+  let permissions: Record<string, ToolPermissionValue> | undefined;
+  if (parsed.allowedTools.length > 0 || parsed.disallowedTools.length > 0) {
+    const rules = permissionsFromRules({ allow: parsed.allowedTools, deny: parsed.disallowedTools });
+    if (rules.skipped.length > 0)
+      throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
+    permissions = rules.permissions;
+  }
   // OpenAI asks an app to show while the plan pays.
   if (provider === CHATGPT_PROVIDER && parsed.format !== "json" && !parsed.streamJson) {
     err(t("cli.progress.chatgpt_plan", { url: CHATGPT_USAGE_URL }));
@@ -695,6 +731,7 @@ async function runPrintMode(
         images,
         onEvent,
         permissionMode: parsed.permissionMode,
+        ...(permissions === undefined ? {} : { permissions }),
         maxToolIterations: parsed.maxSteps,
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
@@ -718,6 +755,7 @@ async function runPrintMode(
     images,
     onEvent,
     permissionMode: parsed.permissionMode,
+    ...(permissions === undefined ? {} : { permissions }),
     maxToolIterations: parsed.maxSteps,
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });

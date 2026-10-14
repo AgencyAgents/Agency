@@ -9,7 +9,7 @@ import {
   foreignHookPaths,
   loadConfig,
 } from "@agency/core";
-import type { PermissionMode } from "@agency/guard";
+import type { PermissionMode, ToolPermissionValue } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
 import {
@@ -35,6 +35,8 @@ export interface RunHeadlessOptions {
   images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
   permissionMode?: PermissionMode;
+  /** Permission rules of this turn: they win over those of the config. */
+  permissions?: Record<string, ToolPermissionValue>;
   maxToolIterations?: number;
   budget?: RunTurnParams["budget"];
   outputSchema?: Record<string, unknown>;
@@ -187,6 +189,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       thinkingLevel: options.thinkingLevel,
       session,
       permissionMode: options.permissionMode,
+      ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
       maxToolIterations: options.maxToolIterations,
       ...(options.budget === undefined ? {} : { budget: options.budget }),
       ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),

@@ -979,6 +979,59 @@ describe("-p headless mode", () => {
     expect(fake.calls[0]?.permissionMode).toBe("deny");
   });
 
+  test("--allowed-tools and --disallowedTools become the permission rules of the turn; an unknown rule fails", async () => {
+    const parsed = parseArgv([
+      "-p",
+      "hi",
+      "--allowed-tools",
+      "Bash(git log,diff *),Read",
+      "--disallowedTools=Bash(rm *)",
+    ]);
+    expect(parsed.allowedTools).toEqual(["Bash(git log,diff *)", "Read"]);
+    expect(parsed.disallowedTools).toEqual(["Bash(rm *)"]);
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const code = await runEntrypoint(
+      [
+        "-p",
+        "hi",
+        "--model",
+        "openai/fake-1",
+        "--allowed-tools",
+        "Bash(git *),Read",
+        "--disallowed-tools",
+        "Bash(rm *)",
+      ],
+      { ...baseDeps(), ...deps, runHeadless: headless.runHeadless },
+    );
+    expect(code).toBe(0);
+    expect(headless.calls[0]?.permissions).toEqual({
+      bash: { "git *": "allow", "rm *": "deny" },
+      read: "allow",
+    });
+    const session = fakeClient();
+    await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--session", "rules", "--allowed-tools", "Edit"],
+      {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir: tempDir("agency-ep-sessions-"),
+        ensureClient: async () => session.client,
+      },
+    );
+    expect(session.calls.find((call) => call.method === "session_send")?.params).toMatchObject({
+      permissions: { edit: "allow" },
+    });
+    const bad = capture();
+    const badCode = await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--disallowed-tools", "Read(~/.ssh/**)"],
+      { ...baseDeps(), ...bad.deps, runHeadless: headless.runHeadless },
+    );
+    expect(badCode).toBe(1);
+    expect(bad.err.join("\n")).toContain("Read(~/.ssh/**)");
+    expect(headless.calls).toHaveLength(1);
+  });
+
   test("--max-steps parses, rejects a bad value, and reaches both kinds of turn", async () => {
     expect(parseArgv(["-p", "hi"]).maxSteps).toBeUndefined();
     expect(parseArgv(["-p", "hi", "--max-steps", "80"]).maxSteps).toBe(80);
