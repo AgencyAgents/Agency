@@ -85,6 +85,56 @@ describe("runCommandHooks", () => {
     expect(await run(hooks, "Stop")).toEqual({});
   });
 
+  test("`if` runs a hook only for a tool call that matches its permission rule", async () => {
+    const cmd = hook("if-deny", 'console.error("matched"); process.exit(2);');
+    const when = (rule: string, event: keyof CommandHooks = "PreToolUse"): CommandHooks => ({
+      [event]: [{ hooks: [{ type: "command", command: cmd, if: rule }] }],
+    });
+    const bash = (command: string) => ({ tool_name: "bash", tool_input: { command } });
+    expect(await run(when("Bash(git push *)"), "PreToolUse", bash("git push origin dev"))).toEqual({
+      block: "matched",
+    });
+    // Any part of the command line, also behind a wrapper.
+    expect(
+      (await run(when("Bash(git push *)"), "PreToolUse", bash("cd app && sudo git push origin"))).block,
+    ).toBe("matched");
+    expect(await run(when("Bash(git push *)"), "PreToolUse", bash("git status"))).toEqual({});
+    expect(await run(when("Bash(npm run test:*)"), "PreToolUse", bash("npm run test -- -x"))).toEqual({
+      block: "matched",
+    });
+    // A command that the splitter cannot read runs the hook, as in Claude Code.
+    expect((await run(when("Bash(rm *)"), "PreToolUse", bash("echo $(ls)"))).block).toBe("matched");
+
+    const edit = (path: string) => ({ tool_name: "edit", tool_input: { path } });
+    expect((await run(when("Edit(*.ts)"), "PreToolUse", edit("src/deep/a.ts"))).block).toBe("matched");
+    expect(await run(when("Edit(*.ts)"), "PreToolUse", edit("src/a.js"))).toEqual({});
+    expect((await run(when("Edit(src/**)"), "PreToolUse", edit(join(dir, "src", "a.js")))).block).toBe(
+      "matched",
+    );
+    expect(await run(when("Edit(src/**)"), "PreToolUse", edit("lib/src/a.js"))).toEqual({});
+    expect(await run(when("Edit(*.ts)"), "PreToolUse", bash("a.ts"))).toEqual({});
+
+    // On an event that is not a tool event, a hook with `if` never runs.
+    expect(await run(when("Bash(*)", "Stop"), "Stop", {})).toEqual({});
+  });
+
+  test("an async hook does not hold the event, and cannot block it", async () => {
+    const done = join(dir, "async-done.txt");
+    const cmd = hook(
+      "async",
+      `setTimeout(() => { require("fs").writeFileSync(${JSON.stringify(done)}, "x"); process.exit(2); }, 1500);`,
+    );
+    for (const flag of [{ async: true }, { asyncRewake: true }]) {
+      rmSync(done, { force: true });
+      const hooks: CommandHooks = { Stop: [{ hooks: [{ type: "command", command: cmd, ...flag }] }] };
+      const started = Date.now();
+      expect(await run(hooks, "Stop")).toEqual({});
+      expect(Date.now() - started).toBeLessThan(1000);
+      for (let i = 0; i < 100 && !existsSync(done); i++) await Bun.sleep(50);
+      expect(existsSync(done)).toBe(true);
+    }
+  }, 20_000);
+
   test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
     const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');
     const compaction = on("PreCompact", cmd, "manual");

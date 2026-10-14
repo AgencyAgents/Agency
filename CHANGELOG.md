@@ -670,6 +670,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **`if` and background hooks**: a hook with `"if": "Bash(git push *)"`
+  runs only for a tool call that matches the rule. Before, `if` was
+  dropped, so such a hook ran for every call of the tool. `async` and
+  `asyncRewake` hooks run in the background; before, the event waited
+  for them and they could block it. 18 of the 54 hooks in the 16 hook
+  files of Claude Code plugins on the test PC use one of these fields.
 - **Sandbox of the operating system on Windows**: `sandbox.backend: "os"`
   runs each command under a write-restricted token. A command writes
   only in the workspace and in a temporary folder of its own, not in

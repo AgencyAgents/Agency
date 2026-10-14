@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { globToRegExpSource, splitCommand, unwrapCommand } from "@agency/guard";
 import { z } from "zod";
 import { type EventBus, HookBlock } from "../events.ts";
 
@@ -30,6 +31,11 @@ const GroupSchema = z.object({
       command: z.string().min(1),
       /** Seconds. */
       timeout: z.number().positive().optional(),
+      /** One permission rule on the tool call (`Bash(git *)`, `Edit(*.ts)`): the hook runs only for a call that matches. */
+      if: z.string().optional(),
+      /** Runs in the background: the event does not wait, and the hook cannot block it. */
+      async: z.boolean().optional(),
+      asyncRewake: z.boolean().optional(),
     }),
   ),
 });
@@ -64,6 +70,35 @@ function matches(matcher: string | undefined, subject: string | undefined): bool
   }
 }
 
+const TOOL_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+]);
+
+/**
+ * True when the tool call matches the `if` rule of a hook. A command line matches when one of its commands does, as
+ * for a permission rule; one that the splitter cannot read matches, as in Claude Code.
+ */
+export function hookIfMatches(rule: string, tool: unknown, toolInput: unknown, cwd: string): boolean {
+  const parsed = /^([^()]+?)(?:\(([\s\S]*)\))?$/.exec(rule.trim());
+  if (!parsed || typeof tool !== "string" || parsed[1]?.toLowerCase() !== tool.toLowerCase()) return false;
+  const pattern = parsed[2]?.replace(/:\*$/, "*");
+  if (pattern === undefined || pattern === "" || pattern === "*") return true;
+  const input = (toolInput ?? {}) as Record<string, unknown>;
+  if (typeof input.command === "string") {
+    const { parts, dynamic } = splitCommand(input.command);
+    const re = new RegExp(globToRegExpSource(pattern, "command"));
+    return dynamic || parts.some((part) => unwrapCommand(part).some((form) => re.test(form)));
+  }
+  const path = input.file_path ?? input.path;
+  if (typeof path !== "string") return true;
+  // As in .gitignore: a pattern with no slash names a file at any depth, one with a slash starts at the folder.
+  const re = new RegExp(globToRegExpSource(pattern.includes("/") ? pattern : `**/${pattern}`, "path"));
+  return re.test(relative(cwd, resolve(cwd, path)).replace(/\\/g, "/"));
+}
+
 export interface HookRunOptions {
   cwd: string;
   /** The shell that runs each command: the daemon gives the shell of its bash tool. Absent means the system shell. */
@@ -74,7 +109,7 @@ function runOne(
   command: string,
   stdin: string,
   opts: HookRunOptions,
-  timeoutS: number,
+  timeoutS: number | undefined,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const { cwd, shell } = opts;
@@ -100,7 +135,7 @@ function runOne(
         } catch {}
       }
     };
-    const timer = setTimeout(killTree, timeoutS * 1000);
+    const timer = timeoutS === undefined ? undefined : setTimeout(killTree, timeoutS * 1000);
     child.stdout.on("data", (d) => {
       if (stdout.length < MAX_OUTPUT_CHARS) stdout += String(d);
     });
@@ -148,6 +183,22 @@ export async function runCommandHooks(
   for (const group of hooks[event] ?? []) {
     if (!matches(group.matcher, subject)) continue;
     for (const entry of group.hooks) {
+      if (
+        entry.if !== undefined &&
+        !(TOOL_EVENTS.has(event) && hookIfMatches(entry.if, input.tool_name, input.tool_input, opts.cwd))
+      ) {
+        continue;
+      }
+      if (entry.async || entry.asyncRewake) {
+        // ponytail: the output of a background hook does not reach the model; add a queue for the next turn when a plugin needs it.
+        void runOne(
+          entry.command,
+          stdin,
+          opts,
+          entry.asyncRewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
+        );
+        continue;
+      }
       const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
