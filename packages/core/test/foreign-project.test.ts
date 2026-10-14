@@ -6,7 +6,12 @@ import { createFileTrustStore } from "@agency/guard";
 import { resolveFileRoster } from "../src/agents/files.ts";
 import { expandCommand, loadCommands } from "../src/commands/loader.ts";
 import { discoverSkills, resolveSkillDirs } from "../src/plugins/skill.ts";
-import { expandImports, loadInstructions, loadUserAgentInstructions } from "../src/prompt/instructions.ts";
+import {
+  expandImports,
+  loadInstructions,
+  loadUserAgentInstructions,
+  nestedInstructions,
+} from "../src/prompt/instructions.ts";
 import { outputStyleInstructions } from "../src/prompt/output-style.ts";
 
 const dirs: string[] = [];
@@ -310,4 +315,26 @@ test("the @path imports of CLAUDE.md load, inside the workspace only, and not in
   const trust = createFileTrustStore(join(folder({}), "trust.json"));
   trust.trust(plain);
   expect(loadInstructions(trust, plain, plain)).toEqual(["agents text"]);
+});
+
+test("the AGENTS.md and CLAUDE.md of a subfolder come once, with the first file there", () => {
+  const ws = folder({
+    "AGENTS.md": "root text",
+    "pkg/AGENTS.md": "pkg agents",
+    "pkg/CLAUDE.md": "@AGENTS.md\n",
+    "pkg/api/CLAUDE.md": "api claude",
+    "pkg/api/x.ts": "",
+    "other/y.ts": "",
+  });
+  const seen = new Set<string>();
+  expect(nestedInstructions(ws, "pkg/api/x.ts", seen)).toBe(
+    [
+      `Instructions of ${join("pkg", "AGENTS.md")}, for the files of its folder:\npkg agents`,
+      `Instructions of ${join("pkg", "api", "CLAUDE.md")}, for the files of its folder:\napi claude`,
+    ].join("\n\n"),
+  );
+  expect(nestedInstructions(ws, join(ws, "pkg", "api", "z.ts"), seen)).toBeUndefined();
+  expect(nestedInstructions(ws, "other/y.ts", seen)).toBeUndefined();
+  expect(nestedInstructions(ws, "top.ts", seen)).toBeUndefined();
+  expect(nestedInstructions(ws, "../outside/a.ts", seen)).toBeUndefined();
 });

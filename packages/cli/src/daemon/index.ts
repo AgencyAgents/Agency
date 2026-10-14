@@ -19,6 +19,7 @@ import {
   EventBus,
   foreignHome,
   foreignHookPaths,
+  HookBlock,
   type HookRunOptions,
   hasBoardItemShape,
   InboxStore,
@@ -31,6 +32,7 @@ import {
   loadPlugins,
   memoryFile,
   mergeCommandHooks,
+  nestedInstructions,
   outputStyleInstructions,
   parseEnvFile,
   SessionStore,
@@ -435,6 +437,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     const file = envFileOf(sessionId ?? "default");
     if (!existsSync(file)) return;
     Object.assign(env, parseEnvFile(readFileSync(file, "utf8"), { ...process.env, ...env }));
+  });
+  // The AGENTS.md or CLAUDE.md of a subfolder reaches the model with the result of the first file tool there.
+  // ponytail: the folders seen live in memory, so a new daemon gives an old session such a file once more.
+  const nestedSeen = new Map<string, Set<string>>();
+  eventBus.on("tool.execute.after", (payload) => {
+    const { tool, input, sessionId } = payload as { tool: string; input: unknown; sessionId?: string };
+    const path = (input as { path?: unknown } | undefined)?.path;
+    if (
+      !projectTrusted ||
+      !["read", "edit", "write", "notebook_edit"].includes(tool) ||
+      typeof path !== "string"
+    )
+      return;
+    const seen = nestedSeen.get(sessionId ?? "default") ?? new Set<string>();
+    nestedSeen.set(sessionId ?? "default", seen);
+    const text = nestedInstructions(options.workspaceRoot, path, seen);
+    if (text !== undefined) throw new HookBlock(text);
   });
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];

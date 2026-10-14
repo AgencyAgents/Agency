@@ -1,6 +1,6 @@
 import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
 import { foreignHome } from "../paths.ts";
@@ -189,6 +189,41 @@ export function expandImports(
         .join("`");
     })
     .join("\n");
+}
+
+/**
+ * The AGENTS.md, CLAUDE.md and GEMINI.md of the folders between the workspace root and `file` that `seen` does not
+ * hold, as Claude Code loads a nested CLAUDE.md when the model reaches its folder. Adds the folders to `seen`.
+ */
+export function nestedInstructions(
+  workspaceRoot: string,
+  file: string,
+  seen: Set<string>,
+  maxFileBytes = DEFAULT_MAX_INSTRUCTION_BYTES,
+): string | undefined {
+  const rel = relative(workspaceRoot, resolve(workspaceRoot, file));
+  if (rel.startsWith("..") || isAbsolute(rel) || dirname(rel) === ".") return undefined;
+  const out: string[] = [];
+  let dir = workspaceRoot;
+  for (const part of dirname(rel).split(sep)) {
+    dir = join(dir, part);
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    const texts: string[] = [];
+    for (const name of INSTRUCTION_NAMES) {
+      const path = join(dir, name);
+      if (!existsSync(path) || !statSync(path).isFile()) continue;
+      const raw = readTextCapped(path, maxFileBytes);
+      const text = name === "AGENTS.md" ? raw : expandImports(raw, dir, workspaceRoot, maxFileBytes);
+      // A CLAUDE.md that repeats AGENTS.md (a copy, a link or an import) counts once.
+      if (text.trim() === "" || texts.some((t) => t.trim() === text.trim())) continue;
+      texts.push(text);
+      out.push(
+        `Instructions of ${relative(workspaceRoot, path)}, for the files of its folder:\n${text.trim()}`,
+      );
+    }
+  }
+  return out.length > 0 ? out.join("\n\n") : undefined;
 }
 
 /** The instruction files that other agents load in every project. Codex reads its override in place of AGENTS.md. */
