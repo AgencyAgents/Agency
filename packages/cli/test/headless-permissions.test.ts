@@ -134,6 +134,21 @@ describe("headless permission modes", () => {
     expect(existsSync(join(workspaceRoot, "notes.txt"))).toBe(false);
   }, 30000);
 
+  test("a bash prompt completes under --permission-mode allow-all", async () => {
+    const { client } = await startDaemon(toolCallAdapter("bash", { command: "echo headless-ok" }));
+    const result = (await client.call("run_turn", {
+      turnId: "headless-allow-all-1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      permissionMode: "allow-all",
+      nonInteractive: true,
+      session: [{ role: "user", content: [{ type: "text", text: "echo something" }] }],
+    })) as RunTurnRpcResult;
+    expect(result.stopReason).toBe("end_turn");
+    expect(toolResultTexts(result.messages).join("\n")).toContain("headless-ok");
+  }, 30000);
+
   test("an explicit config entry allows bash without any flag", async () => {
     const configDir = writeConfigDir({ permissions: { bash: "allow" } });
     const { client } = await startDaemon(toolCallAdapter("bash", { command: "echo headless-ok" }), configDir);

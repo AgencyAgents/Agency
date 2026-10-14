@@ -59,31 +59,43 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
     async fetch(url, init = {}) {
       const explicitProxy = options.proxy && !isExempt(url, env) ? options.proxy : undefined;
       const ca = await resolveCa(options, env);
-      const controller = new AbortController();
-      const onCallerAbort = () => controller.abort();
-      init.signal?.addEventListener("abort", onCallerAbort);
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // The timeout bounds the wait for headers only; the caller's signal also cancels a streaming body.
+      const timeout = new AbortController();
+      const timer = setTimeout(() => timeout.abort(), timeoutMs);
+      const signal = init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal;
 
       try {
         return await fetch(url, {
           ...init,
-          signal: controller.signal,
+          signal,
           // Bun-native fetch extensions; ignored (harmlessly) by a strict DOM lib typing.
           ...(explicitProxy ? { proxy: explicitProxy } : {}),
           ...(ca ? { tls: { ca } } : {}),
         } as RequestInit);
       } catch (cause) {
+        // A caller abort is not a network fault: typed as one, the scheduler would retry a cancelled request.
+        if (init.signal?.aborted) throw cause;
         throw translateFetchError(cause, url, Boolean(explicitProxy));
       } finally {
         clearTimeout(timer);
-        init.signal?.removeEventListener("abort", onCallerAbort);
       }
     },
   };
 }
 
-function translateFetchError(cause: unknown, url: string, throughExplicitProxy: boolean): AgencyError {
+/** The query and the login of an address can hold a key, and an error's text goes to logs and to the model. */
+function withoutSecrets(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
+function translateFetchError(cause: unknown, rawUrl: string, throughExplicitProxy: boolean): AgencyError {
   const message = cause instanceof Error ? cause.message : String(cause);
+  const url = withoutSecrets(rawUrl);
 
   if (cause instanceof DOMException && cause.name === "AbortError") {
     return new AgencyError(ErrorCode.NETWORK, `request to ${url} timed out`, {

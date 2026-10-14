@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
 import { logDir } from "@agency/core";
+import { bootErrorPath } from "@agency/rpc";
 import { createAgentDaemon } from "./daemon.ts";
 
 /**
@@ -23,21 +25,29 @@ function parseArgs(argv: string[]): { workspaceRoot: string; instanceFile: strin
   return { workspaceRoot, instanceFile, idleLingerMs: idleLingerRaw ? Number(idleLingerRaw) : undefined };
 }
 
-if (import.meta.main) {
-  const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(process.argv.slice(2));
+/** Runs until a signal or idle shutdown; the compiled binary reaches it through the entrypoint's hidden command. */
+export async function runDaemonEntry(argv: string[]): Promise<never> {
+  const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(argv);
 
-  const daemon = await createAgentDaemon({
-    workspaceRoot,
-    instanceFile,
-    idleLingerMs,
-    logsDir: logDir(),
-    // Idle shutdown must leave through stop() — a bare process.exit(0)
-    // orphans MCP servers and dev servers exactly like a missing signal
-    // handler does.
-    onIdleShutdown: () => {
-      void shutdown();
-    },
-  });
+  let daemon: Awaited<ReturnType<typeof createAgentDaemon>>;
+  try {
+    daemon = await createAgentDaemon({
+      workspaceRoot,
+      instanceFile,
+      idleLingerMs,
+      idleFromStart: true,
+      logsDir: logDir(),
+      // Idle shutdown must leave through stop() — a bare process.exit(0)
+      // orphans MCP servers and dev servers exactly like a missing signal
+      // handler does.
+      onIdleShutdown: () => {
+        void shutdown();
+      },
+    });
+  } catch (error) {
+    writeFileSync(bootErrorPath(instanceFile), error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 
   let stopping = false;
   async function shutdown() {
@@ -62,5 +72,7 @@ if (import.meta.main) {
   // Keep the process alive; startDaemonServer's socket listener does that on
   // its own, but state this explicitly rather than relying on an implicit
   // side effect if the transport ever changes.
-  await new Promise(() => {});
+  return new Promise<never>(() => {});
 }
+
+if (import.meta.main) await runDaemonEntry(process.argv.slice(2));

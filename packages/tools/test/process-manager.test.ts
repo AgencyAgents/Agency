@@ -18,8 +18,29 @@ describe("ProcessManager", () => {
   test("captures stdout into the log buffer", async () => {
     manager = new ProcessManager();
     const info = manager.spawn(["node", "-e", "console.log('hello from child')"]);
-    await new Promise((r) => setTimeout(r, 300));
+    // A fixed wait of 300 ms failed on a slow machine, where node needs seconds to start.
+    for (let i = 0; i < 300 && manager.getLogs(info.id) === ""; i++)
+      await new Promise((r) => setTimeout(r, 50));
     expect(manager.getLogs(info.id)).toContain("hello from child");
+  });
+
+  test("a background process does not get the provider keys of the harness", async () => {
+    manager = new ProcessManager();
+    process.env.AGENCY_ENVTEST_API_KEY = "harness-key-71f3";
+    process.env.ENVTEST_PLAIN = "plain-value-52c1";
+    try {
+      const info = manager.spawn([
+        "node",
+        "-e",
+        "console.log('key=[' + (process.env.AGENCY_ENVTEST_API_KEY ?? '') + '] plain=[' + process.env.ENVTEST_PLAIN + ']')",
+      ]);
+      for (let i = 0; i < 300 && manager.getLogs(info.id) === ""; i++)
+        await new Promise((r) => setTimeout(r, 50));
+      expect(manager.getLogs(info.id)).toContain("key=[] plain=[plain-value-52c1]");
+    } finally {
+      delete process.env.AGENCY_ENVTEST_API_KEY;
+      delete process.env.ENVTEST_PLAIN;
+    }
   });
 
   test("kill stops a tracked process", async () => {

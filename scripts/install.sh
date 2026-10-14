@@ -2,12 +2,12 @@
 # Installs the Agency binary from a GitHub release. Fails closed: a missing or
 # mismatched checksum aborts the install, nothing is written.
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/AgencyHarness/Agency/master/scripts/install.sh | bash
 # Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: ~/.local/bin),
 # AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
 set -euo pipefail
 
-REPO="AgencyAgents/Agency"
+REPO="AgencyHarness/Agency"
 INSTALL_DIR="${AGENCY_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"
@@ -44,7 +44,13 @@ if [ -z "$expected" ]; then
   echo "install: FAIL - no checksum for $asset in checksums.txt; refusing to install" >&2
   exit 1
 fi
-if ! echo "$expected  $tmp/$asset" | sha256sum -c --strict >/dev/null 2>&1; then
+# macOS has no sha256sum; it has shasum.
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+else
+  actual="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+fi
+if [ "$actual" != "$expected" ]; then
   echo "install: FAIL - checksum mismatch for $asset; refusing to install" >&2
   exit 1
 fi

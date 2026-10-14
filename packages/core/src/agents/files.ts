@@ -13,6 +13,10 @@ export const AGENT_FILE_FIELDS = [
   "permissions",
   "pathScope",
   "replace",
+  "description",
+  // A Claude Code agent file carries these two. The handle is the file name, and there is no color here.
+  "name",
+  "color",
 ] as const;
 
 export type AgentFileField = (typeof AGENT_FILE_FIELDS)[number];
@@ -20,11 +24,28 @@ export type AgentFileField = (typeof AGENT_FILE_FIELDS)[number];
 const EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
 const HANDLE_RE = /^[a-z][a-z0-9-]*$/;
 
+/** The tool names of a Claude Code agent file, as the names of the same tools here. */
+const CLAUDE_TOOL_NAMES: Record<string, string> = {
+  Read: "read",
+  Write: "write",
+  Edit: "edit",
+  Glob: "glob",
+  Grep: "grep",
+  Bash: "bash",
+  WebFetch: "fetch",
+  WebSearch: "websearch",
+  TodoWrite: "todo_write",
+};
+/** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
+const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);
+
 export type AgentSource = "project" | "user" | "config" | "seed" | "plugin";
 
 export interface FileAgentDef {
   handle: string;
   role: string;
+  /** When to use the agent. With one, the agent is a type of the spawn tool. */
+  description?: string;
   provider?: string;
   model?: string;
   effort?: AgentConfig["effort"];
@@ -96,10 +117,11 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     def.provider = provider;
   }
   const model = split.fields.model;
-  if (model !== undefined) {
+  if (model !== undefined && !CLAUDE_MODEL_ALIASES.has(model)) {
     if (model.length === 0) fail(file, "model", "must be non-empty");
     def.model = model;
   }
+  if (split.fields.description !== undefined) def.description = split.fields.description;
   const effort = split.fields.effort;
   if (effort !== undefined) {
     if (!EFFORTS.has(effort)) {
@@ -107,7 +129,11 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     }
     def.effort = effort as AgentConfig["effort"];
   }
-  if (split.fields.tools !== undefined) def.tools = parseStringList(split.fields.tools, file, "tools");
+  if (split.fields.tools !== undefined) {
+    def.tools = parseStringList(split.fields.tools, file, "tools").map(
+      (name) => CLAUDE_TOOL_NAMES[name] ?? name,
+    );
+  }
   if (split.fields.permissions !== undefined) {
     let parsed: unknown;
     try {
@@ -162,11 +188,20 @@ function discoverAgentFiles(dir: string): string[] {
   return out;
 }
 
-function loadAgentDir(dir: string, source: AgentSource): Map<string, FileAgentDef> {
+/** A file that is not valid is skipped: one bad file must not take every other agent away. */
+function loadAgentDir(
+  dir: string,
+  source: AgentSource,
+  warn: (message: string) => void,
+): Map<string, FileAgentDef> {
   const out = new Map<string, FileAgentDef>();
   for (const file of discoverAgentFiles(dir)) {
-    const def = parseAgentFile(readFileSync(file, "utf8"), file);
-    out.set(def.handle, { ...def, source, file });
+    try {
+      const def = parseAgentFile(readFileSync(file, "utf8"), file);
+      out.set(def.handle, { ...def, source, file });
+    } catch (error) {
+      warn(`skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   return out;
 }
@@ -217,6 +252,10 @@ export interface ResolveFileRosterOptions {
   configDirOverride?: string;
   configAgents?: Record<string, AgentConfig>;
   seed?: boolean;
+  /** False for a workspace that the user did not trust: an agent file can grant itself tools, so none loads. */
+  projectTrusted?: boolean;
+  /** Gets a line for each agent file that is skipped. */
+  warn?: (message: string) => void;
 }
 
 export interface FileRoster {
@@ -230,13 +269,16 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const merged = new Map<string, FileAgentDef>();
   for (const [handle, agent] of Object.entries(base)) merged.set(handle, toFileDef(handle, agent, "config"));
   let seeded = false;
-  if (opts.seed !== false) {
+  // No seed in an untrusted workspace: the files would not load, and their folder would look like project content.
+  if (opts.seed !== false && opts.projectTrusted !== false) {
     const written = ensureSeedAgents(opts.workspaceRoot, base);
     seeded = written.length > 0;
   }
   const userDir = join(opts.configDirOverride ?? configDir(), "agents");
-  for (const [handle, def] of loadAgentDir(userDir, "user")) merged.set(handle, def);
+  const warn = opts.warn ?? (() => {});
+  for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
+  if (opts.projectTrusted === false) return { agents: merged, seeded };
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
-  for (const [handle, def] of loadAgentDir(projectDir, "project")) merged.set(handle, def);
+  for (const [handle, def] of loadAgentDir(projectDir, "project", warn)) merged.set(handle, def);
   return { agents: merged, seeded };
 }

@@ -1,6 +1,7 @@
 export {
   CATALOG_FRESH_TTL_MS,
   convertModelsDevCatalog,
+  convertModelsDevCatalogLenient,
   fetchModelsDevCatalog,
   loadCachedModelsDevCatalog,
   loadModelsDevCatalog,

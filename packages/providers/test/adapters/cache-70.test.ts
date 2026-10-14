@@ -61,7 +61,8 @@ describe("prompt cache policy (7.0.7)", () => {
   test("the second turn reports a cache read instead of a full write", async () => {
     const sse = sseResponse(
       [
-        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":1100}}}\n\n',
+        // The wire counts are additive: input_tokens holds only the tokens that are not cached.
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":1100}}}\n\n',
         'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n',
         'event: message_stop\ndata: {"type":"message_stop"}\n\n',
       ].join(""),
@@ -80,6 +81,31 @@ describe("prompt cache policy (7.0.7)", () => {
     expect(events.at(-1)).toMatchObject({
       type: "message_stop",
       usage: { inputTokens: 1200, outputTokens: 7, cachedInputTokens: 1100 },
+    });
+  });
+
+  test("a cache write counts in the input total too", async () => {
+    const sse = sseResponse(
+      [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":50,"cache_creation_input_tokens":900}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join(""),
+    );
+    const events = await collect(
+      anthropicAdapter.stream(
+        {
+          model: "m",
+          apiKey: "k",
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          maxTokens: 64,
+        },
+        { fetch: async () => sse },
+      ),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "message_stop",
+      usage: { inputTokens: 950, outputTokens: 7, cacheWriteInputTokens: 900 },
     });
   });
 
@@ -133,6 +159,43 @@ describe("prompt cache policy (7.0.7)", () => {
     expect(turn3.messages[0]?.content.at(-1)).not.toMatchObject({ cache_control: { type: "ephemeral" } });
     expect(turn3.messages[2]?.content.at(-1)).toMatchObject({ cache_control: { type: "ephemeral" } });
     expect(turn3.messages[4]?.content.at(-1)).toMatchObject({ cache_control: { type: "ephemeral" } });
+  });
+
+  test("no one-hour cache mark comes after a five-minute mark", async () => {
+    // The API rule: a 1-hour entry must appear before any 5-minute entry, in the order tools, system, messages.
+    let body: {
+      tools: { cache_control?: { ttl?: string } }[];
+      system: { cache_control?: { ttl?: string } }[];
+      messages: { content: { cache_control?: { ttl?: string } }[] }[];
+    } = { tools: [], system: [], messages: [] };
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        body = JSON.parse(init?.body as string);
+        return sseResponse("");
+      },
+    };
+    await collect(
+      anthropicAdapter.stream(
+        {
+          model: "m",
+          apiKey: "k",
+          systemSegments: [
+            { stability: "shared", text: pad("shared prefix") },
+            { stability: "dynamic", text: "env" },
+          ],
+          tools: [{ name: "read", description: pad("reads"), inputSchema: {} }],
+          messages: [{ role: "user", content: [{ type: "text", text: pad("one") }] }],
+          maxTokens: 64,
+        },
+        http,
+      ),
+    );
+
+    const ttls = [...body.tools, ...body.system, ...body.messages.flatMap((m) => m.content)]
+      .filter((block) => block.cache_control)
+      .map((block) => block.cache_control?.ttl ?? "5m");
+    expect(ttls).toContain("1h");
+    expect(ttls.slice(ttls.indexOf("5m") === -1 ? ttls.length : ttls.indexOf("5m"))).not.toContain("1h");
   });
 
   test("two agents share the cached prefix and diverge only in role and tools", async () => {
@@ -248,5 +311,40 @@ describe("prompt cache policy (7.0.7)", () => {
     expect((create.body as { ttl: string }).ttl).toBe("3600s");
     expect((generate.body as { cachedContent: string }).cachedContent).toBe("cachedContents/abc");
     expect((generate.body as { tools: unknown }).tools).toBeUndefined();
+    // The API rejects a cached request that also sets a system instruction, so the dynamic part leads the contents.
+    const sent = generate.body as {
+      systemInstruction?: unknown;
+      contents: { role: string; parts: unknown[] }[];
+    };
+    expect(sent.systemInstruction).toBeUndefined();
+    expect(sent.contents).toEqual([{ role: "user", parts: [{ text: "env" }, { text: "hi" }] }]);
+  });
+
+  test("google sends no system instruction with a cache when the prompt has no dynamic part", async () => {
+    let generate: { systemInstruction?: unknown; contents: unknown } | undefined;
+    const http: HttpClient = {
+      fetch: async (url, init) => {
+        if (url.includes("/cachedContents")) return Response.json({ name: "cachedContents/abc" });
+        generate = JSON.parse(init?.body as string);
+        return new Response(
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })}\n\n`,
+        );
+      },
+    };
+    await collect(
+      googleAdapter.stream(
+        {
+          model: "gemini-3-flash",
+          apiKey: "k",
+          system: pad("team identity plus playbook"),
+          systemSegments: [{ stability: "shared", text: pad("team identity plus playbook") }],
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          maxTokens: 64,
+        },
+        http,
+      ),
+    );
+    expect(generate?.systemInstruction).toBeUndefined();
+    expect(generate?.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
   });
 });

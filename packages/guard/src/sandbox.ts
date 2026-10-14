@@ -12,6 +12,16 @@ export interface CommandPolicy {
 }
 
 /**
+ * Workspace paths that a sandboxed command must not change: git, and the hooks, MCP servers and plugins of `.agency`,
+ * run later outside the sandbox. `.git` is pinned against a swap; the worktrees of a team stay writable.
+ */
+export const PROTECTED_PATHS = {
+  pinned: [".git"],
+  readOnly: [".git/hooks", ".git/config", ".agency"],
+  writable: [".agency/worktrees"],
+} as const;
+
+/**
  * Decides the verdict for a path that resolves OUTSIDE the sandbox root:
  * "deny" refuses (the historical default), "allow" admits it, "ask" routes
  * through the approval callback. Wired from the `external_directory`
@@ -20,12 +30,26 @@ export interface CommandPolicy {
 export type ExternalDirectoryDecision = (resolvedPath: string) => Decision;
 
 /**
+ * Pluggable container seam (R2): the exact surface callers use.
+ * SandboxBoundary is the local software backend; future backends
+ * (containers, namespaces) implement this without any caller changing.
+ */
+export interface SandboxBackend {
+  /** Resolves `candidate` inside the root; throws when it escapes. */
+  resolvePath(candidate: string): string;
+  /** Resolve with the external_directory gate applied (see impl). */
+  resolvePathGated(candidate: string, opts: { tool: string; ask?: RequestApproval }): Promise<string>;
+  /** Throws PERMISSION_DENIED when `command` is denied or unallowlisted. */
+  checkCommand(command: string): void;
+}
+
+/**
  * Bounds where tool execution is allowed to touch: a resolved-path scope and
  * a command allow/deny policy. This is a software boundary, not OS isolation.
  * It's the seam future work (containers, namespaces) plugs into without any
  * caller changing (R2).
  */
-export class SandboxBoundary {
+export class SandboxBoundary implements SandboxBackend {
   constructor(
     private readonly root: string,
     private readonly commandPolicy: CommandPolicy = {},
@@ -112,7 +136,7 @@ export class SandboxBoundary {
   }
 
   private resolveUncontained(candidate: string): string {
-    return canonicalPath(resolve(this.root, candidate));
+    return canonicalPath(resolve(this.root, fromMsysPath(candidate)));
   }
 
   private contains(resolved: string): boolean {
@@ -143,6 +167,25 @@ export class SandboxBoundary {
 
 function sep(): string {
   return process.platform === "win32" ? "\\" : "/";
+}
+
+/**
+ * A view of a sandbox for an agent that works in a subfolder: a relative path starts at `base()`.
+ * The view inherits from `inner`, so its boundary and every other member stay (a container backend keeps `exec`).
+ */
+export function rebaseSandbox<T extends SandboxBackend>(inner: T, base: () => string): T {
+  const at = (candidate: string) => resolve(base(), fromMsysPath(candidate));
+  return Object.assign(Object.create(inner) as T, {
+    resolvePath: (candidate: string) => inner.resolvePath(at(candidate)),
+    resolvePathGated: (candidate: string, opts: { tool: string; ask?: RequestApproval }) =>
+      inner.resolvePathGated(at(candidate), opts),
+  });
+}
+
+/** Git Bash prints a drive as `/c/...`, and a model copies that form into the file tools. Windows reads it as `C:\c\...`. */
+export function fromMsysPath(candidate: string): string {
+  if (process.platform !== "win32") return candidate;
+  return candidate.replace(/^\/([a-zA-Z])(\/|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`);
 }
 
 function windowsCompareKey(p: string): string {

@@ -14,12 +14,13 @@ import {
   resolveDispatchTarget,
   runChildTurn,
   type ToolSpec,
+  worktreeBranch,
 } from "@agency/core";
-import { checkCostForecast } from "@agency/guard";
-import { classifyEffortFromText, resolveApiKey } from "@agency/providers";
+import { checkCostForecast, relativeWorkspacePath } from "@agency/guard";
+import { classifyEffortFromText } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { extractFinalText } from "@agency/tools";
-import { preflightDispatchEstimate, priceForModel, recordTurnCompletion } from "../costing.ts";
+import { modelRunOptions, preflightDispatchEstimate, recordTurnCompletion } from "../costing.ts";
 import {
   childKey,
   childSessionIdFor,
@@ -29,12 +30,14 @@ import {
   worktreeBranchFor,
   worktreePathFor,
 } from "../team-context.ts";
-import { checkTeamBudgets, type DaemonContext, oauthOverridesFor, type TeamBudgets } from "../types.ts";
+import { checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { abortWorktreePeer, isOwnWorktree } from "./dispatch-worktrees.ts";
+import { routeAgent } from "./team-run.ts";
 
 export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string): ToolSpec {
   const {
+    activeTurnMeta,
     adapterFor,
     boardStore,
     broadcast,
@@ -47,12 +50,10 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
     dispatchLog,
     eventBus,
     gateForAgent,
-    getKeychain,
     getOrCreateScope,
     http,
     isReadOnlyAgent,
     options,
-    providers,
     redactor,
     resolveAgentModel,
     sessionScopes,
@@ -266,6 +267,8 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           } catch {}
           const scope = await getOrCreateScope(childSessionId, a.handle);
           scope.teamId = parentSessionId;
+          // The folder where this agent's shell and file tools work. A writable worktree replaces the workspace.
+          let agentRoot = options.workspaceRoot;
           const caps = agent.capabilities;
           const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
           if (writeCapable) {
@@ -299,7 +302,12 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               const scratchAbs = makeWorktreeReadOnly(wtPath, `scratch-${batchId}`);
               if (sc) sc.bashState.cwd = scratchAbs;
             } else {
-              if (sc) sc.bashState.cwd = wtPath;
+              agentRoot = wtPath;
+              if (sc) {
+                sc.bashState.cwd = wtPath;
+                // Without this the file tools write to the workspace while the shell runs in the worktree.
+                sc.fileBase.root = wtPath;
+              }
             }
           }
           const tip = todoStore.latestTip(todoStore.load(childSessionId)) ?? null;
@@ -340,24 +348,11 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           }
 
           // --- Real turn execution (following task tool pattern at line 628) ---
-          const childProvider = agent.provider;
-          const childModel = agent.model ?? "";
-
-          let childApiKey = "";
-          try {
-            const kc = await getKeychain();
-            const k = await resolveApiKey({
-              provider: childProvider,
-              env: process.env,
-              keychain: kc,
-              config: providers[childProvider]?.apiKey,
-              ...oauthOverridesFor(childProvider, providers),
-            });
-            if (k) {
-              childApiKey = k;
-              redactor.registerSecret(k);
-            }
-          } catch {}
+          const {
+            provider: childProvider,
+            model: childModel,
+            apiKey: childApiKey,
+          } = await routeAgent(daemon, a.handle, agent, ctx.turnId);
 
           const childModelInfo = catalogModel(childProvider, childModel);
           const childTurnId = newEntryId();
@@ -371,10 +366,11 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           const childTools = childScope?.tools ?? [];
           const claimedItem = boardStore.list().find((item) => item.claimedBy === a.handle);
           const claimedScope = claimedItem?.pathScope;
+          const runMode =
+            ctx.turnId === undefined ? undefined : activeTurnMeta.get(ctx.turnId)?.permissionMode;
+          const runGate = gateForAgent(a.handle).withMode(runMode ?? "ask");
           const agentGate =
-            claimedScope && claimedScope.length > 0
-              ? gateForAgent(a.handle).withItemScope(claimedScope)
-              : gateForAgent(a.handle);
+            claimedScope && claimedScope.length > 0 ? runGate.withItemScope(claimedScope) : runGate;
           const offeredTools = childTools
             .filter((t) => agentGate.toolOffered(t.name, t.riskTier))
             // Depth-0 child isolation: subagents cannot dispatch or spawn.
@@ -388,7 +384,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               .list()
               .map((m) => m.handle)
               .join(" "),
-            family: agent.provider,
+            family: childProvider,
             role: agent.role,
             handle: a.handle,
             briefLine: "Complete the given brief concisely.",
@@ -401,12 +397,12 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
               .list()
               .filter((i) => i.claimedBy === a.handle)
               .map((i) => `${i.id} ${i.content}`),
-            workspaceRoot: options.workspaceRoot,
+            workspaceRoot: agentRoot,
           });
 
           const childTurn = await team.limiter.run(() =>
             runChildTurn(
-              { http, eventBus, createTraceRecorder },
+              { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactToolResult },
               {
                 adapter: adapterFor(childProvider),
                 scheduler: daemon.schedulerFor(childProvider),
@@ -420,8 +416,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 identity: { type: "agent", name: a.handle },
                 capabilities: agentCaps,
                 toolPolicy: agentGate,
-                pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-                maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+                ...modelRunOptions(childModelInfo),
                 turnId: childTurnId,
                 sessionId: childSessionId,
                 cwd: options.workspaceRoot,
@@ -566,9 +561,19 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 });
               } catch {}
             }
+            // A peer that stopped early says so: the lead must not read partial work as a finished task.
+            const unfinished = childResult?.error
+              ? ` did not finish (${childResult.error.code}: ${childResult.error.message})`
+              : "";
+            // The lead must know that the files are not in the workspace yet: merge-back is its step.
+            const branch = agentRoot === options.workspaceRoot ? "" : await worktreeBranch(agentRoot);
+            const workNote =
+              agentRoot === options.workspaceRoot
+                ? ""
+                : ` Its file changes are in ${relativeWorkspacePath(options.workspaceRoot, agentRoot)}${branch ? ` on branch ${branch}` : ""}, not in the workspace.`;
             dispatchBarrier.complete(
               slot,
-              `${a.handle} dispatched at ${effort}: ${leanSummary(finalText, 80) || "(no output)"}`,
+              `${a.handle} dispatched at ${effort}:${unfinished} ${leanSummary(finalText, 80) || "(no output)"}${workNote}`,
             );
             dispatchLog.append({
               index: slot,

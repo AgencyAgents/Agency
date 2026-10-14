@@ -35,7 +35,8 @@ function spawnDaemonEntry(workspaceRoot: string, instanceFile: string) {
       "--idle-linger-ms",
       "60000",
     ],
-    { stdio: ["ignore", "ignore", "ignore"] },
+    // Bun.spawn's default env misses variables set after startup, such as the preload's AGENCY_HOME.
+    { stdio: ["ignore", "ignore", "ignore"], env: process.env },
   );
   spawned.push(proc);
 }

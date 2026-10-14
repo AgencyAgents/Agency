@@ -2,10 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
-import type { RunTurnRpcResult } from "../src/daemon.ts";
+import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "../src/daemon.ts";
 import type { EntrypointDeps } from "../src/entrypoint.ts";
 import { parseArgv, runEntrypoint } from "../src/entrypoint.ts";
 import type { RunHeadlessOptions } from "../src/headless.ts";
@@ -120,6 +121,11 @@ describe("parseArgv", () => {
   test("parses retention flags into a policy", () => {
     const parsed = parseArgv(["storage", "prune", "--max-age-days", "30", "--max-total-mb", "500"]);
     expect(parsed.retention).toEqual({ maxAgeDays: 30, maxTotalBytes: 500 * 1024 * 1024 });
+  });
+
+  test("update takes --rollback, as the help text and the docs say", () => {
+    expect(parseArgv(["update", "--rollback"])).toMatchObject({ command: "update", rollback: true });
+    expect(parseArgv(["update"]).rollback).toBe(false);
   });
 
   test("-- terminates flag parsing", () => {
@@ -385,14 +391,22 @@ describe("auth commands", () => {
 
     const deps: EntrypointDeps = {
       keychain: backend,
-      env: { AGENCY_OPENAI_API_KEY: "sk-openai" },
+      env: { AGENCY_OPENAI_API_KEY: "sk-openai", OPENROUTER_API_KEY: "sk-openrouter" },
       configDir: tempDir("agency-ep-config-"),
     };
 
     const json = capture();
     await runEntrypoint(["auth", "list", "--format", "json"], { ...deps, ...json.deps });
     const states = JSON.parse(json.out.join(""));
-    expect(states).toEqual({ anthropic: true, google: false, openai: true });
+    expect(states).toEqual({
+      anthropic: true,
+      deepseek: false,
+      google: false,
+      groq: false,
+      openai: true,
+      openrouter: true,
+      xai: false,
+    });
 
     const text = capture();
     await runEntrypoint(["auth", "list"], { ...deps, ...text.deps });
@@ -450,6 +464,127 @@ function baseDeps(overrides: Partial<EntrypointDeps> = {}): Partial<EntrypointDe
 }
 
 describe("-p headless mode", () => {
+  test("a reply that continued after the output limit prints all its parts, not only the last one", async () => {
+    const text = (value: string) => [{ type: "text" as const, text: value }];
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      messages: [
+        { role: "user", content: text("count") },
+        { role: "assistant", content: text("1 2 3 ") },
+        { role: "user", content: text(OUTPUT_CUT_NOTE) },
+        { role: "assistant", content: text("4 5 6") },
+      ],
+    });
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["-p", "count", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+
+    expect(code).toBe(0);
+    expect(out.join("").split(/\s+/)).toEqual(["1", "2", "3", "4", "5", "6"]);
+  });
+
+  test("text mode prints the answer, not the sentence that the model wrote before a tool call", async () => {
+    const text = (value: string) => [{ type: "text" as const, text: value }];
+    const toolRound = [
+      { role: "user" as const, content: text("list") },
+      {
+        role: "assistant" as const,
+        content: [
+          ...text("Let me generate this with a script"),
+          { type: "tool_use" as const, id: "c1", name: "bash", input: { command: "seq 3" } },
+        ],
+      },
+      {
+        role: "user" as const,
+        content: [
+          { type: "tool_result" as const, toolUseId: "c1", content: "permission denied", isError: true },
+        ],
+      },
+    ];
+    const printed = async (result: Record<string, unknown>) => {
+      const fake = fakeRunHeadless({ ...TURN_RESULT, ...result } as typeof TURN_RESULT);
+      const { out, deps } = capture();
+      await runEntrypoint(["-p", "list", "--model", "openai/fake-1"], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+      return out.join("\n");
+    };
+
+    expect({
+      finished: await printed({
+        messages: [
+          ...toolRound,
+          { role: "assistant", content: text("one\ntwo ") },
+          { role: "user", content: text(OUTPUT_CUT_NOTE) },
+          { role: "assistant", content: text("three") },
+        ],
+      }),
+      // A turn that stopped before an answer still shows the text that it has.
+      stoppedEarly: await printed({
+        messages: toolRound,
+        stopReason: "tool_use",
+        error: { code: "iteration_limit", message: "stopped after 25 tool steps" },
+      }),
+    }).toEqual({ finished: "one\ntwo \nthree", stoppedEarly: "Let me generate this with a script" });
+  });
+
+  test("a reply that streams in small parts shows as whole lines of progress, not one part per line", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        for (const text of ["The", " note", " says", " hello", ".", "\n", "Second", " line"]) {
+          options.onEvent?.({ type: "text_delta", text });
+        }
+        options.onEvent?.({ type: "tool_start", name: "read" });
+        options.onEvent?.({ type: "text_delta", text: "Done" });
+        options.onEvent?.({ type: "turn_complete", stopReason: "end_turn" });
+        return TURN_RESULT;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(err).toEqual([
+      "The note says hello.",
+      "Second line",
+      "Tool: read",
+      "Done",
+      "Turn complete (end_turn).",
+    ]);
+  });
+
+  test("an image file that cannot be read stops the run: the prompt does not go out with no image", async () => {
+    const fake = fakeRunHeadless();
+    const { err, deps } = capture();
+    const argv = ["-p", "what colour is this?", "--image", "no-such-file.png", "--model", "openai/fake-1"];
+    const code = await runEntrypoint(argv, { ...baseDeps(), ...deps, runHeadless: fake.runHeadless });
+
+    expect(code).toBe(1);
+    expect(err.join(" ")).toContain("Cannot read the image file no-such-file.png");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  test("a retry shows as a line of progress, so a wait for a rate limit is not silent", async () => {
+    const { err, deps } = capture();
+    await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        options.onEvent?.({ type: "retry", attempt: 2, message: "Rate limit exceeded" });
+        options.onEvent?.({ type: "turn_complete", stopReason: "end_turn" });
+        return TURN_RESULT;
+      },
+    });
+
+    expect(err).toEqual(["Retry 2: Rate limit exceeded", "Turn complete (end_turn)."]);
+  });
+
   test("runs one turn through runHeadless and prints the assistant text", async () => {
     const fake = fakeRunHeadless();
     const { out, deps } = capture();
@@ -487,15 +622,219 @@ describe("-p headless mode", () => {
     expect(payload.messages).toHaveLength(2);
   });
 
-  test("a failed turn exits non-zero", async () => {
-    const fake = fakeRunHeadless({ ...TURN_RESULT, stopReason: "error" });
-    const { deps } = capture();
+  test("a failed turn exits non-zero and names its cause on stderr", async () => {
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      stopReason: "error",
+      error: { code: "network", message: "connection reset" },
+    });
+    const { err, deps } = capture();
     const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
       ...baseDeps(),
       ...deps,
       runHeadless: fake.runHeadless,
     });
     expect(code).toBe(1);
+    expect(err).toContain("network: connection reset");
+  });
+
+  test("a run that stops at the step limit exits non-zero and says so", async () => {
+    const fake = fakeRunHeadless({
+      ...TURN_RESULT,
+      stopReason: "tool_use",
+      error: { code: "iteration_limit", message: "stopped after 25 tool steps: the task is not finished" },
+    });
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(1);
+    expect(err).toContain("iteration_limit: stopped after 25 tool steps: the task is not finished");
+  });
+
+  test("--format stream-json prints each event as one JSON line, and the result as the last line", async () => {
+    const { out, err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "stream-json"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async (options: RunHeadlessOptions) => {
+        options.onEvent?.({ type: "tool_start", id: "c1", name: "read" });
+        options.onEvent?.({ type: "text_delta", text: "Done" });
+        return TURN_RESULT;
+      },
+    });
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    const lines = out.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.map((line) => line.type)).toEqual(["tool_start", "text_delta", "result"]);
+    expect(lines[2]?.stopReason).toBe("end_turn");
+    expect(lines[2]?.messages).toEqual(TURN_RESULT.messages);
+  });
+
+  test("--max-cost sends the cost limit with the turn", async () => {
+    const fake = fakeRunHeadless();
+    const { deps } = capture();
+    await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "0.5"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(fake.calls[0]?.budget).toEqual({ maxCostUsd: 0.5 });
+  });
+
+  test("--system-prompt replaces the base prompt and --append-system-prompt adds to it", async () => {
+    const prompts = async (...flags: string[]): Promise<string | undefined> => {
+      const fake = fakeRunHeadless();
+      await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", ...flags], {
+        ...baseDeps(),
+        ...capture().deps,
+        runHeadless: fake.runHeadless,
+      });
+      return fake.calls[0]?.systemPrompt;
+    };
+    expect(await prompts()).toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(await prompts("--system-prompt", "You are a reviewer.")).toBe("You are a reviewer.");
+    expect(await prompts("--append-system-prompt", "Answer in French.")).toBe(
+      `${DEFAULT_SYSTEM_PROMPT}\n\nAnswer in French.`,
+    );
+    expect(
+      await prompts("--system-prompt", "You are a reviewer.", "--append-system-prompt", "Answer in French."),
+    ).toBe("You are a reviewer.\n\nAnswer in French.");
+  });
+
+  test("--json-schema sends the schema and prints the structured answer, or fails with no answer", async () => {
+    const schema = { type: "object", properties: { count: { type: "number" } }, required: ["count"] };
+    const run = async (result: RunTurnRpcResult, ...flags: string[]) => {
+      const fake = fakeRunHeadless(result);
+      const { out, err, deps } = capture();
+      const code = await runEntrypoint(
+        ["-p", "count", "--model", "openai/fake-1", "--json-schema", JSON.stringify(schema), ...flags],
+        { ...baseDeps(), ...deps, runHeadless: fake.runHeadless },
+      );
+      return { code, call: fake.calls[0], out, err: err.join("\n") };
+    };
+    const answered: RunTurnRpcResult = {
+      ...TURN_RESULT,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_call", id: "c1", name: "structured_output", input: { count: 7 } }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "Done." }] },
+      ],
+    };
+    const text = await run(answered);
+    expect(text.call?.outputSchema).toEqual(schema);
+    expect(text.call?.prompt).toContain("structured_output");
+    expect(text.out).toEqual(['{"count":7}']);
+    expect(text.code).toBe(0);
+    const json = await run(answered, "--format", "json");
+    expect(JSON.parse(json.out.join("\n")).structuredOutput).toEqual({ count: 7 });
+    const none = await run(TURN_RESULT);
+    expect(none.code).toBe(1);
+    expect(none.err).toContain("no structured answer");
+    expect((await run(answered, "--session", "s1")).code).not.toBe(0);
+  });
+
+  test("review sends the diff of the workspace in a turn that cannot change files", async () => {
+    const cwd = tempDir("agency-ep-review-");
+    const git = (...args: string[]) => {
+      const done = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", ...args], {
+        cwd,
+      });
+      if (done.exitCode !== 0) throw new Error(done.stderr.toString());
+    };
+    git("init", "-q", ".");
+    writeFileSync(join(cwd, "calc.js"), "export const add = (a, b) => a + b;\n");
+    git("add", "calc.js");
+    git("commit", "-q", "-m", "start");
+    const run = async (...args: string[]) => {
+      const fake = fakeRunHeadless();
+      const { out, deps } = capture();
+      const code = await runEntrypoint(["review", ...args, "--model", "openai/fake-1"], {
+        ...baseDeps({ cwd }),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+      return { code, call: fake.calls[0], out: out.join("\n") };
+    };
+    const clean = await run();
+    expect(clean.call).toBeUndefined();
+    expect(clean.out).toContain("no changes");
+
+    writeFileSync(join(cwd, "calc.js"), "export const add = (a, b) => a - b;\n");
+    writeFileSync(join(cwd, "new.js"), "export const x = 1;\n");
+    const dirty = await run();
+    expect(dirty.code).toBe(0);
+    expect(dirty.call?.prompt).toContain("+export const add = (a, b) => a - b;");
+    expect(dirty.call?.prompt).toContain("new.js");
+    expect(dirty.call?.permissionMode).toBe("ask");
+
+    git("add", "calc.js", "new.js");
+    git("commit", "-q", "-m", "change");
+    const against = await run("HEAD~1");
+    expect(against.call?.prompt).toContain("+export const add = (a, b) => a - b;");
+    expect((await run("no-such-ref")).code).not.toBe(0);
+  });
+
+  test("--max-cost refuses a value that is not a positive number", async () => {
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "free"], {
+      ...baseDeps(),
+      ...deps,
+    });
+    expect(code).not.toBe(0);
+    expect(err.join("\n")).toContain("--max-cost");
+  });
+
+  test("a run that the cost limit stopped exits non-zero and says so", async () => {
+    const fake = fakeRunHeadless({ ...TURN_RESULT, budgetExceeded: true });
+    const { err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--max-cost", "0.01"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: fake.runHeadless,
+    });
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("budget_exceeded");
+  });
+
+  test("--format json prints a failed run as JSON on stdout: a script must not get empty output", async () => {
+    const { out, err, deps } = capture();
+    const code = await runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--format", "json"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: async () => {
+        throw Object.assign(new Error("Internal Server Error"), { code: "transient" });
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(out.join(""))).toEqual({
+      error: { code: "transient", message: "Internal Server Error" },
+    });
+    expect(err).toEqual(["Internal Server Error"]);
+  });
+
+  test("-p - takes the prompt from stdin, and an empty stdin is an error", async () => {
+    const fake = fakeRunHeadless();
+    const { err, deps } = capture();
+    const run = (stdin: string) =>
+      runEntrypoint(["-p", "-", "--model", "openai/fake-1"], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+        stdin: async () => stdin,
+      });
+
+    expect(await run("a long prompt\nfrom a pipe\n")).toBe(0);
+    expect(fake.calls.map((call) => call.prompt)).toEqual(["a long prompt\nfrom a pipe"]);
+
+    expect(await run("  \n")).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+    expect(err.join(" ")).toContain("stdin");
   });
 
   test("--model overrides config.model through the flags layer", async () => {
@@ -625,6 +964,7 @@ describe("-p headless mode", () => {
   test("--permission-mode parses, defaults to ask, and reaches the headless call", async () => {
     expect(parseArgv(["-p", "hi"]).permissionMode).toBe("ask");
     expect(parseArgv(["-p", "hi", "--permission-mode", "allow-edits"]).permissionMode).toBe("allow-edits");
+    expect(parseArgv(["-p", "hi", "--permission-mode", "allow-all"]).permissionMode).toBe("allow-all");
     expect(() => parseArgv(["-p", "hi", "--permission-mode", "yes"])).toThrow("permission-mode");
     const fake = fakeRunHeadless();
     const { deps } = capture();
@@ -635,6 +975,33 @@ describe("-p headless mode", () => {
     });
     expect(code).toBe(0);
     expect(fake.calls[0]?.permissionMode).toBe("deny");
+  });
+
+  test("--max-steps parses, rejects a bad value, and reaches both kinds of turn", async () => {
+    expect(parseArgv(["-p", "hi"]).maxSteps).toBeUndefined();
+    expect(parseArgv(["-p", "hi", "--max-steps", "80"]).maxSteps).toBe(80);
+    for (const bad of ["0", "-3", "2.5", "many"]) {
+      expect(() => parseArgv(["-p", "hi", "--max-steps", bad])).toThrow("--max-steps");
+    }
+
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--max-steps", "80"], {
+      ...baseDeps(),
+      ...deps,
+      runHeadless: headless.runHeadless,
+    });
+    expect(headless.calls[0]?.maxToolIterations).toBe(80);
+
+    const session = fakeClient();
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--session", "steps", "--max-steps", "80"], {
+      ...baseDeps(),
+      ...deps,
+      sessionsDir: tempDir("agency-ep-sessions-"),
+      ensureClient: async () => session.client,
+    });
+    const send = session.calls.find((call) => call.method === "session_send");
+    expect(send?.params).toMatchObject({ maxToolIterations: 80 });
   });
 
   test("a session-backed turn compacts daemon-side; the client sends text only", async () => {
@@ -690,6 +1057,51 @@ describe("-p headless mode", () => {
     expect((send!.params as { userText: string }).userText).toBe("follow-up");
   });
 
+  test("a resumed run prints this turn's reply only, not the earlier replies", async () => {
+    const text = (role: "user" | "assistant", value: string) => ({
+      role,
+      content: [{ type: "text" as const, text: value }],
+    });
+    const fake = fakeClient({
+      ...TURN_RESULT,
+      messages: [
+        text("user", "first question"),
+        text("assistant", "first reply"),
+        text("user", "follow-up"),
+        { role: "assistant", content: [{ type: "tool_call", id: "c1", name: "read", input: {} }] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolCallId: "c1", content: "data", isError: false }],
+        },
+        text("assistant", "second reply"),
+      ],
+    });
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    writeSessionFile(sessionsDir, "s", [entry("e1", null, "first question", "2026-01-01T00:00:00.000Z")]);
+
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["-p", "follow-up", "--model", "openai/fake-1", "--continue"], {
+      ...baseDeps(),
+      ...deps,
+      sessionsDir,
+      ensureClient: async () => fake.client,
+    });
+
+    expect(code).toBe(0);
+    expect(out).toEqual(["second reply"]);
+  });
+
+  test("a command group with no subcommand says that it needs one", async () => {
+    // `daemon` is not here: with no subcommand it shows the status.
+    for (const group of ["session", "auth", "plugin"]) {
+      const { err, deps } = capture();
+      const code = await runEntrypoint([group], { ...baseDeps(), ...deps });
+      expect(code).toBe(1);
+      expect(err.join("\n")).toContain(`"${group}" needs a subcommand`);
+      expect(err.join("\n")).not.toContain("(none)");
+    }
+  });
+
   test("--continue with no sessions, conflicting session flags, and missing -p all fail clearly", async () => {
     const emptyDir = tempDir("agency-ep-sessions-");
     const none = capture();
@@ -701,6 +1113,8 @@ describe("-p headless mode", () => {
     });
     expect(code).toBe(1);
     expect(none.err.join("\n")).toContain("No sessions to continue");
+    // A plain -p run keeps no session, so the message says how to get one.
+    expect(none.err.join("\n")).toContain("--session <name>");
 
     const both = capture();
     const code2 = await runEntrypoint(["-p", "hi", "--continue", "--session", "x"], {
@@ -725,6 +1139,18 @@ describe("-p headless mode", () => {
   });
 });
 
+describe("trust", () => {
+  test("`agency trust` records the workspace so its instructions load", async () => {
+    const home = tempDir("agency-ep-home-");
+    const cwd = tempDir("agency-ep-ws-");
+    const { out, deps } = capture();
+    const code = await runEntrypoint(["trust"], { env: { AGENCY_HOME: home }, cwd, ...deps });
+    expect(code).toBe(0);
+    expect(out.join(" ")).toContain(cwd);
+    expect(createFileTrustStore(join(home, "data", "trust.json")).isTrusted(cwd)).toBe(true);
+  });
+});
+
 describe("bare agency", () => {
   test("bare `agency` exits 0 with health summary", async () => {
     const { out, deps } = capture();
@@ -736,9 +1162,20 @@ describe("bare agency", () => {
     const text = out.join("\n");
     expect(text).toContain("Agency");
     expect(text).toContain("Model");
-    expect(text).toContain("Providers");
+    expect(text).toContain("Providers: 1 connected");
     expect(text).toContain("Sessions");
     expect(text).toContain("agency -p");
+  });
+
+  test("bare `agency` counts only providers with a resolvable key, as `auth list` does", async () => {
+    const shared = baseDeps({ env: {} });
+    const bare = capture();
+    await runEntrypoint([], { ...shared, ...bare.deps });
+    expect(bare.out.join("\n")).toContain("Providers: 0 connected");
+
+    const list = capture();
+    await runEntrypoint(["auth", "list", "--format", "json"], { ...shared, ...list.deps });
+    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(7).fill(false));
   });
 });
 

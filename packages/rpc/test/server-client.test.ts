@@ -48,6 +48,26 @@ describe("startDaemonServer + connectToDaemon", () => {
     await expect(client.call("boom", {})).rejects.toThrow("something broke");
   });
 
+  test("a rejected call keeps the error code the handler threw", async () => {
+    server = await startDaemonServer({
+      handlers: {
+        boom: async () => {
+          throw Object.assign(new Error("try again later"), { code: "overload" });
+        },
+      },
+    });
+    const client = await connectToDaemon(server.port);
+    clients.push(client);
+
+    let rejection: unknown;
+    try {
+      await client.call("boom", {});
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ message: "try again later", code: "overload" });
+  });
+
   test("calling an unregistered method rejects with a clear message", async () => {
     server = await startDaemonServer({ handlers: {} });
     const client = await connectToDaemon(server.port);
@@ -99,6 +119,27 @@ describe("startDaemonServer + connectToDaemon", () => {
     const ack = JSON.parse(await ackPromise);
     expect(ack).toMatchObject({ type: "hello_ack", compatible: false });
     socket.destroy();
+  });
+
+  test("a first client that the server refuses gets an error that names the cause", async () => {
+    server = await startDaemonServer({ handlers: {}, refuseFirstClient: () => true });
+    await expect(connectToDaemon(server.port)).rejects.toThrow("the daemon is leaving");
+  });
+
+  test("a server that has a client does not ask to refuse the next one", async () => {
+    let asked = 0;
+    let refuse = false;
+    server = await startDaemonServer({
+      handlers: {},
+      refuseFirstClient: () => {
+        asked += 1;
+        return refuse;
+      },
+    });
+    clients.push(await connectToDaemon(server.port));
+    refuse = true;
+    clients.push(await connectToDaemon(server.port));
+    expect(asked).toBe(1);
   });
 
   test("onClientCount reflects connects and disconnects", async () => {

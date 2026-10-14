@@ -30,6 +30,15 @@ export interface SessionMeta {
   createdAt: string;
 }
 
+/** Best-effort observer of successful appends (memory indexing lives here). */
+export type SessionAppendListener = (sessionId: string, entry: SessionEntry) => void;
+
+/** The part of the event bus that the store and the compaction use. emitCollect lets a hook refuse. */
+export interface SessionBus {
+  emit: (event: string, payload: unknown) => void;
+  emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
+}
+
 function sessionPath(sessionsDir: string, sessionId: string): string {
   return join(sessionsDir, `${sessionId}.jsonl`);
 }
@@ -73,24 +82,37 @@ interface LoadCache {
  */
 export class SessionStore {
   private readonly caches = new Map<string, LoadCache>();
-  private bus?: { emit: (event: string, payload: unknown) => void };
+  private readonly appendListeners = new Set<SessionAppendListener>();
+  private bus?: SessionBus;
   private logger?: Logger;
 
   constructor(
     private readonly sessionsDir: string,
-    opts?: { bus?: { emit: (event: string, payload: unknown) => void }; logger?: Logger },
+    opts?: { bus?: SessionBus; logger?: Logger },
   ) {
     this.bus = opts?.bus;
     this.logger = opts?.logger;
   }
 
-  setBus(bus: { emit: (event: string, payload: unknown) => void }): void {
+  setBus(bus: SessionBus): void {
     this.bus = bus;
   }
 
   /** Returns the event bus if one was set via constructor or setBus(). */
-  getBus(): { emit: (event: string, payload: unknown) => void } | undefined {
+  getBus(): SessionBus | undefined {
     return this.bus;
+  }
+
+  /** Registers a best-effort observer called after each successful append. */
+  addAppendListener(listener: SessionAppendListener): () => void {
+    this.appendListeners.add(listener);
+    return () => {
+      this.appendListeners.delete(listener);
+    };
+  }
+
+  removeAppendListener(listener: SessionAppendListener): void {
+    this.appendListeners.delete(listener);
   }
 
   create(sessionId: string = newEntryId()): SessionMeta {
@@ -144,6 +166,7 @@ export class SessionStore {
       } else {
         this.caches.delete(sessionId);
       }
+      this.notifyAppended(sessionId, full);
       return full;
     } finally {
       this.releaseLock(lockPath);
@@ -195,13 +218,15 @@ export class SessionStore {
   list(): string[] {
     if (!existsSync(this.sessionsDir)) return [];
     return readdirSync(this.sessionsDir)
-      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl"))
+      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trace.jsonl") && !f.endsWith(".memory.jsonl"))
       .map((f) => f.slice(0, -".jsonl".length));
   }
 
   delete(sessionId: string): void {
     rmSync(sessionPath(this.sessionsDir, sessionId), { force: true });
+    rmSync(join(this.sessionsDir, `${sessionId}.memory.jsonl`), { force: true });
     rmSync(join(this.sessionsDir, `${sessionId}.trace.jsonl`), { force: true });
+    rmSync(join(this.sessionsDir, `${sessionId}.environment.txt`), { force: true });
     if (existsSync(this.sessionsDir)) {
       for (const f of readdirSync(this.sessionsDir)) {
         if (f.startsWith(`${sessionId}.`) && f.endsWith(".cassette.json")) {
@@ -406,7 +431,9 @@ export class SessionStore {
         closeSync(fd);
         return;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        // Windows gives EPERM for a lock that another process removes at this moment: it is free on the next try.
+        if (code !== "EEXIST" && !(process.platform === "win32" && code === "EPERM")) throw error;
         try {
           if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) rmSync(lockPath, { force: true });
         } catch {
@@ -423,6 +450,23 @@ export class SessionStore {
   private releaseLock(lockPath: string): void {
     rmSync(lockPath, { force: true });
   }
+
+  /** Fires append listeners without ever breaking the session path. */
+  private notifyAppended(sessionId: string, entry: SessionEntry): void {
+    for (const listener of [...this.appendListeners]) {
+      try {
+        listener(sessionId, entry);
+      } catch (error) {
+        this.logger?.warn(
+          `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (!this.logger)
+          console.warn(
+            `[sessions] append listener threw: ${error instanceof Error ? error.message : String(error)}`,
+          );
+      }
+    }
+  }
 }
 
 function countNewlines(text: string): number {
@@ -435,7 +479,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function compactionSummaryMessage(entry: SessionEntry & CompactionSummaryEntry): Message {
+export function compactionSummaryMessage(entry: Pick<CompactionSummaryEntry, "summary">): Message {
   return {
     role: "user",
     content: [{ type: "text", text: `[earlier conversation compacted]\n${entry.summary}` }],

@@ -1,12 +1,9 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
-/** True when running on Windows — controls whether we use attrib for read-only. */
-const isWin = process.platform === "win32";
 
 export interface WorktreeInfo {
   path: string;
@@ -45,14 +42,39 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
   return entries;
 }
 
+const repoQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * One worktree change at a time per repository. Two `git worktree add` runs race inside git: one reads
+ * the other's half-written `.git/worktrees/<name>` and fails with "failed to read ... commondir".
+ */
+function inRepoOrder<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+  const next = (repoQueues.get(cwd) ?? Promise.resolve()).then(run, run);
+  repoQueues.set(
+    cwd,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
 export async function createWorktree(cwd: string, path: string, branch?: string): Promise<void> {
   const args = branch ? ["worktree", "add", "-b", branch, path] : ["worktree", "add", path];
-  await execFileAsync("git", args, { cwd });
+  await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));
+}
+
+/** The branch that a worktree has checked out. Empty when git cannot tell. */
+export async function worktreeBranch(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path });
+    return stdout.trim();
+  } catch {
+    return "";
+  }
 }
 
 export async function removeWorktree(cwd: string, path: string, force = false): Promise<void> {
   const args = ["worktree", "remove", ...(force ? ["--force"] : []), path];
-  await execFileAsync("git", args, { cwd });
+  await inRepoOrder(cwd, () => execFileAsync("git", args, { cwd }));
 }
 
 /**
@@ -83,22 +105,12 @@ export function restoreWorktreeWritable(worktreePath: string): void {
         } else {
           chmodSync(full, st.mode | 0o200);
         }
-        if (isWin) {
-          execFileSync("attrib", ["-r", full], { windowsHide: true });
-        }
       } catch {
         // Stale symlink, race, or permission — skip.
       }
     }
   };
   restoreRecursive(root);
-  if (isWin) {
-    try {
-      execFileSync("attrib", ["-r", root], { windowsHide: true });
-    } catch {
-      // best-effort: root attr is advisory, removal proceeds regardless
-    }
-  }
 }
 
 /**
@@ -146,11 +158,6 @@ export function makeWorktreeReadOnly(worktreePath: string, scratchDir: string): 
 
   // Ensure the scratch dir itself and its future contents stay writable.
   chmodSync(scratchAbs, 0o755);
-  if (isWin) {
-    // Windows: attrib -r clears the read-only attribute so the scratch dir
-    // stays writable even if a parent directory was set read-only.
-    execFileSync("attrib", ["-r", scratchAbs], { windowsHide: true });
-  }
 
   return scratchAbs;
 }
@@ -177,12 +184,7 @@ function setReadOnlyRecursive(root: string, skipPath: string): void {
         // Files: remove write bits.
         chmodSync(full, st.mode & 0o444);
       }
-      // On Windows, also set the read-only attribute explicitly via attrib +r.
-      // chmodSync on Windows translates mode bits to the read-only attribute,
-      // but attrib is more reliable for directories and nested paths.
-      if (isWin) {
-        execFileSync("attrib", ["+r", full], { windowsHide: true });
-      }
+      // chmodSync alone sets the Windows read-only attribute; an `attrib` spawn per entry cost 75 ms each.
     } catch {
       // Stale symlink, race, or permission — skip.
     }

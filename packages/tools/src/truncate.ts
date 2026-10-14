@@ -37,10 +37,8 @@ export function spillToTempFile(content: string, prefix = "agency-tool-output"):
 }
 
 /**
- * Head-keeping truncation with disk spill: content within `maxBytes` passes
- * through untouched; overflow is cut at a character boundary and the FULL
- * text is written to a temp file whose path is appended, so the model can
- * re-read what was dropped.
+ * Truncation with disk spill: content within `maxBytes` passes through untouched. A longer one keeps its start
+ * and its end, and the full text goes to a temp file whose path is appended, so the model can read the rest.
  */
 export function truncateWithSpill(
   content: string,
@@ -49,7 +47,14 @@ export function truncateWithSpill(
 ): string {
   const bytes = Buffer.from(content, "utf8");
   if (bytes.length <= maxBytes) return content;
-  const head = sliceAtCharBoundary(bytes, maxBytes);
+  // The end stays too: the error of a build or a test run is there.
+  const half = Math.floor(maxBytes / 2);
+  const head = sliceAtCharBoundary(bytes, half);
+  let start = bytes.length - half;
+  while (start < bytes.length && ((bytes.at(start) ?? 0) & 0xc0) === 0x80) start += 1;
+  const tail = bytes.subarray(start).toString("utf8");
+  const omitted = bytes.length - Buffer.byteLength(head) - (bytes.length - start);
   const spillPath = spillToTempFile(content);
-  return `${head}\n${spillPath ? notices.truncated(spillPath) : notices.truncatedNoSpill}`;
+  const notice = spillPath ? notices.truncated(spillPath) : notices.truncatedNoSpill;
+  return `${head}\n[... ${omitted} bytes omitted ...]\n${tail}\n${notice}`;
 }

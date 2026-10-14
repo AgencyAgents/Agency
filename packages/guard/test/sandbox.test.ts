@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { SandboxBoundary } from "../src/sandbox.ts";
+import { rebaseSandbox, SandboxBoundary } from "../src/sandbox.ts";
 
 describe("SandboxBoundary.resolvePath", () => {
   // "C:" is a relative folder name on POSIX, so absolute paths must be per-platform.
@@ -33,6 +33,14 @@ describe("SandboxBoundary.resolvePath", () => {
 
   test("rejects a sibling directory that merely shares a prefix", () => {
     expect(() => boundary.resolvePath(sibling)).toThrow(AgencyError);
+  });
+
+  test("reads the drive form that Git Bash prints as a Windows path", () => {
+    if (!isWin) return;
+    expect(boundary.resolvePath("/c/repo/project/src/index.ts")).toBe(join(root, "src", "index.ts"));
+    expect(() => boundary.resolvePath("/c/Windows/System32")).toThrow(AgencyError);
+    // The bare drive is the drive root. "C:" alone is the current folder of that drive, which is the sandbox root.
+    expect(() => boundary.resolvePath("/c")).toThrow(AgencyError);
   });
 
   test("the thrown error carries PERMISSION_DENIED", () => {
@@ -307,5 +315,36 @@ describe("SandboxBoundary.resolvePathGated (external_directory)", () => {
       tool: "read",
     });
     expect(resolved.startsWith(outside)).toBe(true);
+  });
+});
+
+describe("rebaseSandbox", () => {
+  const isWin = process.platform === "win32";
+  const root = isWin ? join("C:", "repo", "project") : join("/", "repo", "project");
+  const worktree = join(root, ".agency", "worktrees", "s", "coder");
+
+  test("a relative path starts at the base, and the boundary of the inner sandbox still holds", () => {
+    const inner = new SandboxBoundary(root, { deny: [/^rm /] });
+    const rebased = rebaseSandbox(inner, () => worktree);
+    expect({
+      relative: rebased.resolvePath(join("src", "a.ts")),
+      absolute: rebased.resolvePath(join(root, "b.ts")),
+      atRoot: rebaseSandbox(inner, () => root).resolvePath(join("src", "a.ts")),
+    }).toEqual({
+      relative: join(worktree, "src", "a.ts"),
+      absolute: join(root, "b.ts"),
+      atRoot: join(root, "src", "a.ts"),
+    });
+    expect(() => rebased.resolvePath(join("..", "..", "..", "..", "..", "outside.txt"))).toThrow(
+      "outside the sandbox root",
+    );
+    expect(() => rebased.checkCommand("rm -rf x")).toThrow();
+  });
+
+  test("every other member of the inner backend stays, so a container backend keeps exec", () => {
+    const inner = Object.assign(new SandboxBoundary(root), { exec: () => "ran in the container" });
+    const rebased = rebaseSandbox(inner, () => worktree);
+    expect("exec" in rebased).toBe(true);
+    expect(rebased.exec()).toBe("ran in the container");
   });
 });

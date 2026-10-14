@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -107,6 +108,8 @@ async function startDaemon(opts: {
   adapter?: ProviderAdapter;
   onCall?: () => void;
   gitRepo?: boolean;
+  agents?: Record<string, unknown>;
+  onStream?: (provider: string, request: { model: string; apiKey: string }) => void;
 }) {
   const root = tempDir("agency-dh35-root-");
   if (opts.gitRepo) {
@@ -120,20 +123,24 @@ async function startDaemon(opts: {
   const sessionsDir = tempDir("agency-dh35-sess-");
   let calls = 0;
   const inner = opts.adapter ?? dispatchAdapter();
-  const counting: ProviderAdapter = {
+  const counting = (provider: string): ProviderAdapter => ({
     family: "fake",
     stream: (req, http) => {
       calls++;
       opts.onCall?.();
+      opts.onStream?.(provider, req);
       return inner.stream(req, http);
     },
-  };
+  });
   const daemon = await createAgentDaemon({
     workspaceRoot: root,
     instanceFile: join(tempDir("agency-dh35-inst-"), "instance.json"),
-    adapterFor: () => counting,
+    adapterFor: counting,
     http: noopHttp,
-    configDir: writeConfigDir(teamCfg(opts.budgets ? { budgets: opts.budgets } : undefined)),
+    configDir: writeConfigDir({
+      ...teamCfg(opts.budgets ? { budgets: opts.budgets } : undefined),
+      ...(opts.agents ? { agents: { ...teamCfg().agents, ...opts.agents } } : {}),
+    }),
     sessionsDir,
   });
   daemons.push(daemon);
@@ -176,6 +183,60 @@ describe("dispatch hardening (item 35)", () => {
     // traceRecorder per child: one trace file per dispatched session.
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w1-b0.trace.jsonl"))).toBe(true);
     expect(existsSync(join(sessionsDir, "team-dh35-parent-session-w2-b0.trace.jsonl"))).toBe(true);
+  });
+
+  it("a peer that did not finish is reported as such to the lead", async () => {
+    const base = dispatchAdapter();
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request, http): AsyncIterable<StreamEvent> {
+        if (JSON.stringify(request.messages.at(-1)?.content).includes("brief two")) {
+          yield { type: "text_delta", text: "half of brief two" };
+          throw new AgencyError(ErrorCode.NETWORK, "connection reset", { source: "fake" });
+        }
+        yield* base.stream(request, http);
+      },
+    };
+    const { client } = await startDaemon({ adapter, gitRepo: true });
+    const result = (await client.call("run_turn", {
+      turnId: "dh35-unfinished",
+      provider: "anthropic",
+      model: PRICED_MODEL,
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "please dispatch" }] }],
+      sessionId: "dh35-unfinished-session",
+    })) as RunTurnRpcResult;
+
+    const lines = toolResultText(result).split("\n");
+    expect(lines.find((line) => line.startsWith("w1"))).not.toContain("did not finish");
+    expect(lines.find((line) => line.startsWith("w2"))).toContain(
+      "did not finish (network: connection reset)",
+    );
+  }, 60_000);
+
+  it("a peer whose pinned provider has no key runs on the lead turn's provider, model and key", async () => {
+    const seen: string[] = [];
+    const keyless = { role: "Worker", provider: "keyless", model: "keyless-1", effort: "low", enabled: true };
+    const { client } = await startDaemon({
+      gitRepo: true,
+      agents: { w1: keyless, w2: keyless },
+      onStream: (provider, req) => seen.push(`${provider}/${req.model}/${req.apiKey}`),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "dh35-route",
+      provider: "anthropic",
+      model: PRICED_MODEL,
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "please dispatch" }] }],
+      sessionId: "dh35-route-session",
+    })) as RunTurnRpcResult;
+
+    expect(toolResultText(result)).toContain("child output for brief one");
+    expect(seen.length).toBe(4);
+    expect(new Set(seen)).toEqual(new Set([`anthropic/${PRICED_MODEL}/key`]));
   });
 
   it("dispatch_compare refuses once the team budget is hit (no spawn, no model call)", async () => {

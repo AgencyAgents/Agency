@@ -22,14 +22,17 @@
 | Telemetry | `dataDir()/telemetry/events.jsonl` | Only when `telemetryEnabled` |
 | Keys | OS keychain | See below |
 
+On Linux and macOS, each start of `agency` makes `dataDir()` and `<configDir>` readable by your user only (mode `0700`): the sessions, logs and approvals hold code and tool output. On Windows these folders are in your profile, which other users cannot read.
+
 ### Keys
 
 `@agency/providers` resolves keys per turn in this order:
 
 1. Declared `provider.<id>.env` entries (first present env var wins)
 2. `AGENCY_<PROVIDER>_API_KEY` (e.g. `AGENCY_ANTHROPIC_API_KEY`)
-3. OS keychain (`agency auth login <provider>` stores via `keychain.set`)
-4. `provider.<id>.apiKey` from config (lowest precedence, local dev only)
+3. The provider's own name `<PROVIDER>_API_KEY` (e.g. `OPENROUTER_API_KEY`; for `google`: `GEMINI_API_KEY`, then `GOOGLE_API_KEY`)
+4. OS keychain (`agency auth login <provider>` stores via `keychain.set`)
+5. `provider.<id>.apiKey` from config (lowest precedence, local dev only)
 
 Keychain backends: DPAPI on Windows, Keychain on macOS, libsecret where available on Linux, and an encrypted file fallback elsewhere. Legacy Windows DPAPI format (hex `76492d11...` prefix) is detected and migrated to the current format. The daemon resolves keys itself via `getKeychain()` — headless `-p` validates locally for a fast failure but does not send the key over RPC. Keys are registered with `Redactor` so every log line scrubs them.
 
@@ -44,11 +47,11 @@ Legacy DPAPI detection: a stale hex-format key that fails to decrypt throws an a
 
 ### Redaction chokepoint
 
-One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values and for `AGENCY_*_API_KEY` env entries; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
+One `Redactor` owns every secret. `registerSecret` is called for config `apiKey` values, for each env entry whose name ends in `_API_KEY`, and for each env entry that a `provider.<id>.env` list names; the daemon also registers the resolved per-turn key. `Logger` and `Telemetry` both scrub through it. A tool result loses the registered values before the model, the hooks and the session get it. The output of a command (`bash`, `code`) also loses tokens by their shape: keys of Anthropic, OpenAI, OpenRouter, Google, GitHub, AWS (key id), Slack, npm, and private key blocks. A file tool (`read`, `grep`) keeps such text, because the model edits what it reads. A password with no known shape passes. `redactValue` is depth-capped (8) and cycle-safe (path-scoped set, DAG shared nodes are not treated as cycles). The debug bundle (`agency debug`) is built from the same redacted sources.
 
 ### Network
 
-Provider requests go through a single `HttpClient` (`@agency/net`) with proxy, custom CA (`resolveCa` with a module-level file-content cache), timeouts, and offline-failure handling. No other network call is made during a turn except the provider request and optional `mcpServers` HTTP transports.
+Provider requests go through a single `HttpClient` (`@agency/net`) with proxy, custom CA (`resolveCa` with a module-level file-content cache), timeouts, and offline-failure handling. No other network call is made during a turn except the provider request and optional `mcpServers` HTTP transports. Outside a turn there are two more calls. `providers_list` and `agency onboard` fetch the model catalog from `MODELS_DEV_URL`. The CLI asks the GitHub releases API for a newer version at most once a day (`checkStale`, stamp in `cacheDir()/update-check.json`) and prints the notice on stderr; set `AGENCY_NO_UPDATE_CHECK` to turn it off.
 
 ### What is never collected
 

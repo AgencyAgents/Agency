@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 /** Per-OS config directory. Data/cache/log directories live in storage.ts. */
 export function configDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.AGENCY_HOME) return join(env.AGENCY_HOME, "config");
   if (platform === "win32") {
     return join(env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Agency");
   }

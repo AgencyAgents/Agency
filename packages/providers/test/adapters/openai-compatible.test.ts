@@ -142,6 +142,24 @@ describe("createOpenAiCompatibleAdapter", () => {
     expect((byMessage as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
   });
 
+  test("maps the overflow error of a llama.cpp server to CONTEXT_OVERFLOW", async () => {
+    // The body is a capture from llama-server b11155: the code is a number and the message has its own wording.
+    const body = {
+      error: {
+        code: 400,
+        message:
+          "request (14030 tokens) exceeds the available context size (12288 tokens), try increasing it",
+        type: "exceed_context_size_error",
+        n_prompt_tokens: 14030,
+        n_ctx: 12288,
+      },
+    };
+    const adapter = createOpenAiCompatibleAdapter("local", "http://127.0.0.1:8080/v1");
+
+    const err = await collect(adapter.stream(baseRequest, fakeError({ status: 400, body }))).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
   test("maps content_filter finish reasons to refusal instead of end_turn", async () => {
     const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
     const encoder = new TextEncoder();
@@ -218,6 +236,141 @@ describe("createOpenAiCompatibleAdapter", () => {
 
     const stop = events.find((e) => e.type === "message_stop") as { stopReason: string };
     expect(stop.stopReason).toBe("tool_use");
+  });
+
+  /** A stream of chat completion chunks, one per delta, the last one with the finish reason. */
+  function streamOf(deltas: unknown[], finishReason: string | null): HttpClient {
+    const frames = deltas.map((delta, i) => ({
+      choices: [{ delta, finish_reason: i === deltas.length - 1 ? finishReason : null }],
+    }));
+    const text = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`;
+    return { fetch: async () => new Response(text, { status: 200 }) };
+  }
+
+  test("an error in the middle of a stream fails the request: it is not the end of a good reply", async () => {
+    // OpenRouter's documented form: HTTP 200, an `error` beside `choices`, finish reason "error".
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: "The answer is" }, finish_reason: null }] },
+      {
+        error: { code: 429, message: "Rate limit exceeded", metadata: { error_type: "rate_limit_exceeded" } },
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      },
+    ];
+    const text = chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("");
+    const http: HttpClient = { fetch: async () => new Response(text, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const err = await collect(adapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.RATE_LIMIT);
+    expect((err as AgencyError).message).toBe("Rate limit exceeded");
+  });
+
+  test("a finish reason of error with no error body stops the reply as an error", async () => {
+    const http = streamOf([{ content: "The answer is" }], "error");
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "error" });
+  });
+
+  test("a tool call that ends with finish reason stop is still a tool turn", async () => {
+    // Some servers send the call and then "stop". With end_turn the loop would not run the tool.
+    const http = streamOf(
+      [{ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: '{"path":"a"}' } }] }],
+      "stop",
+    );
+    const adapter = createOpenAiCompatibleAdapter("ollama", "http://localhost:11434/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "tool_use" });
+  });
+
+  test("a stream that ends with no finish reason still closes its open tool call", async () => {
+    const http = streamOf(
+      [{ tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: '{"path":"a"}' } }] }],
+      null,
+    );
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_call_start",
+      "tool_call_delta",
+      "tool_call_end",
+      "message_stop",
+    ]);
+    expect(events.at(-1)).toMatchObject({ stopReason: "tool_use" });
+  });
+
+  test("an OpenRouter stream repeats the finish reason on its usage chunk: the tool call ends once", async () => {
+    // Recorded from openrouter.ai with deepseek/deepseek-v4-flash. Two ends made the loop run each tool twice.
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-stream-tool-call.sse`).text();
+    const http: HttpClient = { fetch: async () => new Response(cassette, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.filter((event) => event.type === "tool_call_end")).toEqual([
+      { type: "tool_call_end", id: "call_c167c9cf19a14a05b9cf6eba" },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "message_stop",
+      stopReason: "tool_use",
+      usage: { inputTokens: 359, outputTokens: 63, costUsd: 0.000044135 },
+    });
+  });
+
+  test("OpenRouter sends reasoning in `delta.reasoning`: it comes out as thinking", async () => {
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-stream-tool-call.sse`).text();
+    const http: HttpClient = { fetch: async () => new Response(cassette, { status: 200 }) };
+    const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    const thinking = events.flatMap((event) => (event.type === "thinking_delta" ? [event.text] : []));
+    expect(thinking.join("")).toBe("The user wants me to call the read tool on notes.txt. Let me do that.");
+  });
+
+  test("a tool call with no id still runs: the adapter gives it one", async () => {
+    const http = streamOf(
+      [
+        { tool_calls: [{ index: 0, id: "", function: { name: "read", arguments: "" } }] },
+        { tool_calls: [{ index: 0, function: { arguments: '{"path":"a"}' } }] },
+        {},
+      ],
+      "tool_calls",
+    );
+    const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    const id =
+      (events.find((event) => event.type === "tool_call_start") as { id: string } | undefined)?.id ?? "";
+    expect(id).toBeTruthy();
+    expect(events).toContainEqual({ type: "tool_call_delta", id, inputJsonDelta: '{"path":"a"}' });
+    expect(events).toContainEqual({ type: "tool_call_end", id });
+  });
+
+  test("reasoning_content of a reasoning model becomes thinking, not a silent drop", async () => {
+    // llama-server b11155 with Qwen3 streams its reasoning in this delta field before the answer.
+    const http = streamOf([{ reasoning_content: "17 plus 25" }, { content: "42" }], "stop");
+    const adapter = createOpenAiCompatibleAdapter("local", "http://127.0.0.1:8080/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.slice(0, 2)).toEqual([
+      { type: "thinking_delta", text: "17 plus 25" },
+      { type: "text_delta", text: "42" },
+    ]);
+  });
+
+  test("a refusal in the delta's own field is shown as text and ends the turn as a refusal", async () => {
+    // The API description gives the stream delta a `refusal` field next to `content`.
+    const http = streamOf([{ refusal: "I can't help " }, { refusal: "with that." }], "stop");
+    const adapter = createOpenAiCompatibleAdapter("openai", "https://api.openai.com/v1");
+
+    const events = await collect(adapter.stream(baseRequest, http));
+    expect(events.slice(0, 2)).toEqual([
+      { type: "text_delta", text: "I can't help " },
+      { type: "text_delta", text: "with that." },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "message_stop", stopReason: "refusal" });
   });
 
   function fakeError(options: { status: number; body: unknown }): HttpClient {

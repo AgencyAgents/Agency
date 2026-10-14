@@ -2,22 +2,29 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  CODE_COMMAND,
   type Config,
+  cacheDir,
   dataDir,
   EventBus,
   getSessionTitle,
   loadConfig,
+  OUTPUT_CUT_NOTE,
+  ownerOnlyDirs,
   parseModelRef,
   type RetentionPolicy,
   reportStorage,
+  runCodeChild,
   SessionStore,
   storagePaths,
 } from "@agency/core";
+import { runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
   createKeychain,
   defaultModelIDs,
+  GATEWAY_BASE_URLS,
   type KeychainBackend,
   OAUTH_PROVIDERS,
   resolveApiKey,
@@ -27,13 +34,15 @@ import {
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
-import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult } from "./daemon.ts";
+import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
-import { connectHeadlessClient, type RunHeadlessOptions, runHeadless } from "./headless.ts";
+import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
+import { mcpCmd } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
+import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
 
 /**
  * Inlined at compile time by scripts/build.ts (--define); running from source
@@ -50,38 +59,63 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
-   session list [query]     List sessions for this workspace (id, title, created, entries);
-                        optional query filters by title (id fallback), case-insensitive
+  session list [query]     List sessions for this workspace (id, title, created, entries);
+                           optional query filters by title (id fallback), case-insensitive
   session show <id>        Show session details
   session rename <id> <title>  Rename a session
   session fork <id>        Fork (clone) a session under a new id
   session clone <id> [newId]  Clone a session file under a new id (or the given one)
   session delete <id>      Delete a session by id
-  daemon status            Show daemon status for this workspace
-   auth login <provider>    Store an API key for a provider in the OS keychain
-   auth login <provider> --oauth
-                        OAuth browser flow for anthropic, openai, google, github-copilot
-                        (needs provider.<id>.oauth.clientId in config)
-   auth login <provider> --device
-                        RFC 8628 device flow where supported (github-copilot)
+  daemon status            Show daemon status for this workspace, with the turns that run
+  daemon cancel <turn>     Stop a turn that runs
+  auth login <provider>    Store an API key for a provider in the OS keychain
+  auth login <provider> --oauth
+                           OAuth browser flow for anthropic, openai, google, github-copilot
+                           (needs provider.<id>.oauth.clientId in config)
+  auth login <provider> --device
+                           RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
-   plugin install <dir> [--overwrite]  Install a Claude Code / Codex plugin
-   plugin list              Show installed skills and plugin modules
-   plugin remove <name>     Remove an installed plugin
+  mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
+  mcp logout <server>      Remove the sign-in of an MCP server
+  plugin install <dir> [--overwrite]
+                           Install a Claude Code / Codex plugin
+  plugin list              Show installed skills and plugin modules
+  plugin remove <name>     Remove an installed plugin
+  review [<ref>]           Review the changes of the workspace and change no file:
+                           the uncommitted changes, or the changes since <ref>
+  workflow run <file> [--arg key=value]
+                           Run a script that starts agent turns, in sequence or in parallel
   onboard                  First-run setup: connect, model, trust
+  trust                    Trust this workspace: load its AGENTS.md, CLAUDE.md and rules
   debug                    Write a redacted debug bundle for issue reports
   update [--rollback]      Update binary from GitHub Releases (ed25519 + SHA-256 verified)
   serve                    Run daemon in foreground (logging to stdout)
 
 Options:
   -p, --print <prompt>     Run a single turn headlessly and print the result
+                           (use - to read the prompt from stdin)
   --workspace <path>       Workspace root (default: current directory)
   --model <provider/model> Model to use; overrides config.model
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
-  --permission-mode <mode> With -p: ask (default), allow-edits, or deny
-  --format <text|json>     Output format (default: text; json is for scripting)
+  --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
+  --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
+                           of the config, or 100)
+  --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
+  --max-total-cost <usd>   With workflow run: no turn starts after the turns cost this much
+  --system-prompt <text>   With -p: use this text in place of the built-in base prompt
+  --append-system-prompt <text>
+                           With -p: add this text after the base prompt
+  --json-schema <file>     With -p: the answer is JSON that matches this JSON Schema
+                           (a file, or the schema itself)
+  --goal <condition>       With -p and a session: the turn goes on until the model
+                           judges the condition met, or the step limit
+  --image <path>           With -p: send an image file with the prompt (repeat for more)
+  --format <text|json|stream-json>
+                           Output format (default: text). json is one result for a
+                           script. stream-json with -p is one JSON line for each
+                           event, then the result as the last line
   --max-age-days <days>    With storage prune: delete sessions older than this
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
   --help, -h               Show this help
@@ -89,6 +123,12 @@ Options:
 
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
+
+/** The base of the system prompt of a headless turn. The daemon adds the environment, the instructions and the skills. */
+function basePrompt(parsed: ParsedArgv): string {
+  const base = parsed.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  return parsed.appendSystemPrompt === undefined ? base : `${base}\n\n${parsed.appendSystemPrompt}`;
+}
 
 export interface ParsedArgv {
   command: string | undefined;
@@ -101,10 +141,23 @@ export interface ParsedArgv {
   oauth: boolean;
   device: boolean;
   overwrite: boolean;
+  rollback: boolean;
   images: string[];
+  /** The `--arg key=value` pairs of `workflow run`, as written. */
+  workflowArgs: string[];
   continueLast: boolean;
   session: string | undefined;
-  permissionMode: "ask" | "allow-edits" | "deny";
+  permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
+  /** Tool steps one turn may take; undefined keeps the loop's default. */
+  maxSteps: number | undefined;
+  goal: string | undefined;
+  systemPrompt: string | undefined;
+  jsonSchema: string | undefined;
+  appendSystemPrompt: string | undefined;
+  maxCost: number | undefined;
+  maxTotalCost: number | undefined;
+  /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
+  streamJson: boolean;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
   help: boolean;
@@ -121,8 +174,12 @@ export interface EntrypointDeps {
   instanceDir?: string;
   /** Overrides the keychain backend (tests). */
   keychain?: KeychainBackend;
+  /** Opens the sign-in page of `mcp login` (tests); default: the browser. */
+  openUrl?: (url: string) => Promise<void> | void;
   /** Reads the API key for `auth login`; default reads a hidden TTY line or piped stdin. */
   keyReader?: (prompt: string) => Promise<string>;
+  /** Overrides the stdin that `-p -` reads the prompt from (tests). */
+  stdin?: () => Promise<string>;
   /** Overrides runHeadless for one-shot -p turns (tests). */
   runHeadless?: (options: RunHeadlessOptions) => Promise<RunTurnRpcResult>;
   /** Overrides the daemon connection for session-backed -p turns (tests). */
@@ -165,10 +222,20 @@ export function parseArgv(argv: string[]): ParsedArgv {
     oauth: false,
     device: false,
     images: [],
+    workflowArgs: [],
     overwrite: false,
+    rollback: false,
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
+    maxSteps: undefined,
+    goal: undefined,
+    systemPrompt: undefined,
+    jsonSchema: undefined,
+    appendSystemPrompt: undefined,
+    maxCost: undefined,
+    maxTotalCost: undefined,
+    streamJson: false,
     format: "text",
     retention: undefined,
     help: false,
@@ -231,16 +298,45 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--format": {
         const format = value();
-        if (format !== "text" && format !== "json") throw new Error(t("cli.error.invalid_format"));
-        parsed.format = format;
+        if (format !== "text" && format !== "json" && format !== "stream-json") {
+          throw new Error(t("cli.error.invalid_format"));
+        }
+        parsed.streamJson = format === "stream-json";
+        parsed.format = format === "text" ? "text" : "json";
         break;
       }
       case "--permission-mode": {
         const mode = value();
-        if (mode !== "ask" && mode !== "allow-edits" && mode !== "deny") {
+        if (mode !== "ask" && mode !== "allow-edits" && mode !== "allow-all" && mode !== "deny") {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
         parsed.permissionMode = mode;
+        break;
+      }
+      case "--max-steps": {
+        const steps = Number(value());
+        if (!Number.isInteger(steps) || steps < 1) throw new Error(t("cli.error.invalid_max_steps"));
+        parsed.maxSteps = steps;
+        break;
+      }
+      case "--goal":
+        parsed.goal = value();
+        break;
+      case "--json-schema":
+        parsed.jsonSchema = value();
+        break;
+      case "--system-prompt":
+        parsed.systemPrompt = value();
+        break;
+      case "--append-system-prompt":
+        parsed.appendSystemPrompt = value();
+        break;
+      case "--max-cost":
+      case "--max-total-cost": {
+        const cost = Number(value());
+        if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
+        if (name === "--max-cost") parsed.maxCost = cost;
+        else parsed.maxTotalCost = cost;
         break;
       }
       case "--max-age-days":
@@ -254,8 +350,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--image":
         parsed.images.push(value());
         break;
+      case "--arg":
+        parsed.workflowArgs.push(value());
+        break;
       case "--overwrite":
         parsed.overwrite = true;
+        break;
+      case "--rollback":
+        parsed.rollback = true;
         break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
@@ -325,24 +427,82 @@ async function validateTurnKey(provider: string, config: Config, deps: Entrypoin
   const env = envOf(deps);
   const keychain = deps.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
   const providerConfig = config.provider[provider];
-  const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-  const key =
-    fromDeclaredEnv ??
-    (await resolveApiKey({
-      provider,
-      env,
-      keychain,
-      config: providerConfig?.apiKey,
-      oauthClientId: providerConfig?.oauth?.clientId,
-      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-    }));
+  const key = await resolveApiKey({
+    provider,
+    env,
+    keychain,
+    declaredEnv: providerConfig?.env,
+    config: providerConfig?.apiKey,
+    oauthClientId: providerConfig?.oauth?.clientId,
+    oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+  });
   if (key === undefined) throw new Error(t("cli.error.no_key", { provider }));
 }
 
-/** Assistant text blocks joined by newlines: what `-p` prints in text mode. */
+/** One row per known provider. `auth list` and the bare-run summary share it so they cannot disagree. */
+async function providerConnections(
+  config: Config,
+  env: NodeJS.ProcessEnv,
+  keychain: KeychainBackend,
+): Promise<Array<{ provider: string; connected: boolean }>> {
+  const builtin = ["anthropic", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
+  const ids = [...new Set([...builtin, ...Object.keys(config.provider)])].sort();
+  const rows: Array<{ provider: string; connected: boolean }> = [];
+  for (const id of ids) {
+    const providerConfig = config.provider[id];
+    const key = await resolveApiKey({
+      provider: id,
+      env,
+      keychain,
+      declaredEnv: providerConfig?.env,
+      config: providerConfig?.apiKey,
+      oauthClientId: providerConfig?.oauth?.clientId,
+      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+    });
+    rows.push({ provider: id, connected: key !== undefined });
+  }
+  return rows;
+}
+
+/** The error of a command group for a subcommand that is wrong or missing. */
+function subcommandError(group: string, subcommand: string | undefined): Error {
+  return new Error(
+    subcommand === undefined
+      ? t("cli.error.missing_subcommand", { command: group })
+      : t("cli.error.unknown_command", { command: `${group} ${subcommand}` }),
+  );
+}
+
+/** What `-p` prints in text mode: the reply to the prompt this run sent.
+ *  A session turn returns the earlier turns too, and those are not output. */
 function assistantText(messages: Message[]): string {
+  const isCutNote = (message: Message) =>
+    message.role === "user" &&
+    message.content.some((block) => block.type === "text" && block.text === OUTPUT_CUT_NOTE);
+  // The answer is the last assistant message and the parts that a cut note joins to it. A sentence that the
+  // model wrote before a tool call is progress on stderr, not output: a script reads stdout as the answer.
+  let start = messages.length;
+  while (start > 0) {
+    const message = messages[start - 1] as Message;
+    if (message.role !== "assistant" && !isCutNote(message)) break;
+    start -= 1;
+  }
+  const answer = messages
+    .slice(start)
+    .flatMap((message) => (message.role === "assistant" ? message.content : []))
+    .flatMap((block) => (block.type === "text" ? [block.text] : []));
+  if (answer.length > 0) return answer.join("\n");
+
+  // No answer (a turn that stopped early): show every text of this run, so partial work is not lost.
+  // The note after a cut reply is not a prompt: the parts before it are output too. A real model drops the
+  // space at the cut ("22" then "23"), so the parts keep a line break between them and never merge.
+  const prompt = messages.findLastIndex(
+    (message) =>
+      message.role === "user" &&
+      message.content.some((block) => block.type === "text" && block.text !== OUTPUT_CUT_NOTE),
+  );
   const parts: string[] = [];
-  for (const message of messages) {
+  for (const message of messages.slice(prompt + 1)) {
     if (message.role !== "assistant") continue;
     for (const block of message.content) {
       if (block.type === "text") parts.push(block.text);
@@ -354,6 +514,22 @@ function assistantText(messages: Message[]): string {
 function printJsonOrText(out: LineSink, format: "text" | "json", payload: unknown, text: string): void {
   if (format === "json") out(JSON.stringify(payload, null, 2));
   else if (text.length > 0) out(text);
+}
+
+/** Prints a headless turn and returns its exit code; a salvaged turn names its cause on stderr. */
+function reportTurn<T extends RunTurnRpcResult>(
+  out: LineSink,
+  err: LineSink,
+  parsed: Pick<ParsedArgv, "format" | "streamJson">,
+  result: T,
+): number {
+  // The last line of a stream: one line, like each event before it.
+  if (parsed.streamJson) out(JSON.stringify({ type: "result", ...result }));
+  else printJsonOrText(out, parsed.format, result, assistantText(result.messages));
+  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
+  // A run that the cost limit cut is not finished: a script must not read it as success.
+  if (result.budgetExceeded && parsed.format === "text") err(t("cli.error.budget_exceeded"));
+  return result.stopReason === "error" || result.error || result.budgetExceeded ? 1 : 0;
 }
 
 /** Most recently appended session: the one `--continue` resumes. Ties break
@@ -371,19 +547,23 @@ function latestSessionId(store: SessionStore): string | undefined {
 function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[] {
   const blocks: import("@agency/schema").ImageBlock[] = [];
   for (const p of paths) {
+    let data: Buffer;
     try {
-      const data = readFileSync(p);
-      const ext = p.split(".").pop()?.toLowerCase() ?? "";
-      const mime =
-        ext === "png"
-          ? "image/png"
-          : ext === "jpg" || ext === "jpeg"
-            ? "image/jpeg"
-            : ext === "webp"
-              ? "image/webp"
-              : "image/png";
-      blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
-    } catch {}
+      data = readFileSync(p);
+    } catch {
+      // A prompt that goes out with no image gets an answer about some other thing.
+      throw new Error(t("cli.error.image_unreadable", { path: p }));
+    }
+    const ext = p.split(".").pop()?.toLowerCase() ?? "";
+    const mime =
+      ext === "png"
+        ? "image/png"
+        : ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "webp"
+            ? "image/webp"
+            : "image/png";
+    blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
   }
   return blocks;
 }
@@ -409,28 +589,64 @@ async function runPrintMode(
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
 
+  let outputSchema: Record<string, unknown> | undefined;
+  if (parsed.jsonSchema !== undefined) {
+    if (parsed.continueLast || parsed.session !== undefined) throw new Error(t("cli.error.schema_session"));
+    try {
+      const raw = parsed.jsonSchema.trimStart().startsWith("{")
+        ? parsed.jsonSchema
+        : readFileSync(resolve(deps.cwd ?? process.cwd(), parsed.jsonSchema), "utf8");
+      outputSchema = JSON.parse(raw) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(
+        t("cli.error.invalid_schema", { detail: error instanceof Error ? error.message : String(error) }),
+      );
+    }
+  }
   // Progress events: printed to stderr in text mode, silent in JSON mode.
-  const onEvent =
-    parsed.format === "json"
+  // A model sends text in small parts: they collect into whole lines, and a part line ends before any other line.
+  let partLine = "";
+  const line = (text: string) => {
+    if (partLine) err(t("cli.progress.text", { text: partLine }));
+    partLine = "";
+    err(text);
+  };
+  const onEvent = parsed.streamJson
+    ? (event: unknown) => out(JSON.stringify(event))
+    : parsed.format === "json"
       ? undefined
       : (event: unknown) => {
           const ev = event as Record<string, unknown>;
           switch (ev.type) {
             case "tool_start":
-              err(t("cli.progress.tool", { name: String(ev.name ?? ev.id ?? "?") }));
+              line(t("cli.progress.tool", { name: String(ev.name ?? ev.id ?? "?") }));
               break;
-            case "text_delta":
-              err(t("cli.progress.text", { text: String(ev.text ?? "") }));
+            case "text_delta": {
+              const lines = (partLine + String(ev.text ?? "")).split("\n");
+              partLine = lines.pop() ?? "";
+              for (const whole of lines) err(t("cli.progress.text", { text: whole }));
               break;
+            }
             case "heartbeat":
-              err(t("cli.progress.heartbeat"));
+              line(t("cli.progress.heartbeat"));
+              break;
+            case "retry":
+              line(
+                t("cli.progress.retry", {
+                  attempt: String(ev.attempt ?? "?"),
+                  message: String(ev.message ?? ""),
+                }),
+              );
               break;
             case "turn_complete":
-              err(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
+              line(t("cli.progress.turn_complete", { reason: String(ev.stopReason ?? "?") }));
               break;
           }
         };
 
+  if (parsed.goal !== undefined && !parsed.continueLast && parsed.session === undefined) {
+    throw new Error(t("cli.error.goal_needs_session"));
+  }
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
       bus: deps.bus ?? new EventBus(),
@@ -450,15 +666,17 @@ async function runPrintMode(
         sessionId,
         provider,
         model,
-        systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPrompt: basePrompt(parsed),
         userText: prompt,
         images,
         onEvent,
         permissionMode: parsed.permissionMode,
+        maxToolIterations: parsed.maxSteps,
+        ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
+        ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
         nonInteractive: true,
       });
-      printJsonOrText(out, parsed.format, { sessionId, tipId, ...result }, assistantText(result.messages));
-      return result.stopReason === "error" ? 1 : 0;
+      return reportTurn(out, err, parsed, { sessionId, tipId, ...result });
     } finally {
       await client.close();
     }
@@ -470,14 +688,139 @@ async function runPrintMode(
     instanceDir: deps.instanceDir,
     provider,
     model,
-    systemPrompt: DEFAULT_SYSTEM_PROMPT,
-    prompt,
+    systemPrompt: basePrompt(parsed),
+    prompt: outputSchema === undefined ? prompt : `${prompt}\n\n${STRUCTURED_OUTPUT_NOTE}`,
+    ...(outputSchema === undefined ? {} : { outputSchema }),
     images,
     onEvent,
     permissionMode: parsed.permissionMode,
+    maxToolIterations: parsed.maxSteps,
+    ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
-  printJsonOrText(out, parsed.format, result, assistantText(result.messages));
-  return result.stopReason === "error" ? 1 : 0;
+  if (outputSchema === undefined) return reportTurn(out, err, parsed, result);
+  const answer = result.messages
+    .flatMap((m) => m.content)
+    .findLast((b) => b.type === "tool_call" && b.name === STRUCTURED_OUTPUT_TOOL);
+  if (answer?.type !== "tool_call") {
+    reportTurn(out, err, parsed, result);
+    err(t("cli.error.no_structured_output"));
+    return 1;
+  }
+  if (parsed.format === "text" && !parsed.streamJson) {
+    out(JSON.stringify(answer.input));
+    return reportTurn(() => {}, err, parsed, result);
+  }
+  return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
+}
+
+const STRUCTURED_OUTPUT_NOTE = `When the work is done, call the ${STRUCTURED_OUTPUT_TOOL} tool one time with the final answer.`;
+const REVIEW_MAX_DIFF_CHARS = 200_000;
+
+/** `review [<ref>]`: one turn over the diff. The mode is `ask` with no person to ask, so an edit or a command is refused. */
+async function reviewCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const cwd = workspaceRootOf(parsed, deps);
+  const ref = parsed.subcommand;
+  const git = (...args: string[]): string => {
+    const done = Bun.spawnSync(["git", ...args], { cwd });
+    if (done.exitCode !== 0)
+      throw new Error(t("cli.error.review_git", { detail: done.stderr.toString().trim() }));
+    return done.stdout.toString();
+  };
+  const diff = ref === undefined ? git("diff", "HEAD") : git("diff", `${ref}...HEAD`);
+  const untracked = ref === undefined ? git("ls-files", "--others", "--exclude-standard").trim() : "";
+  if (diff.trim() === "" && untracked === "") {
+    out(t("cli.review.no_changes"));
+    return 0;
+  }
+  const prompt = [
+    "Review these changes as a careful senior engineer. Read the files around a change when the diff alone does not show if it is correct.",
+    "Report only real problems: bugs, security faults, broken behaviour, missing tests for changed logic. No style notes.",
+    "For each finding give the file and line, what is wrong, and a concrete case that fails. Put the most severe first. If you find nothing, say so in one line.",
+    "Do not change any file.",
+    untracked === "" ? "" : `New files that are not in the diff, read them:\n${untracked}`,
+    diff.length > REVIEW_MAX_DIFF_CHARS
+      ? `The diff is too large to show in full. Its first part:\n${diff.slice(0, REVIEW_MAX_DIFF_CHARS)}`
+      : `The diff:\n${diff}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return runPrintMode({ ...parsed, permissionMode: "ask" }, prompt, deps, out, err);
+}
+
+/** `workflow run <file>`: each `agent()` of the script is one headless turn with a new context, as `-p` runs it. */
+async function workflowCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  if (parsed.subcommand !== "run") throw subcommandError("workflow", parsed.subcommand);
+  const file = parsed.args[0];
+  if (file === undefined) throw new Error(t("cli.error.missing_value", { flag: "workflow run <file>" }));
+  const args: Record<string, string> = {};
+  for (const pair of parsed.workflowArgs) {
+    const at = pair.indexOf("=");
+    if (at < 1) throw new Error(t("cli.error.workflow_arg", { value: pair }));
+    args[pair.slice(0, at)] = pair.slice(at + 1);
+  }
+
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const config = loadConfig({ globalDir: deps.configDir, env: envOf(deps), flags: flagsFor(parsed) });
+  let started = 0;
+  // Turns in parallel each get what is left at their start, so they can go over the total together.
+  let spent = 0;
+  const result = await runWorkflow(file, {
+    args,
+    log: err,
+    parallel: runParallel,
+    agent: async (prompt, options = {}): Promise<WorkflowAgentResult> => {
+      const ref =
+        options.model === undefined ? resolveModelRef(config, parsed) : parseModelRef(options.model);
+      if (!ref) throw new Error(t("cli.error.no_model"));
+      await validateTurnKey(ref.provider, config, deps);
+      const n = ++started;
+      err(t("cli.workflow.agent_start", { n: String(n), prompt: prompt.replace(/\s+/g, " ").slice(0, 80) }));
+      const left = parsed.maxTotalCost === undefined ? undefined : parsed.maxTotalCost - spent;
+      if (left !== undefined && left <= 0) {
+        err(t("cli.workflow.agent_end", { n: String(n), reason: "total_cost_limit" }));
+        return {
+          text: "",
+          stopReason: "total_cost_limit",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          ok: false,
+        };
+      }
+      const turnCost = options.maxCost ?? parsed.maxCost;
+      const maxCost = left === undefined ? turnCost : Math.min(turnCost ?? left, left);
+      const turn = await (deps.runHeadless ?? runHeadless)({
+        workspaceRoot,
+        instanceDir: deps.instanceDir,
+        provider: ref.provider,
+        model: ref.model,
+        systemPrompt: basePrompt(parsed),
+        prompt,
+        permissionMode: options.permissionMode ?? parsed.permissionMode,
+        maxToolIterations: options.maxSteps ?? parsed.maxSteps,
+        ...(maxCost === undefined ? {} : { budget: { maxCostUsd: maxCost } }),
+      });
+      spent += turn.usage.costUsd ?? 0;
+      err(t("cli.workflow.agent_end", { n: String(n), reason: turn.error?.code ?? turn.stopReason }));
+      return {
+        text: assistantText(turn.messages),
+        stopReason: turn.stopReason,
+        usage: turn.usage,
+        ok: turn.stopReason !== "error" && !turn.error && !turn.budgetExceeded,
+      };
+    },
+  });
+  if (typeof result === "string") out(result);
+  else if (result !== undefined) out(JSON.stringify(result, null, 2));
+  return 0;
 }
 
 function whereCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): number {
@@ -670,7 +1013,7 @@ Subcommands:
     return 0;
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `session ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("session", parsed.subcommand);
 }
 
 function defaultKeyReader(prompt: string): Promise<string> {
@@ -752,24 +1095,7 @@ async function authCmd(
   }
 
   if (parsed.subcommand === "list") {
-    const config = loadConfig({ globalDir: deps.configDir, env });
-    const ids = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])].sort();
-    const rows: Array<{ provider: string; connected: boolean }> = [];
-    for (const id of ids) {
-      const providerConfig = config.provider[id];
-      const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-      const key =
-        fromDeclaredEnv ??
-        (await resolveApiKey({
-          provider: id,
-          env,
-          keychain,
-          config: providerConfig?.apiKey,
-          oauthClientId: providerConfig?.oauth?.clientId,
-          oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-        }));
-      rows.push({ provider: id, connected: key !== undefined });
-    }
+    const rows = await providerConnections(loadConfig({ globalDir: deps.configDir, env }), env, keychain);
     if (parsed.format === "json") {
       out(JSON.stringify(Object.fromEntries(rows.map((r) => [r.provider, r.connected])), null, 2));
     } else {
@@ -784,7 +1110,40 @@ async function authCmd(
     return 0;
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `auth ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("auth", parsed.subcommand);
+}
+
+/** One row of `turns_list`: a turn that runs in the daemon. */
+interface ActiveTurn {
+  turnId: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  startedAt: string;
+}
+
+/** `daemon cancel <turn>`: stops a turn that another terminal started. `daemon status` gives the id. */
+async function daemonCancelCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: LineSink): Promise<number> {
+  const turnId = parsed.args[0];
+  if (turnId === undefined) throw new Error(t("cli.error.missing_value", { flag: "daemon cancel <turn>" }));
+  const { defaultInstanceDir } = await import("./headless.ts");
+  const instanceDir = deps.instanceDir ?? defaultInstanceDir(envOf(deps));
+  const instanceFile = join(instanceDir, `${hashWorkspaceRoot(workspaceRootOf(parsed, deps))}.json`);
+  let client: DaemonClient | undefined;
+  try {
+    const info = JSON.parse(readFileSync(instanceFile, "utf8")) as InstanceInfo;
+    client = await connectToDaemon(info.port, "127.0.0.1", { token: info.token });
+  } catch {
+    throw new Error(t("cli.daemon.not_running"));
+  }
+  try {
+    const { cancelled } = (await client.call("cancel_turn", { turnId })) as { cancelled: boolean };
+    if (!cancelled) throw new Error(t("cli.daemon.no_such_turn", { turnId }));
+    out(t("cli.daemon.cancelled", { turnId }));
+    return 0;
+  } finally {
+    await client.close();
+  }
 }
 
 async function daemonStatusCmd(
@@ -808,8 +1167,9 @@ async function daemonStatusCmd(
     let client: DaemonClient | undefined;
     try {
       client = await connectToDaemon(info.port, "127.0.0.1", { token: info.token });
+      const { turns } = (await client.call("turns_list", {})) as { turns: ActiveTurn[] };
       if (parsed.format === "json") {
-        out(JSON.stringify({ status: "running", port: info.port, pid: info.pid ?? null }, null, 2));
+        out(JSON.stringify({ status: "running", port: info.port, pid: info.pid ?? null, turns }, null, 2));
       } else {
         out(
           t("cli.daemon.status", {
@@ -818,6 +1178,9 @@ async function daemonStatusCmd(
             pid: String(info.pid ?? "?"),
           }),
         );
+        for (const turn of turns) {
+          out(t("cli.daemon.turn", { ...turn, model: `${turn.provider}/${turn.model}` }));
+        }
       }
       return 0;
     } catch {
@@ -861,6 +1224,9 @@ Subcommands:
     try {
       const report = pluginInstallCmd(sourceDir, workspaceRoot, parsed.overwrite, err);
       out(report);
+      const { createFileTrustStore } = await import("@agency/guard");
+      const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));
+      if (!trustStore.isTrusted(workspaceRoot)) err(t("cli.plugin.untrusted"));
       return 0;
     } catch (error) {
       err(error instanceof Error ? error.message : String(error));
@@ -889,7 +1255,7 @@ Subcommands:
     }
   }
 
-  throw new Error(t("cli.error.unknown_command", { command: `plugin ${parsed.subcommand ?? "(none)"}` }));
+  throw subcommandError("plugin", parsed.subcommand);
 }
 
 async function dispatch(
@@ -909,7 +1275,11 @@ async function dispatch(
 
   if (parsed.print !== undefined) {
     if (parsed.command !== undefined) throw new Error(t("cli.error.print_with_command"));
-    return runPrintMode(parsed, parsed.print, deps, out, err);
+    if (parsed.print !== "-") return runPrintMode(parsed, parsed.print, deps, out, err);
+    // `-p -`: a long prompt does not fit the command-line length limit, and a pipe needs no quoting.
+    const prompt = (await (deps.stdin ?? (() => Bun.stdin.text()))()).trim();
+    if (prompt.length === 0) throw new Error(t("cli.error.empty_stdin_prompt"));
+    return runPrintMode(parsed, prompt, deps, out, err);
   }
   if (parsed.continueLast || parsed.session !== undefined) {
     throw new Error(t("cli.error.continue_requires_print"));
@@ -923,8 +1293,10 @@ async function dispatch(
       const ref = parseModelRef(config.model ?? "");
       const modelStr = ref ? `${ref.provider}/${ref.model}` : t("cli.error.no_model");
       const providerCount = Object.keys(config.provider).length;
-      const connectedCount = [...new Set(["anthropic", "google", "openai", ...Object.keys(config.provider)])]
-        .length;
+      const keychain = deps.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
+      const connectedCount = (await providerConnections(config, env, keychain)).filter(
+        (row) => row.connected,
+      ).length;
       const store = new SessionStore(
         deps.sessionsDir ?? storagePaths(workspaceRootOf(parsed, deps), env).sessionsDir,
       );
@@ -968,18 +1340,19 @@ Subcommands:
       if (parsed.subcommand === "status" || parsed.subcommand === undefined) {
         return daemonStatusCmd(parsed, deps, out, err);
       }
+      if (parsed.subcommand === "cancel") return daemonCancelCmd(parsed, deps, out);
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency daemon <subcommand>
 
 Subcommands:
-  status               Show daemon status for this workspace`);
+  status               Show daemon status for this workspace, with the turns that run
+  cancel <turn>        Stop a turn that runs`);
         return 0;
       }
-      throw new Error(t("cli.error.unknown_command", { command: `daemon ${parsed.subcommand ?? "(none)"}` }));
+      throw subcommandError("daemon", parsed.subcommand);
     case "update": {
-      const rollback = parsed.args.includes("--rollback");
       const { runUpdate } = await import("./update.ts");
-      const msg = await runUpdate({ currentVersion: VERSION, rollback });
+      const msg = await runUpdate({ currentVersion: VERSION, rollback: parsed.rollback });
       out(msg);
       return 0;
     }
@@ -992,6 +1365,13 @@ Subcommands:
       const { workspaceId } = await import("@agency/core");
       const instanceFile = join(instanceDir, `${workspaceId(workspaceRoot)}.json`);
       await runServe({ workspaceRoot, instanceFile });
+      return 0;
+    }
+    case "trust": {
+      const root = workspaceRootOf(parsed, deps);
+      const { createFileTrustStore } = await import("@agency/guard");
+      createFileTrustStore(join(dataDir(envOf(deps)), "trust.json")).trust(root);
+      out(t("cli.trust.accepted", { path: root }));
       return 0;
     }
     case "onboard": {
@@ -1009,6 +1389,22 @@ Subcommands:
     }
     case "plugin":
       return pluginCmd(parsed, deps, out, err);
+    case "mcp":
+      return mcpCmd({
+        action: parsed.subcommand,
+        name: parsed.args[0],
+        workspaceRoot: workspaceRootOf(parsed, deps),
+        ...(deps.configDir ? { configDir: deps.configDir } : {}),
+        env: envOf(deps),
+        ...(deps.keychain ? { keychain: deps.keychain } : {}),
+        ...(deps.openUrl ? { openUrl: deps.openUrl } : {}),
+        out,
+        err,
+      });
+    case "workflow":
+      return workflowCmd(parsed, deps, out, err);
+    case "review":
+      return reviewCmd(parsed, deps, out, err);
     default:
       throw new Error(t("cli.error.unknown_command", { command: String(parsed.command) }));
   }
@@ -1020,29 +1416,47 @@ export async function runEntrypoint(
 ): Promise<number> {
   const out = deps.out ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.err ?? ((line: string) => process.stderr.write(`${line}\n`));
-  if (!argv.includes("--help") && !argv.includes("-h") && !argv.includes("--version")) {
-    try {
-      const mod = await import("./update.ts");
-      mod
-        .checkStale(VERSION)
-        .then((latest) => {
-          if (latest) out(`Update available: ${VERSION} -> ${latest} (run agency update)`);
-        })
-        .catch(() => {
-          /* best-effort update check: network failures are non-fatal */
-        });
-    } catch {
-      /* best-effort: update module may not be available */
-    }
-  }
   try {
     return await dispatch(parseArgv(argv), deps, out, err);
   } catch (error) {
-    err(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    err(message);
+    // A script that parses stdout gets the failure there too, in the `error` shape of a turn result.
+    const flag = argv.indexOf("--format");
+    if (flag >= 0 && argv[flag + 1] === "json") {
+      const code = (error as { code?: unknown } | null)?.code;
+      out(
+        JSON.stringify({ error: { code: typeof code === "string" ? code : "internal", message } }, null, 2),
+      );
+    }
     return 1;
   }
 }
 
+/** Real CLI process only: tests call runEntrypoint and must reach neither the network nor the user's cache. */
+async function noteAvailableUpdate(argv: string[]): Promise<void> {
+  if (
+    process.env.AGENCY_NO_UPDATE_CHECK ||
+    argv.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))
+  ) {
+    return;
+  }
+  const { checkStale } = await import("./update.ts");
+  const latest = checkStale(VERSION, join(cacheDir(), "update-check.json"));
+  // stderr: a notice on stdout would corrupt `--format json` output.
+  if (latest)
+    process.stderr.write(`Update available: ${VERSION} -> ${latest} (run agency update)
+`);
+}
+
 if (import.meta.main) {
-  runEntrypoint().then((code) => process.exit(code));
+  if (process.argv[2] === DAEMON_COMMAND) {
+    await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
+  }
+  if (process.argv[2] === CODE_COMMAND) await runCodeChild();
+  if (process.argv[2] === SANDBOX_COMMAND) runSandboxChild();
+  ownerOnlyDirs();
+  await noteAvailableUpdate(process.argv.slice(2));
+  // Awaited: a bare promise does not hold the process open, and an empty stdin read then exits 0 with no output.
+  process.exit(await runEntrypoint());
 }

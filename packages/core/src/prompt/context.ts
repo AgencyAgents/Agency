@@ -89,7 +89,7 @@ export function gatherEnvironmentInfo(options: GatherEnvironmentOptions): Enviro
   const info: EnvironmentInfo = {
     platform: `${process.platform} ${release()} ${process.arch}`,
     cwd: options.cwd,
-    date: formatDate(options.now ?? new Date()),
+    date: environmentDate(options.now ?? new Date()),
     ...(options.shell === undefined ? {} : { shell: options.shell }),
   };
 
@@ -111,14 +111,14 @@ export function buildEnvironmentBlock(info: EnvironmentInfo): string {
         ? `dirty, ${info.git.changedFiles} changed file${info.git.changedFiles === 1 ? "" : "s"}`
         : "clean",
     );
-    lines.push(`git: branch ${info.git.branch} (${state.join(", ")})`);
+    lines.push(`git at session start: branch ${info.git.branch} (${state.join(", ")})`);
   }
   lines.push("</environment>");
   return lines.join("\n");
 }
 
 /** Local date only, e.g. "2026-09-02": coarse enough to keep the system cache. */
-function formatDate(date: Date): string {
+export function environmentDate(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }

@@ -47,6 +47,32 @@ describe("Redactor", () => {
     expect(redactor.redact("this is ok, totally ok")).toBe("this is ok, totally ok");
   });
 
+  test("the output of a command loses tokens by their shape; the text of a file tool keeps them", () => {
+    const redactor = new Redactor();
+    // Built at run time: a literal would look like a leaked key to a scanner.
+    const tokens = [
+      `ghp_${"a".repeat(36)}`,
+      `github_pat_${"b".repeat(60)}`,
+      `AKIA${"C".repeat(16)}`,
+      `xoxb-${"1".repeat(12)}-${"d".repeat(12)}`,
+      `npm_${"e".repeat(36)}`,
+      `sk-${"f".repeat(30)}`,
+      `-----BEGIN OPENSSH PRIVATE KEY-----\n${"g".repeat(40)}\n-----END OPENSSH PRIVATE KEY-----`,
+    ];
+    for (const token of tokens) {
+      for (const tool of ["bash", "code"]) {
+        expect(redactor.redactToolResult(`out: ${token} end`, tool)).toBe("out: [REDACTED] end");
+      }
+      // The model edits what it reads: a changed test key in a source file would make a wrong edit.
+      expect(redactor.redactToolResult(`out: ${token} end`, "read")).toBe(`out: ${token} end`);
+    }
+    redactor.registerSecret("registered-value");
+    expect(redactor.redactToolResult("a registered-value b", "read")).toBe("a [REDACTED] b");
+    // A file name that has "sk-" inside a word is not a key.
+    const listing = "risk-assessment-report-2026-final.md task-runner-configuration-v2";
+    expect(redactor.redactToolResult(listing, "bash")).toBe(listing);
+  });
+
   test("integrates with a logger sink to keep secrets out of log output", () => {
     const redactor = new Redactor();
     redactor.registerSecret("sk-ant-real-key-value");

@@ -1,4 +1,12 @@
+import type { SandboxBackend } from "@agency/guard";
+import { AgencyError, ErrorCode } from "@agency/schema";
+import {
+  asContainerExecBackend,
+  asContainerStdioBackend,
+  type ContainerStdioBackend,
+} from "../container-exec.ts";
 import type { McpServerConfig } from "./config.ts";
+import { type McpBearer, type McpTokenStore, mcpBearer } from "./oauth.ts";
 
 export interface McpTransport {
   start(): Promise<void>;
@@ -11,20 +19,80 @@ export interface McpTransport {
 
 export interface TransportOptions {
   adopt?: (proc: { pid?: number; kill: () => void }, command: string) => void;
+  /** Host cwd the container backend maps into the mount; unset keeps the backend default. */
+  cwd?: string;
+  /** The sign-ins of `agency mcp login`, for a server over HTTP. */
+  tokens?: McpTokenStore;
 }
 
 export function createMcpTransport(
-  _serverName: string,
+  serverName: string,
   config: McpServerConfig,
   options: TransportOptions = {},
 ): McpTransport {
   if (config.url) {
-    return createHttpTransport(config.url, config.headers, config.timeoutMs ?? config.requestTimeoutMs);
+    // An authorization header of the config wins over a sign-in.
+    const own = Object.keys(config.headers ?? {}).some((name) => name.toLowerCase() === "authorization");
+    const bearer = options.tokens && !own ? mcpBearer(config.url, options.tokens) : undefined;
+    return createHttpTransport(
+      serverName,
+      config.url,
+      config.headers,
+      config.timeoutMs ?? config.requestTimeoutMs,
+      bearer,
+    );
   }
   if (config.command) {
     return createStdioTransport(config.command, config.args ?? [], config.env ?? {}, options);
   }
   throw new Error(`MCP server config needs command or url`);
+}
+
+/**
+ * Routes stdio servers into the container when the sandbox offers the
+ * streaming spawn surface. HTTP/SSE configs always use the host HTTP
+ * transport; software sandboxes yield undefined so the manager keeps its
+ * default spawn path. An exec-only container backend fails closed with a
+ * typed error at selection time, never silently on the host.
+ */
+export function transportForWithContainerSandbox(
+  sandbox: SandboxBackend,
+  options: TransportOptions = {},
+): ((serverName: string, config: McpServerConfig) => McpTransport) | undefined {
+  const stdio = asContainerStdioBackend(sandbox);
+  if (stdio) {
+    return (_serverName, config) => {
+      if (config.url) return createMcpTransport(_serverName, config, options);
+      return createContainerStdioTransport(stdio, config, options);
+    };
+  }
+  if (asContainerExecBackend(sandbox) !== undefined) {
+    return (serverName, config) => {
+      if (config.url) return createMcpTransport(serverName, config, options);
+      throw new AgencyError(
+        ErrorCode.INTERNAL,
+        `MCP server "${serverName}" needs container stdio, but the sandbox backend has no streaming spawn surface`,
+        { source: "mcp-container-transport", context: { serverName } },
+      );
+    };
+  }
+  return undefined;
+}
+
+/** Spawns a stdio server across the mount; JSONL pumps and kill-on-close match the local path. */
+export function createContainerStdioTransport(
+  backend: ContainerStdioBackend,
+  config: McpServerConfig,
+  options: TransportOptions = {},
+): McpTransport {
+  if (!config.command) throw new Error(`MCP server config needs command or url`);
+  const argv = [config.command, ...(config.args ?? [])];
+  const env = config.env ?? {};
+  return createStdioTransportFromChild(
+    () => backend.spawnStdio(argv, { ...(options.cwd !== undefined ? { cwd: options.cwd } : {}), env }),
+    config.command,
+    options,
+  );
 }
 
 function parseSseBlock(block: string): Record<string, unknown> | undefined {
@@ -53,14 +121,19 @@ function parseSseBlock(block: string): Record<string, unknown> | undefined {
 }
 
 function createHttpTransport(
+  serverName: string,
   url: string,
   headers?: Record<string, string>,
   timeoutMs?: number,
+  bearer?: McpBearer,
 ): McpTransport {
+  const authorization = (token: string | undefined): Record<string, string> =>
+    token ? { authorization: `Bearer ${token}` } : {};
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
   let closeHandler: (() => void) | undefined;
   const abortController = new AbortController();
   let streamStarted = false;
+  let sessionId: string | undefined;
 
   /** Pump a ReadableStream body for SSE frames, feeding each parsed message to handler. */
   async function pumpSse(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
@@ -135,6 +208,7 @@ function createHttpTransport(
             method: "GET",
             headers: {
               accept: "text/event-stream",
+              ...authorization(await bearer?.token()),
               ...(headers ?? {}),
             },
             signal: abortController.signal,
@@ -157,15 +231,33 @@ function createHttpTransport(
       void pump();
     },
     async send(message) {
-      const res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-          ...(headers ?? {}),
-        },
-        body: JSON.stringify(message),
-      });
+      const post = (token: string | undefined) =>
+        fetchWithTimeout(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
+            ...authorization(token),
+            ...(headers ?? {}),
+          },
+          body: JSON.stringify(message),
+        });
+      let res = await post(await bearer?.token());
+      if (res.status === 401) {
+        // A refused token gets one refresh; with no sign-in, or a refresh that fails, the user signs in again.
+        const fresh = await bearer?.refresh();
+        if (fresh) res = await post(fresh);
+        if (res.status === 401) {
+          throw new AgencyError(
+            ErrorCode.AUTH,
+            `MCP server "${serverName}" needs a sign-in: run \`agency mcp login ${serverName}\``,
+            { source: "mcp-transport", context: { serverName } },
+          );
+        }
+      }
+      // A server with sessions gives the id in the handshake and refuses later requests without it.
+      sessionId = res.headers.get("mcp-session-id") ?? sessionId;
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`MCP HTTP ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 500)}` : ""}`);
@@ -223,7 +315,35 @@ function createStdioTransport(
   env: Record<string, string>,
   options: TransportOptions,
 ): McpTransport {
-  let proc: ReturnType<typeof Bun.spawn> | undefined;
+  return createStdioTransportFromChild(
+    () =>
+      Bun.spawn([command, ...args], {
+        env: { ...process.env, ...env } as Record<string, string>,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    command,
+    options,
+  );
+}
+
+/** Piped child subset the JSONL pumps drive; both Bun.spawn results and container children fit. */
+interface StdioChild {
+  readonly stdin: unknown;
+  readonly stdout: unknown;
+  readonly stderr: unknown;
+  readonly exited: Promise<number>;
+  readonly pid?: number;
+  kill(): void;
+}
+
+function createStdioTransportFromChild(
+  startChild: () => StdioChild | Promise<StdioChild>,
+  command: string,
+  options: TransportOptions,
+): McpTransport {
+  let proc: StdioChild | undefined;
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
   let closeHandler: (() => void) | undefined;
   let stderrBuf = "";
@@ -236,17 +356,12 @@ function createStdioTransport(
 
   return {
     async start() {
-      proc = Bun.spawn([command, ...args], {
-        env: { ...process.env, ...env } as Record<string, string>,
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      proc = await startChild();
       if (options.adopt && proc.pid) {
         options.adopt({ pid: proc.pid, kill: () => proc?.kill() }, command);
       }
       if (proc.stdout && typeof proc.stdout !== "number") {
-        const reader = proc.stdout.getReader();
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
         let buf = "";
         const pump = async () => {
           while (true) {
@@ -272,7 +387,7 @@ function createStdioTransport(
         void pump();
       }
       if (proc.stderr && typeof proc.stderr !== "number") {
-        const reader = proc.stderr.getReader();
+        const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
         const pumpErr = async () => {
           while (true) {
             const { value, done } = await reader.read();

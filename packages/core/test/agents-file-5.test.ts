@@ -52,6 +52,55 @@ describe("phase 5 file-based agents", () => {
     }
   });
 
+  test("an agent file that is not valid is skipped with a warning, and the other files load", () => {
+    const ws = makeDir("one-bad");
+    const userDir = makeDir("one-bad-user");
+    try {
+      writeText(join(ws, ".agency", "agents", "coder.md"), CODER_OVERRIDE);
+      writeText(join(ws, ".agency", "agents", "broken.md"), "---\nrole: broken\nreplace: maybe\n---\nbody\n");
+      const warnings: string[] = [];
+      const roster = resolveFileRoster({
+        workspaceRoot: ws,
+        configDirOverride: userDir,
+        configAgents: { ...DEFAULT_ROSTER },
+        seed: false,
+        warn: (message) => warnings.push(message),
+      });
+      expect(roster.agents.get("coder")?.model).toBe("gpt-test");
+      expect(roster.agents.has("broken")).toBe(false);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("broken.md");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(userDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an untrusted project contributes no agent file", () => {
+    const ws = makeDir("untrusted");
+    const userDir = makeDir("untrusted-user");
+    try {
+      writeText(join(ws, ".agency", "agents", "coder.md"), CODER_OVERRIDE);
+      writeText(
+        join(userDir, "agents", "explorer.md"),
+        CODER_OVERRIDE.replace("role: coder", "role: explorer"),
+      );
+      const roster = resolveFileRoster({
+        workspaceRoot: ws,
+        configDirOverride: userDir,
+        configAgents: { ...DEFAULT_ROSTER },
+        projectTrusted: false,
+      });
+      expect(existsSync(join(ws, ".agency", "agents", "leader.md"))).toBe(false);
+      expect(roster.agents.get("coder")?.source).toBe("config");
+      expect(roster.agents.get("coder")?.model).toBe(DEFAULT_ROSTER.coder?.model);
+      expect(roster.agents.get("explorer")?.source).toBe("user");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(userDir, { recursive: true, force: true });
+    }
+  });
+
   test("first run seeds default roster files into the project", () => {
     const ws = makeDir("seed");
     const userDir = makeDir("seed-user");

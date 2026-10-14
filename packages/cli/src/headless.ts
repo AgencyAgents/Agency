@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { configDir, dataDir, loadConfig } from "@agency/core";
+import { collectAgentsFiles, collectRuleFiles, configDir, dataDir, loadConfig } from "@agency/core";
 import type { PermissionMode } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { ThinkingLevel } from "@agency/providers";
-import { type DaemonClient, type EnsureDaemonOptions, ensureDaemon } from "@agency/rpc";
+import {
+  type DaemonClient,
+  DEFAULT_SPAWN_TIMEOUT_MS,
+  type EnsureDaemonOptions,
+  ensureDaemon,
+} from "@agency/rpc";
 import type { ImageBlock, Message } from "@agency/schema";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
 
@@ -21,12 +27,25 @@ export interface RunHeadlessOptions {
   images?: ImageBlock[];
   thinkingLevel?: ThinkingLevel;
   permissionMode?: PermissionMode;
+  maxToolIterations?: number;
+  budget?: RunTurnParams["budget"];
+  outputSchema?: Record<string, unknown>;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
 }
 
 const DEFAULT_DAEMON_ENTRY = join(import.meta.dir, "daemon-entry.ts");
+
+/** Hidden entrypoint command: a compiled binary re-runs itself as the daemon. */
+export const DAEMON_COMMAND = "__daemon";
+const STANDALONE = /^(B:[\\/]~BUN|\/\$bunfs)[\\/]/.test(Bun.main);
+
+/** A user machine has no `bun` on PATH and no source files, so never spawn either by name. */
+function daemonArgv(entry?: string): string[] {
+  if (entry === undefined && STANDALONE) return [process.execPath, DAEMON_COMMAND];
+  return [process.execPath, "run", entry ?? DEFAULT_DAEMON_ENTRY];
+}
 
 /** Where per-workspace daemon instance files live, alongside Agency's other data dirs. */
 export function defaultInstanceDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -42,6 +61,17 @@ export interface HeadlessConnectOptions {
   daemonEntryPath?: string;
   /** Log sink for progress messages (spawn, connect, trust). Defaults to console.error. */
   log?: (msg: string) => void;
+}
+
+/** True when the workspace holds content that the daemon loads only after `agency trust`. */
+export function hasTrustGatedContent(workspaceRoot: string): boolean {
+  return (
+    collectAgentsFiles(workspaceRoot, workspaceRoot).length + collectRuleFiles(workspaceRoot).length > 0 ||
+    ["plugins", "skills", "agents", "commands", "hooks", "mcp"].some((dir) =>
+      existsSync(join(workspaceRoot, ".agency", dir)),
+    ) ||
+    existsSync(join(workspaceRoot, ".mcp.json"))
+  );
 }
 
 /**
@@ -74,6 +104,9 @@ export async function connectHeadlessClient(
       log(t("cli.trust.denied", { path: options.workspaceRoot }));
       throw new Error(t("trust.denied"));
     }
+  } else if (!trusted && hasTrustGatedContent(options.workspaceRoot)) {
+    // Silence here would hide that the model runs without the project's own rules.
+    log(t("cli.trust.instructions_skipped"));
   }
 
   return ensureDaemon({
@@ -84,16 +117,15 @@ export async function connectHeadlessClient(
       log(t("cli.daemon.spawning", { workspace: options.workspaceRoot }));
       Bun.spawn(
         [
-          "bun",
-          "run",
-          options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY,
+          ...daemonArgv(options.daemonEntryPath),
           "--workspace",
           options.workspaceRoot,
           "--instance-file",
           instanceFile,
         ],
-        { stdio: ["ignore", "ignore", "ignore"] },
-      );
+        // Detached: without it Windows kills the daemon when this CLI exits, so no later run could reuse it.
+        { stdio: ["ignore", "ignore", "ignore"], detached: true },
+      ).unref();
     },
   })
     .then((result) => {
@@ -104,7 +136,7 @@ export async function connectHeadlessClient(
       // Wrap timeout errors with actionable diagnostics.
       if (error instanceof Error && error.message.includes("did not become ready")) {
         const entry = options.daemonEntryPath ?? DEFAULT_DAEMON_ENTRY;
-        throw new Error(t("cli.daemon.timeout", { timeout: "5000", entry }));
+        throw new Error(t("cli.daemon.timeout", { timeout: String(DEFAULT_SPAWN_TIMEOUT_MS), entry }));
       }
       throw error;
     });
@@ -138,6 +170,9 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       thinkingLevel: options.thinkingLevel,
       session,
       permissionMode: options.permissionMode,
+      maxToolIterations: options.maxToolIterations,
+      ...(options.budget === undefined ? {} : { budget: options.budget }),
+      ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),
       nonInteractive: true,
       ...(options.images?.length ? { images: options.images } : {}),
     };

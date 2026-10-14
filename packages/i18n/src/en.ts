@@ -14,6 +14,7 @@ export const en = {
   "error.refusal": "{source} declined to complete this request.",
   "error.tool_error": "The {source} tool failed: {detail}",
   "error.permission_denied": "{source} isn't allowed to do that: {detail}",
+  "error.invalid_request": "The request is not valid: {detail}",
   "error.internal": "Something went wrong inside Agency. Run `agency debug` to file a report.",
 
   "config.invalid": "Config at {path} is invalid: {detail}",
@@ -87,7 +88,9 @@ export const en = {
   "tool.write.unread_overwrite":
     "[note: {path} existed but was never read this session — read it to confirm the overwrite matches your intent]",
   "tool.edit.not_found":
-    "edit rejected: the expected text was not found, the file has changed since it was last read",
+    "edit rejected: the expected text is not in the file. Read the file, then send the edit again with the exact text from the file.",
+  "tool.edit.not_found_near":
+    "edit rejected: the expected text is not in the file with these line breaks. The file has this text:\n{text}\nSend the edit again with this exact text as oldText.",
   "tool.edit.ambiguous":
     "edit rejected: the expected text appears {count} times, include more surrounding context to make it unique, or pass replaceAll",
   "tool.edit.missing_file": "cannot edit {path}: it doesn't exist yet, use write instead",
@@ -96,6 +99,8 @@ export const en = {
   "tool.edit.bad_input": "edit rejected: pass either oldText+newText or a non-empty hunks array, not both",
   "tool.edit.empty_hunk": "edit rejected: hunk {index} has empty oldText",
   "tool.bash.background_started": "started background process {id} (pid {pid})",
+  "tool.bash.background_refused":
+    "background: true is not available with this sandbox backend: the command would run outside the sandbox. Run it in the foreground.",
   "tool.bash.truncated": "[truncated: output exceeded {bytes} bytes; full output saved to {path}]",
   "tool.bash.truncated_no_spill": "[truncated: output exceeded {bytes} bytes]",
   "tool.bash.cancelled": "[cancelled: command aborted before completion]",
@@ -154,19 +159,37 @@ export const en = {
 
   "cli.tui.hint": "Agency TUI: run in a terminal with a TTY. Use --help for commands.",
   "cli.error.unknown_command": 'Unknown command "{command}". Run `agency --help`.',
+  "cli.error.missing_subcommand": '"{command}" needs a subcommand. Run `agency --help`.',
   "cli.error.unknown_option": 'Unknown option "{flag}". Run `agency --help`.',
   "cli.error.missing_value": "Option {flag} needs a value.",
-  "cli.error.invalid_format": '--format must be "text" or "json".',
-  "cli.error.invalid_permission_mode": '--permission-mode must be "ask", "allow-edits", or "deny".',
+  "cli.error.image_unreadable": "Cannot read the image file {path}.",
+  "cli.error.invalid_format": '--format must be "text", "json" or "stream-json".',
+  "cli.error.invalid_max_cost": "--max-cost must be a number above 0, in USD.",
+  "cli.error.budget_exceeded": "budget_exceeded: the turn reached its cost limit: the task is not finished",
+  "cli.error.workflow_no_default": 'The workflow file "{file}" has no default export that is a function.',
+  "cli.error.workflow_arg": '--arg needs the form key=value, and got "{value}".',
+  "cli.error.no_structured_output": "The model ended the turn with no structured answer.",
+  "cli.error.schema_session": "--json-schema works for a one-shot run only: remove --session or --continue.",
+  "cli.error.invalid_schema": "--json-schema needs a JSON Schema, as a file or as text: {detail}",
+  "cli.error.review_git": "git could not give the changes: {detail}",
+  "cli.review.no_changes": "no changes to review",
+  "cli.workflow.agent_start": "[agent {n}] start: {prompt}",
+  "cli.workflow.agent_end": "[agent {n}] end: {reason}",
+  "cli.error.invalid_permission_mode":
+    '--permission-mode must be "ask", "allow-edits", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
+  "cli.error.invalid_max_steps": "--max-steps must be a whole number of 1 or more.",
+  "cli.error.goal_needs_session": "--goal needs --session <id> or --continue: a goal belongs to a session.",
   "cli.error.print_with_command": "Choose either a command or -p/--print, not both.",
+  "cli.error.empty_stdin_prompt": "No prompt on stdin. -p - reads the prompt from a pipe or a file.",
   "cli.error.continue_requires_print": "--continue and --session need -p/--print to run a turn.",
   "cli.error.session_conflict": "Use either --continue or --session, not both.",
   "cli.error.no_model": "No model configured. Run `agency onboard` or pass --model provider/model.",
   "cli.error.provider_without_model":
     "No default model id to pair with {provider}. Pass --model provider/model.",
   "cli.error.no_key": "No API key for {provider}. Run `agency auth login {provider}`.",
-  "cli.error.no_sessions": "No sessions to continue.",
+  "cli.error.no_sessions":
+    "No sessions to continue. A run with -p keeps a session only when it has --session <name>.",
   "cli.error.unknown_session": 'Unknown session "{id}".',
   "cli.error.session_delete_usage": "usage: agency session delete <id>",
   "cli.error.auth_login_usage": "usage: agency auth login <provider>",
@@ -176,6 +199,13 @@ export const en = {
   "cli.auth.key_prompt": "API key for {provider}:",
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
+  "cli.mcp.usage": "Usage: agency mcp login <server> | agency mcp logout <server>",
+  "cli.mcp.unknown": 'No MCP server "{name}". Servers: {names}',
+  "cli.mcp.local": 'MCP server "{name}" runs as a local command: only a server with a url has a sign-in.',
+  "cli.mcp.opening": "Opening the browser to sign in to {name}. If it does not open, visit:\n{url}",
+  "cli.mcp.signed_in": "Signed in to {name}. A new session uses the sign-in.",
+  "cli.mcp.signed_out": "Signed out of {name}.",
+  "cli.mcp.failed": "Sign-in to {name} failed: {reason}",
   "cli.session.deleted": "Deleted session {id}.",
   "cli.session.shown": "Session {id}: {entries} entries, created {createdAt}.",
   "cli.session.renamed": "Session {id} renamed to {title}.",
@@ -190,10 +220,14 @@ export const en = {
 
   "cli.daemon.status": "Daemon: {status} on port {port} (pid {pid})",
   "cli.daemon.not_running": "Daemon: not running",
+  "cli.daemon.turn": "  turn {turnId}  session {sessionId}  {model}  since {startedAt}",
+  "cli.daemon.cancelled": "Turn {turnId}: cancel sent.",
+  "cli.daemon.no_such_turn":
+    'No turn "{turnId}" runs in this daemon. `agency daemon status` lists the turns.',
   "cli.daemon.spawning": "Starting daemon for {workspace}...",
   "cli.daemon.connected": "Daemon connected on port {port}.",
   "cli.daemon.timeout":
-    "Daemon did not become ready within {timeout}ms. Check that `bun` is installed and the daemon entry exists at {entry}.",
+    "Daemon did not become ready within {timeout}ms. On a slow or busy machine it can still be starting: run the command again. Daemon entry: {entry}.",
   "cli.daemon.status_usage": "usage: agency daemon status",
 
   "cli.health.title": "Agency {version}",
@@ -206,12 +240,17 @@ export const en = {
   "cli.progress.tool": "Tool: {name}",
   "cli.progress.text": "{text}",
   "cli.progress.heartbeat": ".",
+  "cli.progress.retry": "Retry {attempt}: {message}",
   "cli.progress.turn_complete": "Turn complete ({reason}).",
 
   "cli.trust.checking": "Checking trust for {path}...",
   "cli.trust.prompt": "Trust {path}? (y/N): ",
   "cli.trust.accepted": "Trusted {path}.",
   "cli.trust.denied": "Trust denied for {path}.",
+  "cli.plugin.untrusted":
+    "This workspace is not trusted, so the installed files do not load. Run `agency trust` to load them.",
+  "cli.trust.instructions_skipped":
+    "Project instructions, plugins, skills, hooks, MCP servers, agent files and command files were not loaded: this workspace is not trusted. Run `agency trust` to load them.",
 
   "debug.written": "Debug bundle written to {path}. It contains no secrets; review before attaching.",
 } as const;

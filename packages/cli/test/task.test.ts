@@ -6,6 +6,7 @@ import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon, type RunTurnRpcResult } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -116,6 +117,122 @@ describe("task ephemeral workers", () => {
     expect(existsSync(tracePath)).toBe(true);
     const cassettePath = join(sdir, `${tr.childSessionId}.${tr.childTurnId}.cassette.json`);
     expect(existsSync(cassettePath)).toBe(true);
+  });
+
+  test("a worker that did not finish returns an error result, not a normal one", async () => {
+    const root = tempRepo();
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (request.messages[0]?.role === "user") {
+          // The worker: its stream dies after some text, so its turn ends with an error and partial work.
+          yield { type: "text_delta", text: "half of the answer" };
+          throw new AgencyError(ErrorCode.NETWORK, "connection reset", { source: "fake" });
+        }
+        const hasToolResult = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if (!hasToolResult) {
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ prompt: "worker task" }),
+          };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "parent done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const daemon = await createAgentDaemon({
+      workspaceRoot: root,
+      instanceFile: join(root, ".agency", "instance.json"),
+      adapterFor: () => adapter,
+      http: noopHttp,
+    });
+    daemons.push(daemon);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+    clients.push(client);
+
+    const result = (await client.call("run_turn", {
+      turnId: "t-worker-cut",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+      sessionId: "test-worker-cut",
+    })) as RunTurnRpcResult;
+
+    const block = result.messages
+      .flatMap((message) => message.content)
+      .find((b) => b.type === "tool_result") as { content: string; isError: boolean } | undefined;
+    expect(block?.isError).toBe(true);
+    expect(block?.content).toContain("network: connection reset");
+    expect(block?.content).toContain("half of the answer");
+  }, 60_000);
+
+  test("a worker asked to run on a provider with no key stays on the parent's provider: the key never goes elsewhere", async () => {
+    const root = tempRepo();
+    const seen: Array<{ provider: string; apiKey: string }> = [];
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push({ provider, apiKey: request.apiKey });
+        const texts = request.messages.flatMap((m) =>
+          m.content.map((b) => (b as { text?: string }).text ?? ""),
+        );
+        const isWorker = texts.some((t) => t.startsWith("worker task"));
+        const hasToolResult = request.messages.some((m) =>
+          m.content.some((b) => (b as { type: string }).type === "tool_result"),
+        );
+        if (!isWorker && !hasToolResult) {
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ prompt: "worker task", model: "openai/gpt-x" }),
+          };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: isWorker ? "worker done" : "parent done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = { a: process.env.AGENCY_OPENAI_API_KEY, b: process.env.OPENAI_API_KEY };
+    delete process.env.AGENCY_OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const daemon = await createAgentDaemon({
+        workspaceRoot: root,
+        instanceFile: join(root, ".agency", "instance.json"),
+        adapterFor,
+        http: noopHttp,
+      });
+      daemons.push(daemon);
+      const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+      clients.push(client);
+
+      const result = (await client.call("run_turn", {
+        turnId: "t-keyless-worker",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "parent-key",
+        systemPrompt: "sys",
+        session: [],
+        sessionId: "test-keyless-worker",
+      })) as RunTurnRpcResult;
+
+      expect(result.stopReason).toBe("end_turn");
+      expect(seen.filter((call) => call.provider !== "anthropic")).toEqual([]);
+      expect(seen).toHaveLength(3);
+    } finally {
+      if (saved.a !== undefined) process.env.AGENCY_OPENAI_API_KEY = saved.a;
+      if (saved.b !== undefined) process.env.OPENAI_API_KEY = saved.b;
+    }
   });
 
   test("depth denial: nested task denied with clean error", async () => {

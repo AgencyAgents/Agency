@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildEnvironmentBlock,
+  CALL_TOOL,
+  CODE_TOOL,
   compact,
   composeSystemPrompt,
+  gatherEnvironmentInfo,
   generateTitle,
   getSessionTitle,
+  modelSummarizer,
   newEntryId,
   projectSessionView,
   resolveSmallModel,
   runChildTurn,
+  type Summarizer,
   summarizeTranscript,
+  TOOL_SEARCH,
   type ToolSpec,
+  withOverhead,
 } from "@agency/core";
 import type { Capabilities, PermissionsGate } from "@agency/guard";
 import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
@@ -23,21 +31,61 @@ import {
   type SessionScope,
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
-import { priceForModel } from "../costing.ts";
+import { modelRunOptions } from "../costing.ts";
 import { handleForSession } from "../team-context.ts";
 import {
   type DaemonContext,
-  oauthOverridesFor,
+  keySourcesFor,
+  projectInstructions,
   type RunTurnParams,
   type SessionMessageParams,
   type SessionSendParams,
   type SessionSendResult,
+  STRUCTURED_OUTPUT_TOOL,
 } from "../types.ts";
-import { executeTurn } from "./turn.ts";
+import { setSessionGoal } from "./goal.ts";
+import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 
 /** Fallback window for daemon-side proactive compaction, matching the
  *  former client default until the catalog supplies a real one. */
 const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
+
+/** The summarizer of a session's compaction: its own model writes the summary. With no key, the offline one. */
+export function sessionSummarizer(
+  ctx: DaemonContext,
+  provider: string,
+  model: string,
+  /** Instructions for this one summary (`/compact <session> <text>`): they go after those of the config. */
+  extraInstructions?: string,
+): Summarizer {
+  let inner: Summarizer | undefined;
+  const wanted = [ctx.config.compactionInstructions, extraInstructions].filter(Boolean).join("\n");
+  const summarize: Summarizer = async (transcript, instructions) => {
+    if (inner === undefined) {
+      const apiKey = await resolveApiKey({
+        provider,
+        env: process.env,
+        keychain: await ctx.getKeychain().catch(() => undefined),
+        config: ctx.providers[provider]?.apiKey,
+        ...keySourcesFor(provider, ctx.providers),
+      }).catch(() => undefined);
+      const maxTokens = ctx.catalogModel(provider, model)?.maxOutputTokens;
+      inner = apiKey
+        ? modelSummarizer({
+            adapter: ctx.adapterFor(provider),
+            http: ctx.http,
+            model,
+            apiKey,
+            ...(maxTokens ? { maxTokens } : {}),
+            ...(wanted ? { instructions: wanted } : {}),
+          })
+        : async (text) => summarizeTranscript(text);
+    }
+    return inner(transcript, instructions);
+  };
+  summarize.detailed = true;
+  return summarize;
+}
 
 export async function generateSessionTitle(
   ctx: DaemonContext,
@@ -65,7 +113,7 @@ export async function generateSessionTitle(
               env: process.env,
               keychain: kc,
               config: providers[smallModelRef.provider]?.apiKey,
-              ...oauthOverridesFor(smallModelRef.provider, providers),
+              ...keySourcesFor(smallModelRef.provider, providers),
             });
             if (smallApiKey) {
               // Background-turn cheap routing: titles run on the cheapest
@@ -114,7 +162,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_delete = async (rawParams) => {
     const { sessionId } = rawParams as { sessionId: string };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_delete requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_delete requires sessionId", {
         source: "session",
       });
     const scope = sessionScopes.get(sessionId);
@@ -125,6 +173,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       sessionScopes.delete(sessionId);
     }
     approvalManagers.delete(sessionId);
+    // A session has one end here: its removal. Only a session that exists has an end.
+    if (todoStore.list().includes(sessionId)) {
+      try {
+        ctx.eventBus.emit("session.end", { sessionId, reason: "other" });
+      } catch {}
+    }
     try {
       todoStore.delete(sessionId);
     } catch {}
@@ -137,11 +191,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       label?: string;
     };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_fork requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_fork requires sessionId", {
         source: "session",
       });
     if (todoStore.load(sessionId).length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const entry = await todoStore.fork(sessionId, {
@@ -156,11 +210,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       newSessionId?: string;
     };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_clone requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_clone requires sessionId", {
         source: "session",
       });
     if (todoStore.load(sessionId).length === 0)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const meta = todoStore.clone(
@@ -172,33 +226,71 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_show = async (rawParams) => {
     const { sessionId, tipId } = rawParams as { sessionId: string; tipId?: string };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_show requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_show requires sessionId", {
         source: "session",
       });
     const view = projectSessionView(todoStore, sessionId, tipId);
     if (!view)
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown session: ${sessionId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
         source: "session",
       });
     const budget = ctx.sessionBudgets.get(sessionId);
     return { ...view, ...(budget === undefined ? {} : { budget }) };
   };
+  // One turn at a time for each session: two sends that start from the same tip fork the history, and one turn is lost.
+  const sendQueues = new Map<string, Promise<unknown>>();
   handlers.session_send = async (rawParams, context) => {
     const p = rawParams as SessionSendParams;
     if (!p.sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires sessionId", {
         source: "session",
       });
     if (!p.userText)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_send requires userText", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_send requires userText", {
         source: "session",
       });
+    // Owned while it waits: a disconnect removes the owner, and a turn with no owner does not start.
+    const turnId = p.turnId ?? randomUUID();
+    ctx.turnOwners.set(turnId, context.clientId);
+    const turn = (sendQueues.get(p.sessionId) ?? Promise.resolve()).then(() => {
+      if (!ctx.turnOwners.has(turnId))
+        throw new AgencyError(ErrorCode.INTERNAL, "the client left before its turn started", {
+          source: "session",
+        });
+      return sendTurn({ ...p, turnId }, context);
+    });
+    const settled = turn.catch(() => {});
+    sendQueues.set(p.sessionId, settled);
+    void settled.then(() => {
+      ctx.turnOwners.delete(turnId);
+      if (sendQueues.get(p.sessionId) === settled) sendQueues.delete(p.sessionId);
+    });
+    return turn;
+  };
+  const sendTurn = async (
+    p: SessionSendParams,
+    context: { clientId: string },
+  ): Promise<SessionSendResult> => {
     const store = todoStore;
-    if (!store.list().includes(p.sessionId)) store.create(p.sessionId);
+    if (!store.list().includes(p.sessionId)) {
+      store.create(p.sessionId);
+      // The turn handler sees a session that holds its first prompt already, and does not take it for a new one.
+      const start = { sessionId: p.sessionId, workspaceRoot: ctx.options.workspaceRoot };
+      try {
+        ctx.eventBus.emit("session.start", start);
+        ctx.eventBus.emit("event", { event: "session.start", payload: start });
+      } catch {}
+    }
     const family = providers[p.provider]?.family ?? p.provider;
     const tokenizer = tokenizerFor(family);
-    const threshold = { contextWindow: p.contextWindow ?? DEFAULT_SESSION_CONTEXT_WINDOW };
-    const summarize = (text: string): Promise<string> => Promise.resolve(summarizeTranscript(text));
+    // The model's own window, not a fixed guess: a small-window model overflows long before 200k tokens.
+    const window = p.contextWindow ?? ctx.catalogModel(p.provider, p.model)?.contextWindow;
+    const threshold = {
+      contextWindow: window || DEFAULT_SESSION_CONTEXT_WINDOW,
+      ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
+    };
+    const summarize = sessionSummarizer(ctx, p.provider, p.model);
+    if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
     // undo_run restores this tip, so the whole turn (user text included) rolls back.
@@ -216,17 +308,18 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
     });
     let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
-    let sliceBase = history.length;
     // Reactive compaction forks the branch, so new appends rebase onto
     // the compacted tip instead of the orphaned pre-compaction entry.
-    let appendBase: string | null = userEntry.id;
-    const onContextOverflow = async (): Promise<Message[]> => {
-      const outcome = await compact(store, p.sessionId, userEntry.id, tokenizer, threshold, summarize, 4, {
+    let tip: string | null = userEntry.id;
+    const onContextOverflow = async (overheadTokens = 0): Promise<Message[]> => {
+      // From the current tip, not the prompt: the steps this turn has done stay in the model's view.
+      const from = tip ?? userEntry.id;
+      const room = withOverhead(threshold, overheadTokens);
+      const outcome = await compact(store, p.sessionId, from, tokenizer, room, summarize, 4, {
         force: true,
       });
       history = store.messagesFor(store.load(p.sessionId), outcome.tipId);
-      sliceBase = history.length;
-      appendBase = outcome.tipId;
+      tip = outcome.tipId;
       compacted = true;
       return history;
     };
@@ -242,24 +335,35 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       session: history,
       budget: p.budget ?? sessionBudgets.get(p.sessionId),
       permissionMode: p.permissionMode,
+      maxToolIterations: p.maxToolIterations,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
     };
-    let result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+    // Each message is stored as the turn produces it: a failed turn or a dead daemon keeps the finished steps.
+    const onMessage = async (message: Message): Promise<void> => {
+      tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
+    };
+    const hooks = { onContextOverflow, onMessage };
+    let result: Awaited<ReturnType<typeof executeTurn>>;
+    try {
+      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
+    } catch (error) {
+      // A prompt that a hook refused is not part of the session: the model must not see it in the next turn.
+      if (error instanceof AgencyError && error.source === PROMPT_HOOK_SOURCE) {
+        await store.rollback(p.sessionId, checkpoints.pop() ?? null);
+      }
+      throw error;
+    }
     if (result.needsCompaction) {
       history = await onContextOverflow();
       runParams.session = history;
-      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, { onContextOverflow });
+      result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
     }
-    let parentId: string | null = appendBase;
-    for (const message of result.messages.slice(sliceBase)) {
-      const appended = await store.append(p.sessionId, { type: "message", parentId, message });
-      parentId = appended.id;
-    }
-    parentId = await appendUsageEntry(store, p.sessionId, parentId, {
+    const served = result.servedBy ?? p;
+    const parentId = await appendUsageEntry(store, p.sessionId, tip, {
       usage: result.usage,
-      model: p.model,
-      pricing: ctx.catalogModel(p.provider, p.model)?.pricing,
+      model: served.model,
+      pricing: ctx.catalogModel(served.provider, served.model)?.pricing,
     });
     const response: SessionSendResult = {
       ...result,
@@ -273,11 +377,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
   handlers.session_message = async (rawParams) => {
     const { sessionId, text } = rawParams as SessionMessageParams;
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires sessionId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires sessionId", {
         source: "session",
       });
     if (!text)
-      throw new AgencyError(ErrorCode.INTERNAL, "session_message requires text", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires text", {
         source: "session",
       });
     const box = sessionInboxes.get(sessionId) ?? [];
@@ -290,7 +394,9 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
 
 export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): readonly string[] | "*" {
   const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
-  return offered.length === list.length ? ("*" as const) : offered.map((t) => t.name);
+  if (offered.length === list.length) return "*" as const;
+  // The tools that a turn adds are not in `list`. A turn adds one only when the gate offers it.
+  return [...offered.map((t) => t.name), TOOL_SEARCH, CALL_TOOL, CODE_TOOL, STRUCTURED_OUTPUT_TOOL];
 }
 
 export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {
@@ -343,9 +449,28 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     warnPersistence,
   } = daemon;
   const spawnMaxDepth = (config as unknown as { spawn?: { maxDepth?: number } }).spawn?.maxDepth ?? 1;
+  // An agent with a description is a type that the model can choose: the roster holds the files of the config folder and the workspace.
+  type AgentType = {
+    description?: string;
+    provider?: string;
+    model?: string;
+    tools?: string[];
+    systemPrompt?: string;
+  };
+  const agentTypes = Object.entries(
+    (config as unknown as { agents?: Record<string, AgentType> }).agents ?? {},
+  )
+    .filter(([, agent]) => agent.description)
+    .map(([name, agent]) => ({ ...agent, name, description: agent.description ?? "" }));
   return createSpawnTool({
     maxDepth: spawnMaxDepth,
+    agentTypes,
     runTask: async (input, ctx) => {
+      const agentType = agentTypes.find((type) => type.name === input.agent);
+      if (input.agent !== undefined && agentType === undefined) {
+        const names = agentTypes.map((type) => type.name).join(", ") || "none";
+        return { content: `unknown agent type: ${input.agent}. The types are: ${names}`, isError: true };
+      }
       const parentTurnId = ctx.turnId;
       const parentSessionId = ctx.sessionId ?? "default";
       const meta = parentTurnId ? activeTurnMeta.get(parentTurnId) : undefined;
@@ -356,8 +481,8 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
       const parentTools = meta?.tools ?? scope.registry.list();
 
-      let childProvider = parentProvider;
-      let childModel = parentModel;
+      let childProvider = agentType?.provider ?? parentProvider;
+      let childModel = agentType?.model ?? parentModel;
       if (typeof input.model === "string" && input.model.length > 0) {
         const slash = input.model.indexOf("/");
         if (slash > 0) {
@@ -370,20 +495,24 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
 
       let childApiKey = parentApiKey;
       if (childProvider !== parentProvider) {
+        let own: string | undefined;
         try {
-          const kc = await getKeychain();
-          const k = await resolveApiKey({
+          own = await resolveApiKey({
             provider: childProvider,
             env: process.env,
-            keychain: kc,
+            keychain: await getKeychain(),
             config: providers[childProvider]?.apiKey,
-            ...oauthOverridesFor(childProvider, providers),
+            ...keySourcesFor(childProvider, providers),
           });
-          if (k) {
-            childApiKey = k;
-            redactor.registerSecret(k);
-          }
         } catch {}
+        if (own) {
+          childApiKey = own;
+          redactor.registerSecret(own);
+        } else {
+          // No key for the requested provider: the parent's key must not go to another vendor.
+          childProvider = parentProvider;
+          childModel = parentModel;
+        }
       }
 
       const childSessionId = newEntryId();
@@ -394,18 +523,30 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       } catch (error: unknown) {
         warnPersistence("todoStore.create", error);
       }
+      try {
+        const started = { sessionId: childSessionId, handle: agentType?.name ?? "worker", parentSessionId };
+        eventBus.emit("subagent.start", started);
+        eventBus.emit("event", { event: "subagent.start", payload: started });
+      } catch {}
       await getOrCreateScope(childSessionId);
 
+      // A worker has the permission mode of the run that started it: no more, and no less.
+      const workerGate = gate.withMode(meta?.permissionMode ?? "ask");
       const baseTools = parentTools;
+      const wantedTools =
+        Array.isArray(input.tools) && input.tools.length > 0 ? input.tools : agentType?.tools;
       let childTools: ToolSpec[];
-      if (Array.isArray(input.tools) && input.tools.length > 0) {
-        const allow = new Set(input.tools);
-        childTools = baseTools.filter((t) => allow.has(t.name));
+      if (wantedTools !== undefined) {
+        const allow = new Set(wantedTools);
+        // A tool list names its tools: a deferred MCP tool in it is loaded for the worker.
+        childTools = baseTools
+          .filter((t) => allow.has(t.name))
+          .map((t) => ("hidden" in t ? { ...t, hidden: () => false } : t));
         if (!allow.has("spawn") && childTools.some((t) => t.name === "spawn")) {
           childTools = childTools.filter((t) => t.name !== "spawn");
         }
       } else {
-        childTools = baseTools.filter((t) => gate.toolOffered(t.name, t.riskTier));
+        childTools = baseTools.filter((t) => workerGate.toolOffered(t.name, t.riskTier));
       }
       // Depth-0 child isolation: subagents cannot dispatch or spawn.
       childTools = childTools.filter((t) => t.name !== "dispatch" && t.name !== "spawn");
@@ -418,16 +559,26 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       };
 
       const workerPrompt = composeSystemPrompt({
-        base: "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
-        instructions: [],
+        base:
+          agentType?.systemPrompt ??
+          "You are an ephemeral worker. Complete the given prompt concisely and return only the final result.",
+        // The rules of the project hold for a worker too. Plugin and skill texts stay with the main turn.
+        instructions: projectInstructions({
+          workspaceRoot: options.workspaceRoot,
+          trustStore: daemon.trustStore,
+        }),
         toolDescriptions: [],
+        // Without it a worker does not know its folder, its shell or the date.
+        context: buildEnvironmentBlock(
+          gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
+        ),
       });
 
       const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
 
       const childModelInfo = catalogModel(childProvider, childModel);
       const childTurn = await runChildTurn(
-        { http, eventBus, createTraceRecorder },
+        { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactToolResult },
         {
           adapter: adapterFor(childProvider),
           scheduler: schedulerFor(childProvider),
@@ -440,10 +591,10 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           provider: childProvider,
           identity,
           capabilities: childCaps,
-          toolPolicy: gate,
+          toolPolicy: workerGate,
+          ...(ctx.requestApproval === undefined ? {} : { requestApproval: ctx.requestApproval }),
           budget: meta?.budget,
-          pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-          maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+          ...modelRunOptions(childModelInfo),
           turnId: childTurnId,
           sessionId: childSessionId,
           cwd: options.workspaceRoot,
@@ -536,6 +687,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
         };
       }
       const finalText = extractFinalText(childResult?.messages ?? []);
+      // A worker that stopped early says so: the lead must not read partial work as a finished task.
+      if (childResult?.error) {
+        const why = `worker did not finish (${childResult.error.code}: ${childResult.error.message})`;
+        return { content: finalText ? `${why}\n${finalText}` : why, isError: true };
+      }
       return { content: finalText || "(no output)" };
     },
   });

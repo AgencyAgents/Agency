@@ -25,6 +25,9 @@ export interface ProviderRequest {
   maxTokens: number;
   temperature?: number;
   thinkingLevel?: ThinkingLevel;
+  /** The model takes image input, so images that a tool returned go with the request.
+   *  Absent means no: an image sent to a model with no vision fails that request and every later one. */
+  vision?: boolean;
   /** Overrides the adapter's native endpoint: gateways, proxies, self-hosted. */
   baseUrl?: string;
   /** Extra headers merged over the adapter's own (auth headers stay). */
@@ -39,6 +42,8 @@ export interface Usage {
   cachedInputTokens?: number;
   /** Tokens written to the provider-side cache at the write premium. */
   cacheWriteInputTokens?: number;
+  /** The provider's own charge in USD, when it reports one (OpenRouter). It wins over the price table. */
+  costUsd?: number;
 }
 
 /**
@@ -57,5 +62,7 @@ export type StreamEvent =
 
 export interface ProviderAdapter {
   readonly family: string;
+  /** Longest silence this endpoint may take on a stream, in ms. A slow local server needs more than the loop default. */
+  readonly streamIdleMs?: number;
   stream(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent>;
 }

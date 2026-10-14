@@ -21,8 +21,20 @@ export interface AgencyEvents {
     sessionId?: string;
     turnId?: string;
   };
+  /** All calls of one reply, after the last one ended and before the next request. */
+  "tool.batch.after": {
+    calls: {
+      id: string;
+      tool: string;
+      input: Record<string, unknown>;
+      result: { content: string; isError: boolean };
+    }[];
+    sessionId?: string;
+    turnId?: string;
+  };
   "session.created": { sessionId: string };
-  "session.compacted": { sessionId: string; tipId: string };
+  "session.compacting": { sessionId: string; trigger: "manual" | "auto" };
+  "session.compacted": { sessionId: string; tipId: string; trigger?: "manual" | "auto" };
   "session.idle": { sessionId?: string };
   "file.edited": { path: string };
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };
@@ -37,13 +49,21 @@ export interface AgencyEvents {
   };
   "shell.env": { env: Record<string, string> };
   "session.start": { sessionId: string; workspaceRoot: string };
+  "session.end": { sessionId: string; reason: string };
   "prompt.submit": { sessionId: string; prompt: string };
   "subagent.start": { sessionId: string; handle: string; parentSessionId: string };
   "board.item.complete": { itemId: string; status: string };
   "pre.merge": { sessionId: string; restored: string[] };
   "cost.threshold": { reason: string; sessionId?: string };
+  "turn.stop": { sessionId?: string; turnId?: string; taskDepth: number; stopHookActive: boolean };
   event: { event: string; payload: unknown };
 }
+
+/** A hook's refusal: its message goes to the model. A caller of emitCollect tells it apart from a broken hook. */
+export class HookBlock extends Error {}
+
+/** A hook's refusal that ends the turn: the model gets no more requests. */
+export class HookStop extends HookBlock {}
 
 type Listener<T = unknown> = (payload: T) => void | Promise<void>;
 
@@ -137,12 +157,13 @@ export class EventBus<_Events extends object = AgencyEvents> {
         try {
           await (listener as Listener)(payload);
         } catch (err) {
+          errors.push(err);
+          if (err instanceof HookBlock) continue;
           this.logger?.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, {
             error: String(err),
           });
           if (!this.logger)
             console.error(`[events] listener for "${event}" (pattern "${pattern}") threw:`, err);
-          errors.push(err);
         }
       }
     }

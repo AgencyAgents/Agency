@@ -20,7 +20,15 @@ export const HOOK_NAMES = [
   "board.item.complete",
   "pre.merge",
   "cost.threshold",
+  "turn.stop",
 ] as const;
+
+/** A handler of these hooks can return `{ block: "reason" }`: the reason goes to the model. */
+export const BLOCKING_HOOKS: ReadonlySet<string> = new Set([
+  "tool.execute.before",
+  "tool.execute.after",
+  "turn.stop",
+]);
 
 export type HookName = (typeof HOOK_NAMES)[number];
 

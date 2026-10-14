@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentRegistry,
   type BoardStore,
@@ -11,10 +13,12 @@ import {
   composeSystemPrompt,
   type DispatchStateStore,
   type EventBus,
+  environmentDate,
   type GitRunner,
   gatherEnvironmentInfo,
   type InboxStore,
   type Logger,
+  loadInstructions,
   mcpServerDownReminder,
   type PluginAgentContribution,
   type PluginCommandContribution,
@@ -23,6 +27,7 @@ import {
   type SessionStore,
   type SystemReminder,
   type TraceRecorder,
+  type TurnError,
   type WakeRegistry,
   withPromptVersion,
   withSystemReminders,
@@ -35,7 +40,7 @@ import {
   type PermissionMode,
   type PermissionsGate,
   type Redactor,
-  type SandboxBoundary,
+  type SandboxBackend,
 } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
@@ -43,6 +48,7 @@ import {
   type CacheSegment,
   classifyEffortFromText,
   createOpenAiCompatibleAdapter,
+  GATEWAY_BASE_URLS,
   googleAdapter,
   type KeychainBackend,
   type ModelInfo,
@@ -53,7 +59,7 @@ import {
   type Usage,
 } from "@agency/providers";
 import type { DaemonServer } from "@agency/rpc";
-import type { Message, StopReason } from "@agency/schema";
+import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import type { Telemetry } from "@agency/telemetry";
 import type { SessionScope, ToolSpec as ToolsToolSpec } from "@agency/tools";
 import type { TeamContext } from "./team-context.ts";
@@ -77,6 +83,8 @@ export const DEFAULT_SYSTEM_PROMPT =
   "write every command in that shell's syntax (PowerShell, cmd.exe, and POSIX sh differ " +
   "in quoting, chaining, and env-var expansion); default to POSIX sh only when no shell " +
   "is named.";
+
+export const STRUCTURED_OUTPUT_TOOL = "structured_output";
 
 export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const DEFAULT_IDLE_LINGER_MS = 10 * 60 * 1000;
@@ -124,6 +132,8 @@ export interface RunTurnParams {
   session: Message[];
   budget?: Budget;
   maxToolIterations?: number;
+  /** A JSON Schema for the final answer: the turn gets a `structured_output` tool with it as the input schema. */
+  outputSchema?: Record<string, unknown>;
   /**
    * Session this turn belongs to: scopes the "always allow" approval grants
    * (they persist across the session's turns, never beyond the daemon
@@ -139,7 +149,7 @@ export interface RunTurnParams {
   promptVersion?: string;
   /**
    * Non-interactive permission mode for this turn (`ask` default).
-   * `allow-edits`/`deny` arrive only via the explicit client flag.
+   * Every other mode arrives only via the explicit client flag.
    */
   permissionMode?: PermissionMode;
   /** Headless turns have no approval surface: asks refuse at once with a
@@ -158,6 +168,25 @@ export interface ResolveSystemPromptOptions {
   /** Shell label for the environment block (resolveShell(...).label), so the
    *  model writes commands in the session shell's dialect. */
   shellLabel?: string;
+  /** Gate for AGENTS.md, CLAUDE.md and .agency/rules: the daemon loads them unless the client sent its own. */
+  trustStore?: import("@agency/guard").TrustStore;
+  /** Texts of the loaded plugins and skills. They go after the project instructions. */
+  pluginInstructions?: readonly string[];
+  /** Environment block per session id. A block that changes between turns ends the prompt cache of the full history. */
+  environments?: EnvironmentStore;
+}
+
+/** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
+export function projectInstructions(
+  options: Pick<ResolveSystemPromptOptions, "workspaceRoot" | "trustStore">,
+): string[] {
+  if (options.trustStore === undefined) return [];
+  try {
+    return loadInstructions(options.trustStore, options.workspaceRoot, options.workspaceRoot);
+  } catch (error) {
+    if (error instanceof AgencyError && error.code === ErrorCode.PERMISSION_DENIED) return [];
+    throw error;
+  }
 }
 
 export interface RunTurnRpcResult {
@@ -166,6 +195,10 @@ export interface RunTurnRpcResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Why the turn did not finish: the provider stream died after content arrived, or the step limit was reached. */
+  error?: TurnError;
+  /** Set when the fallback model produced the result: usage is priced as this model, not as the one requested. */
+  servedBy?: { provider: string; model: string };
   /** Set when the turn failed with CONTEXT_OVERFLOW: the daemon produced no
    *  assistant messages, so the caller (which owns the SessionStore) can
    *  compact the session and retry the turn. */
@@ -187,9 +220,12 @@ export interface SessionSendParams {
   thinkingLevel?: ThinkingLevel;
   budget?: Budget;
   permissionMode?: PermissionMode;
+  maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
   contextWindow?: number;
+  /** Sets the goal of the session before this turn. An empty string clears it. */
+  goal?: string;
 }
 
 export interface SessionSendResult extends RunTurnRpcResult {
@@ -210,8 +246,8 @@ export interface SessionMessageParams {
  * Adapter resolution over the merged provider set: a config-defined provider
  * speaks its declared family's wire format (defaulting to openai-compatible,
  * which makes any OpenAI-shaped gateway work with zero adapter code), a
- * builtin family id falls back to its native adapter, and a catalog provider
- * with a known API base URL gets the openai-compatible adapter pointed there.
+ * builtin family id falls back to its native adapter, and a catalog provider or
+ * built-in gateway id with a known API base URL gets the openai-compatible adapter pointed there.
  * Unknown ids still throw, but only after every layer had its chance.
  */
 export function resolveAdapter(
@@ -219,42 +255,65 @@ export function resolveAdapter(
   providers: Record<string, ProviderConfig>,
   catalogBaseUrls: Record<string, string> = {},
 ): ProviderAdapter {
-  const config = providers[providerId];
-  if (config) {
-    const family = config.family ?? "openai-compatible";
-    if (family === "openai-compatible") {
-      const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId];
-      if (!baseUrl) {
-        throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
-      }
-      return createOpenAiCompatibleAdapter(providerId, baseUrl);
-    }
-    if (family === "openai") return openaiAdapter;
-    if (family === "anthropic") return anthropicAdapter;
-    return googleAdapter;
-  }
+  const config = providers[providerId] ?? {};
+  // A builtin id keeps its native family when its config entry only adds a key, headers or model overrides.
+  const native = NATIVE_ADAPTERS[config.family ?? providerId];
+  if (native && config.family !== "openai-compatible") return bindEndpoint(native, config);
 
-  switch (providerId) {
-    case "anthropic":
-      return anthropicAdapter;
-    case "openai":
-      return openaiAdapter;
-    case "google":
-      return googleAdapter;
-    default: {
-      const catalogBaseUrl = catalogBaseUrls[providerId];
-      if (catalogBaseUrl) return createOpenAiCompatibleAdapter(providerId, catalogBaseUrl);
-      throw new Error(`unknown provider: ${providerId}`);
-    }
+  const baseUrl = config.baseUrl ?? catalogBaseUrls[providerId] ?? GATEWAY_BASE_URLS[providerId];
+  if (baseUrl) {
+    return bindEndpoint(createOpenAiCompatibleAdapter(providerId, baseUrl), {
+      headers: config.headers,
+      streamIdleMs: config.streamIdleMs,
+    });
   }
+  if (providers[providerId] === undefined) {
+    throw new Error(
+      `unknown provider: ${providerId}. A provider with no built-in endpoint needs provider.${providerId}.baseUrl in the config.`,
+    );
+  }
+  throw new Error(`provider "${providerId}" needs a baseUrl (no native endpoint for its family)`);
 }
 
-export function oauthOverridesFor(
+const NATIVE_ADAPTERS: Record<string, ProviderAdapter | undefined> = {
+  anthropic: anthropicAdapter,
+  openai: openaiAdapter,
+  google: googleAdapter,
+};
+
+/** Binds a provider's configured endpoint, headers and idle limit: its key must not go to the family's public host. */
+function bindEndpoint(adapter: ProviderAdapter, config: ProviderConfig): ProviderAdapter {
+  if (!config.baseUrl && !config.headers && config.streamIdleMs === undefined) return adapter;
+  return {
+    ...adapter,
+    ...(config.streamIdleMs === undefined ? {} : { streamIdleMs: config.streamIdleMs }),
+    stream: (request, http) =>
+      adapter.stream(
+        {
+          ...request,
+          baseUrl: request.baseUrl ?? config.baseUrl,
+          headers: { ...config.headers, ...request.headers },
+        },
+        http,
+      ),
+  };
+}
+
+/** A provider config's inputs to the key lookup. Each daemon lookup spreads them, so none can miss one. */
+export function keySourcesFor(
   providerId: string,
   providers: Record<string, ProviderConfig>,
-): { oauthClientId: string | undefined; oauthBaseUrl: string | undefined } {
-  const oauth = providers[providerId]?.oauth;
-  return { oauthClientId: oauth?.clientId, oauthBaseUrl: oauth?.baseUrl };
+): {
+  declaredEnv: string[] | undefined;
+  oauthClientId: string | undefined;
+  oauthBaseUrl: string | undefined;
+} {
+  const config = providers[providerId];
+  return {
+    declaredEnv: config?.env,
+    oauthClientId: config?.oauth?.clientId,
+    oauthBaseUrl: config?.oauth?.baseUrl,
+  };
 }
 
 export interface AgentDaemonOptions {
@@ -262,6 +321,8 @@ export interface AgentDaemonOptions {
   instanceFile: string;
   /** How long to stay alive after the last client disconnects before exiting. */
   idleLingerMs?: number;
+  /** The linger also runs from the start: a daemon that no client reaches (its starter died) then leaves. */
+  idleFromStart?: boolean;
   /** Defaults to the real built-in adapters; tests substitute fakes here. */
   adapterFor?: (provider: string) => ProviderAdapter;
   http?: HttpClient;
@@ -450,8 +511,12 @@ export interface ActiveTurnMeta {
   provider: string;
   model: string;
   apiKey: string;
+  /** ISO time of the start of the turn, for the list of active turns. */
+  startedAt: string;
   budget?: Budget;
   taskDepth?: number;
+  /** The mode of the run: an agent that this turn dispatches answers its asks with it. */
+  permissionMode?: PermissionMode;
 }
 
 export interface ChildTraceSpec {
@@ -489,6 +554,10 @@ export interface DaemonContext {
   pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }>;
   pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;
   trustStore: import("@agency/guard").TrustStore;
+  pluginInstructions: readonly string[];
+  /** Shell hooks of the config: the turn handler runs the prompt and session events itself. */
+  commandHooks: import("@agency/core").CommandHooks;
+  hookRun: import("@agency/core").HookRunOptions;
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;
@@ -507,6 +576,8 @@ export interface DaemonContext {
   sessionBudgets: Map<string, Budget>;
   /** Daemon-wide daily and monthly hard-cap ledger, persisted under sessions. */
   spendLedger: import("@agency/telemetry").SpendLedger;
+  /** Per-task turn ledger, persisted as JSONL under sessions; absent in older stubs. */
+  taskLedger?: import("./task-ledger.ts").TaskUsageTracker;
   /** Pre-integration workspace captures per lead session, restored by undo_run team scope. */
   teamCheckpoints: Map<string, import("@agency/core").IntegrationCheckpoint>;
   /** Team-scoped MCP pools: one shared-process pool per parent session. */
@@ -516,18 +587,57 @@ export interface DaemonContext {
   activeControllers: Map<string, AbortController>;
   turnOwners: Map<string, string>;
   activeTurnMeta: Map<string, ActiveTurnMeta>;
+  /** For each session, the environment block of its first turn. */
+  sessionEnvironments: EnvironmentStore;
   commands: CommandTemplate[];
   catalogModel: (provider: string, model: string) => ModelInfo | undefined;
+  learnModel: (provider: string, model: string, http: HttpClient) => Promise<void>;
   resolveAgentModel: (provider: string, model?: string) => string;
   getKeychain: () => Promise<KeychainBackend | undefined>;
   configFingerprint: { check(): boolean };
   broadcast: (event: string, payload: unknown) => void;
-  sandbox: SandboxBoundary;
+  sandbox: SandboxBackend;
   identity: CallerIdentity;
   shellLabel: string;
   todoSessionsDir: string;
   builtinsMode: boolean;
   tools: ToolsToolSpec[];
+}
+
+export interface EnvironmentStore {
+  get(sessionId: string): string | undefined;
+  set(sessionId: string, block: string): void;
+}
+
+/** The environment blocks of the sessions, in memory and in a file next to each session, so a block outlives the daemon. */
+export function sessionEnvironmentStore(sessionsDir: string): EnvironmentStore {
+  const memory = new Map<string, string>();
+  // The id of a session comes from the caller: only a plain name becomes a file name.
+  const fileOf = (sessionId: string): string | undefined =>
+    /^[\w-][\w.-]*$/.test(sessionId) ? join(sessionsDir, `${sessionId}.environment.txt`) : undefined;
+  return {
+    get(sessionId) {
+      const known = memory.get(sessionId);
+      if (known !== undefined) return known;
+      const file = fileOf(sessionId);
+      try {
+        const block = file === undefined ? "" : readFileSync(file, "utf8");
+        if (block !== "") memory.set(sessionId, block);
+      } catch {}
+      return memory.get(sessionId);
+    },
+    set(sessionId, block) {
+      if (memory.get(sessionId) === block) return;
+      memory.set(sessionId, block);
+      const file = fileOf(sessionId);
+      try {
+        if (file !== undefined) {
+          mkdirSync(sessionsDir, { recursive: true });
+          writeFileSync(file, block);
+        }
+      } catch {}
+    },
+  };
 }
 
 export function resolveSystemPrompt(params: RunTurnParams, options: ResolveSystemPromptOptions): string {
@@ -549,22 +659,28 @@ export function resolvePrompt(
       "[agency] systemPromptParts.context=false omits the environment block (os/cwd/date/git/shell): the model loses workspace orientation.",
     );
   }
+  const stored = params.sessionId === undefined ? undefined : options.environments?.get(params.sessionId);
+  // A block of another day has the wrong date, and the cache of the provider is gone by then.
+  const kept = stored?.includes(`date: ${environmentDate(options.now ?? new Date())}\n`) ? stored : undefined;
   const context =
     parts?.context === false
       ? undefined
-      : buildEnvironmentBlock(
+      : (kept ??
+        buildEnvironmentBlock(
           gatherEnvironmentInfo({
             cwd: options.workspaceRoot,
             now: options.now,
             git: options.git,
             shell: options.shellLabel,
           }),
-        );
+        ));
+  if (context !== undefined && params.sessionId !== undefined)
+    options.environments?.set(params.sessionId, context);
 
   const composed = composeSystemPrompt({
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
     familyPresetOverlay: composeFromParts ? role : undefined,
-    instructions: composeFromParts ? (instructions ?? []) : [],
+    instructions: instructions ?? [...projectInstructions(options), ...(options.pluginInstructions ?? [])],
     toolDescriptions: [],
     context,
   });

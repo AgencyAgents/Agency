@@ -36,8 +36,9 @@ export interface InstanceInfo {
  * spawn lock, deadline, instance file, token, heartbeat, and linger values
  * stay in sync between implementation and tests.
  */
-export const SPAWN_LOCK_STALE_MS = 10_000;
-export const DEFAULT_SPAWN_TIMEOUT_MS = 5_000;
+export const SPAWN_LOCK_STALE_MS = 60_000;
+// Measured: a daemon is ready in 1 to 2 s on a laptop and needed 13 s or more on a CPU five times slower.
+export const DEFAULT_SPAWN_TIMEOUT_MS = 30_000;
 export const INSTANCE_FILE_MODE = 0o600;
 
 /** Stable, filesystem-safe id for a workspace root: one daemon per root (R1). */
@@ -49,7 +50,7 @@ function instanceFilePath(instanceDir: string, workspaceRoot: string): string {
   return join(instanceDir, `${hashWorkspaceRoot(workspaceRoot)}.json`);
 }
 
-function readInstanceFile(path: string): InstanceInfo | undefined {
+export function readInstanceFile(path: string): InstanceInfo | undefined {
   if (!existsSync(path)) return undefined;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as InstanceInfo;
@@ -105,6 +106,19 @@ function spawnLockPath(instanceFile: string): string {
   return `${instanceFile}.lock`;
 }
 
+/** A daemon that fails at its start writes its reason here: its output goes nowhere, and the client waits for it. */
+export function bootErrorPath(instanceFile: string): string {
+  return `${instanceFile}.error`;
+}
+
+function readBootError(instanceFile: string): string | undefined {
+  try {
+    return readFileSync(bootErrorPath(instanceFile), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -143,21 +157,32 @@ function acquireSpawnLock(lockFile: string, staleMs: number): boolean {
       closeSync(fd);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      // Windows gives EPERM for a lock that another client removes at this moment. The next poll tries again.
+      if (process.platform === "win32" && code === "EPERM") return false;
+      if (code !== "EEXIST") throw error;
       const holder = readSpawnLock(lockFile);
-      const holderAlive = holder !== undefined && holder.pid !== process.pid && isProcessAlive(holder.pid);
+      // A lock with no content is between its create and its write: only its age can show a dead holder.
+      const holderDead = holder !== undefined && (holder.pid === process.pid || !isProcessAlive(holder.pid));
       let age = 0;
       try {
         age = Date.now() - statSync(lockFile).mtimeMs;
       } catch {
-        // Vanished between EEXIST and stat: retry the create.
+        // Vanished between EEXIST and stat: the next poll retries the create.
       }
-      if (holderAlive && age < staleMs) return false;
+      if (!holderDead && age < staleMs) return false;
       // Dead holder, same-process leftover, or pathologically old: steal it.
-      rmSync(lockFile, { force: true });
+      releaseSpawnLock(lockFile);
     }
   }
   return false;
+}
+
+/** Windows can refuse the removal (seen as EFAULT) while another client reads the lock. A lock that stays is stolen later. */
+function releaseSpawnLock(lockFile: string): void {
+  try {
+    rmSync(lockFile, { force: true });
+  } catch {}
 }
 
 export interface EnsureDaemonOptions {
@@ -170,9 +195,9 @@ export interface EnsureDaemonOptions {
   spawnTimeoutMs?: number;
   /**
    * How old an O_EXCL spawn lock may be before it is treated as stale and
-   * stolen. Defaults to `SPAWN_LOCK_STALE_MS` (10s): a crashed spawner can't
+   * stolen. Defaults to `SPAWN_LOCK_STALE_MS` (60s): a crashed spawner can't
    * wedge the workspace, while a live spawner still finishing inside the
-   * 5s deadline keeps its lock.
+   * 30s deadline keeps its lock.
    */
   lockStaleMs?: number;
   /** Injectable for tests; production callers never need to pass this. */
@@ -191,6 +216,24 @@ export interface EnsureDaemonOptions {
  * its pid and the lock stolen, so a crashed spawner can't block startup.
  */
 export async function ensureDaemon(
+  options: EnsureDaemonOptions,
+): Promise<{ port: number; client: DaemonClient }> {
+  const instanceFile = instanceFilePath(options.instanceDir, options.workspaceRoot);
+  const run = (inProcess.get(instanceFile) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => ensureDaemonAlone(options));
+  inProcess.set(instanceFile, run);
+  try {
+    return await run;
+  } finally {
+    if (inProcess.get(instanceFile) === run) inProcess.delete(instanceFile);
+  }
+}
+
+/** The calls of this process for one workspace, in a line: the spawn lock takes a holder with this pid for a leftover, so two calls would each spawn. */
+const inProcess = new Map<string, Promise<unknown>>();
+
+async function ensureDaemonAlone(
   options: EnsureDaemonOptions,
 ): Promise<{ port: number; client: DaemonClient }> {
   const connect = options.connect ?? connectToDaemon;
@@ -215,6 +258,8 @@ export async function ensureDaemon(
   const existing = await tryConnect();
   if (existing) return existing;
 
+  // First run: the lock is taken before any daemon has created the instance dir.
+  mkdirSync(options.instanceDir, { recursive: true });
   let locked = false;
   try {
     locked = acquireSpawnLock(lockFile, lockStaleMs);
@@ -223,6 +268,7 @@ export async function ensureDaemon(
       // file between our first read and acquiring the lock.
       const raced = await tryConnect();
       if (raced) return raced;
+      rmSync(bootErrorPath(instanceFile), { force: true });
       options.spawnDaemon(instanceFile);
     }
 
@@ -230,16 +276,21 @@ export async function ensureDaemon(
     while (Date.now() < deadline) {
       const found = await tryConnect();
       if (found) return found;
+      const bootError = readBootError(instanceFile);
+      if (bootError !== undefined) throw new Error(bootError);
       if (!locked) {
         // Someone else is (was) spawning: take over only if they died.
         locked = acquireSpawnLock(lockFile, lockStaleMs);
-        if (locked) options.spawnDaemon(instanceFile);
+        if (locked) {
+          rmSync(bootErrorPath(instanceFile), { force: true });
+          options.spawnDaemon(instanceFile);
+        }
       }
       await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
 
     throw new Error(`daemon for ${options.workspaceRoot} did not become ready within the spawn timeout`);
   } finally {
-    if (locked) rmSync(lockFile, { force: true });
+    if (locked) releaseSpawnLock(lockFile);
   }
 }

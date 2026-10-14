@@ -3,6 +3,7 @@ import { FULL_CAPABILITIES, NO_CAPABILITIES } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent, Usage } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
+import type { Message } from "@agency/schema";
 import { runTurn, type ToolSpec, validateToolInput } from "../src/loop.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -355,6 +356,55 @@ describe("runTurn", () => {
     expect(types[types.length - 1]).toBe("budget_exceeded");
   });
 
+  test("a tool that returns no text gives a result that says so: an empty result is rejected by strict providers", async () => {
+    // Cohere through OpenRouter answers 400 "all elements in tool_results must have the 'outputs' property" for "".
+    const silent: ToolSpec = {
+      name: "bash",
+      description: "runs",
+      inputSchema: {},
+      handler: async () => ({ content: "" }),
+    };
+    const result = await runTurn(toolThenDoneAdapter("bash", {}), new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [silent],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages[1]?.content[0]).toMatchObject({ type: "tool_result", content: "(no output)" });
+  });
+
+  test("a charge that the provider reports counts against the cost budget with no price table", async () => {
+    const charged: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "tool_call_start", id: "call_1", name: "read" };
+        yield { type: "tool_call_end", id: "call_1" };
+        const usage = { inputTokens: 10, outputTokens: 5, costUsd: 0.02 };
+        yield { type: "message_stop", stopReason: "tool_use", usage };
+      },
+    };
+    const result = await runTurn(charged, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [
+        { name: "read", description: "reads", inputSchema: {}, handler: async () => ({ content: "x" }) },
+      ],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      budget: { maxCostUsd: 0.03 },
+    });
+
+    // Two requests at 0.02 pass 0.03. A third request would mean that the charge did not count.
+    expect(result.budgetExceeded).toBe(true);
+    expect(result.usage.costUsd).toBeCloseTo(0.04, 9);
+  });
+
   test("maxToolIterations caps a runaway tool-calling loop and says so", async () => {
     let calls = 0;
     const spec: ToolSpec = {
@@ -386,6 +436,34 @@ describe("runTurn", () => {
     // The cap is distinguishable from a natural finish: a dedicated event lets
     // the UI show "stopped after N steps, continue?".
     expect(events).toContainEqual({ type: "iteration_limit", iterations: 3 });
+    // A caller with no event listener still learns that the work is not finished.
+    expect(result.error?.code).toBe("iteration_limit");
+  });
+
+  test("with no limit from the caller, a runaway loop stops after 100 steps", async () => {
+    let calls = 0;
+    const spec: ToolSpec = {
+      name: "loop_tool",
+      description: "always gets called again",
+      inputSchema: {},
+      handler: async () => {
+        calls += 1;
+        return { content: "ok" };
+      },
+    };
+    // The default scheduler paces requests at 60 a minute: 100 requests would take the test over a minute.
+    const unpaced = new Scheduler({ requestsPerMinute: 1_000_000 });
+    const result = await runTurn(alwaysCallsTool, unpaced, noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [spec],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+    expect(calls).toBe(100);
+    expect(result.error?.code).toBe("iteration_limit");
   });
 
   test("a natural finish never emits the iteration_limit event", async () => {
@@ -404,6 +482,278 @@ describe("runTurn", () => {
     });
 
     expect(events).not.toContainEqual(expect.objectContaining({ type: "iteration_limit" }));
+  });
+
+  test("a tool stop reason with no tool call ends the turn: the loop does not spin", async () => {
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "text_delta", text: "nothing to call" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      maxToolIterations: 4,
+    });
+
+    expect(requests).toBe(1);
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+    expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
+  });
+
+  test("a reply that is cut at the output limit continues, and the turn ends when the model finishes", async () => {
+    const requests: Message[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push([...request.messages]);
+        const first = requests.length === 1;
+        yield { type: "text_delta", text: first ? "part one," : " part two." };
+        yield {
+          type: "message_stop",
+          stopReason: first ? "max_tokens" : "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write a long answer" }] }],
+    });
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+    // The second request holds the cut reply and then a user message that tells the model to go on.
+    expect(requests[1]?.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    const texts = result.messages
+      .filter((message) => message.role === "assistant")
+      .flatMap((message) => message.content)
+      .map((block) => (block.type === "text" ? block.text : ""));
+    expect(texts).toEqual(["part one,", " part two."]);
+  });
+
+  test("a reply that is cut in the middle of a line goes on from its last complete line", async () => {
+    const requests: Message[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push([...request.messages]);
+        const first = requests.length === 1;
+        // A real model writes the cut line again from its start.
+        yield { type: "text_delta", text: first ? "one\ntwo\nthr" : "three\nfour" };
+        yield {
+          type: "message_stop",
+          stopReason: first ? "max_tokens" : "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "count" }] }],
+    });
+
+    const texts = (messages: Message[]) =>
+      messages
+        .filter((message) => message.role === "assistant")
+        .flatMap((message) => message.content)
+        .map((block) => (block.type === "text" ? block.text : ""));
+    expect(texts(requests[1] ?? [])).toEqual(["one\ntwo"]);
+    expect(texts(result.messages)).toEqual(["one\ntwo", "three\nfour"]);
+  });
+
+  test("a reply that stays cut at the output limit ends as a turn error, not as a normal end", async () => {
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "text_delta", text: "more\nand mo" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write a long answer" }] }],
+    });
+
+    expect(requests).toBe(4);
+    expect(result.stopReason).toBe("max_tokens");
+    expect(result.error?.code).toBe("max_tokens");
+    // The last part is the end of the output, so its half line stays.
+    const last = result.messages.at(-1)?.content.at(-1);
+    expect(last).toMatchObject({ type: "text", text: "more\nand mo" });
+  });
+
+  test("a complete tool call in a reply that the output limit cut still runs", async () => {
+    // Measured with a real server: a full bash call arrived with finish reason "length", four times in a row.
+    let runs = 0;
+    const count: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "count" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [count],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "count once" }] }],
+    });
+
+    expect(runs).toBe(1);
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("a tool call that the output limit cut in the middle gets a result that names the limit", async () => {
+    // Measured with a real model: with only "not valid JSON" as the result, it sent the same cut call about 20 times.
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "write" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: '{"path": "out.txt", "content": "1 2 3' };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "write the file" }] }],
+    });
+
+    const toolResult = result.messages.flatMap((m) => m.content).find((b) => b.type === "tool_result");
+    expect(toolResult).toMatchObject({ isError: true, content: expect.stringContaining("output limit") });
+  });
+
+  test("a reply that is cut before any text is not continued: there is nothing to go on from", async () => {
+    // Measured with a reasoning model and a 40-token limit: each request used the limit for thinking only.
+    let requests = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        requests += 1;
+        yield { type: "thinking_delta", text: "let me think" };
+        yield { type: "message_stop", stopReason: "max_tokens", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      maxTokensPerRequest: 40,
+    });
+
+    expect(requests).toBe(1);
+    expect(result.error?.code).toBe("max_tokens");
+    // The message names the limit and the setting, because a second run with the same limit ends the same way.
+    expect(result.error?.message).toContain("40 tokens");
+    expect(result.error?.message).toContain("maxOutputTokens");
+  });
+
+  test("a reply with no text is a turn error, and no empty message enters the transcript", async () => {
+    const silent: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 0 } };
+      },
+    };
+    const result = await runTurn(silent, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.error?.code).toBe("empty_response");
+    // Strict providers reject a message with no content, so one such message would break the session.
+    expect(result.messages.filter((message) => message.content.length === 0)).toEqual([]);
+  });
+
+  test("a reply that the provider ended with an error is a turn error, also when it has text", async () => {
+    const broken: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "half an ans" };
+        yield { type: "message_stop", stopReason: "error", usage: { inputTokens: 1, outputTokens: 3 } };
+      },
+    };
+    const result = await runTurn(broken, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    expect(result.stopReason).toBe("error");
+    expect(result.error?.code).toBe("provider_stop");
   });
 
   test("a tool result carrying images lands on the tool_result block and the event", async () => {
@@ -566,7 +916,7 @@ describe("runTurn", () => {
     });
 
     expect(result.messages[0]?.content).toEqual([
-      { type: "thinking", text: "reasoning here", signature: "sig-1" },
+      { type: "thinking", text: "reasoning here", signature: "sig-1", family: "fake" },
       { type: "text", text: "answer" },
     ]);
   });
@@ -594,7 +944,7 @@ describe("runTurn", () => {
 
     expect(result.messages[0]?.content).toEqual([
       { type: "redacted_thinking", data: "enc-1" },
-      { type: "thinking", text: "", signature: "orphan-sig" },
+      { type: "thinking", text: "", signature: "orphan-sig", family: "fake" },
       { type: "text", text: "ok" },
     ]);
   });
@@ -623,8 +973,8 @@ describe("runTurn", () => {
     });
 
     expect(result.messages[0]?.content).toEqual([
-      { type: "thinking", text: "first reasoning", signature: "sig-1" },
-      { type: "thinking", text: "second reasoning", signature: "sig-2" },
+      { type: "thinking", text: "first reasoning", signature: "sig-1", family: "fake" },
+      { type: "thinking", text: "second reasoning", signature: "sig-2", family: "fake" },
       { type: "text", text: "answer" },
     ]);
   });
@@ -677,6 +1027,214 @@ describe("runTurn", () => {
     expect(result.stopReason).toBe("error");
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]).toEqual({ role: "assistant", content: [{ type: "text", text: "partial" }] });
+  });
+
+  test("mid-stream failure reports its cause as an event and in the result", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "partial" };
+        throw new Error("connection reset");
+      },
+    };
+    const errors: string[] = [];
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      onEvent: (event) => {
+        if (event.type === "error") errors.push(event.message);
+      },
+    });
+
+    expect(errors).toEqual(["connection reset"]);
+    expect(result.error).toEqual({ code: "network", message: "connection reset" });
+  });
+
+  test.each([
+    ["before any content", false],
+    ["after partial content", true],
+  ])(
+    "a provider stream that goes silent ends as a network error, %s",
+    async (_name, partial) => {
+      const adapter: ProviderAdapter = {
+        family: "fake",
+        async *stream(req: { signal?: AbortSignal }): AsyncIterable<StreamEvent> {
+          if (partial) yield { type: "text_delta", text: "partial" };
+          await new Promise((_resolve, reject) =>
+            req.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted.", "AbortError")),
+            ),
+          );
+        },
+      };
+
+      const turn = runTurn(adapter, new Scheduler({ maxAttempts: 1 }), noopHttp, {
+        identity: user,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [],
+        model: "test-model",
+        apiKey: "key",
+        session: [],
+        streamIdleMs: 50,
+      });
+
+      if (partial) {
+        const result = await turn;
+        expect(result.stopReason).toBe("error");
+        expect(result.error).toEqual({ code: "network", message: "the provider sent nothing for 0.05 s" });
+      } else {
+        await expect(turn).rejects.toMatchObject({
+          code: "network",
+          message: "the provider sent nothing for 0.05 s",
+        });
+      }
+    },
+    5_000,
+  );
+
+  test("the idle limit of the adapter applies when the turn sets none", async () => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      streamIdleMs: 50,
+      async *stream(req: { signal?: AbortSignal }): AsyncIterable<StreamEvent> {
+        await new Promise((_resolve, reject) =>
+          req.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          ),
+        );
+      },
+    };
+
+    const turn = runTurn(adapter, new Scheduler({ maxAttempts: 1 }), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    await expect(turn).rejects.toMatchObject({ message: "the provider sent nothing for 0.05 s" });
+  }, 5_000);
+
+  test("onMessage reports each message as the turn produces it, before the next model call", async () => {
+    const seen: string[] = [];
+    let seenAtSecondCall: string[] = [];
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call_start", id: "call_1", name: "missing" };
+          yield { type: "tool_call_end", id: "call_1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        seenAtSecondCall = [...seen];
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      onMessage: async (message) => {
+        await Promise.resolve();
+        seen.push(`${message.role}:${message.content.map((block) => block.type).join("+")}`);
+      },
+    });
+
+    expect(seenAtSecondCall).toEqual(["assistant:tool_call", "user:tool_result"]);
+    expect(seen).toEqual(["assistant:tool_call", "user:tool_result", "assistant:text"]);
+  });
+
+  test.each([
+    ["before any content", false],
+    ["after partial content", true],
+  ])("a cancel during the model call ends the turn as cancelled, %s", async (_name, partial) => {
+    const caller = new AbortController();
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (partial) yield { type: "text_delta", text: "partial" };
+        caller.abort();
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    };
+    const errors: string[] = [];
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      signal: caller.signal,
+      onEvent: (event) => {
+        if (event.type === "error") errors.push(event.message);
+      },
+    });
+
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.error).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(calls).toBe(1);
+    expect(result.messages.map((m) => m.role)).toEqual(partial ? ["assistant"] : []);
+  });
+
+  test.each([
+    ["the stream dies inside the call", undefined],
+    ["the output limit cuts the turn", "max_tokens" as const],
+  ])("a tool call gets an error result when %s", async (_name, stopReason) => {
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        // A call in a cut reply runs, so a second request comes with its result: the model ends the turn there.
+        if (request.messages.some((m) => m.content.some((b) => b.type === "tool_result"))) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "call_1", name: "read" };
+        if (stopReason === undefined) throw new Error("connection reset");
+        yield { type: "tool_call_end", id: "call_1" };
+        yield { type: "message_stop", stopReason, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: user,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+    });
+
+    expect(result.messages.slice(0, 2).map((m) => m.role)).toEqual(["assistant", "user"]);
+    expect(result.messages[1]?.content).toMatchObject([
+      { type: "tool_result", toolCallId: "call_1", isError: true },
+    ]);
   });
 });
 
@@ -910,6 +1468,8 @@ describe("A5: input validation and permissions gating", () => {
     const toolResult = result.messages[1]?.content[0];
     if (toolResult?.type === "tool_result") {
       expect(toolResult.content).toContain("permission denied");
+      // Without this sentence a weaker model sent the refused call again, 15 times on average in live runs.
+      expect(toolResult.content).toContain("Do not call it again");
       expect(toolResult.isError).toBe(true);
     }
   });

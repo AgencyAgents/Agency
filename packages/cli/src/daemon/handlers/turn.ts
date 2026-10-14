@@ -1,30 +1,47 @@
 import {
+  addUsage,
+  CODE_TOOL,
+  type ToolSpec as CoreToolSpec,
+  codeRunner,
+  codeRunnerReadPaths,
+  codeTool,
+  deferTools,
   isTeamLive,
   LEAD_WITHHELD_TOOLS,
   type LoopEvent,
   parseHandles,
+  parseSlashInput,
+  runCommandHooks,
   runTurn,
   TraceRecorder,
   withTrace,
 } from "@agency/core";
-import { clampEffortForModel, type KeychainBackend, resolveApiKey } from "@agency/providers";
+import { buildScriptSandboxArgv, scriptSandboxAvailable, scriptSandboxEnv } from "@agency/guard";
+import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import type { SessionScope } from "@agency/tools";
-import { assertPreflightCaps, priceForModel, recordTurnCompletion } from "../costing.ts";
+import { modelCommandEnv, type SessionScope } from "@agency/tools";
+import {
+  assertPreflightCaps,
+  estimatePreflightTurnCostUsd,
+  modelRunOptions,
+  recordTurnCompletion,
+} from "../costing.ts";
+import { assertTaskPreflightCaps } from "../task-ledger.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
   classifyEffortWithSmallModel,
   type DaemonContext,
   HEARTBEAT_INTERVAL_MS,
-  oauthOverridesFor,
+  keySourcesFor,
   type RunTurnParams,
   type RunTurnRpcResult,
   resolvePrompt,
   resolveSystemPrompt,
+  STRUCTURED_OUTPUT_TOOL,
   type TeamBudgets,
 } from "../types.ts";
-import { applySlashCommand } from "./commands.ts";
+import { applyMcpPrompt, applySlashCommand } from "./commands.ts";
 import { createTurnApproval } from "./plan.ts";
 import { generateSessionTitle } from "./session.ts";
 import { writeTurnCassette } from "./trace.ts";
@@ -45,7 +62,100 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
     for (const manager of ctx.approvalManagers.values()) manager.rejectTurn(turnId);
     return { cancelled: true };
   };
+  // The record of a turn holds its key: only these fields go out.
+  handlers.turns_list = async () => ({
+    turns: [...ctx.activeTurnMeta].map(([turnId, meta]) => ({
+      turnId,
+      sessionId: meta.sessionId,
+      provider: meta.provider,
+      model: meta.model,
+      startedAt: meta.startedAt,
+    })),
+  });
 }
+
+/** The source of the error that a prompt hook's refusal throws: session_send removes the prompt on it. */
+export const PROMPT_HOOK_SOURCE = "prompt-hook";
+
+/** The type of a provider error in the names of Claude Code, for the StopFailure hook. */
+const STOP_FAILURE_TYPES: Partial<Record<ErrorCode, string>> = {
+  [ErrorCode.AUTH]: "authentication_failed",
+  [ErrorCode.RATE_LIMIT]: "rate_limit",
+  [ErrorCode.OVERLOAD]: "overloaded",
+  [ErrorCode.TRANSIENT]: "server_error",
+  [ErrorCode.NETWORK]: "unknown",
+  [ErrorCode.PROXY]: "unknown",
+};
+
+/** The input of a UserPromptExpansion hook: a typed command that became the text of the prompt. */
+type PromptExpansion = Record<
+  "expansion_type" | "command_name" | "command_args" | "command_source" | "prompt",
+  string
+>;
+
+function userTextOf(session: RunTurnParams["session"]): string {
+  const block = session.at(-1)?.content?.find((c: { type: string }) => c.type === "text") as
+    | { text?: string }
+    | undefined;
+  return typeof block?.text === "string" ? block.text : "";
+}
+
+/** Runs the prompt hooks of the config. Their text goes to the session inbox: the loop stores it with the turn. */
+async function runPromptHooks(
+  ctx: DaemonContext,
+  sessionId: string,
+  prompt: string,
+  session: RunTurnParams["session"],
+  expansion?: PromptExpansion,
+): Promise<void> {
+  const opts = ctx.hookRun;
+  const context: string[] = [];
+  if (expansion) {
+    const expanded = await runCommandHooks(
+      ctx.commandHooks,
+      "UserPromptExpansion",
+      { session_id: sessionId, ...expansion },
+      opts,
+    );
+    if (expanded.block !== undefined) {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `a hook blocked the command: ${expanded.block}`, {
+        source: PROMPT_HOOK_SOURCE,
+      });
+    }
+    if (expanded.context !== undefined) context.push(expanded.context);
+  }
+  // No reply in the history yet: this is the first prompt of the session.
+  if (!session.some((m) => m.role === "assistant")) {
+    const start = await runCommandHooks(
+      ctx.commandHooks,
+      "SessionStart",
+      { session_id: sessionId, source: "startup" },
+      opts,
+    );
+    if (start.context !== undefined) context.push(start.context);
+  }
+  const submit = await runCommandHooks(
+    ctx.commandHooks,
+    "UserPromptSubmit",
+    { session_id: sessionId, prompt },
+    opts,
+  );
+  if (submit.block !== undefined) {
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, `a hook blocked the prompt: ${submit.block}`, {
+      source: PROMPT_HOOK_SOURCE,
+    });
+  }
+  if (submit.context !== undefined) context.push(submit.context);
+  if (context.length === 0) return;
+  const box = ctx.sessionInboxes.get(sessionId) ?? [];
+  ctx.sessionInboxes.set(sessionId, box);
+  box.push({
+    role: "user",
+    content: [{ type: "text", text: `<hook-context>\n${context.join("\n")}\n</hook-context>` }],
+  });
+}
+
+let codeModeWarned = false;
 
 /** Shared turn assembly behind run_turn and session_send: one definition,
  *  so daemon-owned and caller-owned turns never drift apart. */
@@ -53,7 +163,10 @@ export async function executeTurn(
   ctx: DaemonContext,
   params: RunTurnParams,
   rpc: { clientId: string },
-  hooks?: { onContextOverflow?: () => Promise<import("@agency/schema").Message[] | undefined> },
+  hooks?: {
+    onContextOverflow?: (overheadTokens?: number) => Promise<import("@agency/schema").Message[] | undefined>;
+    onMessage?: (message: import("@agency/schema").Message) => Promise<void>;
+  },
 ): Promise<RunTurnRpcResult> {
   const {
     activeControllers,
@@ -88,6 +201,7 @@ export async function executeTurn(
     telemetry,
     todoSessionsDir,
     todoStore,
+    trustStore,
     tools,
     turnOwners,
     warnPersistence,
@@ -100,8 +214,9 @@ export async function executeTurn(
 
     // R10 wiring: the whole turn (provider requests and tool calls) correlates under one trace ID.
     return withTrace(async () => {
+      const startedAt = new Date().toISOString();
       if (configFingerprint.check()) {
-        logger.warn("config changed, restart daemon to apply");
+        logger.warn("config or binary changed; this daemon leaves when it is idle");
       }
       // Turn heartbeats keep heartbeat-aware clients' deadlines alive
       // through silent stretches (a long tool call emits no deltas).
@@ -123,12 +238,14 @@ export async function executeTurn(
               env: process.env,
               keychain,
               config: providers[params.provider]?.apiKey,
-              ...oauthOverridesFor(params.provider, providers),
+              ...keySourcesFor(params.provider, providers),
             });
           })());
         if (apiKey === undefined) {
-          throw new Error(
-            `no API key for provider "${params.provider}": set AGENCY_${params.provider.toUpperCase()}_API_KEY or run \`agency auth login ${params.provider}\``,
+          throw new AgencyError(
+            ErrorCode.AUTH,
+            `no API key for provider "${params.provider}": set ${keyEnvName(params.provider)} or run \`agency auth login ${params.provider}\``,
+            { source: "daemon" },
           );
         }
         redactor.registerSecret(apiKey);
@@ -229,6 +346,7 @@ export async function executeTurn(
         if (teamBudget !== undefined && teamFor(budgetParent).teamTotal.value >= teamBudget)
           throw new Error(`team budget exceeded: ${teamFor(budgetParent).teamTotal.value} >= ${teamBudget}`);
 
+        await ctx.learnModel(resolvedProvider, resolvedModel, http);
         const modelInfo = catalogModel(resolvedProvider, resolvedModel);
         // Clamp the resolved thinking level to what the model actually supports
         if (resolvedThinkingLevel && modelInfo) {
@@ -245,7 +363,23 @@ export async function executeTurn(
           session: params.session,
           ...(modelInfo?.pricing === undefined ? {} : { pricing: modelInfo.pricing }),
         });
+        // Per-task ledger caps stop before the first provider call too,
+        // on the same estimate the sibling gate uses.
+        assertTaskPreflightCaps({
+          board: boardStore,
+          ...(ctx.taskLedger === undefined ? {} : { ledger: ctx.taskLedger }),
+          handle: childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default"),
+          estimateUsd: estimatePreflightTurnCostUsd({
+            systemPrompt: params.systemPrompt,
+            session: params.session,
+            ...(modelInfo?.pricing === undefined ? {} : { pricing: modelInfo.pricing }),
+          }),
+          announce: { bus: ctx.eventBus, sessionId },
+        });
+        // Usage of the model requests that finished. A turn that then fails or moves to the fallback still spent it.
+        let spent: import("@agency/providers").Usage = { inputTokens: 0, outputTokens: 0 };
         const wrappedOnEvent = (event: LoopEvent): void => {
+          if (event.type === "turn_complete") spent = addUsage(spent, event.usage);
           collectedTraceEvents.push(event);
           broadcast(eventStream, event);
         };
@@ -261,6 +395,7 @@ export async function executeTurn(
             });
           } catch {}
         }
+        const typed = userTextOf(params.session);
         applySlashCommand(commands, options.workspaceRoot, params.session);
         if (params.images?.length) {
           const last = params.session[params.session.length - 1];
@@ -274,7 +409,20 @@ export async function executeTurn(
         if (builtinsMode) {
           turnScope = await getOrCreateScope(sessionId, mentioned.length === 1 ? mentioned[0] : undefined);
           await turnScope.todos.hydrate(sessionId);
+          await applyMcpPrompt(turnScope.mcp, params.session);
         }
+        const slash = parseSlashInput(typed);
+        const template = slash && commands.find((c) => c.name === slash.name);
+        const expansion: PromptExpansion | undefined =
+          slash && userTextOf(params.session) !== typed
+            ? {
+                expansion_type: template ? "slash_command" : "mcp_prompt",
+                command_name: slash.name,
+                command_args: slash.args,
+                command_source: template ? template.source : "mcp",
+                prompt: typed,
+              }
+            : undefined;
         const requestApproval = createTurnApproval(ctx, params, sessionId, eventStream);
         const fallbackRef = (() => {
           const fm = (config as unknown as { fallback_model?: string }).fallback_model;
@@ -284,7 +432,70 @@ export async function executeTurn(
           return { provider: fm.slice(0, slash), model: fm.slice(slash + 1) };
         })();
 
+        // A fallback continues from these: a restart would run the primary's tools a second time.
+        const carried: import("@agency/schema").Message[] = [];
+        const onPrimaryMessage = async (message: import("@agency/schema").Message): Promise<void> => {
+          carried.push(message);
+          await hooks?.onMessage?.(message);
+        };
         let result: Awaited<ReturnType<typeof runTurn>>;
+        // The model that produced the result: a fallback has its own name and price in the cost records.
+        let served = { provider: resolvedProvider, model: resolvedModel, info: modelInfo };
+        const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
+        const recordSpend = (ran: Pick<typeof served, "model" | "info">, usage: typeof spent): number =>
+          recordTurnCompletion(ctx, {
+            team: turnTeam,
+            sessionId,
+            handle: childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default") ?? "lead",
+            model: ran.model,
+            usage,
+            ...(ran.info?.pricing === undefined ? {} : { pricing: ran.info.pricing }),
+            turnId: params.turnId,
+            eventStreams: [eventStream],
+            ...(childInfo?.parentSessionId === undefined
+              ? {}
+              : { parentSessionId: childInfo.parentSessionId }),
+            board: boardStore,
+          });
+        const recordFailedSpend = (ran: Pick<typeof served, "model" | "info">): void => {
+          if (spent.inputTokens + spent.outputTokens > 0) recordSpend(ran, spent);
+          spent = { inputTokens: 0, outputTokens: 0 };
+        };
+        const deferMode = config.mcpDeferTools ?? "auto";
+        // The loop validates the input of a tool against its schema, so a wrong answer goes back to the model.
+        const structuredTools: CoreToolSpec[] =
+          params.outputSchema === undefined
+            ? []
+            : [
+                {
+                  name: STRUCTURED_OUTPUT_TOOL,
+                  description:
+                    "Gives the final answer of the task in the required structure. Call it one time, when the work is done.",
+                  inputSchema: params.outputSchema,
+                  riskTier: "safe",
+                  handler: async () => ({ content: "The answer is recorded. End the turn now." }),
+                },
+              ];
+        // `true` needs the script sandbox. `"host"` runs the script with the authority of a shell command, so it is
+        // only for the software backend: a sandbox for commands must not have a tool that goes around it.
+        const isolatedRunner =
+          config.codeMode === true && (await scriptSandboxAvailable(codeRunnerReadPaths()))
+            ? buildScriptSandboxArgv(codeRunner(), codeRunnerReadPaths())
+            : undefined;
+        if (config.codeMode === true && !isolatedRunner && !codeModeWarned) {
+          codeModeWarned = true;
+          logger.warn(
+            "codeMode is true, but this machine has no sandbox for scripts: the code tool is not offered",
+          );
+        }
+        const hostCode = config.codeMode === "host" && (config.sandbox?.backend ?? "software") === "software";
+        const codeTools = (gate: {
+          toolOffered(tool: string, riskTier?: "dangerous"): boolean;
+        }): CoreToolSpec[] => {
+          if (!gate.toolOffered(CODE_TOOL, "dangerous")) return [];
+          if (isolatedRunner) return [codeTool(() => scriptSandboxEnv(), isolatedRunner)];
+          return hostCode ? [codeTool(() => modelCommandEnv())] : [];
+        };
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -297,10 +508,15 @@ export async function executeTurn(
               : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
           const leadTurn = !findChildSession(ctx, sessionId) && !handleForSession(ctx, sessionId);
           const withheld = new Set<string>(LEAD_WITHHELD_TOOLS);
-          const effectiveTools =
+          const offeredTools =
             leadTurn && isTeamLive(boardStore.list())
               ? gatedTools.filter((t) => !withheld.has(t.name))
               : gatedTools;
+          const effectiveTools = [
+            ...deferTools(offeredTools, deferMode),
+            ...codeTools(sessionGate),
+            ...structuredTools,
+          ];
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
             tools: effectiveTools,
@@ -308,8 +524,10 @@ export async function executeTurn(
             provider: params.provider,
             model: params.model,
             apiKey,
+            startedAt,
             budget: params.budget,
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+            permissionMode: params.permissionMode,
           });
           try {
             // Root turns drain the session inbox (fed by session_message);
@@ -343,24 +561,28 @@ export async function executeTurn(
               }
               return msgs;
             };
+            const promptText = (() => {
+              const m = params.session[params.session.length - 1];
+              const b = m?.content?.find((c: { type: string }) => c.type === "text") as
+                | { text?: string }
+                | undefined;
+              return typeof b?.text === "string" ? b.text : "";
+            })();
             try {
-              const promptText = (() => {
-                const m = params.session[params.session.length - 1];
-                const b = m?.content?.find((c: { type: string }) => c.type === "text") as
-                  | { text?: string }
-                  | undefined;
-                return typeof b?.text === "string" ? b.text : "";
-              })();
               eventBus.emit("prompt.submit", { sessionId, prompt: promptText });
               eventBus.emit("event", {
                 event: "prompt.submit",
                 payload: { sessionId, prompt: promptText },
               });
             } catch {}
+            if (!childInfo) await runPromptHooks(ctx, sessionId, promptText, params.session, expansion);
             const mainPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: effectiveMcpFailures,
               shellLabel,
+              trustStore,
+              pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
               identity,
@@ -368,6 +590,7 @@ export async function executeTurn(
               toolPolicy: sessionGate,
               requestApproval,
               eventBus,
+              redactToolResult: redactor.redactToolResult,
               drainMailbox: mailboxDrain,
               systemPrompt: mainPrompt.text,
               systemSegments: mainPrompt.segments,
@@ -382,27 +605,45 @@ export async function executeTurn(
                 params.thinkingLevel,
               session: params.session,
               budget: params.budget,
-              pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
-              maxTokensPerRequest: modelInfo?.maxOutputTokens,
+              ...modelRunOptions(modelInfo),
               turnId: params.turnId,
               sessionId: params.sessionId,
               cwd: options.workspaceRoot,
-              maxToolIterations: params.maxToolIterations,
+              maxToolIterations: params.maxToolIterations ?? config.maxSteps,
+              ...(config.compactionInstructions
+                ? { compactionInstructions: config.compactionInstructions }
+                : {}),
+              ...(config.compactionLimit ? { compactionLimit: config.compactionLimit } : {}),
               signal: controller.signal,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
               ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
+              onMessage: onPrimaryMessage,
             });
           } finally {
             activeTurnMeta.delete(params.turnId);
           }
         } catch (error) {
+          recordFailedSpend(served);
           const isRetryable =
             error instanceof AgencyError &&
             (error.code === ErrorCode.OVERLOAD ||
               error.code === ErrorCode.TRANSIENT ||
               error.code === ErrorCode.RATE_LIMIT);
           if (isRetryable && fallbackRef && fallbackRef.provider !== params.provider) {
+            let fbApiKey: string | undefined;
+            try {
+              fbApiKey = await resolveApiKey({
+                provider: fallbackRef.provider,
+                env: process.env,
+                keychain: await getKeychain().catch(() => undefined),
+                config: providers[fallbackRef.provider]?.apiKey,
+                ...keySourcesFor(fallbackRef.provider, providers),
+              });
+            } catch {}
+            // No key for the fallback provider: the primary key must not go to another vendor.
+            if (!fbApiKey) throw error;
+            redactor.registerSecret(fbApiKey);
             const fbEvent = {
               type: "fallback" as const,
               from: `${params.provider}/${params.model}`,
@@ -413,44 +654,42 @@ export async function executeTurn(
             try {
               eventBus.emit("model.fallback", fbEvent);
             } catch {}
-            const fbApiKey = await (async () => {
-              let kc: KeychainBackend | undefined;
-              try {
-                kc = await getKeychain();
-              } catch {}
-              const k = await resolveApiKey({
-                provider: fallbackRef.provider,
-                env: process.env,
-                keychain: kc,
-                config: providers[fallbackRef.provider]?.apiKey,
-                ...oauthOverridesFor(fallbackRef.provider, providers),
-              });
-              return k ?? apiKey;
-            })();
-            if (fbApiKey) redactor.registerSecret(fbApiKey);
             const sessionGate = gateForSession(sessionId).withMode(params.permissionMode ?? "ask");
             const fallbackCapabilities =
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
             const fallbackMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-            const fallbackTools =
-              builtinsMode && turnScope
-                ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
-                : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier));
+            const fallbackTools = [
+              ...deferTools(
+                builtinsMode && turnScope
+                  ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
+                  : tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier)),
+                deferMode,
+              ),
+              ...codeTools(sessionGate),
+              ...structuredTools,
+            ];
             activeTurnMeta.set(params.turnId, {
               capabilities: fallbackCapabilities,
               tools: fallbackTools,
               sessionId,
               provider: fallbackRef.provider,
               model: fallbackRef.model,
-              apiKey: fbApiKey ?? apiKey,
+              apiKey: fbApiKey,
+              startedAt,
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
+              permissionMode: params.permissionMode,
             });
+            // The fallback model's own limits: the primary's output limit can be too large for it.
+            const fallbackInfo = catalogModel(fallbackRef.provider, fallbackRef.model);
             const fallbackPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: fallbackMcpFailures,
               shellLabel,
+              trustStore,
+              pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             try {
               result = await runTurn(
@@ -463,20 +702,24 @@ export async function executeTurn(
                   toolPolicy: sessionGate,
                   requestApproval,
                   eventBus,
+                  redactToolResult: redactor.redactToolResult,
                   systemPrompt: fallbackPrompt.text,
                   systemSegments: fallbackPrompt.segments,
                   tools: fallbackTools,
                   model: fallbackRef.model,
-                  apiKey: fbApiKey ?? apiKey,
+                  apiKey: fbApiKey,
                   thinkingLevel: params.thinkingLevel,
-                  session: params.session,
+                  session: [...params.session, ...carried],
                   budget: params.budget,
-                  pricePerMTok: modelInfo ? priceForModel(modelInfo.pricing) : undefined,
-                  maxTokensPerRequest: modelInfo?.maxOutputTokens,
+                  ...modelRunOptions(fallbackInfo),
                   turnId: params.turnId,
                   sessionId: params.sessionId,
                   cwd: options.workspaceRoot,
-                  maxToolIterations: params.maxToolIterations,
+                  maxToolIterations: params.maxToolIterations ?? config.maxSteps,
+                  ...(config.compactionInstructions
+                    ? { compactionInstructions: config.compactionInstructions }
+                    : {}),
+                  ...(config.compactionLimit ? { compactionLimit: config.compactionLimit } : {}),
                   signal: controller.signal,
                   taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
                   provider: fallbackRef.provider,
@@ -484,8 +727,13 @@ export async function executeTurn(
                   traceRecorder,
                   onEvent: wrappedOnEvent,
                   ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
+                  ...(hooks?.onMessage ? { onMessage: hooks.onMessage } : {}),
                 },
               );
+              served = { provider: fallbackRef.provider, model: fallbackRef.model, info: fallbackInfo };
+            } catch (fallbackError) {
+              recordFailedSpend({ model: fallbackRef.model, info: fallbackInfo });
+              throw fallbackError;
             } finally {
               activeTurnMeta.delete(params.turnId);
             }
@@ -500,6 +748,9 @@ export async function executeTurn(
               workspaceRoot: options.workspaceRoot,
               mcpFailures: cassetteMcpFailures,
               shellLabel,
+              trustStore,
+              pluginInstructions: ctx.pluginInstructions,
+              environments: ctx.sessionEnvironments,
             });
             writeTurnCassette(traceRecorder, params, sysPrompt, collectedTraceEvents, result);
           }
@@ -511,23 +762,7 @@ export async function executeTurn(
           eventBus.emit("event", { event: "session.idle", payload: { sessionId } });
         } catch {}
 
-        const modelPricing = modelInfo?.pricing;
-        const sidKey = sessionId;
-        const turnTeam = teamFor(childInfo?.parentSessionId ?? sessionId);
-        const turnHandle =
-          childInfo?.handle ?? handleForSession(ctx, params.sessionId ?? "default") ?? "lead";
-        const turnCost = recordTurnCompletion(ctx, {
-          team: turnTeam,
-          sessionId: sidKey,
-          handle: turnHandle,
-          model: resolvedModel,
-          usage: result.usage,
-          ...(modelPricing === undefined ? {} : { pricing: modelPricing }),
-          turnId: params.turnId,
-          eventStreams: [eventStream],
-          ...(childInfo?.parentSessionId === undefined ? {} : { parentSessionId: childInfo.parentSessionId }),
-          board: boardStore,
-        });
+        const turnCost = recordSpend(served, result.usage);
         if (budgets?.teamUsd !== undefined && turnTeam.teamTotal.value >= budgets.teamUsd) {
           for (const c of activeControllers.values())
             try {
@@ -544,7 +779,7 @@ export async function executeTurn(
           costUsd: turnCost,
         });
         telemetry.record("turn_complete", {
-          provider: resolvedProvider,
+          provider: served.provider,
           stopReason: result.stopReason,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
@@ -556,7 +791,13 @@ export async function executeTurn(
         // Generate session title after first turn if none exists yet
         void generateSessionTitle(ctx, params, sessionId);
 
-        const response: RunTurnRpcResult = { ...result, cancelled: controller.signal.aborted };
+        const response: RunTurnRpcResult = {
+          ...result,
+          cancelled: controller.signal.aborted,
+          ...(served.provider === resolvedProvider
+            ? {}
+            : { servedBy: { provider: served.provider, model: served.model } }),
+        };
         return response;
       } catch (error) {
         if (error instanceof AgencyError && error.code === ErrorCode.CONTEXT_OVERFLOW) {
@@ -575,6 +816,7 @@ export async function executeTurn(
             usage: { inputTokens: 0, outputTokens: 0 },
             budgetExceeded: false,
             cancelled: controller.signal.aborted,
+            error: { code: error.code, message: error.message },
             needsCompaction: true,
           };
           return response;
@@ -583,6 +825,21 @@ export async function executeTurn(
           turnId: params.turnId,
           error: error instanceof Error ? error.message : String(error),
         });
+        const failure = error instanceof AgencyError ? STOP_FAILURE_TYPES[error.code] : undefined;
+        if (failure !== undefined && !((params as { taskDepth?: number }).taskDepth ?? 0)) {
+          // No decision control: the error goes back at once, and the hook runs on.
+          void runCommandHooks(
+            ctx.commandHooks,
+            "StopFailure",
+            {
+              session_id: params.sessionId ?? "default",
+              error: failure,
+              error_details: (error as AgencyError).message,
+              last_assistant_message: `API Error: ${(error as AgencyError).message}`,
+            },
+            ctx.hookRun,
+          ).catch(() => {});
+        }
         telemetry.recordCrash("run_turn", error);
         throw error;
       } finally {

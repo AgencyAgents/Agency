@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveApiKey } from "../../src/auth/resolve.ts";
+import { keyEnvName, resolveApiKey } from "../../src/auth/resolve.ts";
 import type { KeychainBackend } from "../../src/auth/types.ts";
 
 function fakeKeychain(stored?: string): KeychainBackend {
@@ -60,5 +60,42 @@ describe("resolveApiKey", () => {
       env: { AGENCY_OPENAI_API_KEY: "sk-openai", AGENCY_ANTHROPIC_API_KEY: "sk-anthropic" },
     });
     expect(key).toBe("sk-openai");
+  });
+
+  test("a variable name that the config declares wins over the built-in names", async () => {
+    const key = await resolveApiKey({
+      provider: "openrouter",
+      declaredEnv: ["MY_ROUTER_KEY"],
+      env: {
+        MY_ROUTER_KEY: "sk-declared",
+        AGENCY_OPENROUTER_API_KEY: "sk-agency",
+        OPENROUTER_API_KEY: "sk-own",
+      },
+    });
+    expect(key).toBe("sk-declared");
+  });
+
+  test("a provider id with a hyphen has a variable name that a POSIX shell can set", async () => {
+    // `export AGENCY_MY-GATEWAY_API_KEY=...` is not a valid identifier in sh.
+    const env = { AGENCY_MY_GATEWAY_API_KEY: "sk-gateway" };
+    expect(await resolveApiKey({ provider: "my-gateway", env })).toBe("sk-gateway");
+    expect(keyEnvName("my-gateway")).toBe("AGENCY_MY_GATEWAY_API_KEY");
+  });
+
+  test("the provider's own variable name is read after the AGENCY name", async () => {
+    const own = { OPENROUTER_API_KEY: "sk-own" };
+    expect(await resolveApiKey({ provider: "openrouter", env: own })).toBe("sk-own");
+    expect(
+      await resolveApiKey({
+        provider: "openrouter",
+        env: { ...own, AGENCY_OPENROUTER_API_KEY: "sk-agency" },
+      }),
+    ).toBe("sk-agency");
+    expect(
+      await resolveApiKey({ provider: "openrouter", env: own, keychain: fakeKeychain("sk-stored") }),
+    ).toBe("sk-own");
+    expect(await resolveApiKey({ provider: "google", env: { GEMINI_API_KEY: "sk-gemini" } })).toBe(
+      "sk-gemini",
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CallerIdentity } from "@agency/guard";
+import { type CallerIdentity, rebaseSandbox } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { type BashState, createBashTool } from "./builtins/bash.ts";
 import { createBrowserTool } from "./builtins/browser.ts";
@@ -26,10 +26,11 @@ import {
   mcpIdentityFor,
   startMcpServersFromRaw,
 } from "./mcp/manager.ts";
+import { transportForWithContainerSandbox } from "./mcp/transport.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { ReadState } from "./read-state.ts";
 import { ToolRegistry } from "./registry.ts";
-import { resolveShell, type WindowsShellKind } from "./shell.ts";
+import { resolveConfiguredShell, type WindowsShellKind } from "./shell.ts";
 import { SnapshotStore } from "./snapshot.ts";
 
 /**
@@ -72,12 +73,17 @@ export interface SessionScope {
   processManager: ProcessManager;
   todos: TodoStore;
   bashState: BashState;
+  /** Where a relative path of the file tools starts. An agent with a worktree gets that worktree here. */
+  fileBase: { root: string };
   readState: ReadState;
   snapshots: SnapshotStore;
   mcpFailures: ReadonlyMap<string, string>;
   mcp?: McpManager;
   mcpIdentityFor: (serverName: string, handle?: string) => CallerIdentity;
   lspRegistry?: LspRegistry;
+  /** Starts deferred MCP servers (no-op once started or unconfigured).
+   *  Single-flight: concurrent callers share one startup. */
+  promoteMcp(): Promise<void>;
   /**
    * Owning team id when this session runs as a member of a Team
    * (team/team-store.ts). Undefined for standalone sessions.
@@ -87,6 +93,8 @@ export interface SessionScope {
 }
 
 const LSP_DIAGNOSTICS_TIMEOUT_MS = 1200;
+
+const EMPTY_MCP_FAILURES: ReadonlyMap<string, string> = new Map();
 
 export interface SessionScopeOptions {
   deps: ToolDeps;
@@ -103,19 +111,29 @@ export interface SessionScopeOptions {
   todoPersistence?: TodoPersistence;
   websearch?: WebSearchConfig;
   mcpServers?: unknown;
+  /** Skip eager MCP startup; servers start on the first promoteMcp() call.
+   *  Default false: startup timing is unchanged for existing callers. */
+  mcpDeferred?: boolean;
   lspServers?: unknown;
   lspRegistry?: LspRegistry;
   mcpTransportFor?: McpManagerOptions["transportFor"];
   identityFor?: McpManagerOptions["identityFor"];
+  /** The sign-ins of `agency mcp login`. */
+  mcpTokens?: McpManagerOptions["tokens"];
 }
 
-export async function createSessionScope(options: SessionScopeOptions): Promise<SessionScope> {
+export async function createSessionScope(scopeOptions: SessionScopeOptions): Promise<SessionScope> {
+  const fileBase = { root: scopeOptions.workspaceRoot };
+  const options: SessionScopeOptions = {
+    ...scopeOptions,
+    deps: { ...scopeOptions.deps, sandbox: rebaseSandbox(scopeOptions.deps.sandbox, () => fileBase.root) },
+  };
   const snapshots = new SnapshotStore(
     options.snapshotDir,
     options.snapshotJournalFile ? { journalFile: options.snapshotJournalFile } : undefined,
   );
   const formatter = options.formatter ?? {};
-  const shell = resolveShell(process.platform, options.windowsShell);
+  const shell = resolveConfiguredShell(process.platform, options.windowsShell);
   const bashState: BashState = { cwd: options.workspaceRoot };
   const processManager = new ProcessManager();
   const todos = new TodoStore(options.todoPersistence);
@@ -174,7 +192,13 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
   registry.register(createGrepTool(options.deps));
   registry.register(createGlobTool(options.deps));
   registry.register(createFetchTool(options.deps, options.http));
-  registry.register(createBrowserTool(options.deps, options.http));
+  registry.registerDeferred("browser", () => createBrowserTool(options.deps, options.http), {
+    riskTier: "moderate",
+    description:
+      "Headless-browser minimum without bundled chromium: navigate fetches a page over HTTP(S), " +
+      "snapshot returns an accessibility-tree-like view (title, headings, links, text), close discards " +
+      "the page. Screenshots are unavailable in this build (use snapshot).",
+  });
   registry.register(createTodoReadTool(todos));
   registry.register(createTodoWriteTool(todos));
   registry.register(createExecutePlanTool(options.deps, todos));
@@ -182,7 +206,7 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
     registry.register(tool);
   }
   registry.register(createQuestionTool());
-  if (options.websearch?.endpoint) {
+  if (options.websearch) {
     registry.register(createWebSearchTool(options.deps, options.http, options.websearch));
   }
   if (lspRegistry) {
@@ -322,14 +346,36 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
   }
 
   let mcp: McpManager | undefined;
-  if (options.mcpServers !== undefined) {
+  let mcpInflight: Promise<void> | undefined;
+  const startMcp = async (): Promise<void> => {
+    // Explicit transportFor wins; a container sandbox routes stdio across
+    // the mount (software yields undefined, keeping the default spawn path).
+    const tokens = options.mcpTokens ? { tokens: options.mcpTokens } : {};
+    const containerTransportFor = transportForWithContainerSandbox(options.deps.sandbox, {
+      cwd: options.workspaceRoot,
+      adopt: (proc, command) => processManager.adopt(proc, command),
+      ...tokens,
+    });
     mcp = await startMcpServersFromRaw(options.mcpServers, {
       capabilities: options.deps.capabilities,
       processManager,
-      transportFor: options.mcpTransportFor,
+      ...tokens,
+      transportFor: options.mcpTransportFor ?? containerTransportFor,
       registry,
       identityFor: options.identityFor,
     });
+  };
+  const promoteMcp = async (): Promise<void> => {
+    if (options.mcpServers === undefined || mcp !== undefined) return;
+    if (!mcpInflight) {
+      mcpInflight = startMcp().finally(() => {
+        mcpInflight = undefined;
+      });
+    }
+    return mcpInflight;
+  };
+  if (options.mcpServers !== undefined && !options.mcpDeferred) {
+    await startMcp();
   }
   const mcpIdentityForScope = (serverName: string, handle?: string): CallerIdentity =>
     (options.identityFor ?? mcpIdentityFor)(serverName, handle);
@@ -340,12 +386,18 @@ export async function createSessionScope(options: SessionScopeOptions): Promise<
     processManager,
     todos,
     bashState,
+    fileBase,
     readState,
     snapshots,
-    mcpFailures: mcp?.failures ?? new Map(),
-    mcp,
+    get mcpFailures(): ReadonlyMap<string, string> {
+      return mcp?.failures ?? EMPTY_MCP_FAILURES;
+    },
+    get mcp(): McpManager | undefined {
+      return mcp;
+    },
     mcpIdentityFor: mcpIdentityForScope,
     lspRegistry,
+    promoteMcp,
     async dispose() {
       // Each scope owns its ProcessManager (kills background dev servers/watchers
       // started in that session) and its MCP clients (stdio transports). LSP is

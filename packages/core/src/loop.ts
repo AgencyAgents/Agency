@@ -15,12 +15,29 @@ import {
   selectModel,
   type ThinkingLevel,
   type ToolDefinition,
+  tokenizerFor,
   type Usage,
   withCheapFallback,
   withMidStreamRecovery,
 } from "@agency/providers";
-import type { ContentBlock, ImageBlock, Message, StopReason } from "@agency/schema";
-import { isContextOverflowError } from "./sessions/compaction.ts";
+import {
+  AgencyError,
+  type ContentBlock,
+  ErrorCode,
+  type ImageBlock,
+  type Message,
+  type StopReason,
+} from "@agency/schema";
+import { CODE_TOOL } from "./codemode.ts";
+import { HookBlock, HookStop } from "./events.ts";
+import {
+  compactMessages,
+  countMessageTokens,
+  isContextOverflowError,
+  triggerTokens,
+  withOverhead,
+} from "./sessions/compaction.ts";
+import { modelSummarizer } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -37,6 +54,11 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
       toolCallId?: string;
       requestApproval?: RequestApproval;
       onProgress?: (message: string) => void;
+      /** Runs another tool of this turn through the same checks as a call of the model. */
+      callTool?: (
+        name: string,
+        input: Record<string, unknown>,
+      ) => Promise<{ content: string; isError: boolean; images?: ImageBlock[] }>;
     },
   ): Promise<{ content: string; isError?: boolean; images?: ImageBlock[] }>;
   renderCall?(input: Input & Record<string, unknown>): string;
@@ -50,10 +72,16 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
    *  gate both consume it (`safe` runs freely, the rest asks and needs a
    *  trusted workspace). Unclassified tools are treated as ungated. */
   riskTier?: RiskTier;
+  /** Asked before each request: a hidden tool is not in the tool list, and a call of it is refused. */
+  hidden?: () => boolean;
 }
 
 /** Erased tool type for registries holding mixed-input tools. */
 export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
+
+/** The model is told one time when this number of tool steps is left, and when this share of the cost limit is spent. */
+const LOW_STEPS = 5;
+const COST_NOTE_SHARE = 0.8;
 
 export interface Budget {
   maxTokens?: number;
@@ -119,18 +147,32 @@ export interface RunTurnOptions {
   /** Caps tool-calling round-trips even when nothing else stops the run:
    *  a runaway model that keeps calling tools shouldn't spin forever. */
   maxToolIterations?: number;
+  /** What the user wants the summary of a compaction to keep. */
+  compactionInstructions?: string;
+  /** Longest silence allowed on a provider stream before the request is cut. Default 5 minutes. */
+  streamIdleMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: LoopEvent) => void;
+  /** Applied to the text of each tool result before the model, the hooks and the session get it. */
+  redactToolResult?: (text: string, tool?: string) => string;
   eventBus?: {
     emit: (event: string, payload: unknown) => void;
     emitAsync?: (event: string, payload: unknown) => Promise<void>;
     emitCollect?: (event: string, payload: unknown) => Promise<{ errors: unknown[] }>;
   };
-  /** Overflow hook (U8): runs once per turn on context overflow, then the
-   *  provider call is retried exactly once. A returned message list replaces
+  /** Overflow hook (U8): runs once per request on context overflow, then that
+   *  request is retried exactly once. A returned message list replaces
    *  the history for the retry (reactive compact-and-retry). Absent means
-   *  overflow throws. */
-  onContextOverflow?: () => Promise<Message[] | undefined>;
+   *  the loop folds its own transcript in memory. */
+  onContextOverflow?: (overheadTokens?: number) => Promise<Message[] | undefined>;
+  /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
+  contextWindow?: number;
+  /** `compactionLimit` of the config: the history is compacted at this size also when the window is larger. */
+  compactionLimit?: number;
+  /** The model takes image input: images that a tool returned go to it. Absent means no. */
+  vision?: boolean;
+  /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
+  onMessage?: (message: Message) => void | Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -149,6 +191,9 @@ export interface RunTurnOptions {
 
 const NEVER_ABORTED = new AbortController().signal;
 
+/** A guard against a model that never stops, not a budget for the work: a cost limit is the budget. */
+export const DEFAULT_MAX_TOOL_ITERATIONS = 100;
+
 /** Approval prompt for a tripped doom loop. Asks instead of spinning. */
 export function doomApprovalRequest(toolName: string, repeats: number): ApprovalRequest {
   return {
@@ -163,7 +208,12 @@ export interface RunTurnResult {
   stopReason: StopReason;
   usage: Usage;
   budgetExceeded: boolean;
+  /** Why the turn did not finish: a salvaged stream (stop reason `error`) or the step limit (stop reason `tool_use`).
+   *  A turn that fails before any content throws instead. */
+  error?: TurnError;
 }
+
+export type TurnError = { code: string; message: string };
 
 /**
  * The R4 seam: no globals, every dependency passed in, so a second concurrent
@@ -178,16 +228,23 @@ export async function runTurn(
   options: RunTurnOptions,
 ): Promise<RunTurnResult> {
   const messages = [...options.session];
-  const maxToolIterations = options.maxToolIterations ?? 25;
-  const toolDefs: ToolDefinition[] = options.tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    inputSchema: t.inputSchema,
-  }));
+  const append = async (message: Message): Promise<void> => {
+    messages.push(message);
+    await options.onMessage?.(message);
+  };
+  const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
+  const toolDefs = (): ToolDefinition[] =>
+    options.tools
+      .filter((t) => !t.hidden?.())
+      .map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
 
   let cumulativeUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let spentCostUsd = 0;
   let stopReason: StopReason = "end_turn";
+  let salvageError: TurnError | undefined;
+  let spoke = false;
+  let outputContinuations = 0;
+  let stopBlocked = false;
   const tracer = options.traceRecorder;
   const turnSpanId = tracer
     ? tracer.startTurnSpan({
@@ -255,12 +312,14 @@ export async function runTurn(
               system: options.systemPrompt,
               ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
               messages,
-              tools: toolDefs,
+              tools: toolDefs(),
               maxTokens: options.maxTokensPerRequest ?? 8192,
               thinkingLevel: options.thinkingLevel,
+              ...(options.vision === undefined ? {} : { vision: options.vision }),
               signal: options.signal,
             },
             options.onEvent,
+            options.streamIdleMs ?? adapter.streamIdleMs,
           ),
         {
           onRetry: (attempt, message, next) => {
@@ -277,13 +336,54 @@ export async function runTurn(
     }
     return routed.value;
   };
-  let overflowRetried = false;
+  const compactionThreshold = {
+    // A model that is not in the catalog has a window of 0 or none: both mean not known.
+    contextWindow: options.contextWindow || 200_000,
+    ...(options.compactionLimit === undefined ? {} : { limitTokens: options.compactionLimit }),
+  };
+  // The size of the last request as the provider counted it. Zero after a compaction: the next request gives the new size.
+  let requestTokens = 0;
+  let proactiveFolds = true;
+  let costNoted = false;
+  const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> =>
+    compactMessages(
+      messages,
+      tokenizerFor(options.provider ?? ""),
+      withOverhead(compactionThreshold, overheadTokens),
+      modelSummarizer({
+        adapter,
+        http,
+        model: options.model,
+        apiKey: options.apiKey,
+        ...(options.maxTokensPerRequest === undefined ? {} : { maxTokens: options.maxTokensPerRequest }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.compactionInstructions === undefined
+          ? {}
+          : { instructions: options.compactionInstructions }),
+      }),
+    );
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+    // One fold for each request: a long turn can fill the window more than once.
+    let overflowRetried = false;
     if (options.drainMailbox) {
+      let injected: Message[] = [];
       try {
-        const injected = options.drainMailbox();
-        if (injected.length > 0) messages.push(...injected);
+        injected = options.drainMailbox();
       } catch {}
+      for (const message of injected) await append(message);
+    }
+    // Before the provider refuses: a request near the limit costs the most, and a refused one is a lost request.
+    let folded = false;
+    if (proactiveFolds && requestTokens >= triggerTokens(compactionThreshold)) {
+      // The request also holds the system prompt and the tool list: the history must leave room for them.
+      const inHistory = await countMessageTokens(messages, tokenizerFor(options.provider ?? ""));
+      const overhead = Math.max(0, requestTokens - inHistory);
+      const replacement = await (options.onContextOverflow ?? foldInMemory)(overhead);
+      if (replacement !== undefined) {
+        messages.length = 0;
+        messages.push(...replacement);
+      }
+      folded = true;
     }
     let modelSpanId: string | null = null;
     if (tracer && turnSpanId) {
@@ -298,9 +398,11 @@ export async function runTurn(
       try {
         turn = await collectWithFallback();
       } catch (error) {
-        if (overflowRetried || !isContextOverflowError(error) || !options.onContextOverflow) throw error;
+        if (overflowRetried || !isContextOverflowError(error)) throw error;
         overflowRetried = true;
-        const replacement = await options.onContextOverflow();
+        const replacement = await (options.onContextOverflow ?? foldInMemory)();
+        // Nothing folded and no owner hook: a retry would send the same request.
+        if (replacement === undefined && !options.onContextOverflow) throw error;
         if (replacement !== undefined) {
           messages.length = 0;
           messages.push(...replacement);
@@ -313,11 +415,30 @@ export async function runTurn(
         turn = await collectWithFallback();
       }
 
-      messages.push({ role: "assistant", content: turn.content });
+      if (turn.stopReason === "max_tokens" && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
+        turn.content = withoutCutLine(turn.content);
+      }
+      // A reply with no content is not stored: strict providers reject an empty message.
+      if (turn.content.length > 0) await append({ role: "assistant", content: turn.content });
+      spoke = turn.content.some((block) => block.type === "text" && block.text.trim() !== "");
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
+      requestTokens = turn.usage.inputTokens + turn.usage.outputTokens;
+      // A compaction that left the request at the trigger size cannot help: the next ones would each cost a summary.
+      if (folded && requestTokens >= triggerTokens(compactionThreshold)) proactiveFolds = false;
       const turnCost = costOf(turn.usage, options.pricePerMTok);
       spentCostUsd += turnCost;
-      stopReason = turn.stopReason;
+      const toolCalls = toolCallsOf({ role: "assistant", content: turn.content });
+      // A stream the caller cut is a cancel, not a provider failure.
+      const cut = turn.stopReason === "error" && options.signal?.aborted;
+      stopReason = cut ? "cancelled" : turn.stopReason;
+      // A tool stop reason with no call has nothing to run: the loop would ask again with an empty result.
+      if (stopReason === "tool_use" && toolCalls.length === 0) stopReason = "end_turn";
+      // A reply cut at the output limit can hold complete calls. They run, and a call that the cut broke gets its parse error.
+      if (stopReason === "max_tokens" && toolCalls.length > 0) {
+        stopReason = "tool_use";
+        for (const id of turn.malformedCalls.keys()) turn.malformedCalls.set(id, CUT_CALL_NOTE);
+      }
+      salvageError = cut ? undefined : turn.error;
       options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
       if (tracer && modelSpanId) {
         tracer.endSpan(modelSpanId, {
@@ -333,14 +454,16 @@ export async function runTurn(
         modelSpanId = null;
       }
 
-      const toolCalls = turn.content.filter(
-        (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
-      );
-
       if (exceedsBudget(cumulativeUsage, spentCostUsd, options.budget)) {
-        if (toolCalls.length > 0 && !options.signal?.aborted) {
-          const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
-          messages.push({ role: "user", content: results });
+        if (toolCalls.length > 0) {
+          await append(
+            options.signal?.aborted
+              ? unrunResults(toolCalls, "cancelled")
+              : {
+                  role: "user",
+                  content: await runTools(toolCalls, options, turn.malformedCalls, options.signal),
+                },
+          );
         }
         options.onEvent?.({
           type: "budget_exceeded",
@@ -351,7 +474,37 @@ export async function runTurn(
         return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
       }
 
-      if (stopReason !== "tool_use" || options.signal?.aborted) break;
+      if (stopReason !== "tool_use" || options.signal?.aborted) {
+        if (toolCalls.length > 0) {
+          await append(unrunResults(toolCalls, options.signal?.aborted ? "cancelled" : stopReason));
+        }
+        // A reply cut at the output limit is not an end: the model goes on from the cut, a limited number of times.
+        // With no text there is nothing to go on from: the limit is too small for the model's thinking.
+        const cutShort = stopReason === "max_tokens" && !options.signal?.aborted && spoke;
+        if (cutShort && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
+          outputContinuations += 1;
+          await append({ role: "user", content: [{ type: "text", text: OUTPUT_CUT_NOTE }] });
+          continue;
+        }
+        // A stop hook can refuse the end of the turn: its reason goes to the model. The step limit bounds this.
+        const canGoOn =
+          stopReason === "end_turn" && !options.signal?.aborted && iteration + 1 < maxToolIterations;
+        if (canGoOn && options.eventBus?.emitCollect) {
+          const { errors } = await options.eventBus.emitCollect("turn.stop", {
+            sessionId: options.sessionId,
+            turnId: options.turnId,
+            taskDepth: options.taskDepth ?? 0,
+            stopHookActive: stopBlocked,
+          });
+          const reasons = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+          if (reasons.length > 0) {
+            stopBlocked = true;
+            await append({ role: "user", content: [{ type: "text", text: reasons.join("\n\n") }] });
+            continue;
+          }
+        }
+        break;
+      }
 
       for (const tc of toolCalls) {
         if (!doomDetection) break;
@@ -380,35 +533,163 @@ export async function runTurn(
         }
       }
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
-      messages.push({ role: "user", content: results });
+      if (options.eventBus?.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.batch.after", {
+          calls: toolCalls.map((tc, i) => {
+            const r = results[i];
+            const result =
+              r?.type === "tool_result"
+                ? { content: r.content, isError: r.isError }
+                : { content: "", isError: false };
+            return { id: tc.id, tool: tc.name, input: tc.input, result };
+          }),
+          sessionId: options.sessionId,
+          turnId: options.turnId,
+        });
+        const stop = errors.find((e): e is HookStop => e instanceof HookStop);
+        if (stop) {
+          await append({ role: "user", content: results });
+          salvageError = { code: "hook_stop", message: stop.message };
+          stopReason = "end_turn";
+          break;
+        }
+        // The text of the hooks goes once into the last result, as the text of a PostToolUse hook into its own.
+        const added = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+        const lastResult = results.at(-1);
+        if (added.length > 0 && lastResult?.type === "tool_result") {
+          results[results.length - 1] = {
+            ...lastResult,
+            content: [lastResult.content, ...added].join("\n\n"),
+          };
+        }
+      }
+      // A model does not know the limits of its turn. The line goes into a result: the history stays append-only.
+      const notes: string[] = [];
+      const stepsLeft = maxToolIterations - iteration - 1;
+      if (stepsLeft === LOW_STEPS && maxToolIterations >= 2 * LOW_STEPS) {
+        notes.push(
+          `${LOW_STEPS} tool steps are left in this turn. Finish the task, or say what is not done.`,
+        );
+      }
+      const costLimit = options.budget?.maxCostUsd;
+      if (!costNoted && costLimit !== undefined && spentCostUsd >= costLimit * COST_NOTE_SHARE) {
+        costNoted = true;
+        notes.push(
+          `${Math.round((spentCostUsd / costLimit) * 100)} percent of the cost limit of this turn is spent. Finish the task, or say what is not done.`,
+        );
+      }
+      const last = results.at(-1);
+      if (notes.length > 0 && last?.type === "tool_result") {
+        results[results.length - 1] = {
+          ...last,
+          content: `${last.content}\n\n[harness: ${notes.join(" ")}]`,
+        };
+      }
+      await append({ role: "user", content: results });
     } catch (error) {
       if (tracer && modelSpanId) {
         try {
           tracer.endSpan(modelSpanId, { status: "error" });
         } catch {}
       }
+      const calls = messages.at(-1)?.role === "assistant" ? toolCallsOf(messages.at(-1)) : [];
+      if (options.signal?.aborted) {
+        if (calls.length > 0) await append(unrunResults(calls, "cancelled"));
+        stopReason = "cancelled";
+        options.onEvent?.({ type: "turn_complete", stopReason, usage: { inputTokens: 0, outputTokens: 0 } });
+        break;
+      }
       endTurnError();
       emitErrorEvent(error, options.onEvent);
+      if (calls.length > 0) await append(unrunResults(calls, "error"));
       throw error;
     }
   }
 
+  // The stop reason stays tool_use; the error tells a caller with no event listener that the work is not finished.
+  let turnError = salvageError;
   if (stopReason === "tool_use" && !options.signal?.aborted) {
     options.onEvent?.({ type: "iteration_limit", iterations: maxToolIterations });
+    turnError = {
+      code: "iteration_limit",
+      message: `stopped after ${maxToolIterations} tool steps: the task is not finished`,
+    };
+  } else if (!turnError && stopReason === "max_tokens") {
+    turnError = {
+      code: "max_tokens",
+      message: spoke
+        ? `the reply was cut at the output limit (continued ${outputContinuations} times): the answer is not complete`
+        : `the output limit of ${options.maxTokensPerRequest ?? 8192} tokens was used before any answer text, most likely by the model's thinking: set a higher maxOutputTokens for this model in the config`,
+    };
+  } else if (!turnError && !spoke && stopReason !== "cancelled") {
+    // No text is no answer: a headless caller must not read it as success.
+    turnError = {
+      code: "empty_response",
+      message: `the model returned no text (stop reason: ${stopReason})`,
+    };
+  } else if (!turnError && stopReason === "error") {
+    turnError = {
+      code: "provider_stop",
+      message: "the provider ended the reply with an error: the answer is not complete",
+    };
   }
 
   endTurnOk();
-  return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: false };
+  return {
+    messages,
+    stopReason,
+    usage: cumulativeUsage,
+    budgetExceeded: false,
+    ...(turnError ? { error: turnError } : {}),
+  };
+}
+
+function toolCallsOf(message: Message | undefined): Array<Extract<ContentBlock, { type: "tool_call" }>> {
+  return (message?.content ?? []).filter(
+    (b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call",
+  );
+}
+
+/** A provider that sends nothing for this long has stalled: without a limit the turn waits until a cancel. */
+const STREAM_IDLE_MS = 5 * 60_000;
+
+/** How many times in a row the model is asked to go on after a reply that was cut at the output limit. */
+const MAX_OUTPUT_CONTINUATIONS = 3;
+export const OUTPUT_CUT_NOTE =
+  "Your reply was cut at the output limit. Continue from the exact point where it stopped. Do not repeat text.";
+const CUT_CALL_NOTE =
+  "not run: the output limit cut this call before its arguments were complete. Send it again with shorter arguments, for example write a long file in smaller parts.";
+
+/** Measured: a model writes the cut line again from its start, so the half line was in the output twice. */
+function withoutCutLine(content: ContentBlock[]): ContentBlock[] {
+  const last = content.at(-1);
+  if (last?.type !== "text") return content;
+  const kept = last.text.slice(0, Math.max(0, last.text.lastIndexOf("\n")));
+  return kept.trim() === "" ? content : [...content.slice(0, -1), { ...last, text: kept }];
+}
+
+/** Every provider rejects a tool call that has no result, so a turn that stops early answers its calls. */
+function unrunResults(calls: ReadonlyArray<{ id: string }>, why: string): Message {
+  return {
+    role: "user",
+    content: calls.map((call) => ({
+      type: "tool_result",
+      toolCallId: call.id,
+      content: `not run: the turn ended (${why}) before this call started`,
+      isError: true,
+    })),
+  };
 }
 
 /** AgencyError-like errors carry a string `code`; anything else is reported as internal. */
+function describeError(error: unknown): TurnError {
+  if (!(error instanceof Error)) return { code: "internal", message: String(error) };
+  const code = "code" in error && typeof error.code === "string" ? error.code : "internal";
+  return { code, message: error.message };
+}
+
 function emitErrorEvent(error: unknown, onEvent?: (event: LoopEvent) => void): void {
-  if (error instanceof Error) {
-    const code = "code" in error && typeof error.code === "string" ? error.code : "internal";
-    onEvent?.({ type: "error", code, message: error.message });
-    return;
-  }
-  onEvent?.({ type: "error", code: "internal", message: String(error) });
+  onEvent?.({ type: "error", ...describeError(error) });
 }
 
 type ToolResultLike = { content: string; isError: boolean; images?: ImageBlock[] };
@@ -480,7 +761,8 @@ async function runTools(
     results[item.index] = {
       type: "tool_result",
       toolCallId: item.call.id,
-      content: result.content,
+      // A strict provider (Cohere) rejects an empty result, and a model reads an empty one as a failure.
+      content: result.content || "(no output)",
       isError: result.isError,
       ...(result.images?.length ? { images: result.images } : {}),
     };
@@ -550,11 +832,17 @@ async function executeOne(
   call: Extract<ContentBlock, { type: "tool_call" }>,
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
+  inner = false,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
   const resolved = spec ?? resolveToolSpec(options.tools, call.name);
   if (!resolved) {
     const available = options.tools.map((t) => t.name).join(", ");
     return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
+  }
+  // A hidden tool is out of the tool list of the request. A call from another tool (call_tool, code) can reach it.
+  if (!inner && resolved.hidden?.()) {
+    const hint = `the tool "${resolved.name}" is not loaded: find it with tool_search, then call it with call_tool`;
+    return { content: hint, isError: true };
   }
 
   try {
@@ -606,9 +894,29 @@ async function executeOne(
           });
         } catch {}
       }
+      // The user who is asked must see the script, not only the name of the tool.
+      const title =
+        resolved.name === CODE_TOOL && typeof call.input.code === "string" ? { title: call.input.code } : {};
+      // A PermissionRequest hook can answer an ask before the user gets it.
+      const askUser = options.requestApproval;
+      const ask: typeof askUser =
+        askUser === undefined || bus?.emitCollect === undefined
+          ? askUser
+          : async (request) => {
+              const asked: { decision?: "allow" | "deny" } & Record<string, unknown> = {
+                sessionId: options.sessionId,
+                tool: request.tool,
+                command: request.command,
+                path: request.path,
+              };
+              await bus.emitCollect?.("permission.request", asked);
+              if (asked.decision === "allow") return "once";
+              if (asked.decision === "deny") return "reject";
+              return askUser(request);
+            };
       const verdict = await options.toolPolicy.check(
-        { tool: resolved.name, riskTier: resolved.riskTier, ...subject },
-        options.requestApproval,
+        { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title },
+        ask,
       );
       if (bus) {
         try {
@@ -626,7 +934,8 @@ async function executeOne(
       }
       if (verdict === "deny") {
         return {
-          content: `permission denied: ${resolved.name} is not permitted by the current permissions policy`,
+          // Measured: with the bare first sentence a weaker model sent the same refused call 15 times on average.
+          content: `permission denied: ${resolved.name} is not permitted by the current permissions policy. Do not call it again: the answer will be the same. Continue without it, or tell the user that the task needs this permission.`,
           isError: true,
         };
       }
@@ -660,7 +969,13 @@ async function executeOne(
 
   const toolSignal = signal ?? NEVER_ABORTED;
   const onEvent = options.onEvent;
+  let innerCalls = 0;
   const toolCtx = {
+    callTool: (name: string, input: Record<string, unknown>) => {
+      innerCalls += 1;
+      const inner = { type: "tool_call" as const, id: `${call.id}.${innerCalls}`, name, input };
+      return executeOne(undefined, inner, options, signal, true);
+    },
     signal: toolSignal,
     turnId: options.turnId,
     cwd: options.cwd,
@@ -681,6 +996,8 @@ async function executeOne(
   } catch (error) {
     result = { content: error instanceof Error ? error.message : String(error), isError: true };
   }
+  if (options.redactToolResult)
+    result = { ...result, content: options.redactToolResult(result.content, resolved.name) };
 
   if (options.eventBus) {
     const afterPayload = {
@@ -691,8 +1008,13 @@ async function executeOne(
       turnId: options.turnId,
     };
     try {
-      if (options.eventBus.emitAsync) await options.eventBus.emitAsync("tool.execute.after", afterPayload);
-      else options.eventBus.emit("tool.execute.after", afterPayload);
+      if (options.eventBus.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.execute.after", afterPayload);
+        const notes = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+        if (notes.length > 0) result = { ...result, content: [result.content, ...notes].join("\n\n") };
+      } else if (options.eventBus.emitAsync) {
+        await options.eventBus.emitAsync("tool.execute.after", afterPayload);
+      } else options.eventBus.emit("tool.execute.after", afterPayload);
     } catch {}
     options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
     if (MUTATING_TOOLS.has(resolved.name)) {
@@ -741,11 +1063,9 @@ const SIMPLE_TYPES: Record<string, (value: unknown) => boolean> = {
 };
 
 /**
- * Minimal JSON-Schema validation over the subset tool `inputSchema`s use
- * (object root, `properties` with `type`/`enum`, `required`, shallow `items`).
- * Deliberately permissive: unknown keywords and untyped properties pass — the
- * goal is catching `{path: 123}`-shaped garbage with an actionable message,
- * not reimplementing a spec-complete validator.
+ * JSON-Schema validation over the subset that tool schemas use: `type` (also a list), `enum`, `required`,
+ * `properties` and `items`, at any depth. Unknown keywords pass: the goal is a clear message for a wrong value,
+ * not a complete validator.
  */
 export function validateToolInput(schema: Record<string, unknown>, input: unknown): string | undefined {
   if (!schema || typeof schema !== "object") return undefined;
@@ -753,50 +1073,42 @@ export function validateToolInput(schema: Record<string, unknown>, input: unknow
     return `invalid input: expected an object, got ${describeType(input)}`;
   }
   if (typeof input !== "object" || input === null) return undefined;
+  const fault = validateValue(schema, input, "");
+  return fault === undefined ? undefined : `invalid input: ${fault}`;
+}
 
-  const properties = schema.properties;
-  const required = schema.required;
-  if (Array.isArray(required)) {
-    for (const name of required) {
-      if (typeof name === "string" && !(name in input)) {
-        return `invalid input: missing required property "${name}"`;
-      }
+function validateValue(schema: unknown, value: unknown, path: string): string | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  const spec = schema as Record<string, unknown>;
+  const types = (Array.isArray(spec.type) ? spec.type : [spec.type]).filter(
+    (type): type is string => typeof type === "string" && type in SIMPLE_TYPES,
+  );
+  if (types.length > 0 && !types.some((type) => SIMPLE_TYPES[type]?.(value))) {
+    return `"${path}" must be ${types.join(" or ")}, got ${describeType(value)}`;
+  }
+  if (Array.isArray(spec.enum) && !spec.enum.some((option) => option === value)) {
+    return `"${path}" must be one of ${JSON.stringify(spec.enum)}`;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const fault = validateValue(spec.items, value[i], `${path}[${i}]`);
+      if (fault !== undefined) return fault;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const at = (name: string): string => (path === "" ? name : `${path}.${name}`);
+  if (Array.isArray(spec.required)) {
+    for (const name of spec.required) {
+      if (typeof name === "string" && !(name in record)) return `missing required property "${at(name)}"`;
     }
   }
-  if (!properties || typeof properties !== "object") return undefined;
-  const record = input as Record<string, unknown>;
-
-  for (const [name, rawSpec] of Object.entries(properties as Record<string, unknown>)) {
+  if (!spec.properties || typeof spec.properties !== "object") return undefined;
+  for (const [name, propSchema] of Object.entries(spec.properties as Record<string, unknown>)) {
     if (!(name in record)) continue;
-    const value = record[name];
-    if (!(rawSpec && typeof rawSpec === "object")) continue;
-    const propSchema = rawSpec as Record<string, unknown>;
-
-    if (typeof propSchema.type === "string") {
-      const check = SIMPLE_TYPES[propSchema.type];
-      if (check && !check(value)) {
-        return `invalid input: "${name}" must be ${propSchema.type}, got ${describeType(value)}`;
-      }
-    }
-    if (Array.isArray(propSchema.enum) && !propSchema.enum.some((option) => option === value)) {
-      return `invalid input: "${name}" must be one of ${JSON.stringify(propSchema.enum)}`;
-    }
-    if (propSchema.type === "array" && Array.isArray(value)) {
-      const itemSpec = propSchema.items;
-      if (
-        itemSpec &&
-        typeof itemSpec === "object" &&
-        typeof (itemSpec as Record<string, unknown>).type === "string"
-      ) {
-        const itemCheck = SIMPLE_TYPES[(itemSpec as Record<string, unknown>).type as string];
-        if (itemCheck) {
-          const bad = value.findIndex((item) => !itemCheck(item));
-          if (bad !== -1) {
-            return `invalid input: "${name}[${bad}]" must be ${(itemSpec as Record<string, unknown>).type}, got ${describeType(value[bad])}`;
-          }
-        }
-      }
-    }
+    const fault = validateValue(propSchema, record[name], at(name));
+    if (fault !== undefined) return fault;
   }
   return undefined;
 }
@@ -813,6 +1125,7 @@ interface CollectedTurn {
   usage: Usage;
   /** Tool-call ids whose streamed arguments never parsed, mapped to the per-call error message. */
   malformedCalls: Map<string, string>;
+  error?: TurnError;
 }
 
 async function collectTurn(
@@ -820,6 +1133,7 @@ async function collectTurn(
   http: HttpClient,
   request: Parameters<ProviderAdapter["stream"]>[0],
   onEvent: ((event: LoopEvent) => void) | undefined,
+  idleMs = STREAM_IDLE_MS,
 ): Promise<CollectedTurn> {
   const content: ContentBlock[] = [];
   const jsonByToolId = new Map<string, string>();
@@ -828,77 +1142,106 @@ async function collectTurn(
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
-  for await (const event of withMidStreamRecovery(adapter.stream(request, http))) {
-    switch (event.type) {
-      case "text_delta":
-        appendText(content, "text", event.text);
-        onEvent?.({ type: "text_delta", text: event.text });
-        break;
-      case "thinking_delta":
-        appendText(content, "thinking", event.text);
-        onEvent?.({ type: "thinking_delta", text: event.text });
-        break;
-      case "thinking_signature": {
-        const last = content[content.length - 1];
-        if (last?.type === "thinking" && last.signature === undefined) {
-          last.signature = event.signature;
-        } else if (last?.type !== "thinking") {
-          content.push({ type: "thinking", text: "", signature: event.signature });
-        } else {
-          // Trailing block already carries a signature: a second signature
-          // without intervening thinking text starts its own placeholder so
-          // no provider-issued signature is ever dropped.
-          content.push({ type: "thinking", text: "", signature: event.signature });
+  const idle = new AbortController();
+  const stalled = () =>
+    new AgencyError(ErrorCode.NETWORK, `the provider sent nothing for ${idleMs / 1000} s`, {
+      source: "loop",
+    });
+  const watch = () => setTimeout(() => idle.abort(), idleMs);
+  let idleTimer = watch();
+  const signal = request.signal ? AbortSignal.any([request.signal, idle.signal]) : idle.signal;
+
+  const salvaged: { error?: TurnError } = {};
+  const stream = withMidStreamRecovery(adapter.stream({ ...request, signal }, http), (error) => {
+    if (request.signal?.aborted) return;
+    // A stream that dies after content is a network failure unless the adapter already typed it.
+    salvaged.error =
+      error instanceof AgencyError || idle.signal.aborted
+        ? describeError(idle.signal.aborted ? stalled() : error)
+        : { code: ErrorCode.NETWORK, message: describeError(error).message };
+    onEvent?.({ type: "error", ...salvaged.error });
+  });
+  try {
+    for await (const event of stream) {
+      clearTimeout(idleTimer);
+      idleTimer = watch();
+      switch (event.type) {
+        case "text_delta":
+          appendText(content, "text", event.text);
+          onEvent?.({ type: "text_delta", text: event.text });
+          break;
+        case "thinking_delta":
+          appendText(content, "thinking", event.text);
+          onEvent?.({ type: "thinking_delta", text: event.text });
+          break;
+        case "thinking_signature": {
+          const last = content[content.length - 1];
+          if (last?.type === "thinking" && last.signature === undefined) {
+            last.signature = event.signature;
+            last.family = adapter.family;
+          } else if (last?.type !== "thinking") {
+            content.push({ type: "thinking", text: "", signature: event.signature, family: adapter.family });
+          } else {
+            // Trailing block already carries a signature: a second signature
+            // without intervening thinking text starts its own placeholder so
+            // no provider-issued signature is ever dropped.
+            content.push({ type: "thinking", text: "", signature: event.signature, family: adapter.family });
+          }
+          break;
         }
-        break;
-      }
-      case "redacted_thinking":
-        content.push({ type: "redacted_thinking", data: event.data });
-        break;
-      case "tool_call_start":
-        nameByToolId.set(event.id, event.name);
-        jsonByToolId.set(event.id, "");
-        break;
-      case "tool_call_delta":
-        jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
-        break;
-      case "tool_call_end": {
-        const raw = jsonByToolId.get(event.id) ?? "";
-        let input: Record<string, unknown> = {};
-        if (raw.trim()) {
-          try {
-            input = JSON.parse(raw) as Record<string, unknown>;
-          } catch {
-            // One malformed delta must not kill the whole turn: attempt a
-            // repair pass, and if the arguments are beyond repair, record a
-            // per-call error (runTools turns it into an error tool_result)
-            // instead of throwing away the entire turn.
-            const repaired = repairToolJson(raw);
-            if (repaired) {
-              input = repaired;
-            } else {
-              malformedCalls.set(
-                event.id,
-                `tool arguments were not valid JSON (even after repair): ${raw.slice(0, 500)}`,
-              );
+        case "redacted_thinking":
+          content.push({ type: "redacted_thinking", data: event.data });
+          break;
+        case "tool_call_start":
+          nameByToolId.set(event.id, event.name);
+          jsonByToolId.set(event.id, "");
+          break;
+        case "tool_call_delta":
+          jsonByToolId.set(event.id, (jsonByToolId.get(event.id) ?? "") + event.inputJsonDelta);
+          break;
+        case "tool_call_end": {
+          const raw = jsonByToolId.get(event.id) ?? "";
+          let input: Record<string, unknown> = {};
+          if (raw.trim()) {
+            try {
+              input = JSON.parse(raw) as Record<string, unknown>;
+            } catch {
+              // One malformed delta must not kill the whole turn: attempt a
+              // repair pass, and if the arguments are beyond repair, record a
+              // per-call error (runTools turns it into an error tool_result)
+              // instead of throwing away the entire turn.
+              const repaired = repairToolJson(raw);
+              if (repaired) {
+                input = repaired;
+              } else {
+                malformedCalls.set(
+                  event.id,
+                  `tool arguments were not valid JSON (even after repair): ${raw.slice(0, 500)}`,
+                );
+              }
             }
           }
+          // The tool_start event fires once the streamed arguments are parsed
+          // (not at tool_call_start): the TUI's renderCall needs the input, and
+          // nothing else can run between here and the provider round-trip.
+          content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+          onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+          break;
         }
-        // The tool_start event fires once the streamed arguments are parsed
-        // (not at tool_call_start): the TUI's renderCall needs the input, and
-        // nothing else can run between here and the provider round-trip.
-        content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
-        onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
-        break;
+        case "message_stop":
+          usage = event.usage;
+          stopReason = event.stopReason;
+          break;
       }
-      case "message_stop":
-        usage = event.usage;
-        stopReason = event.stopReason;
-        break;
     }
+  } catch (error) {
+    if (idle.signal.aborted && !request.signal?.aborted) throw stalled();
+    throw error;
+  } finally {
+    clearTimeout(idleTimer);
   }
 
-  return { content, stopReason, usage, malformedCalls };
+  return { content, stopReason, usage, malformedCalls, ...salvaged };
 }
 
 /**
@@ -954,7 +1297,7 @@ function appendText(content: ContentBlock[], type: "text" | "thinking", delta: s
   content.push(type === "text" ? { type: "text", text: delta } : { type: "thinking", text: delta });
 }
 
-function addUsage(a: Usage, b: Usage): Usage {
+export function addUsage(a: Usage, b: Usage): Usage {
   const written = (a.cacheWriteInputTokens ?? 0) + (b.cacheWriteInputTokens ?? 0);
   return {
     inputTokens: a.inputTokens + b.inputTokens,
@@ -963,6 +1306,10 @@ function addUsage(a: Usage, b: Usage): Usage {
     ...(a.cacheWriteInputTokens === undefined && b.cacheWriteInputTokens === undefined
       ? {}
       : { cacheWriteInputTokens: written }),
+    // ponytail: a sum of a reported and an unreported charge drops the unreported part. Price each request alone if one usage ever mixes providers.
+    ...(a.costUsd === undefined && b.costUsd === undefined
+      ? {}
+      : { costUsd: (a.costUsd ?? 0) + (b.costUsd ?? 0) }),
   };
 }
 
@@ -971,6 +1318,7 @@ function totalTokens(usage: Usage): number {
 }
 
 function costOf(usage: Usage, price?: PricePerMTok): number {
+  if (usage.costUsd !== undefined) return usage.costUsd;
   if (!price) return 0;
   const cached = usage.cachedInputTokens ?? 0;
   const written = usage.cacheWriteInputTokens ?? 0;

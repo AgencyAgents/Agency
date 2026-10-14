@@ -1,24 +1,48 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { getUpdatePublicKey } from "./update-public-key.ts";
 
-const REPO = "AgencyAgents/Agency";
+const REPO = "AgencyHarness/Agency";
 
-export async function checkStale(
+const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Returns a newer release version when the stamp file knows one, and asks GitHub at most once a day.
+ * The stamp is written before the request: a short command that exits mid-request must not send another.
+ */
+export function checkStale(
   currentVersion: string,
+  stampFile: string,
   httpFetch: typeof fetch = fetch,
-): Promise<string | undefined> {
+  now: number = Date.now(),
+): string | undefined {
+  let stamp: { checkedAt?: number; latest?: string } = {};
   try {
-    const res = await httpFetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    stamp = JSON.parse(readFileSync(stampFile, "utf8"));
+  } catch {
+    // No stamp yet.
+  }
+  if (stamp.checkedAt === undefined || now - stamp.checkedAt >= CHECK_INTERVAL_MS) {
+    const save = (latest: string | undefined): void => {
+      try {
+        mkdirSync(dirname(stampFile), { recursive: true });
+        writeFileSync(stampFile, JSON.stringify({ checkedAt: now, latest }));
+      } catch {
+        // An unwritable cache dir only means the check repeats.
+      }
+    };
+    save(stamp.latest);
+    void httpFetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
       headers: { accept: "application/vnd.github.v3+json" },
       signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return undefined;
-    const body = (await res.json()) as { tag_name?: string };
-    const latest = body.tag_name?.replace(/^v/, "") ?? "";
-    if (latest && latest !== currentVersion) return latest;
-  } catch {}
-  return undefined;
+    })
+      .then(async (res) => {
+        if (res.ok) save(((await res.json()) as { tag_name?: string }).tag_name?.replace(/^v/, ""));
+      })
+      .catch(() => {});
+  }
+  return stamp.latest && stamp.latest !== currentVersion ? stamp.latest : undefined;
 }
 
 /** Verify ed25519 signature for the asset buffer using the embedded public key. */
@@ -45,13 +69,15 @@ export async function runUpdate(options: {
   if (options.rollback) {
     const backup = `${binPath}.previous`;
     if (!existsSync(backup)) throw new Error("No previous version to rollback to");
-    renameSync(backup, binPath);
+    swapBinary(backup, binPath, `${binPath}.rolled-back`);
     return "Rolled back to previous version";
   }
 
   const latestRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { accept: "application/vnd.github.v3+json" },
   });
+  // GitHub answers 404 for the latest release of a repository that has none.
+  if (latestRes.status === 404) throw new Error("No release is published yet: there is nothing to update to");
   if (!latestRes.ok) throw new Error(`Failed to fetch latest release: ${latestRes.status}`);
   const latest = (await latestRes.json()) as {
     tag_name: string;
@@ -120,11 +146,17 @@ export async function runUpdate(options: {
 
   const tmpPath = `${binPath}.new`;
   writeFileSync(tmpPath, assetBuf, { mode: 0o755 });
-  const backup = `${binPath}.previous`;
-  if (existsSync(binPath)) {
-    const current = readFileSync(binPath);
-    writeFileSync(backup, current, { mode: 0o755 });
-  }
-  renameSync(tmpPath, binPath);
+  swapBinary(tmpPath, binPath, `${binPath}.previous`);
   return `Updated to ${latestVersion}`;
+}
+
+/** Puts `source` at `binPath`. Windows cannot overwrite a running executable but can rename it, so the old one moves aside first. */
+function swapBinary(source: string, binPath: string, aside: string): void {
+  if (existsSync(binPath)) renameSync(binPath, aside);
+  try {
+    renameSync(source, binPath);
+  } catch (error) {
+    if (existsSync(aside)) renameSync(aside, binPath);
+    throw error;
+  }
 }

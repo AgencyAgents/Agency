@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { modelCommandEnv } from "./shell.ts";
+import { killJob, trackJob } from "./win-job.ts";
 
 const MAX_LOG_BYTES = 256 * 1024; // bounded ring buffer per process, not unbounded growth
 
@@ -36,9 +38,11 @@ export class ProcessManager {
     const id = randomUUID();
     const proc = Bun.spawn(command, {
       cwd: options.cwd,
+      env: modelCommandEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
+    trackJob(proc.pid, proc.exited);
 
     const entry: Entry = {
       proc,
@@ -144,6 +148,8 @@ export class ProcessManager {
   private killTree(pid: number): void {
     try {
       if (process.platform === "win32") {
+        // The job first: it holds the descendants that the tree of Windows does not show.
+        killJob(pid);
         // /T walks the child tree, /F forces termination.
         Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"]);
         return;

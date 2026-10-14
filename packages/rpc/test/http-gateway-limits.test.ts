@@ -74,13 +74,14 @@ describe("POST /rpc limits", () => {
     const server = startHttpGateway({
       handlers: { ping: async () => "pong" },
       rateLimitMax: 1,
-      rateLimitWindowMs: 50,
+      // Two requests must fit in the window: 50 ms failed on a slow machine, where one request took more than that.
+      rateLimitWindowMs: 1_000,
     });
     servers.push(server);
 
     expect((await rpc(server, { id: "a", method: "ping", params: {} })).status).toBe(200);
     expect((await rpc(server, { id: "b", method: "ping", params: {} })).status).toBe(429);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect((await rpc(server, { id: "c", method: "ping", params: {} })).status).toBe(200);
   });
 });

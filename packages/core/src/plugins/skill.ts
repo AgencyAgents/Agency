@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Logger } from "../logger.ts";
+import type { ToolSpec } from "../loop.ts";
 import { configDir } from "../paths.ts";
 import type { PluginDefinition } from "./types.ts";
 
@@ -175,6 +176,41 @@ export function skillToPlugin(skill: SkillDescriptor): PluginDefinition {
   }
 
   return def;
+}
+
+/** The part of the system prompt that names the skills on demand: one line each, so an unused skill costs one line. */
+export function skillListing(skills: SkillDescriptor[]): string | undefined {
+  if (skills.length === 0) return undefined;
+  return [
+    "# Skills",
+    "A skill is a set of instructions for one kind of task. Before a task that a skill below covers, load it with the skill tool and follow it.",
+    ...skills.map((skill) => `- ${skill.name}: ${skill.description}`),
+  ].join("\n");
+}
+
+/** The tool that gives the model the body of one listed skill. */
+export function createSkillTool(skills: SkillDescriptor[]): ToolSpec {
+  return {
+    name: "skill",
+    description:
+      "Loads the full instructions of a skill that the system prompt lists. Call it before a task that the skill covers.",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "The name of the skill, as listed." } },
+      required: ["name"],
+    },
+    riskTier: "safe",
+    handler: async (input) => {
+      const skill = skills.find((candidate) => candidate.name === input.name);
+      if (!skill) {
+        const names = skills.map((candidate) => candidate.name).join(", ");
+        return { content: `unknown skill: ${String(input.name)}. The skills are: ${names}`, isError: true };
+      }
+      return {
+        content: `Skill: ${skill.name}\nBase directory: ${dirname(skill.path)} (paths in the skill are relative to it)\n\n${skill.body}`,
+      };
+    },
+  };
 }
 
 /**

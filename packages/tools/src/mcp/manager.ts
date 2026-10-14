@@ -2,9 +2,16 @@ import type { CallerIdentity, Capabilities } from "@agency/guard";
 import type { ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import type { ToolRegistry } from "../registry.ts";
-import { adaptMcpTool, type McpToolDefinition } from "./adapt.ts";
-import { McpClient } from "./client.ts";
+import {
+  adaptMcpTool,
+  type McpToolDefinition,
+  mcpImages,
+  renderMcpContent,
+  resourceBlocks,
+} from "./adapt.ts";
+import { McpClient, type McpPromptDefinition } from "./client.ts";
 import { type McpServerConfig, type McpServersConfig, parseMcpServers } from "./config.ts";
+import type { McpTokenStore } from "./oauth.ts";
 import { createMcpTransport, type McpTransport } from "./transport.ts";
 
 export function mcpIdentityFor(_serverName: string, handle?: string): CallerIdentity {
@@ -17,14 +24,24 @@ export interface McpManagerOptions {
   capabilities: Capabilities;
   processManager?: ProcessManager;
   transportFor?: (serverName: string, config: McpServerConfig) => McpTransport;
+  /** The sign-ins of `agency mcp login`, for the servers over HTTP of the default transport. */
+  tokens?: McpTokenStore;
   registry?: ToolRegistry;
   maxRestarts?: number;
   baseBackoffMs?: number;
   retryResetWindowMs?: number;
 }
 
+export interface McpPrompt extends McpPromptDefinition {
+  server: string;
+}
+
 export interface McpManager {
   tools: ToolSpec[];
+  /** The prompts of the servers. The slash command of one is `/mcp__<server>__<name>`. */
+  prompts: McpPrompt[];
+  /** The text of the prompt that a slash command names. Undefined: no prompt has that name. */
+  promptText(command: string, args: string): Promise<string | undefined>;
   failures: ReadonlyMap<string, string>;
   /**
    * Per-handle identity resolver threaded from scope creation.
@@ -43,6 +60,8 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
   const tools: ToolSpec[] = [];
   const serverTools = new Map<string, Set<string>>();
   const serverDefs = new Map<string, McpToolDefinition[]>();
+  const prompts: McpPrompt[] = [];
+  const resourceServers = new Set<string>();
   const retryCounts = new Map<string, number>();
   const identityFor = options.identityFor ?? mcpIdentityFor;
   const registry = options.registry;
@@ -78,6 +97,76 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
     }
     serverTools.delete(serverName);
     serverDefs.delete(serverName);
+    resourceServers.delete(serverName);
+  };
+
+  const resourceTools: ToolSpec<Record<string, unknown>>[] = [
+    {
+      name: "mcp_list_resources",
+      description:
+        "Lists the resources of the MCP servers. A resource is data that a server gives for reading, with a URI.",
+      inputSchema: {
+        type: "object",
+        properties: { server: { type: "string", description: "Only the resources of this server." } },
+      },
+      riskTier: "safe",
+      async handler(input) {
+        const lines: string[] = [];
+        for (const server of resourceServers) {
+          if (typeof input.server === "string" && input.server !== server) continue;
+          for (const r of (await clients.get(server)?.listResources()) ?? []) {
+            lines.push(
+              `${server} ${r.uri}${r.name ? ` (${r.name})` : ""}${r.description ? `: ${r.description}` : ""}`,
+            );
+          }
+        }
+        return { content: lines.join("\n") || "no resources" };
+      },
+    },
+    {
+      name: "mcp_read_resource",
+      description: "Reads one resource of an MCP server. mcp_list_resources gives the servers and the URIs.",
+      inputSchema: {
+        type: "object",
+        properties: { server: { type: "string" }, uri: { type: "string" } },
+        required: ["server", "uri"],
+      },
+      riskTier: "moderate",
+      async handler(input, ctx) {
+        const server = String(input.server);
+        const client = resourceServers.has(server) ? clients.get(server) : undefined;
+        if (!client) {
+          const known = [...resourceServers].join(", ") || "none";
+          return {
+            content: `no MCP server "${server}" with resources. The servers are: ${known}`,
+            isError: true,
+          };
+        }
+        const blocks = resourceBlocks(await client.readResource(String(input.uri), ctx.signal));
+        const images = mcpImages(blocks);
+        return { content: renderMcpContent(blocks), ...(images.length > 0 ? { images } : {}) };
+      },
+    },
+  ];
+
+  /** Resources and prompts are optional parts of a server: only a server that declares one is asked for it. */
+  const addExtrasFor = async (serverName: string, client: McpClient) => {
+    if (client.serverCapabilities.resources) {
+      resourceServers.add(serverName);
+      for (const spec of resourceTools) {
+        if (tools.some((t) => t.name === spec.name)) continue;
+        try {
+          registry?.register(spec);
+        } catch {}
+        tools.push(spec);
+      }
+    }
+    if (client.serverCapabilities.prompts) {
+      const defs = await client.listPrompts().catch(() => []);
+      for (let i = prompts.length - 1; i >= 0; i--)
+        if (prompts[i]?.server === serverName) prompts.splice(i, 1);
+      prompts.push(...defs.map((def) => ({ ...def, server: serverName })));
+    }
   };
 
   const addToolsFor = (
@@ -187,6 +276,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       transport = options.transportFor
         ? options.transportFor(name, config)
         : createMcpTransport(name, config, {
+            ...(options.tokens ? { tokens: options.tokens } : {}),
             adopt: options.processManager
               ? (proc, command) => {
                   options.processManager?.adopt(
@@ -228,15 +318,17 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       await client.initialize();
       const defs = await client.listTools();
       addToolsFor(name, config, client, defs);
+      await addExtrasFor(name, client);
       markHealthy(name);
     } catch (error) {
       const detail = failureDetail(error, transport);
       failures.set(name, detail);
       if (client) {
+        // Out of the map first: the close handler of a client in the map writes "crashed" over the detail.
+        clients.delete(name);
         try {
           await client.close();
         } catch {}
-        clients.delete(name);
       }
       if (transport) transports.delete(name);
       removeToolsFor(name);
@@ -257,6 +349,22 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
     tools,
     failures,
     identityFor,
+    prompts,
+    async promptText(command, args) {
+      const prompt = prompts.find((p) => `mcp__${p.server}__${p.name}` === command);
+      const client = prompt ? clients.get(prompt.server) : undefined;
+      if (!prompt || !client) return undefined;
+      // Words go to the arguments in their order, and the last argument takes the rest of the text.
+      const names = (prompt.arguments ?? []).map((a) => a.name);
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const values: Record<string, string> = {};
+      names.forEach((name, i) => {
+        const value = i === names.length - 1 ? words.slice(i).join(" ") : words[i];
+        if (value) values[name] = value;
+      });
+      const messages = await client.getPrompt(prompt.name, values);
+      return messages.map((m) => renderMcpContent(m.content)).join("\n\n");
+    },
     async dispose() {
       if (disposed) return;
       disposed = true;

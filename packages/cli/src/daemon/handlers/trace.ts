@@ -11,7 +11,7 @@ import {
 import { type KeychainBackend, resolveApiKey, type ThinkingLevel } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
 
 export function writeTurnCassette(
   traceRecorder: TraceRecorder,
@@ -55,7 +55,7 @@ export function registerTraceHandlers(handlers: Record<string, MethodHandler>, c
   handlers.trace_get = async (rawParams) => {
     const { sessionId, turnId } = rawParams as { sessionId: string; turnId?: string };
     if (!sessionId)
-      throw new AgencyError(ErrorCode.INTERNAL, "trace_get requires sessionId", { source: "trace" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "trace_get requires sessionId", { source: "trace" });
     const spans = loadTraceSpansSync(todoSessionsDir, sessionId);
     const filtered = turnId ? spans.filter((s) => s.traceId === turnId) : spans;
     const tree = buildSpanTree(filtered);
@@ -74,12 +74,12 @@ export function registerTraceHandlers(handlers: Record<string, MethodHandler>, c
       };
     };
     if (!sessionId || !turnId)
-      throw new AgencyError(ErrorCode.INTERNAL, "trace_replay requires sessionId and turnId", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "trace_replay requires sessionId and turnId", {
         source: "trace",
       });
     const record = await readCassetteRecord(todoSessionsDir, sessionId, turnId);
     if (!record)
-      throw new AgencyError(ErrorCode.INTERNAL, `no cassette for ${sessionId}/${turnId}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `no cassette for ${sessionId}/${turnId}`, {
         source: "trace",
       });
     const targetProvider = overrides?.provider ?? record.params.provider;
@@ -115,7 +115,7 @@ export function registerTraceHandlers(handlers: Record<string, MethodHandler>, c
             env: process.env,
             keychain: kc,
             config: providers[targetProvider]?.apiKey,
-            ...oauthOverridesFor(targetProvider, providers),
+            ...keySourcesFor(targetProvider, providers),
           });
         })();
         return k ?? "replay-key";

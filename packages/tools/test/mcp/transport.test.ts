@@ -38,6 +38,26 @@ describe("McpTransport HTTP Streamable", () => {
     expect(received[1]).toEqual({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
   });
 
+  test("the session id that a server gives in the handshake goes out with each later request", async () => {
+    const seen: Array<string | undefined> = [];
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method !== "POST") return new Response(null, { status: 405 });
+      const session = (init.headers as Record<string, string>)["mcp-session-id"];
+      seen.push(session);
+      const message = JSON.parse(String(init.body)) as { id: number; method: string };
+      // A server with sessions refuses a request that has no session id, as the specification says.
+      if (message.method !== "initialize" && session !== "sess-1") return new Response("", { status: 400 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }), {
+        headers: { "content-type": "application/json", "mcp-session-id": "sess-1" },
+      });
+    }) as unknown as typeof fetch;
+    const transport = createMcpTransport("http", { url: "https://example.com/mcp" });
+    transport.onMessage(() => {});
+    await transport.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    await transport.send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+    expect(seen).toEqual([undefined, "sess-1"]);
+  });
+
   test("optional auth headers are sent", async () => {
     let capturedHeaders: Record<string, string> = {};
     globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {

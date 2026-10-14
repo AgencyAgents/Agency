@@ -293,6 +293,22 @@ describe("SessionStore", () => {
     expect(store.tips(entries)).toHaveLength(6);
   });
 
+  test("appends from two processes at one time all survive", async () => {
+    const { store, dir } = setup();
+    const meta = store.create("s1");
+    // Windows gave EPERM on the lock about once in 300 appends, so 1600 appends make a miss of the defect unlikely.
+    const script = `
+      import { SessionStore } from ${JSON.stringify(join(import.meta.dir, "..", "..", "src", "sessions", "store.ts"))};
+      const store = new SessionStore(${JSON.stringify(dir)});
+      for (let n = 0; n < 800; n++) await store.append(${JSON.stringify(meta.id)}, { type: "note", parentId: null, n });
+    `;
+    const children = [1, 2].map(() =>
+      Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "ignore" }),
+    );
+    expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0]);
+    expect(store.load(meta.id)).toHaveLength(1600);
+  }, 60_000);
+
   test("line numbers in corruption warnings stay file-accurate across incremental loads", async () => {
     const { store, dir } = setup();
     const meta = store.create("s1");

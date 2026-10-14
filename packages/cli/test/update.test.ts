@@ -15,13 +15,13 @@ import {
   sign,
   verify,
 } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // We test the exported functions by importing them. verifySignature is private,
 // so we test it indirectly through the full flow with mocked HTTP responses.
-import { runUpdate, verifySignature } from "../src/update.ts";
+import { checkStale, runUpdate, verifySignature } from "../src/update.ts";
 import { getUpdatePublicKey, UPDATE_SPKI_DER_LEN } from "../src/update-public-key.ts";
 
 /**
@@ -214,6 +214,46 @@ describe("runUpdate - signature verification", () => {
     }
   });
 
+  // Windows refuses to overwrite a running executable, and the CLI that runs the update is one.
+  test.skipIf(process.platform !== "win32")(
+    "update and rollback replace a binary that is running",
+    async () => {
+      const kp = testKeypair();
+      const assetContent = Buffer.from("new build");
+      const prevKey = process.env.AGENCY_UPDATE_PUBLIC_KEY;
+      process.env.AGENCY_UPDATE_PUBLIC_KEY = kp.publicKey.toString("base64");
+
+      const binPath = setupTempBin();
+      const ping = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "PING.EXE");
+      copyFileSync(ping, binPath);
+      const running = Bun.spawn([binPath, "-n", "20", "127.0.0.1"], { stdout: "ignore", stderr: "ignore" });
+      try {
+        await Bun.sleep(500);
+        const { httpFetch } = mockRelease({
+          assetName: platformAssetName(),
+          assetContent,
+          signature: signBuffer(assetContent, kp.privateKey),
+        });
+
+        expect(await runUpdate({ currentVersion: "1.0.0", httpFetch, binPath })).toBe("Updated to 2.0.0");
+        expect(readFileSync(binPath).equals(assetContent)).toBe(true);
+        expect(readFileSync(`${binPath}.previous`).equals(readFileSync(ping))).toBe(true);
+
+        expect(await runUpdate({ currentVersion: "2.0.0", rollback: true, binPath })).toBe(
+          "Rolled back to previous version",
+        );
+        expect(readFileSync(binPath).equals(readFileSync(ping))).toBe(true);
+      } finally {
+        running.kill();
+        await running.exited;
+        cleanupTempBin(binPath);
+        if (prevKey === undefined) delete process.env.AGENCY_UPDATE_PUBLIC_KEY;
+        else process.env.AGENCY_UPDATE_PUBLIC_KEY = prevKey;
+      }
+    },
+    20_000,
+  );
+
   test("tampered signature is rejected even with valid checksum", async () => {
     const kp = testKeypair();
     const assetContent = Buffer.from("fake binary content for tamper test");
@@ -373,6 +413,14 @@ describe("runUpdate - signature verification", () => {
       cleanupTempBin(binPath);
     }
   });
+
+  test("a repository with no release says so, not a bare status code", async () => {
+    // GitHub answers 404 for the latest release of a repository that has none.
+    const httpFetch = (async () => new Response("{}", { status: 404 })) as unknown as typeof fetch;
+    await expect(runUpdate({ currentVersion: "0.1.0", httpFetch, binPath: "unused" })).rejects.toThrow(
+      "No release is published yet",
+    );
+  });
 });
 
 describe("sign-release script validation", () => {
@@ -485,3 +533,52 @@ function dirname(p: string): string {
   const idx = p.lastIndexOf(sep);
   return idx === -1 ? "." : p.slice(0, idx);
 }
+
+describe("checkStale", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const release = (tag: string) => {
+    let calls = 0;
+    const fetcher = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ tag_name: tag }));
+    }) as unknown as typeof fetch;
+    return { fetcher, calls: () => calls };
+  };
+
+  test("asks GitHub once a day and answers from the stamp in between", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-update-stamp-"));
+    const stamp = join(dir, "cache", "update-check.json");
+    const { fetcher, calls } = release("v0.2.0");
+    try {
+      expect(checkStale("0.1.0", stamp, fetcher, 1_000_000)).toBeUndefined();
+      await Bun.sleep(20);
+      expect(calls()).toBe(1);
+
+      expect(checkStale("0.1.0", stamp, fetcher, 1_000_000 + DAY - 1)).toBe("0.2.0");
+      expect(checkStale("0.2.0", stamp, fetcher, 1_000_000 + DAY - 1)).toBeUndefined();
+      expect(calls()).toBe(1);
+
+      checkStale("0.1.0", stamp, fetcher, 1_000_000 + DAY);
+      expect(calls()).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a command that exits before the answer still spends the day's one request", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-update-stamp-"));
+    const stamp = join(dir, "update-check.json");
+    let calls = 0;
+    const never = (() => {
+      calls += 1;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    try {
+      checkStale("0.1.0", stamp, never, 5_000_000);
+      checkStale("0.1.0", stamp, never, 5_000_001);
+      expect(calls).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

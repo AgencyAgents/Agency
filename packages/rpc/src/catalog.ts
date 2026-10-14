@@ -6,6 +6,7 @@
 export const METHOD_DOCS: Record<string, string> = {
   run_turn: "Run one model turn over caller-owned messages.",
   cancel_turn: "Abort an in-flight turn and refuse its pending asks.",
+  turns_list: "List the turns that run: id, session, model and start time.",
   session_send: "Daemon-owned turn: send text, history and usage stay server-side.",
   session_show: "Read a session through the single SessionProjector view.",
   session_list: "List daemon-known sessions with title and tip.",
@@ -24,7 +25,8 @@ export const METHOD_DOCS: Record<string, string> = {
   todo_read: "Read the latest persisted todo_state for a session.",
   todo_write: "Persist a todo_state entry for a session.",
   cost_report: "Sum usage entries plus trace spans per session and agent (Phase 9 adds budgets and caps).",
-  undo_run: "Roll a session back to its pre-turn checkpoint (Phase 8 generalizes to team runs).",
+  undo_run:
+    "Roll a session back to its pre-turn checkpoint; with mode files-only|task-only|both restores a shadow commit's files and/or the session tip.",
   undo: "Undo the last snapshot-backed file change.",
   redo: "Redo a snapshot-backed file change.",
   prompt_inspect: "Resolve the system prompt without running a turn.",
@@ -52,7 +54,7 @@ export const METHOD_DOCS: Record<string, string> = {
   agent_stop: "Stop one team agent and idle its sessions.",
   dispatch_compare: "Fan out one prompt to two agents and compare.",
   plan_approve: "Record a human approval for a plan file.",
-  mcp_status: "MCP server failures for a session scope.",
+  mcp_status: "MCP server failures and prompts for a session scope.",
   lsp_status: "Language server statuses for a session scope.",
   commands_list: "List available slash command templates.",
   commands_expand: "Expand a slash command template with args.",

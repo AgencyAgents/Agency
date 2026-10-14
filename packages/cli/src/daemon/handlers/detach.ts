@@ -15,7 +15,7 @@ export function boardFilePath(workspaceRoot: string): string {
 }
 
 function fail(reason: string): never {
-  throw new AgencyError(ErrorCode.INTERNAL, reason, { source: "detach" });
+  throw new AgencyError(ErrorCode.INVALID_REQUEST, reason, { source: "detach" });
 }
 
 function str(value: unknown): string {

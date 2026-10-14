@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { ErrorCode } from "@agency/schema";
 import { EVENT_RETRY_MS, EVENT_RING_SIZE } from "./catalog.ts";
 import { EventRing, sseFrame } from "./event-buffer.ts";
 import { buildGatewayDocument } from "./gateway-doc.ts";
@@ -41,6 +43,8 @@ export interface HttpGatewayOptions {
    * When unset the gateway accepts anonymous callers.
    */
   token?: string;
+  /** A client dropped its request before the call ended. The daemon cancels that client's turns. */
+  onClientDisconnect?: (clientId: string) => void;
   /** Interval between SSE keepalive comments; 0 disables. Default 15s. */
   keepAliveMs?: number;
   /** Emit CORS headers; the allowlist decides which origins get them. */
@@ -91,6 +95,19 @@ interface SseClient {
   /** Idempotently tears the client down: unregisters, stops keepalive, closes. */
   close: () => void;
 }
+
+/** A handler failure the caller or an upstream caused must not read as a gateway fault; untyped throws stay 500. */
+const STATUS_BY_CODE: Record<string, number> = {
+  [ErrorCode.INVALID_REQUEST]: 400,
+  [ErrorCode.AUTH]: 401,
+  [ErrorCode.PERMISSION_DENIED]: 403,
+  [ErrorCode.CONTEXT_OVERFLOW]: 413,
+  [ErrorCode.RATE_LIMIT]: 429,
+  [ErrorCode.NETWORK]: 502,
+  [ErrorCode.PROXY]: 502,
+  [ErrorCode.OVERLOAD]: 503,
+  [ErrorCode.TRANSIENT]: 503,
+};
 
 function errorPayload(error: unknown): { message: string; code?: string } {
   const code =
@@ -262,11 +279,18 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
       return json(404, { id: id ?? null, error: { message: `unknown method: ${method}` } }, request);
     }
 
+    // Each call is its own client: a dropped request must cancel the turn of that call and no other.
+    const clientId = `http-${randomUUID()}`;
+    const onGone = (): void => options.onClientDisconnect?.(clientId);
+    request.signal.addEventListener("abort", onGone);
     try {
-      const result = await handler(params, { clientId: "http" });
+      const result = await handler(params, { clientId });
       return json(200, { id: id ?? null, result }, request);
     } catch (error: unknown) {
-      return json(500, { id: id ?? null, error: errorPayload(error) }, request);
+      const payload = errorPayload(error);
+      return json(STATUS_BY_CODE[payload.code ?? ""] ?? 500, { id: id ?? null, error: payload }, request);
+    } finally {
+      request.signal.removeEventListener("abort", onGone);
     }
   }
 

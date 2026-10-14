@@ -14,6 +14,8 @@ export const ErrorCode = {
   REFUSAL: "refusal",
   TOOL_ERROR: "tool_error",
   PERMISSION_DENIED: "permission_denied",
+  /** The caller sent a request it can correct: a missing parameter, an unknown id, a bad value. */
+  INVALID_REQUEST: "invalid_request",
   INTERNAL: "internal",
 } as const;
 
@@ -40,6 +42,7 @@ const RETRY_CLASS: Record<ErrorCode, RetryClass> = {
   // feedback the caller can act on, not turn-fatal failures.
   [ErrorCode.TOOL_ERROR]: "retryable",
   [ErrorCode.PERMISSION_DENIED]: "fatal",
+  [ErrorCode.INVALID_REQUEST]: "fatal",
   [ErrorCode.INTERNAL]: "fatal",
 };
 
@@ -55,6 +58,7 @@ const MESSAGE_KEY: Record<ErrorCode, string> = {
   [ErrorCode.REFUSAL]: "error.refusal",
   [ErrorCode.TOOL_ERROR]: "error.tool_error",
   [ErrorCode.PERMISSION_DENIED]: "error.permission_denied",
+  [ErrorCode.INVALID_REQUEST]: "error.invalid_request",
   [ErrorCode.INTERNAL]: "error.internal",
 };
 

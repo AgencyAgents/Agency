@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../src/paths.ts";
 import {
   cacheDir,
   dataDir,
   logDir,
+  ownerOnlyDirs,
   pruneCache,
   pruneSessions,
   reportStorage,
@@ -36,6 +38,15 @@ describe("per-OS directories", () => {
     const env = { XDG_DATA_HOME: "/data", XDG_CACHE_HOME: "/cache" } as NodeJS.ProcessEnv;
     expect(dataDir(env, "linux")).toBe(join("/data", "agency"));
     expect(cacheDir(env, "linux")).toBe(join("/cache", "agency"));
+  });
+
+  test("AGENCY_HOME roots config, data and cache on every platform", () => {
+    const env = { AGENCY_HOME: "/h", LOCALAPPDATA: "C:\\x", XDG_DATA_HOME: "/data" } as NodeJS.ProcessEnv;
+    for (const platform of ["win32", "darwin", "linux"]) {
+      expect(configDir(env, platform)).toBe(join("/h", "config"));
+      expect(dataDir(env, platform)).toBe(join("/h", "data"));
+      expect(cacheDir(env, platform)).toBe(join("/h", "cache"));
+    }
   });
 });
 
@@ -263,5 +274,17 @@ describe("pruneSessions", () => {
     const result = await pruneSessions({ maxAgeDays: 30 }, env, "linux");
     expect(result.deleted).toEqual(expect.arrayContaining(olds));
     for (const old of olds) expect(existsSync(old)).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("ownerOnlyDirs", () => {
+  test("makes the data and config folders 0700, also when they were open before", () => {
+    const home = mkdtempSync(join(tmpdir(), "agency-owner-"));
+    dirs.push(home);
+    const env = { AGENCY_HOME: home } as NodeJS.ProcessEnv;
+    mkdirSync(dataDir(env), { recursive: true, mode: 0o755 });
+    ownerOnlyDirs(env);
+    expect(statSync(dataDir(env)).mode & 0o777).toBe(0o700);
+    expect(statSync(configDir(env)).mode & 0o777).toBe(0o700);
   });
 });

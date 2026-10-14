@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
-import { type Dirent, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, type Dirent, existsSync, mkdirSync, rmSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import { configDir } from "./paths.ts";
 
-/** User data: sessions, snapshots. Never safe to delete casually. */
+/**
+ * User data: sessions, snapshots. Never safe to delete casually.
+ * AGENCY_HOME roots config, data and cache in one place: macOS has no other env override.
+ */
 export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.AGENCY_HOME) return join(env.AGENCY_HOME, "data");
   if (platform === "win32") {
     return join(env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Agency");
   }
@@ -18,6 +22,7 @@ export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: string =
 
 /** Regenerable: model catalogs, tokenizer tables. Always safe to delete. */
 export function cacheDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.AGENCY_HOME) return join(env.AGENCY_HOME, "cache");
   if (platform === "win32") {
     return join(env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Agency", "Cache");
   }
@@ -25,6 +30,23 @@ export function cacheDir(env: NodeJS.ProcessEnv = process.env, platform: string 
     return join(homedir(), "Library", "Caches", "Agency");
   }
   return join(env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "agency");
+}
+
+/**
+ * Off Windows, where the profile folders are private already: sessions, logs and approvals hold code and tool
+ * output, so the data and config folders are the user's alone (0700). A folder it cannot change stays as it is.
+ */
+export function ownerOnlyDirs(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): void {
+  if (platform === "win32") return;
+  for (const dir of [dataDir(env, platform), configDir(env, platform)]) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+    } catch {}
+  }
 }
 
 export function logDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {

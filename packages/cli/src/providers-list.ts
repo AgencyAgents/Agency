@@ -69,17 +69,15 @@ async function connectedProviderIds(
   const connected: string[] = [];
   for (const id of providerIds) {
     const providerConfig = config.provider[id];
-    const fromDeclaredEnv = providerConfig?.env?.map((name) => env[name]).find(Boolean);
-    const key =
-      fromDeclaredEnv ??
-      (await resolveApiKey({
-        provider: id,
-        env,
-        keychain,
-        config: providerConfig?.apiKey,
-        oauthClientId: providerConfig?.oauth?.clientId,
-        oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-      }));
+    const key = await resolveApiKey({
+      provider: id,
+      env,
+      keychain,
+      declaredEnv: providerConfig?.env,
+      config: providerConfig?.apiKey,
+      oauthClientId: providerConfig?.oauth?.clientId,
+      oauthBaseUrl: providerConfig?.oauth?.baseUrl,
+    });
     if (key) connected.push(id);
   }
   return connected;

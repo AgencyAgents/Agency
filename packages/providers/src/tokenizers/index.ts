@@ -1,5 +1,20 @@
+import { createRequire } from "node:module";
 import type { HttpClient } from "@agency/net";
-import { encode } from "gpt-tokenizer";
+
+// gpt-tokenizer embeds the full o200k_base BPE vocabulary (~80MB RSS when
+// loaded). It is only needed for exact OpenAI token counts, so it is loaded
+// lazily on the first count() call instead of at module import time — the
+// daemon boot graph imports this module via @agency/providers and must not
+// pay that cost until a turn actually needs a precise count.
+const require = createRequire(import.meta.url);
+let encodeFn: ((text: string) => number[]) | undefined;
+
+function encode(text: string): number[] {
+  if (!encodeFn) {
+    encodeFn = (require("gpt-tokenizer") as { encode: (t: string) => number[] }).encode;
+  }
+  return encodeFn(text);
+}
 
 export interface Tokenizer {
   /** True BPE count vs. a calibrated approximation; callers use this to decide

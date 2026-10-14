@@ -21,16 +21,25 @@ export { createGlobTool } from "./builtins/glob.ts";
 export { createGrepTool } from "./builtins/grep.ts";
 export {
   approvalRecordPath,
+  assertActTransitionAllowed,
+  assertPlanAgentWriteAllowed,
   collapsePlanBlockForScrollback,
   commentsPath,
   countUnresolvedComments,
   createExecutePlanTool,
   createPlanExitTool,
+  isPlanAgentWriteAllowed,
   isPlanExitYes,
   isPlanPath,
   LEGACY_PLAN_DIR,
   PLAN_BLOCK_ICON,
   PLAN_DIR,
+  type PlanActDenyReason,
+  type PlanActTransition,
+  PlanActTransitionDeniedError,
+  PlanAgentWriteDeniedError,
+  PlanApprovalDeniedError,
+  type PlanApprovalDenyReason,
   type PlanApprovalRecord,
   type PlanStep,
   parsePlanSteps,
@@ -96,6 +105,8 @@ export * from "./mcp/index.ts";
 export * from "./process-manager.ts";
 export * from "./read-state.ts";
 export * from "./registry.ts";
+export * from "./repomap.ts";
+export * from "./semantic-index.ts";
 export * from "./session-scope.ts";
 export * from "./shell.ts";
 export * from "./snapshot.ts";

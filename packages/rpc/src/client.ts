@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { PendingRequestManager } from "@agency/net";
 import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type RpcMessage } from "./protocol.ts";
-import { FrameWriter } from "./writer.ts";
+import { destroyAfterData, FrameWriter } from "./writer.ts";
 
 export interface DaemonClient {
   call(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
@@ -104,7 +104,7 @@ export async function connectToDaemon(
     lastInbound = Date.now();
     if (message.type === "response" || message.type === "response_error") {
       if (message.type === "response") pending.resolve(message.id, message.result);
-      else pending.reject(message.id, new Error(message.error.message));
+      else pending.reject(message.id, Object.assign(new Error(message.error.message), message.error));
     } else if (message.type === "event") {
       for (const listener of listeners.get(message.event) ?? []) listener(message.payload);
     }
@@ -117,7 +117,7 @@ export async function connectToDaemon(
     } catch {
       // Malformed frame: never crash on parse (the server side already
       // guards this); fail the connection instead.
-      socket?.destroy();
+      if (socket) destroyAfterData(socket);
       return;
     }
     for (const message of messages ?? []) handleMessage(message);
@@ -204,7 +204,7 @@ export async function connectToDaemon(
         try {
           messages = dec.push(chunk.toString("utf8"));
         } catch {
-          sock.destroy();
+          destroyAfterData(sock);
           reject(new Error("daemon sent a malformed handshake frame"));
           return;
         }
@@ -226,6 +226,10 @@ export async function connectToDaemon(
       throw new Error(
         `daemon protocol version ${ack.version} is incompatible with this client's version ${PROTOCOL_VERSION}`,
       );
+    }
+    if (ack.leaving === true) {
+      sock.destroy();
+      throw new Error("the daemon is leaving because its config changed");
     }
     if (ack.authorized === false) {
       authRejected = true; // permanent: retrying with the same token is futile

@@ -3,10 +3,10 @@ import { AgencyError, type ContentBlock, ErrorCode, type StopReason } from "@age
 import { estimateTokens, MIN_CACHEABLE_TOKENS, splitStableDynamic } from "../cache-policy.ts";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
-import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
+import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usage } from "../types.ts";
 
 const API_VERSION = "2023-06-01";
-const BASE_URL = "https://api.anthropic.com/v1/messages";
+const BASE_URL = "https://api.anthropic.com/v1";
 
 /** Anthropic's `thinking.budget_tokens` per unified level. `off` omits the block entirely. */
 const THINKING_BUDGET: Record<Exclude<ThinkingLevel, "off">, number> = {
@@ -16,6 +16,19 @@ const THINKING_BUDGET: Record<Exclude<ThinkingLevel, "off">, number> = {
   high: 8192,
   xhigh: 16384,
   max: 32000,
+};
+
+/** The 4.5 family and older models take a thinking budget and answer 400 to adaptive thinking. Later models are the reverse. */
+const BUDGET_THINKING_MODEL = /claude-(?:3-|(?:opus|sonnet|haiku)-4-(?:[15](?!\d)|\d{8}))/;
+
+/** `output_config.effort` per unified level, for the models with adaptive thinking. */
+const EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
 };
 
 const STOP_REASON: Record<string, StopReason> = {
@@ -30,10 +43,11 @@ const STOP_REASON: Record<string, StopReason> = {
   pause_turn: "end_turn",
 };
 
-/** Anthropic phrases oversized inputs as a 400 invalid_request_error (or 413). */
-function isInputTooLong(status: number, message: string): boolean {
+/** Anthropic phrases oversized inputs as a 400 invalid_request_error (or 413). A llama.cpp server has its own type. */
+function isInputTooLong(status: number, message: string, type?: string): boolean {
   return (
     status === 413 ||
+    type === "exceed_context_size_error" ||
     (status === 400 &&
       /(prompt is too long|input length[^\n]*exceeds|exceeds the context|context length|too many (input )?tokens|request too large)/i.test(
         message,
@@ -41,7 +55,7 @@ function isInputTooLong(status: number, message: string): boolean {
   );
 }
 
-function toAnthropicContent(block: ContentBlock): Record<string, unknown> | undefined {
+function toAnthropicContent(block: ContentBlock, vision = false): Record<string, unknown> | undefined {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
@@ -53,13 +67,19 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
       return {
         type: "tool_result",
         tool_use_id: block.toolCallId,
-        content: block.content,
+        content:
+          vision && block.images?.length
+            ? [
+                { type: "text", text: block.content },
+                ...block.images.map((image) => toAnthropicContent(image)),
+              ]
+            : block.content,
         is_error: block.isError || undefined,
       };
     case "thinking":
-      // Unsigned thinking can't be replayed (the API rejects it), so it only
-      // goes back when the signature the provider issued for it is present.
-      return block.signature === undefined
+      // Unsigned thinking can't be replayed (the API rejects it), and neither can
+      // a signature that another provider issued.
+      return block.signature === undefined || (block.family ?? "anthropic") !== "anthropic"
         ? undefined
         : { type: "thinking", thinking: block.text, signature: block.signature };
     case "redacted_thinking":
@@ -69,11 +89,16 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> | unde
 
 function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   const minTokens = request.cachePolicy?.minTokens ?? MIN_CACHEABLE_TOKENS;
+  // A message that maps to no content is left out: the API rejects an empty message.
   const messages: { role: string; content: Record<string, unknown>[]; cache_control?: unknown }[] =
-    request.messages.map((m) => ({
-      role: m.role === "system" ? "user" : m.role,
-      content: m.content.map(toAnthropicContent).filter((c): c is Record<string, unknown> => c !== undefined),
-    }));
+    request.messages
+      .map((m) => ({
+        role: m.role === "system" ? "user" : m.role,
+        content: m.content
+          .map((block) => toAnthropicContent(block, request.vision))
+          .filter((c): c is Record<string, unknown> => c !== undefined),
+      }))
+      .filter((m) => m.content.length > 0);
 
   // Breakpoints 3 and 4 roll forward: the settled turn-back tail and the
   // current tail. Each is skipped when the conversation is too short to pay.
@@ -111,8 +136,12 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
         input_schema: t.inputSchema,
       }));
     if (estimateTokens(JSON.stringify(tools)) >= minTokens) {
+      // The API wants a 1-hour entry before any 5-minute one, and tools come before the system text.
+      const hour =
+        request.systemSegments !== undefined &&
+        estimateTokens(splitStableDynamic(request.systemSegments).stable) >= minTokens;
       const lastTool = tools.at(-1);
-      if (lastTool) lastTool.cache_control = { type: "ephemeral" };
+      if (lastTool) lastTool.cache_control = hour ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
     }
     body.tools = tools;
   }
@@ -138,7 +167,16 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   if (request.temperature !== undefined) body.temperature = request.temperature;
 
   if (request.thinkingLevel && request.thinkingLevel !== "off") {
-    body.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET[request.thinkingLevel] };
+    if (BUDGET_THINKING_MODEL.test(request.model)) {
+      // The API takes a budget of 1024 or more that is less than max_tokens. Half of max_tokens leaves room for the answer.
+      const budget = Math.min(THINKING_BUDGET[request.thinkingLevel], Math.floor(request.maxTokens / 2));
+      if (budget >= 1024) body.thinking = { type: "enabled", budget_tokens: budget };
+    } else {
+      // These models hide the thinking text unless the request asks for the summary. The 4.6 models have no xhigh.
+      const noXhigh = request.thinkingLevel === "xhigh" && /-4-6(?!\d)/.test(request.model);
+      body.thinking = { type: "adaptive", display: "summarized" };
+      body.output_config = { effort: noXhigh ? "high" : EFFORT[request.thinkingLevel] };
+    }
   }
 
   return body;
@@ -152,7 +190,10 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   const context = { status: res.status, source: "anthropic" };
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: "anthropic", context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `anthropic ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: "anthropic", context });
   }
   if (res.status === 429) {
     const retryAfterMsValue = parseRetryAfterMs(res);
@@ -167,19 +208,47 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: "anthropic", context });
   }
-  if (isInputTooLong(res.status, message)) {
+  if (isInputTooLong(res.status, message, body?.error?.type)) {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "anthropic", context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: "anthropic", context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: "anthropic", context });
+}
+
+interface WireUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  /** The charge in USD. A gateway (OpenRouter) sends it. */
+  cost?: number | null;
+}
+
+/**
+ * message_delta repeats the counts as totals, and a gateway sends zero in message_start and the real counts there.
+ * The wire counts are additive: `inputTokens` is the whole prompt, and the cost formula takes the cached parts out.
+ */
+function readUsage(usage: Usage, wire: WireUsage | undefined): void {
+  if (typeof wire?.output_tokens === "number") usage.outputTokens = wire.output_tokens;
+  if (typeof wire?.cost === "number") usage.costUsd = wire.cost;
+  const cached = wire?.cache_read_input_tokens;
+  const written = wire?.cache_creation_input_tokens;
+  const total = (wire?.input_tokens ?? 0) + (cached ?? 0) + (written ?? 0);
+  if (total === 0) return;
+  usage.inputTokens = total;
+  if (typeof cached === "number") usage.cachedInputTokens = cached;
+  if (typeof written === "number") usage.cacheWriteInputTokens = written;
 }
 
 async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIterable<StreamEvent> {
-  const res = await http.fetch(BASE_URL, {
+  const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/messages`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-api-key": request.apiKey,
       "anthropic-version": API_VERSION,
+      ...request.headers,
     },
     body: JSON.stringify(buildRequestBody(request)),
     signal: request.signal,
@@ -191,15 +260,7 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
 
   // index -> tool_call id, so content_block_delta/stop can address the right call
   const toolCallIndex = new Map<number, string>();
-  const usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-    cacheWriteInputTokens?: number;
-  } = {
-    inputTokens: 0,
-    outputTokens: 0,
-  };
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
 
   for await (const frame of parseSse(res.body)) {
@@ -208,22 +269,7 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
 
     switch (payload.type) {
       case "message_start": {
-        const msgUsage = (
-          payload.message as {
-            usage?: {
-              input_tokens?: number;
-              cache_read_input_tokens?: number;
-              cache_creation_input_tokens?: number;
-            };
-          }
-        )?.usage;
-        usage.inputTokens = msgUsage?.input_tokens ?? 0;
-        if (msgUsage?.cache_read_input_tokens !== undefined) {
-          usage.cachedInputTokens = msgUsage.cache_read_input_tokens;
-        }
-        if (msgUsage?.cache_creation_input_tokens !== undefined) {
-          usage.cacheWriteInputTokens = msgUsage.cache_creation_input_tokens;
-        }
+        readUsage(usage, (payload.message as { usage?: WireUsage })?.usage);
         break;
       }
       case "content_block_start": {
@@ -271,9 +317,18 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
       }
       case "message_delta": {
         const delta = payload.delta as { stop_reason?: string };
-        const deltaUsage = payload.usage as { output_tokens?: number } | undefined;
+        if (delta.stop_reason === "model_context_window_exceeded") {
+          // Claude 4.5 and later accept a request that cannot fit, and stop the reply when the window is full.
+          throw new AgencyError(
+            ErrorCode.CONTEXT_OVERFLOW,
+            "the context window became full during the reply",
+            {
+              source: "anthropic",
+            },
+          );
+        }
         if (delta.stop_reason) stopReason = STOP_REASON[delta.stop_reason] ?? "end_turn";
-        if (deltaUsage?.output_tokens !== undefined) usage.outputTokens = deltaUsage.output_tokens;
+        readUsage(usage, payload.usage as WireUsage | undefined);
         break;
       }
       case "message_stop": {

@@ -1,6 +1,6 @@
 ﻿import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { importClaudePlugin, Logger } from "@agency/core";
+import { importClaudePlugin, Logger, pluginHooksFile, pluginMcpFile, pluginRootDir } from "@agency/core";
 
 // ---------------------------------------------------------------------------
 // Install receipt shape
@@ -12,6 +12,8 @@ export interface InstallReceipt {
   skillsInstalled: string[];
   commandsInstalled: string[];
   agentsInstalled: string[];
+  /** Absent in a receipt from before hooks were installed. */
+  hooksInstalled?: string[];
   installedAt: string;
 }
 
@@ -25,7 +27,11 @@ export function pluginInstallCmd(
   overwrite: boolean,
   errSink: (line: string) => void,
 ): string {
-  const logger = new Logger({ level: "warn", sink: errSink });
+  // The importer logs JSON lines for a daemon. A person at the CLI gets the text and the CLI flag.
+  const logger = new Logger({
+    level: "warn",
+    sink: (line) => errSink(String(JSON.parse(line).message).replace("overwrite: true", "--overwrite")),
+  });
   const report = importClaudePlugin(sourceDir, { sourceDir, workspaceRoot, overwrite, logger });
 
   // Write install receipt into .agency/skills/<pluginName>/receipt.json
@@ -35,6 +41,7 @@ export function pluginInstallCmd(
     skillsInstalled: report.skillsInstalled,
     commandsInstalled: report.commandsInstalled,
     agentsInstalled: report.agentsInstalled,
+    hooksInstalled: report.hooksInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -53,10 +60,10 @@ export function pluginInstallCmd(
     for (const s of report.skillsInstalled) lines.push(`  - ${s}`);
   }
 
-  if (report.hooksMapped.length > 0) {
+  if (report.hooksInstalled.length > 0) {
     lines.push("");
-    lines.push("Hooks mapped:");
-    for (const h of report.hooksMapped) lines.push(`  - ${h.claudeEvent} -> ${h.agencyHook}`);
+    lines.push(`Hooks installed (.agency/hooks/${report.pluginName}.json, they run shell commands):`);
+    for (const event of report.hooksInstalled) lines.push(`  - ${event}`);
   }
 
   if (report.hooksSkipped.length > 0) {
@@ -68,7 +75,7 @@ export function pluginInstallCmd(
   const mcpKeys = Object.keys(report.mcpServers);
   if (mcpKeys.length > 0) {
     lines.push("");
-    lines.push("MCP servers found -- manually merge into config.mcpServers:");
+    lines.push(`MCP servers installed (.agency/mcp/${report.pluginName}.json, they start programs):`);
     for (const key of mcpKeys) lines.push(`  - ${key}`);
   }
 
@@ -104,7 +111,8 @@ export function pluginListCmd(workspaceRoot: string): string {
       const fullPath = join(skillsDir, entry);
       try {
         if (statSync(fullPath).isDirectory()) {
-          lines.push(`  ${entry}  (skill)`);
+          const kind = existsSync(join(fullPath, "receipt.json")) ? "plugin" : "skill";
+          lines.push(`  ${entry}  (${kind})`);
         }
       } catch {
         // race: dir disappeared between readdir and stat
@@ -131,7 +139,26 @@ export function pluginListCmd(workspaceRoot: string): string {
 // plugin remove <name>
 // ---------------------------------------------------------------------------
 
+function owningPlugin(workspaceRoot: string, skill: string): string | undefined {
+  const skillsDir = join(workspaceRoot, ".agency", "skills");
+  for (const entry of readdirSync(skillsDir)) {
+    try {
+      const receipt: InstallReceipt = JSON.parse(
+        readFileSync(join(skillsDir, entry, "receipt.json"), "utf8"),
+      );
+      if (receipt.skillsInstalled.includes(skill)) return receipt.pluginName;
+    } catch {
+      // No receipt or a corrupt one: this folder owns no skill.
+    }
+  }
+  return undefined;
+}
+
+/** A name from the command line or from a receipt is one path part: a path would delete outside `.agency`. */
+const isFileName = (name: string): boolean => !/^\.*$|[\\/:]/.test(name);
+
 export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
+  if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
   const skillDir = join(workspaceRoot, ".agency", "skills", name);
   if (!existsSync(skillDir)) {
     throw new Error(`Plugin "${name}" is not installed (no directory found at .agency/skills/${name}/)`);
@@ -139,6 +166,13 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
 
   // Read receipt to find command files and skill dirs to delete
   const receiptPath = join(skillDir, "receipt.json");
+  if (!existsSync(receiptPath)) {
+    // A skill that a plugin installed goes with its plugin: alone, its removal leaves the receipt behind.
+    const owner = owningPlugin(workspaceRoot, name);
+    if (owner !== undefined) {
+      throw new Error(`"${name}" is a skill of the plugin "${owner}". Run: agency plugin remove ${owner}`);
+    }
+  }
   let commandsToDelete: string[] = [];
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
@@ -147,10 +181,10 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   if (existsSync(receiptPath)) {
     try {
       const receipt: InstallReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-      commandsToDelete = receipt.commandsInstalled;
-      skillsToDelete = receipt.skillsInstalled;
-      agentsToDelete = receipt.agentsInstalled ?? [];
-      pluginName = receipt.pluginName;
+      commandsToDelete = receipt.commandsInstalled.filter(isFileName);
+      skillsToDelete = receipt.skillsInstalled.filter(isFileName);
+      agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
+      if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
     }
@@ -191,6 +225,17 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     }
   }
   if (deletedAgents.length > 0) lines.push(`Deleted agent files: ${deletedAgents.join(", ")}`);
+  const hooksFile = pluginHooksFile(workspaceRoot, pluginName);
+  if (existsSync(hooksFile)) {
+    rmSync(hooksFile);
+    lines.push("Deleted its hooks.");
+  }
+  const mcpFile = pluginMcpFile(workspaceRoot, pluginName);
+  if (existsSync(mcpFile)) {
+    rmSync(mcpFile);
+    lines.push("Deleted its MCP servers.");
+  }
+  rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
 
   return lines.join("\n");
 }

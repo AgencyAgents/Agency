@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export type WindowsShellKind = "powershell" | "gitbash" | "cmd";
 
@@ -36,6 +37,8 @@ export interface ShellConfig {
   /** A short, human-readable name to state in the system prompt so the model
    *  writes commands in the right dialect instead of defaulting to bash. */
   label: string;
+  /** True when bash syntax is right for this shell, so the tool needs no warning against it. */
+  posixSyntax?: boolean;
 }
 
 const POSIX: ShellConfig = {
@@ -47,6 +50,7 @@ const POSIX: ShellConfig = {
     `printf '\\n${EXIT_MARKER}%s\\n' "$__agency_exit"\n` +
     `printf '${CWD_MARKER}%s\\n' "$(pwd)"`,
   label: "POSIX sh",
+  posixSyntax: true,
 };
 
 const POWERSHELL: ShellConfig = {
@@ -68,8 +72,10 @@ const GIT_BASH: ShellConfig = {
     `${userCommand}\n` +
     `__agency_exit=$?\n` +
     `printf '\\n${EXIT_MARKER}%s\\n' "$__agency_exit"\n` +
-    `printf '${CWD_MARKER}%s\\n' "$(pwd)"`,
+    // -W gives the Windows form. The MSYS form (/tmp/x, /c/x) is not a path that the host can resolve.
+    `printf '${CWD_MARKER}%s\\n' "$(pwd -W)"`,
   label: "Git Bash",
+  posixSyntax: true,
 };
 
 const CMD: ShellConfig = {
@@ -102,6 +108,32 @@ export function resolveShell(platform: string, windowsShell: WindowsShellKind = 
     case "cmd":
       return CMD;
   }
+}
+
+/** The launcher of Git for Windows, found from git. A bare `bash.exe` can be the WSL launcher. */
+export function findGitBash(which: (name: string) => string | null = Bun.which): string | undefined {
+  const git = which("git");
+  if (!git) return undefined;
+  // git.exe is in <root>/cmd or in <root>/mingw64/bin.
+  return ["..", join("..", "..")]
+    .map((up) => join(dirname(git), up, "bin", "bash.exe"))
+    .find((path) => existsSync(path));
+}
+
+/**
+ * The shell for a config value. With none, Windows gets Git Bash when Git for Windows is installed: measured on one
+ * task, a weaker model needed 10 tool calls with 2 errors there, and 24 calls with 13 errors in PowerShell 5.1.
+ */
+export function resolveConfiguredShell(
+  platform: string,
+  configured?: WindowsShellKind,
+  find: () => string | undefined = findGitBash,
+): ShellConfig {
+  if (platform !== "win32") return resolveShell(platform, configured);
+  const gitBash = configured === undefined || configured === "gitbash" ? find() : undefined;
+  const kind = configured ?? (gitBash ? "gitbash" : "powershell");
+  const shell = resolveShell(platform, kind);
+  return kind === "gitbash" && gitBash ? { ...shell, command: gitBash } : shell;
 }
 
 export interface ParsedShellOutput {
@@ -137,4 +169,43 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
     cwd: cwdLine || fallbackCwd,
     exitCode: exitLine !== undefined && exitLine !== "" ? Number.parseInt(exitLine, 10) : 0,
   };
+}
+
+let deniedEnv: RegExp[] = [];
+let allowedEnv: RegExp[] = [];
+
+/** The default of Codex: a name with KEY, SECRET or TOKEN in it, in any case, holds a credential. */
+const SECRET_NAME = /KEY|SECRET|TOKEN/i;
+
+/** `*` in a name stands for any text. A pattern has no case: a token is a token in any spelling. */
+function namePatterns(names: readonly string[]): RegExp[] {
+  return names.map((name) => {
+    const source = name
+      .split("*")
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*");
+    return new RegExp(`^${source}$`, name.includes("*") || process.platform === "win32" ? "i" : "");
+  });
+}
+
+/** `sandbox.denyEnv` and `sandbox.allowEnv` of the config: one daemon has one config, so the lists are state of the module. */
+export function setDeniedCommandEnv(denied: readonly string[], allowed: readonly string[] = []): void {
+  deniedEnv = namePatterns(denied);
+  allowedEnv = namePatterns(allowed);
+}
+
+/**
+ * The environment of a command that the model wrote: no provider key of the harness (`AGENCY_<ID>_API_KEY`), no
+ * variable of the deny list, and no secret name unless the allow list has it. A command could print such a value
+ * into the transcript or send it out.
+ */
+export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined || /^AGENCY_.+_API_KEY$/i.test(name)) continue;
+    if (deniedEnv.some((pattern) => pattern.test(name))) continue;
+    if (SECRET_NAME.test(name) && !allowedEnv.some((pattern) => pattern.test(name))) continue;
+    out[name] = value;
+  }
+  return out;
 }

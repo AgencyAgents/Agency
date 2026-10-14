@@ -1,6 +1,6 @@
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import type { AgentRegistry } from "./registry.ts";
-import { type BoardItem, type BoardStatus, BoardStore } from "./todo.ts";
+import { type BoardItem, type BoardStatus, type BoardStorage, BoardStore } from "./todo.ts";
 
 /**
  * A team is the persistent shared-work context for subagent delegation:
@@ -46,14 +46,28 @@ function fail(reason: string): TeamOpResult {
  * Persistent store for teams. Owns per-team shared-todo state (delegated
  * to BoardStore, mirrored back onto Team.sharedTodos) and
  * mailbox broadcast via the bound AgentRegistry.
+ *
+ * With a `boardStorage` the per-team boards survive daemon restarts: every
+ * board mutation writes a `<teamId>.board.jsonl` sidecar (best-effort, warns
+ * on failure, never throws into the board path) and `restoreBoard` /
+ * `preloadBoards` reload it on boot. Without storage the store is purely
+ * in-memory, exactly as before.
  */
 export class TeamStore {
   private readonly teams = new Map<string, Team>();
   private readonly todoStores = new Map<string, BoardStore>();
   private readonly todoSeq = new Map<string, number>();
   private counter = 0;
+  private readonly boardStorage?: BoardStorage;
+  private readonly onBoardWarn: (message: string) => void;
 
-  constructor(private readonly registry?: AgentRegistry) {}
+  constructor(
+    private readonly registry?: AgentRegistry,
+    opts?: { boardStorage?: BoardStorage; onBoardWarn?: (message: string) => void },
+  ) {
+    this.boardStorage = opts?.boardStorage;
+    this.onBoardWarn = opts?.onBoardWarn ?? ((message) => console.warn(`[board] ${message}`));
+  }
 
   create(goal: string, leaderHandle: string, opts: CreateTeamOptions = {}): Team {
     if (goal.trim().length === 0) {
@@ -93,12 +107,40 @@ export class TeamStore {
         persist: (todos) => {
           const current = this.teams.get(id);
           if (current) current.sharedTodos = [...todos];
+          this.queueBoardSave(id, [...todos]);
           return Promise.resolve();
         },
       }),
     );
     this.todoSeq.set(id, team.sharedTodos.length);
+    if (team.sharedTodos.length > 0) this.queueBoardSave(id, [...team.sharedTodos]);
     return team;
+  }
+
+  /**
+   Serializes sidecar writes per team so concurrent board mutations can
+   never reorder on disk (last mutation wins). Best-effort: failures warn,
+   never throw into the board path.
+   */
+  private readonly saveQueue = new Map<string, Promise<void>>();
+
+  private queueBoardSave(teamId: string, snapshot: BoardItem[]): void {
+    const storage = this.boardStorage;
+    if (!storage) return;
+    const warn = this.onBoardWarn;
+    const prev = this.saveQueue.get(teamId) ?? Promise.resolve();
+    let tail: Promise<void>;
+    tail = prev.then(async () => {
+      try {
+        await storage.save(teamId, snapshot);
+      } catch (error: unknown) {
+        warn(
+          `board sidecar save failed for ${teamId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (this.saveQueue.get(teamId) === tail) this.saveQueue.delete(teamId);
+    });
+    this.saveQueue.set(teamId, tail);
   }
 
   get(id: string): Team | undefined {
@@ -116,7 +158,76 @@ export class TeamStore {
   delete(id: string): boolean {
     this.todoStores.delete(id);
     this.todoSeq.delete(id);
+    const storage = this.boardStorage;
+    if (storage) {
+      const warn = this.onBoardWarn;
+      const prev = this.saveQueue.get(id) ?? Promise.resolve();
+      let tail: Promise<void>;
+      tail = prev.then(async () => {
+        try {
+          await storage.delete(id);
+        } catch (error: unknown) {
+          warn(
+            `board sidecar delete failed for ${id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (this.saveQueue.get(id) === tail) this.saveQueue.delete(id);
+      });
+      this.saveQueue.set(id, tail);
+      void tail;
+    }
     return this.teams.delete(id);
+  }
+
+  /**
+   * Reloads one team's board from its sidecar (restart path): call after
+   * `create` with the same id, or on a live team to re-read disk. The
+   * sidecar wins over the seed; the todo sequence reseeds from the loaded
+   * items so appended ids never collide. Returns false when no sidecar
+   * exists (team keeps its current items).
+   */
+  async restoreBoard(teamId: string): Promise<boolean> {
+    if (!this.boardStorage) return false;
+    const team = this.teams.get(teamId);
+    const store = this.todoStores.get(teamId);
+    if (!team || !store) return false;
+    const items = await this.boardStorage.load(teamId);
+    if (items.length === 0 && !(await this.boardStorage.has(teamId))) return false;
+    store.hydrate(items);
+    team.sharedTodos = [...items];
+    this.reseedSeq(teamId, items);
+    return true;
+  }
+
+  /** Restart path for many teams: best-effort per team, never throws. */
+  async preloadBoards(teamIds: string[]): Promise<void> {
+    for (const id of teamIds) {
+      try {
+        await this.restoreBoard(id);
+      } catch (error: unknown) {
+        this.onBoardWarn(
+          `board sidecar load failed for ${id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /** Awaits the sidecar write for one team (deterministic flush for tests / shutdown). */
+  async flushBoard(teamId: string): Promise<void> {
+    if (!this.boardStorage) return;
+    await (this.saveQueue.get(teamId) ?? Promise.resolve());
+    const store = this.todoStores.get(teamId);
+    if (!store) return;
+    await this.boardStorage.save(teamId, store.list());
+  }
+
+  private reseedSeq(teamId: string, items: readonly BoardItem[]): void {
+    let max = 0;
+    for (const item of items) {
+      const match = /-todo-(\d+)$/.exec(item.id);
+      if (match) max = Math.max(max, Number(match[1]));
+    }
+    this.todoSeq.set(teamId, Math.max(this.todoSeq.get(teamId) ?? 0, max, items.length));
   }
 
   addMember(teamId: string, handle: string): TeamOpResult {

@@ -1,19 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { McpServerConfigSchema } from "@agency/tools";
 import { parseAgentFile } from "../agents/files.ts";
 import type { Logger } from "../logger.ts";
+import { COMMAND_HOOK_EVENTS, type CommandHooks, CommandHooksSchema } from "./command-hooks.ts";
+import { SKILL_NAME_RE } from "./manifest.ts";
 import { parseSkillFrontmatter } from "./skill.ts";
-
-// ---------------------------------------------------------------------------
-// Hook event mapping: Claude Code event names -> Agency hook names
-// ---------------------------------------------------------------------------
-
-const CLAUDE_TO_AGENCY_HOOK_MAP: Record<string, string> = {
-  SessionStart: "session.start",
-  UserPromptSubmit: "prompt.submit",
-  SubagentStart: "subagent.start",
-};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,11 +31,11 @@ export interface ImportClaudePluginReport {
   pluginDescription?: string;
   /** Skill names that were installed into .agency/skills/<name>/. */
   skillsInstalled: string[];
-  /** Hooks that were successfully mapped to Agency events. */
-  hooksMapped: Array<{ claudeEvent: string; agencyHook: string }>;
-  /** Hooks that were skipped (unknown events, etc.). */
+  /** Events whose commands are now in .agency/hooks/<plugin>.json, where the daemon runs them. */
+  hooksInstalled: string[];
+  /** Events that were not installed: no such event here, or entries that are not commands. */
   hooksSkipped: Array<{ event: string; reason: string }>;
-  /** Validated MCP server entries (caller should merge into config). */
+  /** The MCP servers that are now in .agency/mcp/<plugin>.json, where the daemon loads them. */
   mcpServers: Record<string, unknown>;
   /** Agent definition filenames found (informational; see agentsInstalled). */
   agentsFound: string[];
@@ -117,31 +109,47 @@ function readManifest(
   };
 }
 
+/** Where the files of an installed plugin stay, for the hook commands that name them. */
+export function pluginRootDir(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "plugin-roots", pluginName);
+}
+
+/** The MCP file that `plugin install` writes for one plugin. */
+export function pluginMcpFile(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "mcp", `${pluginName}.json`);
+}
+
+/** The hook file that `plugin install` writes for one plugin. */
+export function pluginHooksFile(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "hooks", `${pluginName}.json`);
+}
+
 /**
- * Parse hooks from a raw object. The object is expected to be a map of
- * Claude Code event names to handler arrays: { SessionStart: [...], ... }.
- * Only known events are mapped; unknown events are warn-and-skipped.
+ * The command hooks of a plugin, for the events that this harness runs. `${CLAUDE_PLUGIN_ROOT}` in a command
+ * becomes `root`, the folder that holds the plugin's files after the install.
  */
 function parseHooks(
   hooksRaw: Record<string, unknown>,
-  _logger?: Logger,
-): {
-  mapped: Array<{ claudeEvent: string; agencyHook: string }>;
-  skipped: Array<{ event: string; reason: string }>;
-} {
-  const mapped: Array<{ claudeEvent: string; agencyHook: string }> = [];
+  root: string,
+): { hooks: CommandHooks; skipped: Array<{ event: string; reason: string }> } {
+  const hooks: CommandHooks = {};
   const skipped: Array<{ event: string; reason: string }> = [];
-
-  for (const eventName of Object.keys(hooksRaw)) {
-    const agencyHook = CLAUDE_TO_AGENCY_HOOK_MAP[eventName];
-    if (!agencyHook) {
-      skipped.push({ event: eventName, reason: `unknown event "${eventName}"` });
+  for (const [event, groups] of Object.entries(hooksRaw)) {
+    if (!(COMMAND_HOOK_EVENTS as readonly string[]).includes(event)) {
+      skipped.push({ event, reason: `unsupported event "${event}"` });
       continue;
     }
-    mapped.push({ claudeEvent: eventName, agencyHook });
+    const parsed = CommandHooksSchema.safeParse({ [event]: groups });
+    if (!parsed.success) {
+      skipped.push({ event, reason: "its entries are not command hooks" });
+      continue;
+    }
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code hook command
+    const placeholder = "${CLAUDE_PLUGIN_ROOT}";
+    const text = JSON.stringify(parsed.data).replaceAll(placeholder, root.replaceAll("\\", "/"));
+    Object.assign(hooks, JSON.parse(text));
   }
-
-  return { mapped, skipped };
+  return { hooks, skipped };
 }
 
 /**
@@ -246,12 +254,17 @@ export function importClaudePlugin(
     );
   }
 
+  // The name becomes a folder and a file under .agency: a name that is a path would write outside them.
+  if (!SKILL_NAME_RE.test(manifest.name)) {
+    throw new Error(`Plugin name "${manifest.name}" is not valid: it must match ${SKILL_NAME_RE.source}`);
+  }
+
   const report: ImportClaudePluginReport = {
     pluginName: manifest.name,
     pluginVersion: manifest.version,
     pluginDescription: manifest.description,
     skillsInstalled: [],
-    hooksMapped: [],
+    hooksInstalled: [],
     hooksSkipped: [],
     mcpServers: {},
     agentsFound: [],
@@ -296,6 +309,10 @@ export function importClaudePlugin(
       // Reuse the existing frontmatter parser
       const parsed = parseSkillFrontmatter(raw);
       const skillName = parsed.name ?? entry;
+      if (!SKILL_NAME_RE.test(skillName)) {
+        logger?.warn(`[importer] skipping skill "${skillName}": its name must match ${SKILL_NAME_RE.source}`);
+        continue;
+      }
 
       // Write to .agency/skills/<name>/SKILL.md
       const targetDir = join(workspaceRoot, ".agency", "skills", skillName);
@@ -312,8 +329,8 @@ export function importClaudePlugin(
         logger?.info(`[importer] overwriting skill "${skillName}" at ${targetFile}`);
       }
 
-      mkdirSync(targetDir, { recursive: true });
-      writeFileSync(targetFile, raw, "utf8");
+      // The whole folder: a skill names its own files (references, scripts) by a path that starts at its folder.
+      cpSync(skillDirPath, targetDir, { recursive: true });
       report.skillsInstalled.push(skillName);
     }
   }
@@ -321,20 +338,47 @@ export function importClaudePlugin(
   // -----------------------------------------------------------------------
   // 3. Hooks: hooks/hooks.json or inline in plugin.json
   // -----------------------------------------------------------------------
+  const copyTo = pluginRootDir(workspaceRoot, manifest.name);
+  // A plugin that is installed from the workspace itself cannot be copied into its own subfolder: its files stay where they are.
+  const inPlace = resolve(copyTo).startsWith(`${resolve(sourceDir)}${sep}`);
+  const root = inPlace ? sourceDir : copyTo;
+  let copied = inPlace;
+  // Hook commands and MCP servers name files of the plugin: its files stay in the workspace, as the source folder can go away.
+  const keepPluginFiles = (): void => {
+    if (copied) return;
+    cpSync(sourceDir, root, { recursive: true, filter: (path) => basename(path) !== ".git" });
+    copied = true;
+  };
   const hooksSource = resolveHooks(sourceDir, manifest, logger);
   if (hooksSource) {
-    const hookResult = parseHooks(hooksSource, logger);
-    report.hooksMapped = hookResult.mapped;
-    report.hooksSkipped = hookResult.skipped;
+    const { hooks, skipped } = parseHooks(hooksSource, root);
+    report.hooksSkipped = skipped;
+    report.hooksInstalled = Object.keys(hooks);
+    if (report.hooksInstalled.length > 0) {
+      keepPluginFiles();
+      const file = pluginHooksFile(workspaceRoot, manifest.name);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, `${JSON.stringify({ hooks }, null, 2)}\n`, "utf8");
+    }
   }
 
   // -----------------------------------------------------------------------
   // 4. MCP servers: .mcp.json
   // -----------------------------------------------------------------------
-  const mcpPath = join(sourceDir, ".mcp.json");
-  const mcpRaw = readJsonFile(mcpPath);
+  // The file of the plugin, with or with no `mcpServers` key, or the same key of the manifest.
+  const mcpFile = readJsonFile(join(sourceDir, ".mcp.json"));
+  const mcpRaw = isRecord(mcpFile) ? (mcpFile.mcpServers ?? mcpFile) : manifest.mcpServers;
   if (isRecord(mcpRaw)) {
-    report.mcpServers = parseMcpServers(mcpRaw, logger);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code plugin
+    const placeholder = "${CLAUDE_PLUGIN_ROOT}";
+    const text = JSON.stringify(mcpRaw).replaceAll(placeholder, root.replaceAll("\\", "/"));
+    report.mcpServers = parseMcpServers(JSON.parse(text), logger);
+    if (Object.keys(report.mcpServers).length > 0) {
+      keepPluginFiles();
+      const file = pluginMcpFile(workspaceRoot, manifest.name);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, `${JSON.stringify({ mcpServers: report.mcpServers }, null, 2)}\n`, "utf8");
+    }
   }
 
   // -----------------------------------------------------------------------

@@ -1,23 +1,30 @@
-import { rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   AgentRegistry,
+  attachCommandHooks,
   BoardStore,
-  type Budget,
   ChannelStore,
   ChoiceLog,
+  type CommandHooks,
+  type Config,
   collectPluginAgents,
   collectPluginCommands,
   configDir,
   createRotatingFileSink,
+  createSkillTool,
   DispatchStateStore,
   dataDir,
   EventBus,
+  type HookRunOptions,
+  hasBoardItemShape,
   InboxStore,
   Logger,
   loadCommands,
   loadConfig,
+  loadHookFiles,
   loadPlugins,
+  mergeCommandHooks,
   SessionStore,
   storagePaths,
   type ToolSpec,
@@ -27,27 +34,45 @@ import {
 import {
   ApprovalManager,
   type Capabilities,
+  type CommandPolicy,
   createFileTrustStore,
+  DockerSandboxBackend,
+  type ExternalDirectoryDecision,
+  ensureSandboxAvailable,
+  OsSandboxBackend,
   PermissionsGate,
   Redactor,
+  type SandboxBackend,
   SandboxBoundary,
   type ToolPermissionValue,
   type TrustStore,
 } from "@agency/guard";
 
 import { createHttpClient } from "@agency/net";
-import { createKeychain, type KeychainBackend, Scheduler } from "@agency/providers";
+import {
+  BUILTIN_PROVIDER_METADATA,
+  createKeychain,
+  type KeychainBackend,
+  Scheduler,
+} from "@agency/providers";
 import {
   type DaemonServer,
   type HttpGatewayServer,
   newInstanceToken,
   PROTOCOL_VERSION,
+  readInstanceFile,
   startDaemonServer,
   startHttpGateway,
   writeInstanceFile,
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
-import { resolveShell, type TeamMcpPool } from "@agency/tools";
+import {
+  keychainTokenStore,
+  loadProjectMcpServers,
+  resolveConfiguredShell,
+  setDeniedCommandEnv,
+  type TeamMcpPool,
+} from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
@@ -58,6 +83,7 @@ import {
   startBoardFileSync,
   syncBoardFile,
 } from "./handlers/detach.ts";
+import { registerGoalCheck } from "./handlers/goal.ts";
 import { registerPlanHandlers } from "./handlers/plan.ts";
 import {
   registerSessionHandlers,
@@ -67,25 +93,61 @@ import {
 } from "./handlers/session.ts";
 import { registerSurfaceHandlers } from "./handlers/surface.ts";
 import { initTeamFromConfig, registerTeamHandlers } from "./handlers/team.ts";
-import { initTeamRunState, registerTeamRunHandlers, remapRosterToCredentials } from "./handlers/team-run.ts";
+import { initTeamRunState, registerTeamRunHandlers } from "./handlers/team-run.ts";
 import { registerTeamSurfaceHandlers } from "./handlers/team-surface.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
-import { createSessionScopes } from "./session-scopes.ts";
+import { createSessionScopes, sandboxWindowsShell } from "./session-scopes.ts";
 import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
+import { TaskUsageTracker } from "./task-ledger.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
 import {
+  type ActiveTurnMeta,
   type AgentDaemon,
   type AgentDaemonOptions,
   commandPolicyFromPermissions,
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
   resolveAdapter,
+  sessionEnvironmentStore,
 } from "./types.ts";
 
 export * from "./config-fingerprint.ts";
 export * from "./types.ts";
+/**
+ * Builds the sandbox backend named by config. Software boots as before;
+ * docker maps the sandbox keys onto DockerSandboxOptions. Pure so tests
+ * can assert the branch without starting a daemon.
+ */
+export function createSandboxBackend(
+  workspaceRoot: string,
+  commandPolicy: CommandPolicy,
+  externalDecision: ExternalDirectoryDecision | undefined,
+  sandboxConfig?: Config["sandbox"],
+  windowsShell?: Config["windowsShell"],
+): SandboxBackend {
+  if (sandboxConfig?.backend === "docker") {
+    return new DockerSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
+      image: sandboxConfig.image,
+      container: sandboxConfig.container,
+      containerRoot: sandboxConfig.containerRoot,
+      dockerBin: sandboxConfig.dockerBin,
+      egress: sandboxConfig.egress,
+      network: sandboxConfig.network,
+      capDrop: sandboxConfig.capDrop,
+    });
+  }
+  if (sandboxConfig?.backend === "os") {
+    return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
+      allowNetwork: sandboxConfig.allowNetwork,
+      ...(windowsShell ? { windowsShell } : {}),
+      // The keys, sessions and daemon tokens: a command that reads a token can drive the daemon.
+      hidden: [dataDir(), configDir()],
+    });
+  }
+  return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
+}
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
   const providers = config.provider;
@@ -95,11 +157,13 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const redactor = new Redactor();
   for (const providerConfig of Object.values(providers)) {
     if (providerConfig.apiKey) redactor.registerSecret(providerConfig.apiKey);
+    for (const name of providerConfig.env ?? []) {
+      const value = process.env[name];
+      if (value) redactor.registerSecret(value);
+    }
   }
   for (const [envKey, value] of Object.entries(process.env)) {
-    if (envKey.startsWith("AGENCY_") && envKey.endsWith("_API_KEY") && value) {
-      redactor.registerSecret(value);
-    }
+    if (envKey.endsWith("_API_KEY") && value) redactor.registerSecret(value);
   }
 
   const eventBus = new EventBus();
@@ -121,8 +185,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const adapterFor = options.adapterFor ?? ((provider: string) => resolveAdapter(provider, providers));
   const http = options.http ?? createHttpClient();
 
-  // Model metadata for pre-flight accounting (max output tokens, pricing):
-  // resolved offline, never fetched on the turn path.
+  // Model metadata for pre-flight accounting (max output tokens, pricing): resolved offline.
+  // One exception: the first turn on an OpenRouter model that the catalog does not know reads OpenRouter's model list.
   const models = createModelCatalog(providers, config);
   const catalogModel = models.catalogModel;
   const resolveAgentModel = models.resolveAgentModel;
@@ -144,10 +208,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
-  const shellLabel = resolveShell(process.platform, config.windowsShell).label;
-  const sandbox = new SandboxBoundary(options.workspaceRoot, commandPolicy, (resolved) =>
-    gate.externalDirectoryDecision(resolved),
+  // A key in a variable that `provider.<id>.env` names is a key of the harness too, whatever its name.
+  const providerEnv = Object.values(providers ?? {}).flatMap((provider) => provider.env ?? []);
+  setDeniedCommandEnv([...(config.sandbox?.denyEnv ?? []), ...providerEnv], config.sandbox?.allowEnv);
+  const shell = resolveConfiguredShell(process.platform, sandboxWindowsShell(config));
+  const shellLabel = shell.label;
+  const sandbox = createSandboxBackend(
+    options.workspaceRoot,
+    commandPolicy,
+    (resolved) => gate.externalDirectoryDecision(resolved),
+    config.sandbox,
+    config.windowsShell,
   );
+  // Fail-closed Docker gate at boot (not lazy scope creation): a docker
+  // backend without a reachable daemon refuses to serve rather than running
+  // turns against an unintended backend. Software backends have no probe
+  // and skip this with zero added latency.
+  await ensureSandboxAvailable(sandbox);
 
   /**
    * Per-agent PermissionsGate: returns a gate sourced from the agent's own
@@ -165,7 +242,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
         workspaceRoot: options.workspaceRoot,
         absentToolsDenied: true,
         trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
-      });
+      }).withCeiling(gate);
     }
     return gate;
   }
@@ -201,9 +278,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return keychainPromise;
   };
 
+  const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
+  const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
+  const filesOf = (dir: string): string[] =>
+    existsSync(dir) ? readdirSync(dir).map((file) => join(dir, file)) : [];
   const configFingerprint = createConfigFingerprint([
     join(options.configDir ?? configDir(), "config.jsonc"),
     join(options.workspaceRoot, ".agency", "config.jsonc"),
+    // The executable too: after an update, an idle daemon from the old binary leaves.
+    process.execPath,
+    // The hook and MCP folders for a new or a removed file, and each file for an edit: an edit does not change the folder.
+    hooksDir,
+    ...filesOf(hooksDir),
+    mcpDir,
+    ...filesOf(mcpDir),
+    join(options.workspaceRoot, ".mcp.json"),
+    // The trust list too: plugins load at start, so a trust change must start a new daemon.
+    options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
@@ -252,6 +343,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const builtinsMode = options.tools === undefined;
+  // Plugin, command and agent files can run code or grant tools: those of a workspace load only after trust.
+  const projectTrusted = trustStore.isTrusted(options.workspaceRoot);
+  // The hooks of the user's config, then those that `plugin install` put into a trusted workspace.
+  const commandHooks: CommandHooks = mergeCommandHooks(
+    config.hooks ?? {},
+    projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
+  );
+  // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
+  const hookRun: HookRunOptions = {
+    cwd: options.workspaceRoot,
+    shell,
+    // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
+    onBackgroundOutput: (sessionId, text) => {
+      const id = sessionId ?? "default";
+      const box = sessionInboxes.get(id) ?? [];
+      sessionInboxes.set(id, box);
+      box.push({
+        role: "user",
+        content: [{ type: "text", text: `<hook-context>\n${text}\n</hook-context>` }],
+      });
+    },
+  };
+  attachCommandHooks(eventBus, commandHooks, hookRun);
+  let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
   let pluginAgents: Array<{ pluginId: string; agent: import("@agency/core").PluginAgentContribution }> = [];
@@ -264,6 +379,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      projectTrusted,
       bus: eventBus,
       logger,
       registry: sharedPluginRegistry as unknown as never,
@@ -274,8 +390,11 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResultEarly.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     sharedPluginTools = sharedPluginRegistry.list();
+    if (pluginResultEarly.skills.length > 0)
+      sharedPluginTools.push(createSkillTool(pluginResultEarly.skills));
     pluginAgents = collectPluginAgents(pluginResultEarly.plugins);
     pluginCommands = collectPluginCommands(pluginResultEarly.plugins);
+    pluginInstructions = pluginResultEarly.instructions;
   } else {
     tools = options.tools ?? [];
     const { ToolRegistry } = await import("@agency/tools");
@@ -285,6 +404,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      projectTrusted,
       bus: eventBus,
       logger,
       registry: pluginToolRegistry as unknown as never,
@@ -295,27 +415,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       for (const e of pluginResult.errors) logger.warn(`plugin "${e.id}" not loaded: ${e.error}`);
     }
     tools = pluginToolRegistry.list();
+    if (pluginResult.skills.length > 0) tools.push(createSkillTool(pluginResult.skills));
     pluginAgents = collectPluginAgents(pluginResult.plugins);
     pluginCommands = collectPluginCommands(pluginResult.plugins);
+    pluginInstructions = pluginResult.instructions;
   }
 
-  const activeTurnMeta = new Map<
-    string,
-    {
-      capabilities: Capabilities;
-      tools: ToolSpec[];
-      sessionId: string;
-      provider: string;
-      model: string;
-      apiKey: string;
-      budget?: Budget;
-      taskDepth?: number;
-    }
-  >();
+  const activeTurnMeta = new Map<string, ActiveTurnMeta>();
 
   const commands = loadCommands({
     workspaceRoot: options.workspaceRoot,
     configDirOverride: options.configDir,
+    projectTrusted,
   });
 
   const defaultCapabilitiesSync: Capabilities =
@@ -340,6 +451,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       }
     },
   });
+  try {
+    const entries = todoStore.load("team-shared");
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry?.type === "todo_state" && Array.isArray(entry.todos)) {
+        boardStore.hydrate(entry.todos.filter(hasBoardItemShape));
+        break;
+      }
+    }
+  } catch (error: unknown) {
+    warnPersistence("board hydrate", error);
+  }
   const teamContexts = new Map<string, TeamContext>();
   const teamMcpPools = new Map<string, TeamMcpPool>();
   const teamFor = (parentSessionId: string): TeamContext => {
@@ -350,9 +473,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     }
     return team;
   };
+  // The servers of the user's config win on a name: a workspace cannot take the place of one.
+  const mcpServers = {
+    ...(projectTrusted
+      ? loadProjectMcpServers(options.workspaceRoot, (message) => logger.warn(message))
+      : {}),
+    ...config.mcpServers,
+  };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({
     options,
     config,
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     http,
     identity,
     sandbox,
@@ -365,6 +496,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     gateForAgent,
     sharedPluginTools,
     getCtx: () => ctx,
+    mcpTokens: keychainTokenStore(getKeychain),
   });
   const inboxStore = new InboxStore();
   const channelStore = new ChannelStore();
@@ -400,7 +532,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const schedulerFor = (provider: string): Scheduler => {
     let scheduler = schedulers.get(provider);
     if (!scheduler) {
-      scheduler = new Scheduler({ maxConcurrent: 8 });
+      // The rate of a known API: at the 60 of an unknown provider, a turn of fast steps waited 1 s for each request.
+      const requestsPerMinute =
+        providers[provider]?.requestsPerMinute ??
+        BUILTIN_PROVIDER_METADATA.find((meta) => meta.id === provider)?.rateLimit?.requestsPerMinute;
+      scheduler = new Scheduler({
+        maxConcurrent: 8,
+        ...(requestsPerMinute === undefined ? {} : { requestsPerMinute }),
+      });
       schedulers.set(provider, scheduler);
     }
     return scheduler;
@@ -408,6 +547,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const activeControllers = new Map<string, AbortController>();
   const turnOwners = new Map<string, string>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let staleConfigTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
   let server!: DaemonServer;
   let httpGateway!: HttpGatewayServer;
@@ -438,6 +578,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginAgents,
     pluginCommands,
     trustStore,
+    pluginInstructions,
+    commandHooks,
+    hookRun,
     teamContexts,
     teamFor,
     sessionInboxes,
@@ -453,14 +596,17 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     turnCheckpoints: new Map<string, Array<string | null>>(),
     sessionBudgets: new Map(),
     spendLedger: new SpendLedger({ sessionsDir: todoSessionsDir }),
+    taskLedger: new TaskUsageTracker({ sessionsDir: todoSessionsDir }),
     teamCheckpoints: new Map(),
     teamMcpPools,
     listModels: models.listModels,
     activeControllers,
     turnOwners,
     activeTurnMeta,
+    sessionEnvironments: sessionEnvironmentStore(todoSessionsDir),
     commands,
     catalogModel,
+    learnModel: models.learnModel,
     resolveAgentModel,
     getKeychain,
     configFingerprint,
@@ -475,9 +621,6 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   try {
     initTeamFromConfig(ctx);
-  } catch {}
-  try {
-    remapRosterToCredentials(ctx);
   } catch {}
   initTeamRunState(ctx);
   installDetachHook(ctx);
@@ -499,40 +642,62 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   registerTeamSurfaceHandlers(handlers, ctx);
   registerTeamRunHandlers(handlers, ctx);
   registerCommandRunHandler(handlers, ctx);
+  registerGoalCheck(ctx);
   registerDetachHandlers(handlers, ctx);
+
+  /** A client that is gone cannot use its turn's result: the turn stops, on the TCP and the HTTP transport. */
+  const cancelTurnsOf = (clientId: string): void => {
+    for (const [turnId, owner] of turnOwners) {
+      if (owner !== clientId) continue;
+      turnOwners.delete(turnId);
+      activeControllers.get(turnId)?.abort();
+    }
+  };
+
+  const leave = (): void => {
+    clearInterval(staleConfigTimer);
+    try {
+      eventBus.emit("session.idle", {});
+      eventBus.emit("event", { event: "session.idle", payload: {} });
+    } catch {}
+    options.onIdleShutdown?.();
+  };
 
   server = await startDaemonServer({
     token: authToken,
     handlers,
     onClientCount(count) {
-      if (count > 0) {
-        clearTimeout(idleTimer);
-        idleTimer = undefined;
-        return;
-      }
-      idleTimer = setTimeout(() => {
-        try {
-          eventBus.emit("session.idle", {});
-          eventBus.emit("event", { event: "session.idle", payload: {} });
-        } catch {}
-        options.onIdleShutdown?.();
-      }, idleLingerMs);
+      clearTimeout(idleTimer);
+      clearInterval(staleConfigTimer);
+      idleTimer = undefined;
+      if (count > 0) return;
+      idleTimer = setTimeout(leave, idleLingerMs);
+      // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
+      staleConfigTimer = setInterval(() => {
+        if (configFingerprint.check()) leave();
+      }, 1_000);
+      staleConfigTimer.unref?.();
     },
 
-    onClientDisconnect(clientId) {
-      for (const [turnId, owner] of turnOwners) {
-        if (owner !== clientId) continue;
-        turnOwners.delete(turnId);
-        activeControllers.get(turnId)?.abort();
-      }
+    onClientDisconnect: cancelTurnsOf,
+    // The check of an idle daemon comes each second: a run that follows a change directly would get the old config.
+    refuseFirstClient: () => {
+      if (options.onIdleShutdown === undefined || !configFingerprint.check()) return false;
+      leave();
+      return true;
     },
   });
+  if (options.idleFromStart) {
+    idleTimer = setTimeout(leave, idleLingerMs);
+    idleTimer.unref?.();
+  }
 
   // Mount the HTTP+SSE gateway on the same handler table and auth token as
   // the TCP transport, so both transports answer the same RPC surface.
   const corsOrigins = (config as unknown as { http?: { corsOrigins?: string[] } }).http?.corsOrigins;
   httpGateway = startHttpGateway({
     handlers,
+    onClientDisconnect: cancelTurnsOf,
     token: authToken,
     store: todoStore,
     sessionForEvent: (event) => sessionKeyForEvent(ctx, event),
@@ -562,6 +727,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       if (stopped) return;
       stopped = true;
       clearTimeout(idleTimer);
+      clearInterval(staleConfigTimer);
       stopBoardSync();
       if (builtinsMode) {
         for (const scope of sessionScopes.values()) {
@@ -581,7 +747,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       // SSE streams must end before the HTTP server stops (ECONNRESET).
       await httpGateway.close();
       await server.close();
-      rmSync(options.instanceFile, { force: true });
+      // After a refusal of a first client, a new daemon can own the file before this one has stopped.
+      if (readInstanceFile(options.instanceFile)?.token === authToken) {
+        rmSync(options.instanceFile, { force: true });
+      }
       await rotatingSink?.flush();
     },
   };

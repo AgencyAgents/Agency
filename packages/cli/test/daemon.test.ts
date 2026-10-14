@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, type ToolSpec, TraceRecorder } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RunTurnParams } from "../src/daemon.ts";
 import {
   type AgentDaemon,
@@ -15,6 +17,7 @@ import {
   type RunTurnRpcResult,
   resolveAdapter,
   resolveSystemPrompt,
+  sessionEnvironmentStore,
 } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -192,6 +195,76 @@ describe("createAgentDaemon", () => {
     expect(result.cancelled).toBe(true);
   }, 30_000);
 
+  test("outputSchema gives the turn a structured_output tool, and an answer that breaks the schema goes back", async () => {
+    const schema = { type: "object", properties: { count: { type: "number" } }, required: ["count"] };
+    const offered: unknown[] = [];
+    const inputs = [{ count: "seven" }, { count: 7 }];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        offered.push(request.tools?.find((t) => t.name === "structured_output")?.inputSchema);
+        const input = inputs[offered.length - 1];
+        if (input) {
+          yield { type: "tool_call_start", id: `c${offered.length}`, name: "structured_output" };
+          yield { type: "tool_call_delta", id: `c${offered.length}`, inputJsonDelta: JSON.stringify(input) };
+          yield { type: "tool_call_end", id: `c${offered.length}` };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const { client } = await startFakeDaemon({ adapterFor, tools: [] });
+    const result = (await client.call("run_turn", {
+      turnId: "t-schema",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "k",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "count" }] }],
+      outputSchema: schema,
+    })) as RunTurnRpcResult;
+    expect(offered[0]).toEqual(schema);
+    const results = result.messages.flatMap((m) => m.content).filter((b) => b.type === "tool_result");
+    expect(results.map((b) => (b.type === "tool_result" ? b.isError : undefined))).toEqual([true, false]);
+    expect(JSON.stringify(results[0])).toContain('\\"count\\" must be number');
+  }, 30_000);
+
+  test("a Notification hook runs when a turn waits for an approval", async () => {
+    const dir = tempRoot();
+    const out = join(dir, "notified.json");
+    const script = join(dir, "notify.js");
+    writeFileSync(
+      script,
+      `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => require("node:fs").writeFileSync(${JSON.stringify(out)}, s));`,
+    );
+    const command = `"${process.execPath.replaceAll("\\", "/")}" "${script.replaceAll("\\", "/")}"`;
+    const { client } = await startFakeDaemon({
+      adapterFor: () => toolCallingAdapter("fakebash", { command: "rm -rf build" }),
+      tools: [dangerousTool],
+      configDir: writeConfigDir({
+        hooks: { Notification: [{ matcher: "permission_prompt", hooks: [{ type: "command", command }] }] },
+      }),
+    });
+    const runPromise = client.call("run_turn", {
+      turnId: "ask-notify",
+      provider: "anthropic",
+      model: "m",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+    });
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && !existsSync(out)) await new Promise((r) => setTimeout(r, 50));
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({
+      hook_event_name: "Notification",
+      notification_type: "permission_prompt",
+    });
+    await client.call("cancel_turn", { turnId: "ask-notify" });
+    await runPromise;
+  }, 30_000);
+
   test("cancel_turn for an unknown turnId reports not cancelled instead of erroring", async () => {
     const { client } = await startFakeDaemon();
     const result = await client.call("cancel_turn", { turnId: "does-not-exist" });
@@ -223,6 +296,517 @@ describe("createAgentDaemon", () => {
     expect(await client.call("cancel_turn", { turnId: "whatever" })).toEqual({ cancelled: false });
   });
 
+  test("a fallback model on a provider with no key is not used: the primary key stays with its provider", async () => {
+    const seen: Array<{ provider: string; apiKey: string }> = [];
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      // biome-ignore lint/correctness/useYield: the stand-in fails before it streams anything.
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push({ provider, apiKey: request.apiKey });
+        throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+      },
+    });
+    const saved = { a: process.env.AGENCY_OPENAI_API_KEY, b: process.env.OPENAI_API_KEY };
+    delete process.env.AGENCY_OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      let rejection: string | undefined;
+      try {
+        await client.call("run_turn", {
+          turnId: "t-fallback-keyless",
+          provider: "anthropic",
+          model: "test-model",
+          apiKey: "primary-key",
+          systemPrompt: "sys",
+          session: [],
+        });
+      } catch (error) {
+        rejection = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(rejection).toMatch(/overloaded/);
+      expect(seen.filter((call) => call.provider !== "anthropic")).toEqual([]);
+    } finally {
+      if (saved.a !== undefined) process.env.AGENCY_OPENAI_API_KEY = saved.a;
+      if (saved.b !== undefined) process.env.OPENAI_API_KEY = saved.b;
+    }
+  }, 60_000);
+
+  test("a turn reads its key from a variable name that the provider config declares", async () => {
+    const seen: string[] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.apiKey);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.MY_GATEWAY_KEY;
+    process.env.MY_GATEWAY_KEY = "declared-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          provider: { "my-gateway": { baseUrl: "http://gateway.test/v1", env: ["MY_GATEWAY_KEY"] } },
+        }),
+      });
+      await client.call("run_turn", {
+        turnId: "t-declared-env",
+        provider: "my-gateway",
+        model: "m",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+      expect(seen).toEqual(["declared-key"]);
+    } finally {
+      if (saved === undefined) delete process.env.MY_GATEWAY_KEY;
+      else process.env.MY_GATEWAY_KEY = saved;
+    }
+  }, 60_000);
+
+  test("a fallback request uses the fallback model's own output limit", async () => {
+    const limits: Record<string, number> = {};
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        limits[provider] = request.maxTokens;
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "from the fallback" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          fallback_model: "openai/gpt-x",
+          provider: {
+            anthropic: { models: { "test-model": { contextWindow: 9000, maxOutputTokens: 900 } } },
+            openai: { models: { "gpt-x": { contextWindow: 5000, maxOutputTokens: 123 } } },
+          },
+        }),
+      });
+      await client.call("run_turn", {
+        turnId: "t-fallback-limit",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+
+      expect(limits).toEqual({ anthropic: 900, openai: 123 });
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
+  test("a turn that ran on the fallback is priced as the fallback model", async () => {
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "from the fallback" };
+        yield {
+          type: "message_stop",
+          stopReason: "end_turn",
+          usage: { inputTokens: 1_000_000, outputTokens: 0 },
+        };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({
+          fallback_model: "openai/gpt-x",
+          provider: {
+            anthropic: {
+              apiKey: "primary-key",
+              models: { "test-model": { pricing: { inputPerMTok: 100, outputPerMTok: 100 } } },
+            },
+            openai: { models: { "gpt-x": { pricing: { inputPerMTok: 1, outputPerMTok: 1 } } } },
+          },
+        }),
+      });
+      const meters: Array<{ type: string; turnCostUsd?: number }> = [];
+      client.on("turn.t-fallback-cost", (payload) => meters.push(payload as { type: string }));
+      await client.call("run_turn", {
+        turnId: "t-fallback-cost",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+
+      expect(meters.find((event) => event.type === "cost_meter")?.turnCostUsd).toBe(1);
+
+      const sent = (await client.call("session_send", {
+        sessionId: "s-fallback-cost",
+        provider: "anthropic",
+        model: "test-model",
+        systemPrompt: "sys",
+        userText: "hi",
+      })) as { servedBy?: unknown };
+      expect(sent.servedBy).toEqual({ provider: "openai", model: "gpt-x" });
+      const report = (await client.call("cost_report", { sessionId: "s-fallback-cost" })) as {
+        sessions: Array<{ costUsd: number }>;
+      };
+      expect(report.sessions[0]?.costUsd).toBe(1);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
+  test("the model's vision capability reaches the provider request", async () => {
+    const seen: Array<boolean | undefined> = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.vision);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({
+        provider: { anthropic: { models: { "sees-images": { capabilities: { vision: true } } } } },
+      }),
+    });
+    for (const model of ["sees-images", "not-in-the-catalog"]) {
+      await client.call("run_turn", {
+        turnId: `t-vision-${model}`,
+        provider: "anthropic",
+        model,
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+    }
+
+    expect(seen).toEqual([true, undefined]);
+  });
+
+  test("a spawned worker gets the vision capability of its model", async () => {
+    const seenByWorker: Array<boolean | undefined> = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const worker = (request.system ?? "").includes("ephemeral worker");
+        if (worker) seenByWorker.push(request.vision);
+        const spawned = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if (!worker && !spawned) {
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ prompt: "look" }) };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({
+        provider: { anthropic: { models: { "sees-images": { capabilities: { vision: true } } } } },
+      }),
+    });
+    await client.call("run_turn", {
+      turnId: "t-worker-vision",
+      provider: "anthropic",
+      model: "sees-images",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [],
+      sessionId: "s-worker-vision",
+    });
+
+    expect(seenByWorker).toEqual([true]);
+  }, 60_000);
+
+  test("a context overflow that cannot be folded returns its cause, not a bare error", async () => {
+    const { client } = await startFakeDaemon({
+      adapterFor: () => ({
+        family: "fake",
+        stream(): AsyncIterable<StreamEvent> {
+          throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "prompt is too long", { source: "fake" });
+        },
+      }),
+    });
+
+    const result = (await client.call("run_turn", {
+      turnId: "t-overflow-cause",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) as RunTurnRpcResult;
+
+    expect(result.stopReason).toBe("error");
+    expect(result.error).toEqual({ code: "context_overflow", message: "prompt is too long" });
+  });
+
+  test("a fallback model continues the turn: tools the primary already ran do not run again", async () => {
+    let runs = 0;
+    const countTool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        runs += 1;
+        return { content: `run ${runs}` };
+      },
+    };
+    const hasResult = (request: { messages: Array<{ content: Array<{ type: string }> }> }): boolean =>
+      request.messages.some((message) => message.content.some((block) => block.type === "tool_result"));
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        if (!hasResult(request)) {
+          yield { type: "tool_call_start", id: "c1", name: "count" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        if (provider === "anthropic")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "finished on the fallback" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_OPENAI_API_KEY;
+    process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        tools: [countTool],
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      const result = (await client.call("run_turn", {
+        turnId: "t-fallback-continue",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "count once" }] }],
+      })) as RunTurnRpcResult;
+
+      expect(result.stopReason).toBe("end_turn");
+      expect(runs).toBe(1);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+      else process.env.AGENCY_OPENAI_API_KEY = saved;
+    }
+  }, 60_000);
+
+  test("a key that a tool result holds does not reach the model or the result of the turn", async () => {
+    const envKey = "env-key-value-9d2c";
+    const turnKey = "turn-key-value-41aa";
+    const dumpTool: ToolSpec = {
+      name: "dump",
+      description: "prints the keys, as an env dump does",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => ({
+        content: `OTHERPROV_API_KEY=${envKey}\nkey of the turn: ${turnKey}\nplain text stays`,
+      }),
+    };
+    const requests: string[] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push(JSON.stringify(request.messages));
+        if (requests.length === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "dump" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    process.env.OTHERPROV_API_KEY = envKey;
+    try {
+      const { client } = await startFakeDaemon({ adapterFor, tools: [dumpTool] });
+      const result = (await client.call("run_turn", {
+        turnId: "t-redact-tool-result",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: turnKey,
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "dump" }] }],
+      })) as RunTurnRpcResult;
+
+      const seen = `${requests[1]}${JSON.stringify(result.messages)}`;
+      expect(seen).not.toContain(envKey);
+      expect(seen).not.toContain(turnKey);
+      expect(requests[1]).toContain("OTHERPROV_API_KEY=[REDACTED]");
+      expect(requests[1]).toContain("plain text stays");
+    } finally {
+      delete process.env.OTHERPROV_API_KEY;
+    }
+  }, 30_000);
+
+  test.each([
+    ["auto", ["tool_search", "call_tool"], ["tool_search", "call_tool"]],
+    ["never", Array.from({ length: 12 }, (_, i) => `tracker_tool_${i}`), undefined],
+  ])(
+    "mcpDeferTools %s: the tool list of a request, and it is the same after a search",
+    async (mode, first, later) => {
+      const mcpTools = Array.from({ length: 12 }, (_, i): ToolSpec & { origin: "mcp" } => ({
+        name: `tracker_tool_${i}`,
+        description: `Does thing number ${i} in the tracker.`,
+        inputSchema: { type: "object", properties: {} },
+        riskTier: "safe",
+        origin: "mcp",
+        handler: async () => ({ content: `tool ${i} ran` }),
+      }));
+      const offered: string[][] = [];
+      const adapterFor = (): ProviderAdapter => ({
+        family: "fake",
+        async *stream(request): AsyncIterable<StreamEvent> {
+          offered.push((request.tools ?? []).map((t) => t.name));
+          if (offered.length === 1 && mode === "auto") {
+            yield { type: "tool_call_start", id: "c1", name: "tool_search" };
+            yield { type: "tool_call_delta", id: "c1", inputJsonDelta: '{"query":"tracker_tool_3"}' };
+            yield { type: "tool_call_end", id: "c1" };
+            yield {
+              type: "message_stop",
+              stopReason: "tool_use",
+              usage: { inputTokens: 1, outputTokens: 1 },
+            };
+            return;
+          }
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      });
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        tools: mcpTools,
+        configDir: writeConfigDir({ mcpDeferTools: mode }),
+      });
+      const turn = (turnId: string) =>
+        client.call("run_turn", {
+          turnId,
+          sessionId: "s-defer",
+          provider: "anthropic",
+          model: "test-model",
+          apiKey: "k",
+          systemPrompt: "sys",
+          session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        });
+      await turn(`t-defer-${mode}-1`);
+      expect(offered[0]).toEqual(first);
+      if (later === undefined) return;
+      expect(offered[1]).toEqual(later);
+      // The next turn of the session has the same list: a change would end the prompt cache.
+      await turn(`t-defer-${mode}-2`);
+      expect(offered[2]).toEqual(later);
+    },
+    30_000,
+  );
+
+  test.each([
+    ["moves to the fallback", ErrorCode.OVERLOAD, 101],
+    ["fails", ErrorCode.AUTH, 100],
+  ])(
+    "the tokens of a finished step count as spend when the turn then %s",
+    async (_name, code, expectedUsd) => {
+      const noop: ToolSpec = {
+        name: "noop",
+        description: "does nothing",
+        inputSchema: {},
+        riskTier: "safe",
+        handler: async () => ({ content: "done" }),
+      };
+      const usage = { inputTokens: 1_000_000, outputTokens: 0 };
+      const adapterFor = (provider: string): ProviderAdapter => ({
+        family: "fake",
+        async *stream(request): AsyncIterable<StreamEvent> {
+          const stepDone = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+          if (!stepDone) {
+            yield { type: "tool_call_start", id: "c1", name: "noop" };
+            yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+            yield { type: "tool_call_end", id: "c1" };
+            yield { type: "message_stop", stopReason: "tool_use", usage };
+            return;
+          }
+          if (provider === "anthropic") throw new AgencyError(code, "no more", { source: "fake" });
+          yield { type: "text_delta", text: "finished on the fallback" };
+          yield { type: "message_stop", stopReason: "end_turn", usage };
+        },
+      });
+      const saved = process.env.AGENCY_OPENAI_API_KEY;
+      process.env.AGENCY_OPENAI_API_KEY = "fallback-key";
+      try {
+        const { client } = await startFakeDaemon({
+          adapterFor,
+          tools: [noop],
+          configDir: writeConfigDir({
+            fallback_model: "openai/gpt-x",
+            // Above the token counts of the fake steps: a compaction in the turn would be one more paid request.
+            compactionLimit: 50_000_000,
+            provider: {
+              anthropic: {
+                models: {
+                  "test-model": {
+                    contextWindow: 100_000_000,
+                    pricing: { inputPerMTok: 100, outputPerMTok: 100 },
+                  },
+                },
+              },
+              openai: {
+                models: {
+                  "gpt-x": { contextWindow: 100_000_000, pricing: { inputPerMTok: 1, outputPerMTok: 1 } },
+                },
+              },
+            },
+          }),
+        });
+        const spent = async () =>
+          ((await client.call("cost_report", {})) as { spend: { dayTotalUsd: number } }).spend.dayTotalUsd;
+        const before = await spent();
+        await client
+          .call("run_turn", {
+            turnId: `t-spend-${code}`,
+            provider: "anthropic",
+            model: "test-model",
+            apiKey: "primary-key",
+            systemPrompt: "sys",
+            session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+          })
+          .catch(() => {});
+
+        expect((await spent()) - before).toBe(expectedUsd);
+      } finally {
+        if (saved === undefined) delete process.env.AGENCY_OPENAI_API_KEY;
+        else process.env.AGENCY_OPENAI_API_KEY = saved;
+      }
+    },
+    60_000,
+  );
+
   test("onIdleShutdown fires after the last client disconnects and the linger elapses", async () => {
     let shutdownCalled = false;
     const { daemon, client } = await startFakeDaemon({
@@ -238,6 +822,186 @@ describe("createAgentDaemon", () => {
 
     expect(shutdownCalled).toBe(true);
     void daemon;
+  });
+
+  test("a spawned daemon that no client reaches leaves after the linger", async () => {
+    const left = { spawned: false, embedded: false };
+    for (const kind of ["spawned", "embedded"] as const) {
+      const daemon = await createAgentDaemon({
+        workspaceRoot: tempRoot(),
+        instanceFile: tempInstanceFile(),
+        adapterFor: () => textAdapter("unused"),
+        http: noopHttp,
+        idleLingerMs: 30,
+        idleFromStart: kind === "spawned",
+        onIdleShutdown: () => (left[kind] = true),
+      });
+      daemons.push(daemon);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    // An embedded daemon (serve, the SDK) can have HTTP clients only: it stays.
+    expect(left).toEqual({ spawned: true, embedded: false });
+  });
+
+  test("an idle daemon leaves when its config changes, so the next run loads the new config", async () => {
+    let shutdownCalled = false;
+    const { client, workspaceRoot } = await startFakeDaemon({
+      idleLingerMs: 60_000,
+      onIdleShutdown: () => (shutdownCalled = true),
+    });
+
+    await client.close();
+    clients.length = 0;
+    mkdirSync(join(workspaceRoot, ".agency"), { recursive: true });
+    writeFileSync(join(workspaceRoot, ".agency", "config.jsonc"), "{}");
+    await new Promise((r) => setTimeout(r, 1_500));
+
+    expect(shutdownCalled).toBe(true);
+  });
+
+  test("an idle daemon leaves when a hook file or an MCP file of its workspace changes, and when a new one comes", async () => {
+    const left: Record<string, boolean> = {};
+    for (const [change, file] of [
+      ["edit", "a.json"],
+      ["add", "b.json"],
+      ["mcp", join("..", "..", ".mcp.json")],
+    ] as const) {
+      const workspaceRoot = tempRoot();
+      const hooksDir = join(workspaceRoot, ".agency", "hooks");
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(join(hooksDir, "a.json"), "{}");
+      left[change] = false;
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        idleLingerMs: 60_000,
+        onIdleShutdown: () => (left[change] = true),
+      });
+      await client.close();
+      clients.length = 0;
+      writeFileSync(join(hooksDir, file), '{"hooks":{}}');
+      await new Promise((r) => setTimeout(r, 1_500));
+    }
+    expect(left).toEqual({ edit: true, add: true, mcp: true });
+  }, 20_000);
+
+  test("the MCP servers of a workspace start only in a trusted workspace", async () => {
+    const failures = async (trusted: boolean): Promise<string[]> => {
+      const workspaceRoot = tempRoot();
+      // A server that cannot start is in the failure list: the list shows which servers the daemon tried.
+      writeFileSync(
+        join(workspaceRoot, ".mcp.json"),
+        JSON.stringify({ mcpServers: { projectserver: { command: "agency-no-such-mcp-server" } } }),
+      );
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, tools: undefined });
+      await client.call("run_turn", {
+        turnId: `mcp-${trusted}`,
+        sessionId: "s1",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+      const status = (await client.call("mcp_status", { sessionId: "s1" })) as {
+        failures: Record<string, string>;
+      };
+      return Object.keys(status.failures);
+    };
+    expect(await failures(false)).toEqual([]);
+    expect(await failures(true)).toEqual(["projectserver"]);
+  }, 60_000);
+
+  test("the tool of a real MCP server is deferred, and a worker with a tool list has it loaded", async () => {
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
+    const offered = { parent: [] as string[], worker: [] as string[] };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const names = (request.tools ?? []).map((t) => t.name);
+        const spawned = request.messages.some((m) => m.content.some((b) => b.type === "tool_result"));
+        if ((request.system ?? "").includes("ephemeral worker")) offered.worker = names;
+        else if (!spawned) {
+          offered.parent = names;
+          yield { type: "tool_call_start", id: "c1", name: "spawn" };
+          yield {
+            type: "tool_call_delta",
+            id: "c1",
+            inputJsonDelta: JSON.stringify({ prompt: "ping", tools: ["srv_ping"] }),
+          };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({
+      workspaceRoot,
+      trustStorePath,
+      adapterFor: () => adapter,
+      configDir: writeConfigDir({ mcpDeferTools: "always" }),
+    });
+    await client.call("run_turn", {
+      turnId: "t-defer-real",
+      sessionId: "s-defer-real",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(offered.parent).toContain("tool_search");
+    expect(offered.parent).not.toContain("srv_ping");
+    expect(offered.worker).toContain("srv_ping");
+  }, 60_000);
+
+  test("a prompt of an MCP server runs as a slash command, and the resource tools are in the request", async () => {
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
+    const seen = { text: "", tools: [] as string[] };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.tools = (request.tools ?? []).map((t) => t.name);
+        seen.text = JSON.stringify(request.messages.at(-1)?.content);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, adapterFor: () => adapter });
+    await client.call("run_turn", {
+      turnId: "t-mcp-prompt",
+      sessionId: "s-mcp-prompt",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "/mcp__srv__review 42" }] }],
+    });
+    expect(seen.text).toContain("Review the issue 42");
+    expect(seen.text).not.toContain("/mcp__srv__review");
+    expect(seen.tools).toEqual(
+      expect.arrayContaining(["srv_ping", "mcp_list_resources", "mcp_read_resource"]),
+    );
+    const status = (await client.call("mcp_status", { sessionId: "s-mcp-prompt" })) as { prompts: unknown[] };
+    expect(status.prompts).toEqual([
+      { command: "/mcp__srv__review", description: "Reviews an issue.", arguments: ["id"] },
+    ]);
+  }, 60_000);
+
+  test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
+    const instanceFile = tempInstanceFile();
+    const { daemon, client } = await startFakeDaemon({ instanceFile });
+    await client.close();
+    clients.length = 0;
+    // The close of the client must be over before the server destroys its sockets (Bun on Windows).
+    await new Promise((r) => setTimeout(r, 100));
+    const successor = JSON.stringify({ port: 1, pid: 1, startedAt: "", version: 2, token: "other" });
+    writeFileSync(instanceFile, successor);
+    await daemon.stop();
+    expect(readFileSync(instanceFile, "utf8")).toBe(successor);
   });
 
   test("onIdleShutdown does not fire while a client is still connected", async () => {
@@ -399,72 +1163,247 @@ describe("createAgentDaemon", () => {
     expect(openai?.models[0]?.apiBaseURL).toBeUndefined();
   }, 30_000);
 
-  // macOS has no env override for dataDir (would hit the real one), so the
-  // catalog-cache sandbox only runs on Windows/Linux.
-  test.skipIf(process.platform === "darwin")(
-    "run_turn reads max output tokens and pricing from the model catalog, not a hardcoded default",
-    async () => {
-      const sandboxData = mkdtempSync(join(tmpdir(), "agency-daemon-data-"));
-      dirs.push(sandboxData);
-      const agencyCache = process.platform === "win32" ? join("Agency", "cache") : join("agency", "cache");
-      const cacheDirPath = join(sandboxData, agencyCache);
-      mkdirSync(cacheDirPath, { recursive: true });
-      writeFileSync(
-        join(cacheDirPath, "model-catalog.json"),
-        JSON.stringify({
-          savedAt: new Date().toISOString(),
-          models: [
-            {
-              id: "catalog-model",
-              family: "anthropic",
-              contextWindow: 200_000,
-              maxOutputTokens: 12_345,
-              pricing: { inputPerMTok: 3, outputPerMTok: 15 },
-              capabilities: { tools: true, vision: true, thinking: true },
-            },
-          ],
-        }),
-      );
+  test("run_turn reads max output tokens and pricing from the model catalog, not a hardcoded default", async () => {
+    const sandboxData = mkdtempSync(join(tmpdir(), "agency-daemon-data-"));
+    dirs.push(sandboxData);
+    const cacheDirPath = join(sandboxData, "data", "cache");
+    mkdirSync(cacheDirPath, { recursive: true });
+    writeFileSync(
+      join(cacheDirPath, "model-catalog.json"),
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        models: [
+          {
+            id: "catalog-model",
+            family: "anthropic",
+            contextWindow: 200_000,
+            maxOutputTokens: 12_345,
+            pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+            capabilities: { tools: true, vision: true, thinking: true },
+          },
+        ],
+      }),
+    );
 
-      const captured: { maxTokens?: number } = {};
-      const capturingAdapter: ProviderAdapter = {
-        family: "fake",
-        async *stream(request) {
-          captured.maxTokens = request.maxTokens;
-          yield { type: "text_delta", text: "ok" };
-          yield {
-            type: "message_stop",
-            stopReason: "end_turn",
-            usage: { inputTokens: 1_000, outputTokens: 100 },
-          };
-        },
-      };
+    const captured: { maxTokens?: number } = {};
+    const capturingAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        captured.maxTokens = request.maxTokens;
+        yield { type: "text_delta", text: "ok" };
+        yield {
+          type: "message_stop",
+          stopReason: "end_turn",
+          usage: { inputTokens: 1_000, outputTokens: 100 },
+        };
+      },
+    };
 
-      const dataEnvKey = process.platform === "win32" ? "LOCALAPPDATA" : "XDG_DATA_HOME";
-      const previous = process.env[dataEnvKey];
-      process.env[dataEnvKey] = sandboxData;
-      try {
-        const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter });
-        const result = (await client.call("run_turn", {
-          turnId: "t-catalog",
-          provider: "anthropic",
-          model: "catalog-model",
-          apiKey: "key",
-          systemPrompt: "sys",
-          session: [],
-        })) as RunTurnRpcResult;
+    const dataEnvKey = "AGENCY_HOME";
+    const previous = process.env[dataEnvKey];
+    process.env[dataEnvKey] = sandboxData;
+    try {
+      const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter });
+      const result = (await client.call("run_turn", {
+        turnId: "t-catalog",
+        provider: "anthropic",
+        model: "catalog-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [],
+      })) as RunTurnRpcResult;
 
-        expect(captured.maxTokens).toBe(12_345);
-        expect(result.usage).toEqual({ inputTokens: 1_000, outputTokens: 100, cachedInputTokens: 0 });
-      } finally {
-        if (previous === undefined) delete process.env[dataEnvKey];
-        else process.env[dataEnvKey] = previous;
-      }
-    },
-  );
+      expect(captured.maxTokens).toBe(12_345);
+      expect(result.usage).toEqual({ inputTokens: 1_000, outputTokens: 100, cachedInputTokens: 0 });
+    } finally {
+      if (previous === undefined) delete process.env[dataEnvKey];
+      else process.env[dataEnvKey] = previous;
+    }
+  });
+
+  test("run_turn takes the limits of an openrouter model from the provider's model list, with one read", async () => {
+    const maxTokens: Array<number | undefined> = [];
+    const capturingAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        maxTokens.push(request.maxTokens);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const list = await Bun.file(
+      join(import.meta.dir, "..", "..", "providers", "test", "cassettes", "openrouter-models.json"),
+    ).text();
+    const reads: string[] = [];
+    const http: HttpClient = {
+      fetch: async (url) => {
+        reads.push(String(url));
+        return new Response(list, { status: 200 });
+      },
+    };
+    const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter, http });
+    const turn = (turnId: string, model: string) =>
+      client.call("run_turn", {
+        turnId,
+        provider: "openrouter",
+        model,
+        apiKey: "key",
+        systemPrompt: "s",
+        session: [],
+      });
+
+    await turn("t1", "deepseek/deepseek-v4-flash");
+    await turn("t2", "liquid/lfm-2.5-2.6b:free");
+    // A model that the list does not have keeps the default.
+    await turn("t3", "no-such/model");
+
+    expect(maxTokens).toEqual([32_000, 8192, 8192]);
+    expect(reads).toEqual(["https://openrouter.ai/api/v1/models"]);
+  });
+
+  test("run_turn keeps the default limits when the model list cannot be read", async () => {
+    let maxTokens: number | undefined;
+    const capturingAdapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request) {
+        maxTokens = request.maxTokens;
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const http: HttpClient = { fetch: async () => new Response("down", { status: 503 }) };
+    const { client } = await startFakeDaemon({ adapterFor: () => capturingAdapter, http });
+
+    const result = (await client.call("run_turn", {
+      turnId: "t1",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-flash",
+      apiKey: "key",
+      systemPrompt: "s",
+      session: [],
+    })) as RunTurnRpcResult;
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(maxTokens).toBe(8192);
+  });
 });
 
 describe("system prompt composition", () => {
+  test("project instructions load from a trusted workspace and stay out of an untrusted one", async () => {
+    const run = async (trusted: boolean): Promise<string> => {
+      const capture = { systems: [] as string[] };
+      const workspaceRoot = tempRoot();
+      writeFileSync(join(workspaceRoot, "AGENTS.md"), "Project rule: answer in French.");
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        trustStorePath,
+        adapterFor: () => textAdapter("ok", capture),
+      });
+      await client.call("run_turn", {
+        turnId: `instr-${trusted}`,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [],
+      });
+      return capture.systems[0] ?? "";
+    };
+
+    expect(await run(true)).toContain("Project rule: answer in French.");
+    expect(await run(false)).not.toContain("Project rule");
+  });
+
+  test("a plugin hook on session.start runs one time for a session that session_send makes", async () => {
+    const workspaceRoot = tempRoot();
+    const pluginsDir = join(workspaceRoot, ".agency", "plugins");
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(
+      join(pluginsDir, "starts.mjs"),
+      'import { appendFileSync } from "node:fs";\n' +
+        "export default {\n" +
+        '  id: "starts",\n' +
+        '  hooks: { "session.start": (payload) => appendFileSync(new URL("./starts.txt", import.meta.url), `${payload.sessionId}\\n`) },\n' +
+        "};\n",
+    );
+    const trustStorePath = join(tempRoot(), "trust.json");
+    createFileTrustStore(trustStorePath).trust(workspaceRoot);
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath });
+    const send = (sessionId: string) =>
+      client.call("session_send", {
+        sessionId,
+        provider: "anthropic",
+        model: "test-model",
+        systemPrompt: "sys",
+        userText: "hi",
+      });
+    const saved = process.env.AGENCY_ANTHROPIC_API_KEY;
+    process.env.AGENCY_ANTHROPIC_API_KEY = "session-start-test-key";
+    try {
+      await send("sess-a");
+      await send("sess-a");
+      await send("sess-b");
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+      else process.env.AGENCY_ANTHROPIC_API_KEY = saved;
+    }
+    const starts = existsSync(join(pluginsDir, "starts.txt"))
+      ? readFileSync(join(pluginsDir, "starts.txt"), "utf8").trim().split("\n")
+      : [];
+    expect(starts).toEqual(["sess-a", "sess-b"]);
+  }, 30_000);
+
+  test("plugins and skills of a workspace load only in a trusted workspace, and their text reaches the prompt", async () => {
+    const run = async (trusted: boolean): Promise<{ system: string; ran: boolean }> => {
+      const capture = { systems: [] as string[] };
+      const workspaceRoot = tempRoot();
+      const pluginsDir = join(workspaceRoot, ".agency", "plugins");
+      mkdirSync(pluginsDir, { recursive: true });
+      mkdirSync(join(workspaceRoot, ".agency", "skills", "hello"), { recursive: true });
+      // The plugin file writes a marker when it runs. Code of a workspace that the user did not trust must not run.
+      writeFileSync(
+        join(pluginsDir, "mark.mjs"),
+        'import { writeFileSync } from "node:fs";\n' +
+          'writeFileSync(new URL("./ran.txt", import.meta.url), "ran");\n' +
+          'export default { id: "mark", agentsMd: "Plugin rule: QUARTZ-881." };\n',
+      );
+      writeFileSync(
+        join(workspaceRoot, ".agency", "skills", "hello", "SKILL.md"),
+        "---\nname: hello\ndescription: a test skill\n---\n\nSkill rule: ZEPHYR-204.\n",
+      );
+      const trustStorePath = join(tempRoot(), "trust.json");
+      if (trusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
+      const { client } = await startFakeDaemon({
+        workspaceRoot,
+        trustStorePath,
+        adapterFor: () => textAdapter("ok", capture),
+      });
+      await client.call("run_turn", {
+        turnId: `plugins-${trusted}`,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "key",
+        systemPrompt: "sys",
+        session: [],
+      });
+      return { system: capture.systems[0] ?? "", ran: existsSync(join(pluginsDir, "ran.txt")) };
+    };
+
+    const untrusted = await run(false);
+    expect(untrusted.ran).toBe(false);
+    expect(untrusted.system).not.toContain("a test skill");
+    expect(untrusted.system).not.toContain("QUARTZ-881");
+
+    const trusted = await run(true);
+    expect(trusted.ran).toBe(true);
+    // A skill with a description is one line in the prompt: its body comes through the skill tool.
+    expect(trusted.system).toContain("- hello: a test skill");
+    expect(trusted.system).not.toContain("ZEPHYR-204");
+    expect(trusted.system).toContain("Plugin rule: QUARTZ-881.");
+  });
+
   test("a plain systemPrompt string is used as the base, with the environment block appended", async () => {
     const capture = { systems: [] as string[] };
     const { client, workspaceRoot } = await startFakeDaemon({
@@ -595,7 +1534,20 @@ describe("resolveSystemPrompt", () => {
       workspaceRoot: tempRoot(),
       git: (_cwd, args) => (args.includes("status") ? "## main...origin/main\n M a.ts\n" : null),
     });
-    expect(system).toContain("git: branch main (dirty, 1 changed file)");
+    expect(system).toContain("git at session start: branch main (dirty, 1 changed file)");
+  });
+
+  test("a session keeps its first environment block: a changed work tree must not end the prompt cache", () => {
+    let status = "## main\n";
+    const options = {
+      workspaceRoot: tempRoot(),
+      git: () => status,
+      environments: new Map<string, string>(),
+    };
+    const first = resolveSystemPrompt(params({ sessionId: "s1" }), options);
+    status = "## main\n M a.ts\n";
+    expect(resolveSystemPrompt(params({ sessionId: "s1" }), options)).toBe(first);
+    expect(resolveSystemPrompt(params({ sessionId: "s2" }), options)).toContain("dirty, 1 changed file");
   });
 
   test("identity falls back to the shared default when parts omit it", () => {
@@ -604,6 +1556,29 @@ describe("resolveSystemPrompt", () => {
       git: () => null,
     });
     expect(system.startsWith(`${DEFAULT_SYSTEM_PROMPT}\n\nROLE\n\n<environment>`)).toBe(true);
+  });
+
+  test("the environment block of a session outlives the daemon, and is made again on another day", () => {
+    const dir = tempRoot();
+    let status = "## main\n";
+    const options = (now: Date) => ({
+      workspaceRoot: dir,
+      git: () => status,
+      now,
+      // A new store for each call: what a new daemon has.
+      environments: sessionEnvironmentStore(join(dir, "sessions")),
+    });
+    const day = new Date(2026, 9, 13, 10);
+    const first = resolveSystemPrompt(params({ sessionId: "s1" }), options(day));
+    status = "## main\n M a.ts\n";
+    expect(resolveSystemPrompt(params({ sessionId: "s1" }), options(day))).toBe(first);
+    // The date in the prompt must be right, and after a day the cache of the provider is gone.
+    const later = resolveSystemPrompt(params({ sessionId: "s1" }), options(new Date(2026, 9, 14, 10)));
+    expect(later).toContain("date: 2026-10-14");
+    expect(later).toContain("dirty, 1 changed file");
+    // An id that is not a safe file name is kept in memory only.
+    resolveSystemPrompt(params({ sessionId: "../x" }), options(day));
+    expect(existsSync(join(dir, "x.environment.txt"))).toBe(false);
   });
 
   test("the shared default carries safety, conventions, tool-use, and shell doctrine", () => {
@@ -747,6 +1722,41 @@ function catalogModel(id: string, family: string): ModelInfo {
     pricing: { inputPerMTok: 1, outputPerMTok: 2 },
     capabilities: { tools: true, vision: false, thinking: false },
   };
+}
+
+/** A trusted workspace whose .mcp.json starts a real stdio MCP server `srv`: one tool, one prompt, one resource. */
+function trustedWorkspaceWithMcpServer(): { workspaceRoot: string; trustStorePath: string } {
+  const workspaceRoot = tempRoot();
+  const server = join(workspaceRoot, "server.js");
+  writeFileSync(
+    server,
+    [
+      "const NL = String.fromCharCode(10);",
+      "const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + NL);",
+      "let buf = '';",
+      "process.stdin.on('data', (d) => {",
+      "  buf += d;",
+      "  for (let i = buf.indexOf(NL); i !== -1; i = buf.indexOf(NL)) {",
+      "    const m = JSON.parse(buf.slice(0, i));",
+      "    buf = buf.slice(i + 1);",
+      "    if (m.id === undefined) continue;",
+      "    if (m.method === 'initialize') send(m.id, { protocolVersion: '2025-03-26', capabilities: { tools: {}, prompts: {}, resources: {} }, serverInfo: { name: 'srv', version: '1' } });",
+      "    else if (m.method === 'tools/list') send(m.id, { tools: [{ name: 'ping', description: 'Pings.', inputSchema: { type: 'object', properties: {} } }] });",
+      "    else if (m.method === 'prompts/list') send(m.id, { prompts: [{ name: 'review', description: 'Reviews an issue.', arguments: [{ name: 'id' }] }] });",
+      "    else if (m.method === 'prompts/get') send(m.id, { messages: [{ role: 'user', content: { type: 'text', text: 'Review the issue ' + m.params.arguments.id } }] });",
+      "    else if (m.method === 'resources/list') send(m.id, { resources: [{ uri: 'docs://guide' }] });",
+      "    else send(m.id, { content: [{ type: 'text', text: 'pong' }] });",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(workspaceRoot, ".mcp.json"),
+    JSON.stringify({ mcpServers: { srv: { command: process.execPath, args: [server] } } }),
+  );
+  const trustStorePath = join(tempRoot(), "trust.json");
+  createFileTrustStore(trustStorePath).trust(workspaceRoot);
+  return { workspaceRoot, trustStorePath };
 }
 
 function writeConfigDir(config: Record<string, unknown>): string {
@@ -935,8 +1945,71 @@ describe("resolveAdapter", () => {
     expect(resolveAdapter("anthropic", { anthropic: { family: "anthropic" } }).family).toBe("anthropic");
   });
 
+  test("a native-family provider sends its key to its configured baseUrl, with its headers", async () => {
+    const sent: Array<{ url: string; headers: Record<string, string> }> = [];
+    const http: HttpClient = {
+      fetch: async (url, init) => {
+        sent.push({ url: String(url), headers: init?.headers as Record<string, string> });
+        return new Response("refused", { status: 400 });
+      },
+    };
+    for (const family of ["anthropic", "openai", "google"] as const) {
+      const adapter = resolveAdapter("gateway", {
+        gateway: { family, baseUrl: "http://gateway.test/base", headers: { "x-team": "core" } },
+      });
+      const stream = adapter.stream({ model: "m", apiKey: "gateway-key", messages: [], maxTokens: 16 }, http);
+      await (async () => {
+        for await (const _ of stream) break;
+      })().catch(() => {});
+    }
+    expect(sent.map((call) => call.url.split("?")[0])).toEqual([
+      "http://gateway.test/base/messages",
+      "http://gateway.test/base/chat/completions",
+      "http://gateway.test/base/models/m:streamGenerateContent",
+    ]);
+    expect(sent.every((call) => call.headers["x-team"] === "core")).toBe(true);
+  });
+
+  test("a builtin id keeps its native adapter when its config entry only holds a key", () => {
+    for (const id of ["anthropic", "openai", "google"]) {
+      expect(resolveAdapter(id, { [id]: { apiKey: "k" } }).family).toBe(id);
+    }
+  });
+
+  test("a built-in gateway id sends its key to its own public endpoint without any config", async () => {
+    const sent: string[] = [];
+    const http: HttpClient = {
+      fetch: async (url) => {
+        sent.push(String(url));
+        return new Response("refused", { status: 400 });
+      },
+    };
+    for (const id of ["openrouter", "deepseek", "groq", "xai"]) {
+      const adapter = resolveAdapter(id, {});
+      expect(adapter.family).toBe(id);
+      const stream = adapter.stream({ model: "m", apiKey: "k", messages: [], maxTokens: 16 }, http);
+      await (async () => {
+        for await (const _ of stream) break;
+      })().catch(() => {});
+    }
+    expect(sent).toEqual([
+      "https://openrouter.ai/api/v1/chat/completions",
+      "https://api.deepseek.com/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
+      "https://api.x.ai/v1/chat/completions",
+    ]);
+    expect(() => resolveAdapter("no-such-provider", {})).toThrow(/unknown provider/);
+  });
+
   test("a config openai-compatible provider without any baseUrl throws", () => {
     expect(() => resolveAdapter("my-gateway", { "my-gateway": {} })).toThrow(/baseUrl/);
+  });
+
+  test("a provider's streamIdleMs goes on its adapter, for a native and for a compatible family", () => {
+    const local = { baseUrl: "http://127.0.0.1:8080/v1", streamIdleMs: 900_000 };
+    expect(resolveAdapter("local", { local }).streamIdleMs).toBe(900_000);
+    expect(resolveAdapter("anthropic", { anthropic: { streamIdleMs: 60_000 } }).streamIdleMs).toBe(60_000);
+    expect(resolveAdapter("anthropic", {}).streamIdleMs).toBeUndefined();
   });
 
   test("an unknown provider with a catalog base URL gets the compatible adapter", () => {
@@ -946,6 +2019,11 @@ describe("resolveAdapter", () => {
 
   test("a fully unknown provider still throws", () => {
     expect(() => resolveAdapter("not-real", {})).toThrow(/unknown provider/);
+  });
+
+  test("the error for a provider with no endpoint names the config key that gives it one", () => {
+    // The catalog lists glm models, but glm has no built-in endpoint: the id alone told the user nothing to do.
+    expect(() => resolveAdapter("glm", {})).toThrow(/provider\.glm\.baseUrl/);
   });
 });
 
@@ -1104,7 +2182,14 @@ describe("A5 permissions and sandbox", () => {
       session: [],
     });
     await new Promise((r) => setTimeout(r, 100));
-    const ask = events1.find((e) => e.type === "approval_requested");
+    let ask = events1.find((e) => e.type === "approval_requested");
+    // Fixed sleeps flake under suite load (event delivery has no latency
+    // bound), so poll like the other approval tests instead of asserting once.
+    const deadline1 = Date.now() + 15_000;
+    while (ask?.requestId === undefined && Date.now() < deadline1) {
+      await new Promise((r) => setTimeout(r, 50));
+      ask = events1.find((e) => e.type === "approval_requested");
+    }
     expect(ask?.requestId).toBeTruthy();
     const responded = await client.call("approval_respond", {
       requestId: ask?.requestId,
@@ -1130,7 +2215,12 @@ describe("A5 permissions and sandbox", () => {
       session: [],
     });
     await new Promise((r) => setTimeout(r, 100));
-    const ask2 = events2.find((e) => e.type === "approval_requested");
+    let ask2 = events2.find((e) => e.type === "approval_requested");
+    const deadline2 = Date.now() + 15_000;
+    while (ask2?.requestId === undefined && Date.now() < deadline2) {
+      await new Promise((r) => setTimeout(r, 50));
+      ask2 = events2.find((e) => e.type === "approval_requested");
+    }
     expect(ask2?.requestId).toBeTruthy();
     await client.call("approval_respond", { requestId: ask2?.requestId, decision: "always" });
     await run2;

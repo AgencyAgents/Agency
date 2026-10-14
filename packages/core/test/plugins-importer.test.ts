@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { loadHookFiles } from "../src/plugins/command-hooks.ts";
 import type { ImportClaudePluginReport } from "../src/plugins/importer.ts";
 import { importClaudePlugin } from "../src/plugins/importer.ts";
 
@@ -47,7 +48,7 @@ function makePonytailFixture(sourceDir: string): void {
           hooks: [{ type: "command", command: "node hooks/activate.js", timeout: 5 }],
         },
       ],
-      SubagentStart: [
+      Setup: [
         {
           hooks: [{ type: "command", command: "node hooks/subagent.js", timeout: 5 }],
         },
@@ -158,7 +159,7 @@ function makeUnknownHooksFixture(sourceDir: string): void {
       SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }],
       UnknownEvent: [{ hooks: [{ type: "command", command: "echo unknown" }] }],
       PreToolUse: [{ hooks: [{ type: "command", command: "echo pretool" }] }],
-      SubagentStart: [{ hooks: [{ type: "command", command: "echo sub" }] }],
+      Setup: [{ hooks: [{ type: "command", command: "echo sub" }] }],
     },
   });
 }
@@ -209,6 +210,132 @@ function makeInvalidMcpFixture(sourceDir: string): void {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("what an install makes runnable", () => {
+  test("the hook commands of a plugin go to a hook file, with the plugin root as a real folder", () => {
+    const src = makeDir("hooks-src");
+    const ws = makeDir("hooks-ws");
+    try {
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "guard" });
+      writeText(join(src, "hooks", "check.sh"), "#!/bin/sh\nexit 0\n");
+      writeJson(join(src, "hooks", "hooks.json"), {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code hook command
+              hooks: [{ type: "command", command: "${CLAUDE_PLUGIN_ROOT}/hooks/check.sh", timeout: 5 }],
+            },
+          ],
+          Stop: [{ hooks: [{ type: "prompt", prompt: "is the work done?" }] }],
+        },
+      });
+      const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+      expect(report.hooksInstalled).toEqual(["PreToolUse"]);
+      expect(report.hooksSkipped).toEqual([{ event: "Stop", reason: "its entries are not command hooks" }]);
+      const installed = loadHookFiles(join(ws, ".agency", "hooks"));
+      const command = installed.PreToolUse?.[0]?.hooks[0]?.command ?? "";
+      expect(command).not.toContain("CLAUDE_PLUGIN_ROOT");
+      expect(command.endsWith("/hooks/check.sh")).toBe(true);
+      // The script that the command names is in the workspace: the source folder can go away.
+      rmSync(src, { recursive: true, force: true });
+      expect(existsSync(command)).toBe(true);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("a skill is installed with the files of its folder", () => {
+    const src = makeDir("skillfiles-src");
+    const ws = makeDir("skillfiles-ws");
+    try {
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "docs" });
+      writeText(
+        join(src, "skills", "writing", "SKILL.md"),
+        "---\nname: writing\ndescription: d\n---\nRead references/style.md.",
+      );
+      writeText(join(src, "skills", "writing", "references", "style.md"), "STYLE-RULES");
+      importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+      expect(existsSync(join(ws, ".agency", "skills", "writing", "references", "style.md"))).toBe(true);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("the MCP servers of a plugin go to an MCP file, with the plugin root as a real folder", () => {
+    const src = makeDir("mcp-src");
+    const ws = makeDir("mcp-ws");
+    try {
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "tools" });
+      writeText(join(src, "server", "index.js"), "// server");
+      writeJson(join(src, ".mcp.json"), {
+        mcpServers: {
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code plugin
+          local: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server/index.js"] },
+        },
+      });
+      const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+      expect(Object.keys(report.mcpServers)).toEqual(["local"]);
+      const file = JSON.parse(readFileSync(join(ws, ".agency", "mcp", "tools.json"), "utf8")) as {
+        mcpServers: { local: { args: string[] } };
+      };
+      const script = file.mcpServers.local.args[0] ?? "";
+      expect(script).not.toContain("CLAUDE_PLUGIN_ROOT");
+      rmSync(src, { recursive: true, force: true });
+      expect(existsSync(script)).toBe(true);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("a hook file that is not valid is skipped, and the others load", () => {
+    const dir = makeDir("hookfiles");
+    try {
+      writeText(join(dir, "a.json"), "not json");
+      writeJson(join(dir, "b.json"), {
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] },
+      });
+      const warnings: string[] = [];
+      const hooks = loadHookFiles(dir, (message) => warnings.push(message));
+      expect(hooks.Stop?.[0]?.hooks[0]?.command).toBe("true");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("a.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a plugin name or a skill name that is a path is refused, and nothing goes outside the install folders", () => {
+    const src = makeDir("name-src");
+    const ws = makeDir("name-ws");
+    const escapedSkill = `${basename(ws)}-escaped`;
+    try {
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "../../escaped-plugin" });
+      writeJson(join(src, "hooks", "hooks.json"), {
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] },
+      });
+      expect(() => importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws })).toThrow("escaped-plugin");
+      expect(existsSync(join(ws, "escaped-plugin.json"))).toBe(false);
+      expect(existsSync(join(ws, "escaped-plugin"))).toBe(false);
+
+      writeJson(join(src, ".claude-plugin", "plugin.json"), { name: "ok" });
+      writeText(
+        join(src, "skills", "s", "SKILL.md"),
+        `---\nname: ../../../${escapedSkill}\ndescription: d\n---\nbody`,
+      );
+      const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+      expect(report.skillsInstalled).toEqual([]);
+      expect(existsSync(join(ws, "..", escapedSkill))).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(join(ws, "..", escapedSkill), { recursive: true, force: true });
+    }
+  });
+});
+
 describe("importClaudePlugin", () => {
   // -----------------------------------------------------------------------
   // ponytail-shape (separate hooks.json)
@@ -231,17 +358,8 @@ describe("importClaudePlugin", () => {
       expect(existsSync(join(ws, ".agency", "skills", "ponytail", "SKILL.md"))).toBe(true);
 
       // Hooks
-      expect(report.hooksMapped).toHaveLength(3);
-      expect(report.hooksMapped).toContainEqual({ claudeEvent: "SessionStart", agencyHook: "session.start" });
-      expect(report.hooksMapped).toContainEqual({
-        claudeEvent: "SubagentStart",
-        agencyHook: "subagent.start",
-      });
-      expect(report.hooksMapped).toContainEqual({
-        claudeEvent: "UserPromptSubmit",
-        agencyHook: "prompt.submit",
-      });
-      expect(report.hooksSkipped).toEqual([]);
+      expect(report.hooksInstalled).toEqual(["SessionStart", "UserPromptSubmit"]);
+      expect(report.hooksSkipped).toEqual([{ event: "Setup", reason: 'unsupported event "Setup"' }]);
 
       // MCP
       expect(report.mcpServers).toHaveProperty("filesystem");
@@ -280,12 +398,7 @@ describe("importClaudePlugin", () => {
       expect(existsSync(join(ws, ".agency", "skills", "caveman", "SKILL.md"))).toBe(true);
 
       // Hooks (inline)
-      expect(report.hooksMapped).toHaveLength(2);
-      expect(report.hooksMapped).toContainEqual({ claudeEvent: "SessionStart", agencyHook: "session.start" });
-      expect(report.hooksMapped).toContainEqual({
-        claudeEvent: "UserPromptSubmit",
-        agencyHook: "prompt.submit",
-      });
+      expect(report.hooksInstalled).toEqual(["SessionStart", "UserPromptSubmit"]);
       expect(report.hooksSkipped).toEqual([]);
 
       // No MCP, no agents, no commands
@@ -323,7 +436,7 @@ describe("importClaudePlugin", () => {
       expect(report.mcpServers.scanner).toHaveProperty("command", "python");
 
       // No hooks, no agents, no commands
-      expect(report.hooksMapped).toEqual([]);
+      expect(report.hooksInstalled).toEqual([]);
       expect(report.hooksSkipped).toEqual([]);
       expect(report.agentsFound).toEqual([]);
       expect(report.commandsInstalled).toEqual([]);
@@ -345,23 +458,18 @@ describe("importClaudePlugin", () => {
 
       const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
 
-      // Known hooks mapped
-      expect(report.hooksMapped).toHaveLength(2);
-      expect(report.hooksMapped).toContainEqual({ claudeEvent: "SessionStart", agencyHook: "session.start" });
-      expect(report.hooksMapped).toContainEqual({
-        claudeEvent: "SubagentStart",
-        agencyHook: "subagent.start",
-      });
+      // The events that this harness runs are installed
+      expect(report.hooksInstalled.sort()).toEqual(["PreToolUse", "SessionStart"]);
 
-      // Unknown hooks skipped
+      // The others are skipped
       expect(report.hooksSkipped).toHaveLength(2);
       expect(report.hooksSkipped).toContainEqual({
         event: "UnknownEvent",
-        reason: 'unknown event "UnknownEvent"',
+        reason: 'unsupported event "UnknownEvent"',
       });
       expect(report.hooksSkipped).toContainEqual({
-        event: "PreToolUse",
-        reason: 'unknown event "PreToolUse"',
+        event: "Setup",
+        reason: 'unsupported event "Setup"',
       });
     } finally {
       rmSync(src, { recursive: true, force: true });
@@ -523,13 +631,13 @@ describe("importClaudePlugin", () => {
       expect(report).toHaveProperty("pluginVersion");
       expect(report).toHaveProperty("pluginDescription");
       expect(report).toHaveProperty("skillsInstalled");
-      expect(report).toHaveProperty("hooksMapped");
+      expect(report).toHaveProperty("hooksInstalled");
       expect(report).toHaveProperty("hooksSkipped");
       expect(report).toHaveProperty("mcpServers");
       expect(report).toHaveProperty("agentsFound");
       expect(report).toHaveProperty("commandsInstalled");
       expect(Array.isArray(report.skillsInstalled)).toBe(true);
-      expect(Array.isArray(report.hooksMapped)).toBe(true);
+      expect(Array.isArray(report.hooksInstalled)).toBe(true);
       expect(Array.isArray(report.hooksSkipped)).toBe(true);
       expect(typeof report.mcpServers).toBe("object");
       expect(Array.isArray(report.agentsFound)).toBe(true);

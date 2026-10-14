@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { EventBus } from "../src/events.ts";
 import { loadPlugins } from "../src/plugins/loader.ts";
 import {
+  createSkillTool,
   discoverSkills,
   parseSkillFrontmatter,
   resolveSkillDirs,
@@ -347,6 +348,67 @@ describe("loader integration with skills", () => {
       // Plugin wins (loaded first), skill is skipped
       expect(result.plugins.some((p) => p.id === "collide")).toBe(true);
       expect(result.errors.some((e) => e.id === "collide" && e.error.includes("duplicate"))).toBe(true);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("skills on demand", () => {
+  const toolCtx = { signal: new AbortController().signal };
+
+  test("a skill with a description is one line in the prompt, and its body is not there", async () => {
+    const ws = makeWs("on-demand");
+    try {
+      writeSkill(
+        ws,
+        "deploy",
+        "name: deploy\ndescription: Use when the user asks for a release",
+        "DEPLOY-BODY step one",
+      );
+      writeSkill(ws, "plain", "name: plain", "PLAIN-BODY always here");
+      const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus() });
+      const prompt = result.instructions.join("\n");
+      expect(prompt).toContain("- deploy: Use when the user asks for a release");
+      expect(prompt).not.toContain("DEPLOY-BODY");
+      // No description: the model has no way to choose it, so the body stays in the prompt.
+      expect(prompt).toContain("PLAIN-BODY always here");
+      expect(result.skills.map((skill) => skill.name)).toEqual(["deploy"]);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("the skill tool returns the body and the folder of the skill", async () => {
+    const ws = makeWs("tool");
+    try {
+      const file = writeSkill(
+        ws,
+        "deploy",
+        "name: deploy\ndescription: Release steps",
+        "DEPLOY-BODY step one",
+      );
+      const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus() });
+      const tool = createSkillTool(result.skills);
+      const loaded = await tool.handler({ name: "deploy" }, toolCtx);
+      expect(loaded.isError).toBeFalsy();
+      expect(loaded.content).toContain("DEPLOY-BODY step one");
+      expect(loaded.content).toContain(join(file, ".."));
+      const missing = await tool.handler({ name: "nope" }, toolCtx);
+      expect(missing.isError).toBe(true);
+      expect(missing.content).toContain("deploy");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("a workspace with no described skill has no listing", async () => {
+    const ws = makeWs("none");
+    try {
+      writeSkill(ws, "plain", "name: plain", "PLAIN-BODY");
+      const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus() });
+      expect(result.skills).toEqual([]);
+      expect(result.instructions.join("\n")).not.toContain("skill tool");
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

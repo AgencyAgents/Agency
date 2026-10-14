@@ -6,6 +6,7 @@ import { SessionStore } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { isUsageEntry } from "@agency/telemetry";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 import { runSessionTurn } from "../src/session-runner.ts";
@@ -50,12 +51,32 @@ function echoAdapter(): ProviderAdapter {
   };
 }
 
-async function connectedDaemon(workspaceRoot: string, sessionsDir: string) {
+/** Asks for one `read`, then fails the next request the way a fatal provider error does. */
+function failsAfterOneStep(): ProviderAdapter {
+  let calls = 0;
+  return {
+    family: "fake",
+    async *stream(): AsyncIterable<StreamEvent> {
+      calls += 1;
+      if (calls > 1) throw new AgencyError(ErrorCode.AUTH, "key revoked", { source: "provider" });
+      yield { type: "tool_call_start", id: "c1", name: "read" };
+      yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ path: "note.txt" }) };
+      yield { type: "tool_call_end", id: "c1" };
+      yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 5, outputTokens: 5 } };
+    },
+  };
+}
+
+async function connectedDaemon(
+  workspaceRoot: string,
+  sessionsDir: string,
+  adapter: ProviderAdapter = echoAdapter(),
+) {
   const daemon = await createAgentDaemon({
     workspaceRoot,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
     sessionsDir,
-    adapterFor: () => echoAdapter(),
+    adapterFor: () => adapter,
     http: noopHttp,
     tools: [],
   });
@@ -121,5 +142,72 @@ describe("session usage persistence", () => {
     if (usage === undefined) throw new Error("expected a usage entry");
     expect((usage.usage as { cachedInputTokens?: number }).cachedInputTokens).toBe(80);
     expect(usage.cacheHitRate).toBeCloseTo(0.8);
+  });
+
+  test("a finished tool step is in the session before the next model call, so a daemon crash keeps it", async () => {
+    const workspaceRoot = tempDir("agency-usage-ws-");
+    const sessionsDir = tempDir("agency-usage-store-");
+    let onDiskAtSecondCall: string[] = [];
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "read" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 5, outputTokens: 5 } };
+          return;
+        }
+        const store = new SessionStore(sessionsDir);
+        const entries = store.load("s1");
+        onDiskAtSecondCall = store
+          .messagesFor(entries, store.latestTip(entries) as string)
+          .map((message) => `${message.role}:${message.content.map((block) => block.type).join("+")}`);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const client = await connectedDaemon(workspaceRoot, sessionsDir, adapter);
+
+    await runSessionTurn(client, {
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "read the note",
+    });
+
+    expect(onDiskAtSecondCall).toEqual(["user:text", "assistant:tool_call", "user:tool_result"]);
+    const store = new SessionStore(sessionsDir);
+    const entries = store.load("s1");
+    expect(store.messagesFor(entries, store.latestTip(entries) as string).map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+  });
+
+  test("a turn that fails after a tool step keeps that step in the session", async () => {
+    const workspaceRoot = tempDir("agency-usage-ws-");
+    const sessionsDir = tempDir("agency-usage-store-");
+    const client = await connectedDaemon(workspaceRoot, sessionsDir, failsAfterOneStep());
+
+    const turn = runSessionTurn(client, {
+      sessionId: "s1",
+      provider: "anthropic",
+      model: "test-model",
+      systemPrompt: "sys",
+      userText: "read the note",
+    });
+    await expect(turn).rejects.toThrow("key revoked");
+
+    const store = new SessionStore(sessionsDir);
+    const entries = store.load("s1");
+    const blocks = store
+      .messagesFor(entries, store.latestTip(entries) as string)
+      .map((message) => `${message.role}:${message.content.map((block) => block.type).join("+")}`);
+    expect(blocks).toEqual(["user:text", "assistant:tool_call", "user:tool_result"]);
   });
 });

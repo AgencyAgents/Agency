@@ -3,7 +3,7 @@ import type { HttpClient } from "@agency/net";
 import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
-import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
+import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usage } from "../types.ts";
 
 /**
  * OpenAI's reasoning_effort only has four tiers, coarser than Agency's unified
@@ -25,6 +25,7 @@ const FINISH_REASON: Record<string, StopReason> = {
   function_call: "tool_use",
   length: "max_tokens",
   content_filter: "refusal",
+  error: "error",
 };
 
 function toOpenAiContent(content: ContentBlock[]): string | Record<string, unknown>[] {
@@ -51,7 +52,7 @@ function textOf(content: ContentBlock[]): string {
     .join("");
 }
 
-function toOpenAiMessages(messages: Message[], system?: string): Record<string, unknown>[] {
+function toOpenAiMessages(messages: Message[], system?: string, vision = false): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   if (system) out.push({ role: "system", content: system });
 
@@ -75,6 +76,14 @@ function toOpenAiMessages(messages: Message[], system?: string): Record<string, 
     for (const tr of toolResults) {
       out.push({ role: "tool", tool_call_id: tr.toolCallId, content: tr.content });
     }
+    // A tool message holds text only, so images that a tool returned follow in a user message.
+    const images = vision ? toolResults.flatMap((tr) => tr.images ?? []) : [];
+    if (images.length > 0) {
+      out.push({
+        role: "user",
+        content: toOpenAiContent([{ type: "text", text: "Images from the tool results above." }, ...images]),
+      });
+    }
     if (toolResults.length > 0) continue;
 
     out.push({ role: m.role, content: toOpenAiContent(m.content) });
@@ -91,7 +100,7 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   // marks explicitly.
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: toOpenAiMessages(request.messages, request.system),
+    messages: toOpenAiMessages(request.messages, request.system, request.vision),
     max_completion_tokens: request.maxTokens,
     stream: true,
     stream_options: { include_usage: true },
@@ -114,13 +123,27 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
 
 async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
-    | { error?: { message?: string; code?: string; type?: string } }
+    | {
+        error?: {
+          message?: string;
+          code?: string;
+          type?: string;
+          metadata?: { raw?: unknown; provider_name?: string };
+        };
+      }
     | undefined;
-  const message = body?.error?.message ?? res.statusText;
+  // OpenRouter says only "Provider returned error" and puts the upstream's cause in the metadata.
+  const meta = body?.error?.metadata;
+  const stated = body?.error?.message ?? res.statusText;
+  const from = meta?.provider_name ? ` (${meta.provider_name})` : "";
+  const message = typeof meta?.raw === "string" ? `${stated}${from}: ${meta.raw.slice(0, 500)}` : stated;
   const context = { status: res.status, source: family };
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: family, context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `${family} ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: family, context });
   }
   if (res.status === 429) {
     const retryAfterMs = parseRetryAfterMs(res);
@@ -135,7 +158,8 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
   if (
     res.status === 413 ||
     body?.error?.code === "context_length_exceeded" ||
-    /(context length|maximum context|too many (input )?tokens|input (is )?too long|request too large)/i.test(
+    body?.error?.type === "exceed_context_size_error" ||
+    /(context length|maximum context|context size|too many (input )?tokens|input (is )?too long|request too large)/i.test(
       message,
     )
   ) {
@@ -144,7 +168,9 @@ async function toAgencyError(res: Response, family: string): Promise<AgencyError
   if (res.status >= 500) {
     return new AgencyError(ErrorCode.TRANSIENT, message, { source: family, context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: family, context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: family, context });
 }
 
 async function* streamRaw(
@@ -172,19 +198,25 @@ async function* streamRaw(
   // OpenAI addresses parallel tool calls by delta index, not id: the id only
   // appears once, on the first delta for that index.
   const toolCallIdByIndex = new Map<number, string>();
-  let usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-  } = { inputTokens: 0, outputTokens: 0 };
+  let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
+  let finished = false;
+  let refused = false;
 
   for await (const frame of parseSse(res.body)) {
     if (frame.data === "[DONE]") continue;
     const payload = JSON.parse(frame.data) as {
+      /** OpenRouter: a failure after the stream began. The HTTP status is 200 by then. */
+      error?: { code?: unknown };
       choices: Array<{
         delta: {
           content?: string;
+          /** A refusal comes in its own field, not in `content`. */
+          refusal?: string;
+          /** The reasoning of a reasoning model on llama.cpp, DeepSeek and others. It is shown and never sent back. */
+          reasoning_content?: string;
+          /** OpenRouter's name for the same text. */
+          reasoning?: string | null;
           tool_calls?: Array<{
             index: number;
             id?: string;
@@ -201,8 +233,16 @@ async function* streamRaw(
         prompt_tokens: number;
         completion_tokens: number;
         prompt_tokens_details?: { cached_tokens?: number };
+        /** OpenRouter: the charge for this request in USD. */
+        cost?: number;
       };
     };
+
+    if (payload.error) {
+      const code = payload.error.code;
+      const status = typeof code === "number" && code >= 400 && code <= 599 ? code : 502;
+      throw await toAgencyError(new Response(JSON.stringify({ error: payload.error }), { status }), family);
+    }
 
     if (payload.usage) {
       const cachedTokens = payload.usage.prompt_tokens_details?.cached_tokens;
@@ -210,26 +250,35 @@ async function* streamRaw(
         inputTokens: payload.usage.prompt_tokens,
         outputTokens: payload.usage.completion_tokens,
         ...(cachedTokens === undefined ? {} : { cachedInputTokens: cachedTokens }),
+        ...(typeof payload.usage.cost === "number" ? { costUsd: payload.usage.cost } : {}),
       };
     }
 
     const choice = payload.choices[0];
     if (!choice) continue;
 
+    const reasoning = choice.delta.reasoning_content || choice.delta.reasoning;
+    if (reasoning) yield { type: "thinking_delta", text: reasoning };
     if (choice.delta.content) {
       yield { type: "text_delta", text: choice.delta.content };
     }
+    if (choice.delta.refusal) {
+      refused = true;
+      yield { type: "text_delta", text: choice.delta.refusal };
+    }
 
     for (const call of choice.delta.tool_calls ?? []) {
-      if (call.id && call.function?.name) {
-        toolCallIdByIndex.set(call.index, call.id);
-        yield { type: "tool_call_start", id: call.id, name: call.function.name };
+      // The name opens a call. Some gateways send no id or an empty one: such a call gets an id here, not a silent drop.
+      if (call.function?.name && !toolCallIdByIndex.has(call.index)) {
+        const id = call.id || randomUUID();
+        toolCallIdByIndex.set(call.index, id);
+        yield { type: "tool_call_start", id, name: call.function.name };
       }
       // Independent check (not else-if): gateways may coalesce the start and
       // the first arguments chunk into a single delta carrying both id+name
       // and arguments. Dropping the args half would truncate the tool input.
       if (call.function?.arguments) {
-        const id = call.id && call.function?.name ? call.id : toolCallIdByIndex.get(call.index);
+        const id = toolCallIdByIndex.get(call.index);
         if (id) yield { type: "tool_call_delta", id, inputJsonDelta: call.function.arguments };
       }
     }
@@ -255,10 +304,18 @@ async function* streamRaw(
 
     if (choice.finish_reason) {
       stopReason = FINISH_REASON[choice.finish_reason] ?? "end_turn";
-      for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
+      // OpenRouter repeats the finish reason on its usage chunk. A call that ends twice runs twice.
+      if (!finished) for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
+      finished = true;
     }
   }
 
+  // No finish reason arrived: the open calls still close, so their arguments are checked and answered.
+  if (!finished) for (const id of toolCallIdByIndex.values()) yield { type: "tool_call_end", id };
+
+  // Some servers send a tool call and then finish with "stop": the calls decide, or the loop would not run them.
+  if (toolCallIdByIndex.size > 0 && stopReason === "end_turn") stopReason = "tool_use";
+  if (refused && stopReason === "end_turn") stopReason = "refusal";
   yield { type: "message_stop", stopReason, usage };
 }
 

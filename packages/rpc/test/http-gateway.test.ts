@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type HttpGatewayServer, type SessionStoreLike, startHttpGateway } from "../src/http-gateway.ts";
 
 const servers: HttpGatewayServer[] = [];
@@ -119,6 +120,22 @@ describe("POST /rpc", () => {
       id: "req-2",
       error: { message: "something broke", code: "E_TEST" },
     });
+  });
+
+  test("an AgencyError the caller can fix answers 4xx, not 500", async () => {
+    const server = startHttpGateway({
+      handlers: {
+        nokey: async () => {
+          throw new AgencyError(ErrorCode.AUTH, "no API key", { source: "test" });
+        },
+      },
+    });
+    servers.push(server);
+
+    const res = await rpc(server, { id: "req-3", method: "nokey" });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ id: "req-3", error: { message: "no API key", code: "auth" } });
   });
 
   test("calling an unregistered method answers with the TCP transport's message", async () => {
@@ -561,5 +578,53 @@ describe("GET /sync-events (SSE replay)", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("Allow")).toBe("GET");
     await res.text();
+  });
+});
+
+describe("a client that goes away", () => {
+  test("a call whose client drops the request is reported gone, with the client id that the handler got", async () => {
+    // Live: a turn started over HTTP ran on after its client left, and its shell command kept running.
+    const gone: string[] = [];
+    let seenClientId = "";
+    let release: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = startHttpGateway({
+      handlers: {
+        slow: async (_params, context) => {
+          seenClientId = context.clientId;
+          release();
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          return "late";
+        },
+        quick: async () => "done",
+      },
+      onClientDisconnect: (clientId) => gone.push(clientId),
+    });
+    servers.push(server);
+
+    const controller = new AbortController();
+    const call = fetch(`${base(server)}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: 1, method: "slow" }),
+      signal: controller.signal,
+    }).catch(() => undefined);
+    await started;
+    controller.abort();
+    await call;
+    const deadline = Date.now() + 3_000;
+    while (gone.length === 0 && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(gone).toEqual([seenClientId]);
+    expect(seenClientId).not.toBe("");
+
+    // A call that ends in the normal way reports nothing.
+    const res = await rpc(server, { id: 2, method: "quick" });
+    expect(await res.json()).toEqual({ id: 2, result: "done" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(gone).toHaveLength(1);
   });
 });

@@ -60,6 +60,12 @@ function teamCfg(): Record<string, unknown> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Holds a child until all five are in stream(): a fixed delay lost the bet on setup time under load. A serial spawn times out here. */
+async function allEntered(state: { maxActive: number }): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (state.maxActive < HANDLES.length && Date.now() < deadline) await sleep(10);
+}
+
 /** Tracks concurrent stream entries so tests can prove parallel (not serial) spawn. */
 function parallelAdapter(state: {
   active: number;
@@ -99,16 +105,16 @@ function parallelAdapter(state: {
         if (txt.startsWith("brief for ")) {
           state.childBriefs.push(txt);
           // Stagger so completion order differs from input order; the barrier
-          // must still report results in input order. Base delay dwarfs the
-          // pre-stream setup stagger so all five overlap in stream().
+          // must still report results in input order.
           const idx = HANDLES.findIndex((h) => txt === `brief for ${h}`);
-          await sleep(300 + (HANDLES.length - idx) * 50);
+          await allEntered(state);
+          await sleep((HANDLES.length - idx) * 80);
           yield { type: "text_delta", text: `child output for ${txt}` };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
         }
         if (txt.includes("compare prompt")) {
-          await sleep(300);
+          await allEntered(state);
           yield { type: "text_delta", text: "compare output" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
@@ -130,7 +136,10 @@ function toolResultText(result: RunTurnRpcResult): string {
   return block?.content ?? "";
 }
 
-async function startDaemon(state: { active: number; maxActive: number; childBriefs: string[] }) {
+async function startDaemon(
+  state: { active: number; maxActive: number; childBriefs: string[] },
+  overrides: { adapterFor?: (provider: string) => ProviderAdapter; config?: Record<string, unknown> } = {},
+) {
   const root = tempDir("agency-dp52-root-");
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: root });
@@ -142,9 +151,9 @@ async function startDaemon(state: { active: number; maxActive: number; childBrie
   const daemon = await createAgentDaemon({
     workspaceRoot: root,
     instanceFile: join(tempDir("agency-dp52-inst-"), "instance.json"),
-    adapterFor: () => parallelAdapter(state),
+    adapterFor: overrides.adapterFor ?? (() => parallelAdapter(state)),
     http: noopHttp,
-    configDir: writeConfigDir(teamCfg()),
+    configDir: writeConfigDir({ ...teamCfg(), ...overrides.config }),
     sessionsDir,
   });
   daemons.push(daemon);
@@ -208,6 +217,48 @@ describe("daemon parallel specialists (item 52)", () => {
     expect(res.results.map((r) => r.handle)).toEqual(HANDLES);
     for (const r of res.results) {
       expect(r.result).toContain(r.handle);
+    }
+  });
+});
+
+describe("dispatch_compare routing", () => {
+  it("an agent whose pinned provider has no key runs on the default model's provider", async () => {
+    const state = { active: 0, maxActive: 0, childBriefs: [] as string[] };
+    const seen: Array<{ provider: string; model: string; apiKey: string }> = [];
+    const saved = { a: process.env.AGENCY_ANTHROPIC_API_KEY, b: process.env.ANTHROPIC_API_KEY };
+    delete process.env.AGENCY_ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const { client } = await startDaemon(state, {
+        adapterFor: (provider) => ({
+          family: "fake",
+          async *stream(request): AsyncIterable<StreamEvent> {
+            seen.push({ provider, model: request.model, apiKey: request.apiKey });
+            yield { type: "text_delta", text: "compare output" };
+            yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
+          },
+        }),
+        config: {
+          model: "house/house-model",
+          provider: { house: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "house-key" } },
+        },
+      });
+      const res = (await client.call("dispatch_compare", {
+        handles: ["w1", "w2"],
+        prompt: "compare prompt routed",
+      })) as { results: Array<{ result: string }> };
+      expect(res.results.map((r) => r.result.split(" · ")[0])).toEqual([
+        "w1 (house/house-model)",
+        "w2 (house/house-model)",
+      ]);
+
+      expect(seen).toEqual([
+        { provider: "house", model: "house-model", apiKey: "house-key" },
+        { provider: "house", model: "house-model", apiKey: "house-key" },
+      ]);
+    } finally {
+      if (saved.a !== undefined) process.env.AGENCY_ANTHROPIC_API_KEY = saved.a;
+      if (saved.b !== undefined) process.env.ANTHROPIC_API_KEY = saved.b;
     }
   });
 });

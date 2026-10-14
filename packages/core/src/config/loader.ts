@@ -113,6 +113,22 @@ function envOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.AGENCY_ENABLED_PROVIDERS !== undefined) {
     out.enabled_providers = envList(env.AGENCY_ENABLED_PROVIDERS);
   }
+  const sandbox: Record<string, unknown> = {};
+  if (env.AGENCY_SANDBOX_BACKEND !== undefined) sandbox.backend = env.AGENCY_SANDBOX_BACKEND;
+  if (env.AGENCY_SANDBOX_IMAGE !== undefined) sandbox.image = env.AGENCY_SANDBOX_IMAGE;
+  if (env.AGENCY_SANDBOX_CONTAINER !== undefined) sandbox.container = env.AGENCY_SANDBOX_CONTAINER;
+  if (env.AGENCY_SANDBOX_CONTAINER_ROOT !== undefined) {
+    sandbox.containerRoot = env.AGENCY_SANDBOX_CONTAINER_ROOT;
+  }
+  if (env.AGENCY_SANDBOX_DOCKER_BIN !== undefined) sandbox.dockerBin = env.AGENCY_SANDBOX_DOCKER_BIN;
+  if (env.AGENCY_SANDBOX_EGRESS !== undefined) sandbox.egress = envList(env.AGENCY_SANDBOX_EGRESS);
+  if (env.AGENCY_SANDBOX_NETWORK !== undefined) sandbox.network = env.AGENCY_SANDBOX_NETWORK;
+  if (env.AGENCY_SANDBOX_CAP_DROP !== undefined) sandbox.capDrop = envList(env.AGENCY_SANDBOX_CAP_DROP);
+  if (Object.keys(sandbox).length > 0) out.sandbox = sandbox;
+  if (env.AGENCY_GIT_WRITE !== undefined) {
+    const current = isPlainObject(out.permissions) ? out.permissions : {};
+    out.permissions = { ...current, git_write: env.AGENCY_GIT_WRITE };
+  }
   return out;
 }
 
@@ -159,7 +175,16 @@ export function loadConfig(sources: ConfigSources = {}): Config {
     if (managedLayer) merged = deepMergeLayer(merged, migrateLayer(managedLayer));
   }
 
-  const config = ConfigSchema.parse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+  const parsed = ConfigSchema.safeParse({ ...merged, schemaVersion: CONFIG_SCHEMA_VERSION });
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+    const projectPath = sources.projectRoot && join(sources.projectRoot, ".agency", "config.jsonc");
+    const files = [globalPath, projectPath, sources.managedPath].filter((path) => path && existsSync(path));
+    throw new Error(`config is not valid: ${issues.join("; ")} (files: ${files.join(", ") || "none"})`, {
+      cause: parsed.error,
+    });
+  }
+  const config = parsed.data;
 
   // Fresh config with no agents key gets the default empty roster.
   if (!config.agents) {

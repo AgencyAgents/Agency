@@ -17,7 +17,12 @@ const TIER_1: BuiltinCommand[] = [
   { name: "help", tier: 1, description: "List built-in, file, and plugin commands.", usage: "/help" },
   { name: "init", tier: 1, description: "Scaffold AGENTS.md guidance files.", usage: "/init" },
   { name: "new", tier: 1, description: "Create an empty session.", usage: "/new [id]" },
-  { name: "compact", tier: 1, description: "Compact a session to a new tip.", usage: "/compact <session>" },
+  {
+    name: "compact",
+    tier: 1,
+    description: "Compact a session to a new tip.",
+    usage: "/compact <session> [provider/model] [instructions]",
+  },
   { name: "model", tier: 1, description: "Show or set the active model.", usage: "/model [provider/model]" },
   { name: "sessions", tier: 1, description: "List daemon-known sessions.", usage: "/sessions" },
   {
@@ -119,7 +124,13 @@ const TIER_3: BuiltinCommand[] = [
     description: "Connectivity, catalog, trust, and session checks.",
     usage: "/doctor",
   },
-  { name: "goal", tier: 3, description: "Team goal, outcome, and cost.", usage: "/goal [outcome]" },
+  {
+    name: "goal",
+    tier: 3,
+    description: "Show, set or clear the condition a session must meet before a turn ends.",
+    usage: "/goal <session> [condition|clear]",
+  },
+  { name: "report", tier: 3, description: "Team goal, outcome, and cost.", usage: "/report [outcome]" },
 ];
 
 /** Every built-in the runtime resolves, in tier order. */

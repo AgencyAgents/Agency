@@ -1,7 +1,34 @@
 {
   "hooks": {
-    "SessionStart": [{ "type": "command", "command": "echo hello" }],
-    "UserPromptSubmit": [{ "type": "command", "command": "echo world" }],
-    "UnknownEvent": [{ "type": "command", "command": "echo skip" }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo hello"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo world"
+          }
+        ]
+      }
+    ],
+    "UnknownEvent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo skip"
+          }
+        ]
+      }
+    ]
   }
 }

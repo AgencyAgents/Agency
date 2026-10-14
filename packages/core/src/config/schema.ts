@@ -1,5 +1,6 @@
 import type { Migration } from "@agency/schema";
 import { z } from "zod";
+import { CommandHooksSchema } from "../plugins/command-hooks.ts";
 
 export const CONFIG_SCHEMA_VERSION = 2;
 
@@ -62,6 +63,10 @@ const ProviderConfigSchema = z.object({
   env: z.array(z.string()).optional(),
   /** A key set directly in config; lowest-precedence, mainly for local dev. */
   apiKey: z.string().optional(),
+  /** Longest silence on a response stream before the request is cut, in ms. Default 5 minutes. */
+  streamIdleMs: z.number().int().positive().optional(),
+  /** Requests that the daemon sends to this provider in one minute, for all turns and workers together. Default 60. */
+  requestsPerMinute: z.number().positive().optional(),
   models: z.record(z.string(), ModelOverrideSchema).optional(),
   whitelist: z.array(z.string()).optional(),
   blacklist: z.array(z.string()).optional(),
@@ -86,6 +91,13 @@ export const ToolPermissionSchema = z.union([
   z.record(z.string(), z.enum(["allow", "ask", "deny"])),
 ]);
 export type ToolPermission = z.infer<typeof ToolPermissionSchema>;
+
+/** Well-known key gating real git writes (Todo 8 materialization checks it). */
+export const GIT_WRITE_PERMISSION_KEY = "git_write" as const;
+export const GitWriteDecisionSchema = z.enum(["allow", "ask", "deny"]);
+export type GitWriteDecision = z.infer<typeof GitWriteDecisionSchema>;
+/** Absent key means deny, preserving the current no-git-write posture. */
+export const GIT_WRITE_DEFAULT: GitWriteDecision = "deny";
 
 /** Tool name (or `external_directory`) -> bare decision or pattern map. */
 export type PermissionsConfig = Record<string, ToolPermission>;
@@ -118,6 +130,13 @@ export const ConfigSchema = z
      * which re-validates it via parseMcpServers at startup.
      */
     mcpServers: z.record(z.string(), z.unknown()).optional(),
+    /** `auto` keeps the schemas of the MCP tools out of a request when there are more than 10, until the model loads them. */
+    mcpDeferTools: z.enum(["auto", "always", "never"]).optional(),
+    /**
+     * Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox
+     * (Linux, macOS). `"host"` runs it with the authority of a shell command.
+     */
+    codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
     lspServers: z.record(z.string(), z.unknown()).optional(),
     /**
      * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
@@ -127,13 +146,47 @@ export const ConfigSchema = z
     permissions: z.record(z.string(), ToolPermissionSchema).default({}),
     /** Trust behavior: when `required`, tools above the `safe` risk tier refuse to run in an untrusted workspace. */
     trust: z.object({ required: z.boolean().default(false) }).default({ required: false }),
-    /** Sandbox-adjacent knobs beyond the permission maps. */
+    /** Sandbox backend switch plus container options. Software is the default. */
     sandbox: z
       .object({
+        /** Local in-process boundary or container exec. Invalid values fail load. */
+        backend: z.enum(["software", "docker", "os"]).default("software"),
+        /** With the `os` backend: shell commands get the network. Default: no network. */
+        allowNetwork: z.boolean().optional(),
+        /** Image for one-shot `docker run` exec. */
+        image: z.string().optional(),
+        /** Existing container for `docker exec`; unset means `docker run --rm`. */
+        container: z.string().optional(),
+        /** Container-side mount point. Defaults to /workspace. */
+        containerRoot: z.string().optional(),
+        /** Docker CLI binary. Defaults to docker. */
+        dockerBin: z.string().optional(),
+        /**
+         * Egress hostname allowlist for container runs. Undefined means
+         * unrestricted (no `--network` flag, current behavior). Defined —
+         * even empty — is deny-by-default: one-shot `docker run` gets
+         * `--network=none` unless `network` names an explicit network.
+         * Per-host enforcement lives at tool-policy level (`requireNetwork`
+         * over capabilities), since plain `docker run` flags cannot express
+         * hostname allowlists; the container network gate is the coarse lock.
+         */
+        egress: z.array(z.string().min(1)).optional(),
+        /** Named Docker network for one-shot runs; honors explicit user intent. */
+        network: z.string().min(1).optional(),
+        /**
+         * Linux capabilities to drop (`--cap-drop`); validated against the
+         * known-good set at backend construction, unknown names fail boot.
+         * `CAP_`-prefixed and lowercase spellings are accepted and canonicalized.
+         */
+        capDrop: z.array(z.string().min(1)).optional(),
+        /** Names of environment variables that a shell command of the model does not get (tokens, keys). */
+        denyEnv: z.array(z.string().min(1)).optional(),
+        /** Names with KEY, SECRET or TOKEN that a shell command of the model still gets, such as `GH_TOKEN`. */
+        allowEnv: z.array(z.string().min(1)).optional(),
         /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
         forecastCostUsd: z.number().optional(),
       })
-      .optional(),
+      .default({ backend: "software" }),
     /**
      * Formatter run after every successful write/edit, e.g.
      * `formatter: {command: ["biome", "format", "--write"]}`; the file path is
@@ -149,10 +202,24 @@ export const ConfigSchema = z
      * Web search for the websearch tool: a GET endpoint the query is appended
      * to as `?q=`. Absent means the tool is not offered to the model at all.
      */
-    websearch: z.object({ endpoint: z.string().optional() }).optional(),
+    websearch: z
+      .object({
+        endpoint: z.string().optional(),
+        /** The OpenRouter model of a search when there is no endpoint. Default `deepseek/deepseek-v4-flash`. */
+        model: z.string().optional(),
+      })
+      .optional(),
     /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
     plugins: z.array(z.string()).optional(),
+    /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */
+    hooks: CommandHooksSchema.optional(),
     fallback_model: z.string().optional(),
+    /** Tool steps that one turn may take when the caller sets no limit. Absent means the loop default. */
+    maxSteps: z.number().int().positive().optional(),
+    /** Text for the model that writes the summary of a compaction: what the summary must keep. */
+    compactionInstructions: z.string().optional(),
+    /** Tokens of history at which a session is compacted when the window of the model is larger. Absent means 220000. */
+    compactionLimit: z.number().int().positive().optional(),
     trace: z
       .object({
         export: z

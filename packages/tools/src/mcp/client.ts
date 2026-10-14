@@ -3,6 +3,19 @@ import { counterIds, PendingRequestManager } from "@agency/net";
 import type { McpToolDefinition } from "./adapt.ts";
 import type { McpTransport } from "./transport.ts";
 
+export interface McpResourceDefinition {
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptDefinition {
+  name: string;
+  description?: string;
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+}
+
 export interface McpClientOptions {
   requestTimeoutMs?: number;
   toolCallTimeoutMs?: number;
@@ -31,14 +44,40 @@ export class McpClient {
     this.onToolListChanged = cb;
   }
 
+  /** What the server said it has in the handshake: `resources`, `prompts`, `tools`. */
+  serverCapabilities: Record<string, unknown> = {};
+
   async initialize(): Promise<void> {
-    await this.request("initialize", { clientInfo: { name: "agency", version: "0.1.0" } });
+    // The specification makes protocolVersion and capabilities mandatory: a server that validates refuses without them.
+    const result = (await this.request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "agency", version: "0.1.0" },
+    })) as { capabilities?: Record<string, unknown> } | undefined;
+    this.serverCapabilities = result?.capabilities ?? {};
     this.notify("notifications/initialized", {});
   }
 
+  /** All pages of a list. A cursor that comes a second time ends the read: a broken server must not hang it. */
+  private async listAll<T>(kind: "tools" | "resources" | "prompts"): Promise<T[]> {
+    const items: T[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      if (cursor !== undefined) seen.add(cursor);
+      const result = (await this.request(`${kind}/list`, cursor === undefined ? {} : { cursor })) as Record<
+        string,
+        unknown
+      >;
+      items.push(...((result[kind] as T[] | undefined) ?? []));
+      cursor =
+        typeof result.nextCursor === "string" && result.nextCursor !== "" ? result.nextCursor : undefined;
+    } while (cursor !== undefined && !seen.has(cursor));
+    return items;
+  }
+
   async listTools(): Promise<McpToolDefinition[]> {
-    const result = (await this.request("tools/list", {})) as { tools?: McpToolDefinition[] };
-    return result.tools ?? [];
+    return this.listAll<McpToolDefinition>("tools");
   }
 
   async callTool(
@@ -59,6 +98,26 @@ export class McpClient {
       isError?: boolean;
     };
     return { content: result.content, isError: result.isError };
+  }
+
+  async listResources(): Promise<McpResourceDefinition[]> {
+    return this.listAll<McpResourceDefinition>("resources");
+  }
+
+  async readResource(uri: string, signal?: AbortSignal): Promise<unknown[]> {
+    const result = (await this.request("resources/read", { uri }, { signal })) as { contents?: unknown[] };
+    return result.contents ?? [];
+  }
+
+  async listPrompts(): Promise<McpPromptDefinition[]> {
+    return this.listAll<McpPromptDefinition>("prompts");
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<Array<{ content?: unknown }>> {
+    const result = (await this.request("prompts/get", { name, arguments: args })) as {
+      messages?: Array<{ content?: unknown }>;
+    };
+    return result.messages ?? [];
   }
 
   async close(): Promise<void> {

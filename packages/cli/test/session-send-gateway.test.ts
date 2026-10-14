@@ -179,6 +179,20 @@ describe("session_send over the HTTP gateway", () => {
     );
   }, 60000);
 
+  test("auto-compaction uses the model's own context window when the caller sends none", async () => {
+    const configDir = writeConfigDir({
+      provider: { anthropic: { models: { "test-model": { contextWindow: 3000, maxOutputTokens: 500 } } } },
+    });
+    const { base, token } = await startDaemon(echoAdapter("n"), { configDir });
+    for (let i = 0; i < 12; i++) {
+      await sessionSend(base, token, { sessionId: "gw-window", userText: `fill ${i} ${"x".repeat(1200)}` });
+    }
+    const shown = await rpcCall(base, token, "session_show", { sessionId: "gw-window" });
+    expect((shown.entries as Array<{ type: string }>).some((e) => e.type === "compaction_summary")).toBe(
+      true,
+    );
+  }, 60000);
+
   test("reactive compact-and-retry recovers from provider overflow", async () => {
     let armed = false;
     let calls = 0;
@@ -223,6 +237,39 @@ describe("session_send over the HTTP gateway", () => {
     }
   });
 
+  test("two sends on one session at the same time make one history, not a fork", async () => {
+    let release: () => void = () => {};
+    const firstHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: string[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(request.messages.map((message) => message.role));
+        const call = seen.length;
+        if (call === 1) await firstHeld;
+        yield { type: "text_delta", text: `reply ${call}` };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const { base, token } = await startDaemon(adapter);
+
+    const first = sessionSend(base, token, { sessionId: "gw-fork", userText: "first" });
+    const deadline = Date.now() + 10_000;
+    while (seen.length < 1 && Date.now() < deadline) await Bun.sleep(10);
+    const second = sessionSend(base, token, { sessionId: "gw-fork", userText: "second" });
+    // Time for the second send to reach the model if nothing holds it back.
+    await Bun.sleep(300);
+    release();
+    await Promise.all([first, second]);
+
+    expect(seen).toEqual([["user"], ["user", "assistant", "user"]]);
+    const shown = await rpcCall(base, token, "session_show", { sessionId: "gw-fork" });
+    const parents = (shown.entries as Array<{ parentId: string | null }>).map((entry) => entry.parentId);
+    expect(new Set(parents).size).toBe(parents.length);
+  }, 30_000);
+
   test("@handle text routes provider, model, and effort through session_send", async () => {
     const models: string[] = [];
     const adapter: ProviderAdapter = {
@@ -256,5 +303,21 @@ describe("session_send over the HTTP gateway", () => {
     expect(models.at(-1)).toBe("coder-model");
     await sessionSend(base, token, { sessionId: "gw-route", userText: "plain question" });
     expect(models.at(-1)).toBe("test-model");
+  });
+
+  test.each([
+    ["a missing parameter", "session_send", { userText: "hi" }],
+    ["an unknown session", "session_show", { sessionId: "no-such-session" }],
+    ["a bad value", "approval_respond", { requestId: "r1", decision: "maybe" }],
+  ])("%s answers 400 with code invalid_request, not 500", async (_name, method, params) => {
+    const { base, token } = await startDaemon(echoAdapter());
+    const res = await fetch(`${base}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: "bad-1", method, params }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
   });
 });

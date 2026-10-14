@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoardStore, ChoiceLog, EventBus, SessionStore } from "@agency/core";
+import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { registerSurfaceHandlers } from "../src/daemon/handlers/surface.ts";
@@ -60,14 +61,18 @@ export const hooks = {
 };
 `;
 
-async function boot(opts: { seed?: (ws: string) => void } = {}) {
+async function boot(opts: { seed?: (ws: string) => void; trusted?: boolean } = {}) {
   const ws = tempDir("agency-cmd-ws-");
   opts.seed?.(ws);
+  // A workspace plugin file runs only in a trusted workspace.
+  const trustStorePath = join(tempDir("agency-cmd-trust-"), "trust.json");
+  if (opts.trusted) createFileTrustStore(trustStorePath).trust(ws);
   const daemon = await createAgentDaemon({
     workspaceRoot: ws,
     instanceFile: join(ws, ".agency", "instance.json"),
     sessionsDir: tempDir("agency-cmd-sess-"),
     approvalsDir: tempDir("agency-cmd-appr-"),
+    trustStorePath,
     adapterFor: () => echoAdapter(),
     http: noopHttp,
     tools: [],
@@ -341,9 +346,9 @@ describe("command_run Tier 3 goldens", () => {
     ]);
   });
 
-  test("/goal returns the team report goal", async () => {
+  test("/report returns the team report goal", async () => {
     const { base, token } = await boot();
-    const out = await run(base, token, "goal");
+    const out = await run(base, token, "report");
     expect(typeof out.data.goal).toBe("string");
   });
 });
@@ -351,6 +356,7 @@ describe("command_run Tier 3 goldens", () => {
 describe("file templates resolve through command_run", () => {
   test("frontmatter plus $1 plus shell plus @file", async () => {
     const { base, token } = await boot({
+      trusted: true,
       seed: (ws) => {
         mkdirSync(join(ws, ".agency", "commands"), { recursive: true });
         writeFileSync(join(ws, ".agency", "commands", "deploy.md"), "deploy $1 to @target.txt");
@@ -363,11 +369,33 @@ describe("file templates resolve through command_run", () => {
     expect(out.kind).toBe("template");
     expect(out.text).toBe("deploy svc to prod-cluster");
   });
+
+  test("a command file of an untrusted workspace does not load, so its shell block does not run", async () => {
+    const seed = (ws: string) => {
+      mkdirSync(join(ws, ".agency", "commands"), { recursive: true });
+      writeFileSync(join(ws, ".agency", "commands", "mark.md"), "result: !`echo ran> marker.txt`");
+    };
+    const untrusted = await boot({ seed });
+    const refused = await rpcCall(untrusted.base, untrusted.token, "command_run", { name: "mark" });
+    const trusted = await boot({ seed, trusted: true });
+    await run(trusted.base, trusted.token, "mark");
+
+    expect({
+      untrustedRan: existsSync(join(untrusted.ws, "marker.txt")),
+      untrustedError: refused.body.error?.message,
+      trustedRan: existsSync(join(trusted.ws, "marker.txt")),
+    }).toEqual({
+      untrustedRan: false,
+      untrustedError: expect.stringContaining("mark"),
+      trustedRan: true,
+    });
+  });
 });
 
 describe("fixture plugin command plus hook", () => {
   test("plugin command resolves and cost.threshold fires the hook", async () => {
     const { base, token, ws } = await boot({
+      trusted: true,
       seed: (w) => {
         mkdirSync(join(w, ".agency", "plugins"), { recursive: true });
         writeFileSync(join(w, ".agency", "plugins", "fixture.mjs"), FIXTURE_PLUGIN);

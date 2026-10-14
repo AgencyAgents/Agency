@@ -10,25 +10,26 @@
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AgencyHarness/Agency/master/scripts/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/AgencyHarness/Agency/master/scripts/install.ps1 | iex
 ```
 
 Both scripts:
-1. Resolve the version from `AGENCY_VERSION` or the latest GitHub release (`api.github.com/repos/AgencyAgents/Agency/releases/latest`).
+1. Resolve the version from `AGENCY_VERSION` or the latest GitHub release (`api.github.com/repos/AgencyHarness/Agency/releases/latest`).
 2. Download `agency-<os>-<arch>` (or `.exe` on Windows) and `checksums.txt` from `releases/download/v<version>`.
 3. Verify the SHA-256 checksum before writing anything. A missing or mismatched checksum aborts.
 
 Environment overrides:
 - `AGENCY_VERSION` — `v0.1.0` or `0.1.0` (default: latest).
 - `AGENCY_INSTALL_DIR` — default `~/.local/bin` (macOS/Linux) or `%LOCALAPPDATA%\Programs\agency` (Windows).
+- `AGENCY_NO_MODIFY_PATH` — Windows only. Set to `1` to leave the user `PATH` as it is.
 
-After install, ensure the install directory is on `PATH`. The Linux/macOS script prints a hint if it is not; the Windows script appends it to the user `PATH`.
+After install, ensure the install directory is on `PATH`. The Linux/macOS script prints a hint if it is not; the Windows script appends it to the user `PATH`, unless `AGENCY_NO_MODIFY_PATH` is `1`.
 
 ## Manual install
 
@@ -38,7 +39,9 @@ After install, ensure the install directory is on `PATH`. The Linux/macOS script
 
 ## Updating and rollback
 
-Re-run the install script with `AGENCY_VERSION` pinned to the desired tag. There is no in-place updater; every install is a fresh download verified against `checksums.txt`.
+`agency update` downloads the latest release and verifies its signature and checksum. It then moves the running binary to `<binary>.previous` and puts the new binary in its place. `agency update --rollback` puts the previous binary back. An idle daemon from the old binary exits within one second; a daemon in a turn finishes that turn first.
+
+To install a specific version, re-run the install script with `AGENCY_VERSION` pinned to the desired tag.
 
 ## Building from source
 

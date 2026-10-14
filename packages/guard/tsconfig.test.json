@@ -7,5 +7,5 @@
     "types": ["bun"]
   },
   "include": ["src", "test"],
-  "references": [{ "path": "../schema" }]
+  "references": [{ "path": "../schema" }, { "path": "../tools" }]
 }

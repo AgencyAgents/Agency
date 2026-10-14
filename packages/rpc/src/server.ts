@@ -7,7 +7,7 @@ import {
   PROTOCOL_VERSION,
   type RpcMessage,
 } from "./protocol.ts";
-import { FrameWriter } from "./writer.ts";
+import { destroyAfterData, FrameWriter } from "./writer.ts";
 
 /** Per-call context: which connected client issued the request. */
 export interface MethodContext {
@@ -30,6 +30,8 @@ export interface DaemonServerOptions {
    * from the instance file (chmod-restricted on creation).
    */
   token?: string;
+  /** Asked when a client connects and no other is connected. True refuses that client in the handshake answer. */
+  refuseFirstClient?: () => boolean;
 }
 
 export interface DaemonServer {
@@ -97,22 +99,31 @@ export async function startDaemonServer(options: DaemonServerOptions): Promise<D
         messages = conn.decoder.push(chunk.toString("utf8"));
       } catch {
         // Oversized or unparseable frame: fail closed for this connection.
-        socket.destroy();
+        destroyAfterData(socket);
         return;
       }
 
       for (const message of messages) {
         if (!conn.handshaked) {
           if (message.type !== "hello") {
-            socket.destroy();
+            destroyAfterData(socket);
             return;
           }
           const compatible = message.version === PROTOCOL_VERSION;
           const authorized = options.token === undefined || message.token === options.token;
+          // The client fails its connect, and `ensureDaemon` then starts a new daemon.
+          const leaving =
+            compatible && authorized && clients.size === 0 && options.refuseFirstClient?.() === true;
           conn.writer.write(
-            encodeFrame({ type: "hello_ack", version: PROTOCOL_VERSION, compatible, authorized }),
+            encodeFrame({
+              type: "hello_ack",
+              version: PROTOCOL_VERSION,
+              compatible,
+              authorized,
+              ...(leaving ? { leaving } : {}),
+            }),
           );
-          if (!compatible || !authorized) {
+          if (!compatible || !authorized || leaving) {
             socket.end();
             return;
           }

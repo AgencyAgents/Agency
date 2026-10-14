@@ -1,4 +1,7 @@
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { intersectPathScopes } from "@agency/guard";
+import type { Logger } from "../logger.ts";
 
 export type BoardStatus = "pending" | "in_progress" | "completed" | "ready_for_review" | "needs-user";
 
@@ -408,4 +411,108 @@ export class BoardStore {
   hydrate(entries: BoardItem[]): void {
     this.items = [...entries];
   }
+}
+
+const BOARD_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "in_progress",
+  "completed",
+  "ready_for_review",
+  "needs-user",
+]);
+
+/**
+ * True for a parsed line worth keeping; unknown extra fields pass through
+ * ignored (version-skew tolerant), wrong-shape lines are skipped by the
+ * storage loader with a warning.
+ */
+export function hasBoardItemShape(raw: unknown): raw is BoardItem {
+  if (typeof raw !== "object" || raw === null) return false;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || r.id.length === 0) return false;
+  if (typeof r.content !== "string" || r.content.length === 0) return false;
+  if (typeof r.status !== "string" || !BOARD_STATUSES.has(r.status)) return false;
+  if (r.claimedBy !== undefined && typeof r.claimedBy !== "string") return false;
+  return true;
+}
+
+/** Pluggable board backend; JSONL file is the default, no new DB. */
+export interface BoardStorage {
+  load(teamId: string): Promise<BoardItem[]>;
+  save(teamId: string, items: readonly BoardItem[]): Promise<void>;
+  delete(teamId: string): Promise<void>;
+  has(teamId: string): Promise<boolean>;
+}
+
+/** JSONL sidecar backend: `<boardsDir>/<teamId>.board.jsonl`. */
+export class JsonlFileBoardStorage implements BoardStorage {
+  private logger?: Logger;
+
+  constructor(
+    private readonly boardsDir: string,
+    opts?: { logger?: Logger },
+  ) {
+    this.logger = opts?.logger;
+  }
+
+  pathFor(teamId: string): string {
+    return join(this.boardsDir, `${teamId}.board.jsonl`);
+  }
+
+  async load(teamId: string): Promise<BoardItem[]> {
+    let text: string;
+    try {
+      text = await readFile(this.pathFor(teamId), "utf8");
+    } catch {
+      return [];
+    }
+    const items: BoardItem[] = [];
+    for (const [offset, line] of text.split("\n").entries()) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        this.warn(`corrupt board line ${offset + 1} in ${teamId}.board.jsonl skipped: ${msg(error)}`);
+        continue;
+      }
+      if (!hasBoardItemShape(parsed)) {
+        this.warn(`board line ${offset + 1} in ${teamId}.board.jsonl skipped (shape mismatch)`);
+        continue;
+      }
+      items.push(parsed);
+    }
+    return items;
+  }
+
+  async save(teamId: string, items: readonly BoardItem[]): Promise<void> {
+    await mkdir(this.boardsDir, { recursive: true });
+    await writeFile(this.pathFor(teamId), items.map((item) => `${JSON.stringify(item)}\n`).join(""), "utf8");
+  }
+
+  async delete(teamId: string): Promise<void> {
+    try {
+      await rm(this.pathFor(teamId), { force: true });
+    } catch (error) {
+      this.warn(`board sidecar delete failed for ${teamId}: ${msg(error)}`);
+    }
+  }
+
+  async has(teamId: string): Promise<boolean> {
+    try {
+      await readFile(this.pathFor(teamId), "utf8");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private warn(message: string): void {
+    if (this.logger) this.logger.warn(`[board] ${message}`);
+    else console.warn(`[board] ${message}`);
+  }
+}
+
+function msg(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

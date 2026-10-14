@@ -1,8 +1,11 @@
 import {
+  BUILTIN_COMMANDS,
   compact,
   defaultGitRunner,
   expandCommand,
+  getSessionGoal,
   initDeep,
+  parseModelRef,
   renderCommandHelp,
   resolveCommand,
   splitCommandArgs,
@@ -13,6 +16,8 @@ import { tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { DaemonContext } from "../types.ts";
+import { setSessionGoal } from "./goal.ts";
+import { sessionSummarizer } from "./session.ts";
 
 export interface CommandRunResult {
   name: string;
@@ -32,7 +37,7 @@ type BuiltinFn = (
 ) => Promise<BuiltinResult>;
 
 function fail(message: string): never {
-  throw new AgencyError(ErrorCode.INTERNAL, message, { source: "command_run" });
+  throw new AgencyError(ErrorCode.INVALID_REQUEST, message, { source: "command_run" });
 }
 
 async function call<T>(
@@ -41,7 +46,11 @@ async function call<T>(
   params: Record<string, unknown>,
 ): Promise<T> {
   const fn = handlers[method];
-  if (!fn) fail(`command backing missing: ${method}`);
+  if (!fn) {
+    throw new AgencyError(ErrorCode.INTERNAL, `command backing missing: ${method}`, {
+      source: "command_run",
+    });
+  }
   return (await fn(params, { clientId: "command_run" })) as unknown as T;
 }
 
@@ -52,7 +61,10 @@ function textOf(value: unknown): string {
 const BUILTINS: Record<string, BuiltinFn> = {
   help: async (ctx) => {
     const text = renderCommandHelp({ templates: ctx.commands, pluginCommands: ctx.pluginCommands });
-    return { text, data: { count: 33 + ctx.commands.length + ctx.pluginCommands.length } };
+    return {
+      text,
+      data: { count: BUILTIN_COMMANDS.length + ctx.commands.length + ctx.pluginCommands.length },
+    };
   },
   init: async (ctx) => {
     const result = initDeep(ctx.options.workspaceRoot);
@@ -73,8 +85,15 @@ const BUILTINS: Record<string, BuiltinFn> = {
     const entries = ctx.todoStore.load(sessionId);
     const tip = ctx.todoStore.latestTip(entries) ?? null;
     if (!tip) return { text: `session ${sessionId} is empty, nothing to compact`, data: { sessionId } };
-    const model = args[1] ?? textOf((ctx.config as { model?: unknown }).model) ?? "";
+    // The word after the session is a model when it has the form provider/model. All other words are instructions.
+    const named = args[1] !== undefined && parseModelRef(args[1]) !== undefined;
+    const instructions = args
+      .slice(named ? 2 : 1)
+      .join(" ")
+      .trim();
+    const model = (named ? args[1] : undefined) ?? textOf((ctx.config as { model?: unknown }).model) ?? "";
     const catalogHit = ctx.listModels().find((m) => m.id === model);
+    const ref = parseModelRef(model);
     const slash = model.indexOf("/");
     const family =
       catalogHit?.family ??
@@ -86,11 +105,21 @@ const BUILTINS: Record<string, BuiltinFn> = {
       sessionId,
       tip,
       tokenizerFor(family),
-      { contextWindow: 200_000 },
-      (text: string) => Promise.resolve(summarizeTranscript(text)),
+      {
+        contextWindow: (ref && ctx.catalogModel(ref.provider, ref.model)?.contextWindow) || 200_000,
+        ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
+      },
+      ref
+        ? sessionSummarizer(ctx, ref.provider, ref.model, instructions || undefined)
+        : async (text) => summarizeTranscript(text),
+      4,
+      // The user asked for it: the size of the session does not decide.
+      { force: true, trigger: "manual" },
     );
     return {
-      text: outcome.compacted ? `compacted ${sessionId} to ${outcome.tipId}` : `${sessionId} below threshold`,
+      text: outcome.compacted
+        ? `compacted ${sessionId} to ${outcome.tipId}`
+        : `${sessionId} is too short to compact`,
       data: { sessionId, ...outcome },
     };
   },
@@ -287,13 +316,17 @@ const BUILTINS: Record<string, BuiltinFn> = {
     return { text: `${data.entries.length} entr(ies) in ${sessionId}`, data };
   },
   mcp: async (_ctx, handlers, args) => {
-    const data = await call<{ failures: Record<string, string> }>(
+    const data = await call<{ failures: Record<string, string>; prompts?: Array<{ command: string }> }>(
       handlers,
       "mcp_status",
       args[0] ? { sessionId: args[0] } : {},
     );
     const count = Object.keys(data.failures).length;
-    return { text: count === 0 ? "no MCP failures" : `${count} MCP failure(s)`, data };
+    const prompts = (data.prompts ?? []).map((p) => p.command).join(" ");
+    return {
+      text: `${count === 0 ? "no MCP failures" : `${count} MCP failure(s)`}${prompts ? `; prompts: ${prompts}` : ""}`,
+      data,
+    };
   },
   lsp: async (_ctx, handlers, args) => {
     const data = await call<{ statuses: Record<string, string> }>(
@@ -347,7 +380,15 @@ const BUILTINS: Record<string, BuiltinFn> = {
       data: { checks },
     };
   },
-  goal: async (_ctx, handlers, args) => {
+  goal: async (ctx, _handlers, args) => {
+    const sessionId = args[0];
+    if (!sessionId) fail("goal requires a session id (/goal <session> [condition|clear])");
+    const wanted = args.slice(1).join(" ");
+    if (wanted.length > 0) await setSessionGoal(ctx, sessionId, wanted === "clear" ? "" : wanted);
+    const goal = getSessionGoal(ctx.todoStore.load(sessionId));
+    return { text: goal ? `goal: ${goal}` : "no goal", data: { sessionId, goal: goal ?? null } };
+  },
+  report: async (_ctx, handlers, args) => {
     const data = await call<{ goal?: string; outcome?: string }>(
       handlers,
       "report_get",
@@ -372,7 +413,7 @@ export async function runCommand(
   if (name.length === 0) fail("command_run requires a command name");
   const resolved = resolveCommand(name, { templates: ctx.commands, pluginCommands: ctx.pluginCommands });
   if (resolved.kind === "unknown") {
-    throw new AgencyError(ErrorCode.INTERNAL, unknownCommandMessage(name), { source: "command_run" });
+    throw new AgencyError(ErrorCode.INVALID_REQUEST, unknownCommandMessage(name), { source: "command_run" });
   }
   if (resolved.kind === "builtin") {
     const fn = BUILTINS[resolved.name];

@@ -55,8 +55,9 @@ jobs:
         run: bun run lint
       - name: Typecheck
         run: bun run typecheck
+      # Not `bun test`: one process for all tests does not finish on Windows.
       - name: Test
-        run: bun test
+        run: bun run test:ci
       - name: Derive version
         shell: bash
         run: |
@@ -165,8 +166,14 @@ jobs:
           cd artifacts
           # Merge per-OS signed checksum fragments into the single manifest
           # the update client fetches as checksums-signed.txt.
-          cat checksums-signed-*.txt > checksums-signed.txt
-          rm -f checksums-signed-*.txt
+          # Without AGENCY_UPDATE_PRIVATE_KEY there are no fragments: the
+          # release still goes out, and `agency update` refuses it.
+          if ls checksums-signed-*.txt >/dev/null 2>&1; then
+            cat checksums-signed-*.txt > checksums-signed.txt
+            rm -f checksums-signed-*.txt
+          else
+            echo "::warning::no signed checksums: AGENCY_UPDATE_PRIVATE_KEY is not set, so 'agency update' will refuse this release"
+          fi
           # checksums.txt covers install payloads only (binaries + SBOM),
           # never the detached .sig sidecars or the signed manifest itself.
           sha256sum $(ls agency-* | grep -v '\.sig$') agency.cdx.json > checksums.txt

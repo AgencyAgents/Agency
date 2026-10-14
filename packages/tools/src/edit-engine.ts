@@ -414,7 +414,12 @@ export function applyEdit(content: string, request: EditRequest): string {
     // Fall back to whitespace-tolerant fuzzy match
     const fuzzy = fuzzyReplace(content, { oldText, newText, replaceAll });
     if (fuzzy !== undefined) return fuzzy;
-    throw editError(t("tool.edit.not_found"), { oldTextPreview: preview(oldText) });
+    const relaid = replaceAcrossLineBreaks(content, oldText, newText);
+    if (relaid !== undefined) return relaid;
+    const near = lineBreakVariant(content, oldText);
+    throw editError(near ? t("tool.edit.not_found_near", { text: near }) : t("tool.edit.not_found"), {
+      oldTextPreview: preview(oldText),
+    });
   }
 
   if (occurrences > 1 && !replaceAll) {
@@ -496,6 +501,30 @@ function whitespaceTolerantRegExp(oldText: string): RegExp | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * An anchor that matches one place in the file when a line break counts as a space (two lines sent as one).
+ * Applies only when the new text has the same count of words: each word goes in and the file keeps its layout.
+ */
+function replaceAcrossLineBreaks(content: string, oldText: string, newText: string): string | undefined {
+  const oldWords = oldText.trim().split(/\s+/);
+  const newWords = newText.trim().split(/\s+/);
+  if (oldWords.length < 2 || oldWords.length !== newWords.length) return undefined;
+  const pattern = new RegExp(oldWords.map((word) => escapeRegExpChar(word)).join("(\\s+)"), "g");
+  const [match, second] = [...content.matchAll(pattern)];
+  if (match?.index === undefined || second !== undefined) return undefined;
+  // Capture group i is the file's own whitespace after word i.
+  const relaid = newWords.map((word, i) => word + (match[i + 1] ?? "")).join("");
+  return content.slice(0, match.index) + relaid + content.slice(match.index + match[0].length);
+}
+
+/** The file text that equals `oldText` when a line break counts as a space. The rejection shows it for the model to copy. */
+function lineBreakVariant(content: string, oldText: string): string | undefined {
+  const tokens = oldText.trim().split(/\s+/);
+  if (tokens.length < 2) return undefined;
+  const found = new RegExp(tokens.map(escapeRegExpChar).join("\\s+")).exec(content)?.[0];
+  return found !== undefined && found.length <= 2000 ? found : undefined;
 }
 
 function escapeRegExpChar(ch: string): string {

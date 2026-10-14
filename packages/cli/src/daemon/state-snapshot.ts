@@ -11,7 +11,16 @@ export function buildStateSnapshot(ctx: DaemonContext, sessionId?: string): Reco
     model: meta.model,
   }));
   const approvals = [...ctx.approvalManagers.entries()].flatMap(([sid, manager]) =>
-    manager.listPending().map((p) => ({ sessionId: sid, ...p })),
+    manager.listPending().map((p) => ({
+      sessionId: sid,
+      ...p,
+      request: {
+        ...p.request,
+        title: ctx.redactor.redact(p.request.title),
+        ...(p.request.command !== undefined ? { command: ctx.redactor.redact(p.request.command) } : {}),
+        ...(p.request.path !== undefined ? { path: ctx.redactor.redact(p.request.path) } : {}),
+      },
+    })),
   );
   let totalUsd = 0;
   const bySession: Record<string, number> = {};

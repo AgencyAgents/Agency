@@ -1,6 +1,56 @@
+import type { HttpClient } from "@agency/net";
+import type { ProviderAdapter } from "@agency/providers";
+import type { Summarizer } from "./compaction.ts";
+
+export interface ModelAsk {
+  adapter: ProviderAdapter;
+  http: HttpClient;
+  model: string;
+  apiKey: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  /** `compactionInstructions` of the config: what the user wants a summary to keep. */
+  instructions?: string;
+}
+
+/** One request with no tools, for the harness's own questions. Undefined for a failed request or a reply with no text. */
+export async function askModel(opts: ModelAsk, system: string, text: string): Promise<string | undefined> {
+  try {
+    let reply = "";
+    const request = {
+      model: opts.model,
+      apiKey: opts.apiKey,
+      system,
+      messages: [{ role: "user" as const, content: [{ type: "text" as const, text }] }],
+      maxTokens: opts.maxTokens ?? 8192,
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    };
+    for await (const event of opts.adapter.stream(request, opts.http)) {
+      if (event.type === "text_delta") reply += event.text;
+    }
+    return reply.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * The shipped default summarizer for proactive compaction: purely extractive
- * and offline, so compaction never blocks on (or bills) a provider round-trip.
+ * A summarizer where the model writes the summary. A failed request or a reply with no text gives the
+ * extractive summary: a compaction must not fail the turn that needs it.
+ */
+export function modelSummarizer(opts: ModelAsk): Summarizer {
+  const extra = opts.instructions?.trim()
+    ? `\n\nInstructions of the user for this summary. They come first where they disagree with the rules above:\n${opts.instructions.trim()}`
+    : "";
+  const summarize: Summarizer = async (transcript, instructions) =>
+    (await askModel(opts, `${instructions}${extra}`, transcript)) ?? summarizeTranscript(transcript);
+  summarize.detailed = true;
+  return summarize;
+}
+
+/**
+ * The offline summarizer, and the fallback of the model one: purely extractive,
+ * so a compaction with it never blocks on (or bills) a provider round-trip.
  * Keeps the earliest and latest lines of the transcript within a character
  * budget and elides the middle, which preserves the task's origin and the
  * work most recently in flight — the parts the kept tail of a compaction

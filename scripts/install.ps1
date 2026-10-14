@@ -1,17 +1,18 @@
 # Installs the Agency binary from a GitHub release. Fails closed: a missing or
 # mismatched checksum aborts the install, nothing is written.
 #
-# Usage: irm https://raw.githubusercontent.com/AgencyAgents/Agency/master/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/AgencyHarness/Agency/master/scripts/install.ps1 | iex
 # Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: %LOCALAPPDATA%\Programs\agency),
-# AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing).
+# AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing),
+# AGENCY_NO_MODIFY_PATH (set to 1 to leave the user PATH as it is).
 $ErrorActionPreference = "Stop"
 
-$Repo = "AgencyAgents/Agency"
+$Repo = "AgencyHarness/Agency"
 $InstallDir = if ($env:AGENCY_INSTALL_DIR) { $env:AGENCY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\agency" }
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   "AMD64" { "x64" }
-  "ARM64" { "arm64" }
+  "ARM64" { throw "install: there is no Windows ARM64 build (x64 only)" }
   default { throw "install: unsupported architecture '$($env:PROCESSOR_ARCHITECTURE)'" }
 }
 
@@ -26,6 +27,9 @@ if ($env:AGENCY_VERSION) {
 $asset = "agency-windows-$arch.exe"
 $baseUrl = if ($env:AGENCY_RELEASE_BASE_URL) { $env:AGENCY_RELEASE_BASE_URL } else { "https://github.com/$Repo/releases/download/v$version" }
 $tmp = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("agency-install-" + [guid]::NewGuid().ToString("N")))
+# Windows PowerShell 5.1 draws a progress bar per chunk: the 86 MB binary took 129 s with it and 0.2 s without.
+$savedProgress = $ProgressPreference
+$ProgressPreference = "SilentlyContinue"
 try {
   Write-Host "install: downloading agency v$version (windows-$arch)"
   $binaryPath = Join-Path $tmp $asset
@@ -49,12 +53,17 @@ try {
 
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if (($userPath -split ";") -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
-    Write-Host "install: added $InstallDir to your user PATH (restart your terminal to pick it up)"
+    if ($env:AGENCY_NO_MODIFY_PATH -eq "1") {
+      Write-Host "install: note: $InstallDir is not on your PATH"
+    } else {
+      [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
+      Write-Host "install: added $InstallDir to your user PATH (restart your terminal to pick it up)"
+    }
   }
 
   Write-Host "install: agency v$version installed to $dest"
   Write-Host "install: run 'agency --help' to get started"
 } finally {
   Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  $ProgressPreference = $savedProgress
 }

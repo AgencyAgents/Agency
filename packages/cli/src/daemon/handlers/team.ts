@@ -6,11 +6,12 @@ import {
   leanSummary,
   openCompareItem,
   type PluginAgentContribution,
+  parseModelRef,
   recordCompareVerdict,
   resolveFileRoster,
   spawnParallel,
 } from "@agency/core";
-import { clampEffortForModel, resolveApiKey } from "@agency/providers";
+import { resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { recordTurnCompletion } from "../costing.ts";
@@ -22,18 +23,19 @@ import {
   latestChildAnywhere,
   latestChildSession,
 } from "../team-context.ts";
-import { type DaemonContext, oauthOverridesFor } from "../types.ts";
-import { type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
+import { type DaemonContext, keySourcesFor } from "../types.ts";
+import { type AgentRoute, type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
 
 type FileBackedAgent = AgentConfig & {
   systemPrompt?: string;
   replace?: boolean;
   tools?: string[];
   pathScope?: string[];
+  description?: string;
 };
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
-  const { catalogModel, config, logger, resolveAgentModel, teamRegistry } = ctx;
+  const { config, logger, teamRegistry } = ctx;
   const cfg = config as unknown as {
     agents?: Record<string, FileBackedAgent>;
     leader?: string;
@@ -45,6 +47,8 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
       workspaceRoot: ctx.options.workspaceRoot,
       ...(ctx.options.configDir !== undefined ? { configDirOverride: ctx.options.configDir } : {}),
       ...(cfg.agents !== undefined ? { configAgents: cfg.agents } : {}),
+      projectTrusted: ctx.trustStore.isTrusted(ctx.options.workspaceRoot),
+      warn: (message) => logger.warn(message),
     });
     fileAgents = roster.agents;
     const merged: Record<string, FileBackedAgent> = { ...(cfg.agents ?? {}) };
@@ -63,6 +67,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         ...(def.replace !== undefined ? { replace: def.replace } : {}),
         ...(def.tools !== undefined ? { tools: def.tools } : {}),
         ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
+        ...(def.description !== undefined ? { description: def.description } : {}),
       };
     }
     cfg.agents = merged;
@@ -112,18 +117,12 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
       continue;
     }
     if (!teamRegistry.has(handle)) {
-      const resolvedModel = resolveAgentModel(a.provider, a.model);
-      const modelInfo = catalogModel(a.provider, resolvedModel);
-      const clampedEffort = clampEffortForModel(
-        a.effort as import("@agency/providers").EffortLevel,
-        modelInfo,
-      );
       teamRegistry.register({
         handle,
         role: a.role,
         provider: a.provider,
-        model: resolvedModel,
-        effort: clampedEffort,
+        model: a.model,
+        effort: a.effort,
         sessionId: `team-${handle}`,
         mailbox: [],
         ...(a.systemPrompt !== undefined && a.systemPrompt.length > 0
@@ -171,17 +170,24 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       decision: "once" | "always" | "reject";
       sessionId?: string;
     };
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "approval_respond requires requestId", {
+        source: "approval",
+      });
+    }
     if (decision !== "once" && decision !== "always" && decision !== "reject") {
-      throw new AgencyError(ErrorCode.INTERNAL, `invalid approval decision: ${String(decision)}`, {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `invalid approval decision: ${String(decision)}`, {
         source: "approval",
       });
     }
     const managers = sessionId ? [approvalManagers.get(sessionId)] : [...approvalManagers.values()];
+    let settled: { resolved: boolean; retroactive: number; closeReason?: string } | undefined;
     for (const manager of managers) {
       const outcome = manager?.respond(requestId, decision);
       if (outcome?.resolved) return outcome;
+      if (outcome?.closeReason !== undefined) settled = outcome;
     }
-    return { resolved: false, retroactive: 0 };
+    return settled ?? { resolved: false, retroactive: 0 };
   };
   handlers.agent_message = async (rawParams) => {
     const { from, to, body, sessionId } = rawParams as {
@@ -229,11 +235,11 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
   handlers.agent_history = async (rawParams) => {
     const { handle, sessionId } = rawParams as { handle: string; sessionId?: string };
     if (typeof handle !== "string" || handle.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "agent_history requires handle", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "agent_history requires handle", { source: "team" });
     }
     const agent = teamRegistry.get(handle);
     if (!agent) {
-      throw new AgencyError(ErrorCode.INTERNAL, `unknown handle: ${handle}`, { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown handle: ${handle}`, { source: "team" });
     }
     const team = sessionId !== undefined ? teamContexts.get(sessionId) : undefined;
     const sid =
@@ -260,12 +266,12 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       sessionId?: string;
     };
     if (!Array.isArray(handles) || handles.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires handles", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "dispatch_compare requires handles", {
         source: "team",
       });
     }
     if (typeof prompt !== "string" || prompt.trim().length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "dispatch_compare requires prompt", {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "dispatch_compare requires prompt", {
         source: "team",
       });
     }
@@ -301,7 +307,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
           env: process.env,
           keychain: kc ?? undefined,
           config: providers[provider]?.apiKey,
-          ...oauthOverridesFor(provider, providers),
+          ...keySourcesFor(provider, providers),
         });
         if (found) {
           compareKeys.set(provider, found);
@@ -311,6 +317,27 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         }
       }
     } catch {}
+    // An agent whose pinned provider has no key runs on the default model's route, resolved once for the batch.
+    let houseRoute: AgentRoute | undefined;
+    const house = [...compareKeys.values()].includes("") ? parseModelRef(config.model ?? "") : undefined;
+    if (house) {
+      let houseKey = compareKeys.get(house.provider);
+      if (houseKey === undefined) {
+        try {
+          houseKey = await resolveApiKey({
+            provider: house.provider,
+            env: process.env,
+            keychain: (await getKeychain().catch(() => undefined)) ?? undefined,
+            config: providers[house.provider]?.apiKey,
+            ...keySourcesFor(house.provider, providers),
+          });
+        } catch {}
+      }
+      if (houseKey) {
+        redactor.registerSecret(houseKey);
+        houseRoute = { ...house, apiKey: houseKey };
+      }
+    }
     const okBy = new Map<string, boolean>();
     const { results } = await spawnParallel(
       handles,
@@ -350,6 +377,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         if (compareScope) compareScope.teamId = parentSessionId;
         let outcome: CompareChildResult;
         const preResolved = compareKeys.get(agent.provider);
+        const route = preResolved === "" ? houseRoute : undefined;
         try {
           outcome = await runCompareChildTurn(ctx, {
             team,
@@ -360,6 +388,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             leanPromptText,
             ...(effort === undefined ? {} : { effort }),
             ...(preResolved === undefined ? {} : { apiKey: preResolved }),
+            ...(route ? { route } : {}),
             itemId,
             key,
             childSessionId,
@@ -383,6 +412,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
             pricing: childModelInfo.pricing,
             eventStreams: [`team.${childSessionId}`],
             parentSessionId,
+            taskId: itemId,
           });
           boardStore.recordCost(
             itemId,
@@ -455,7 +485,7 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
         okBy.set(handle, true);
         return {
           handle,
-          result: `${handle} (${agent.provider}/${agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
+          result: `${handle} (${route?.provider ?? agent.provider}/${route?.model ?? agent.model}) · ${leanSummary(finalText, 120) || "(no output)"}`,
         };
       },
       {

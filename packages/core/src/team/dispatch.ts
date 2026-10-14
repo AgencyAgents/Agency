@@ -7,6 +7,8 @@ export interface DispatchInput {
 
 export interface DispatchCtx {
   signal: AbortSignal;
+  /** The lead turn issuing the dispatch; a peer without credentials inherits its route. */
+  turnId?: string;
   // Inherited spawn depth for children (spawn keeps its depth-1
   // rule). The team itself is flat, so no gate lives on this tool.
   taskDepth: number;
@@ -74,6 +76,7 @@ export function createDispatchTool(deps: {
     async handler(input: unknown, ctx: unknown) {
       const toolCtx = ctx as {
         taskDepth?: number;
+        turnId?: string;
         signal?: AbortSignal;
         requestApproval?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
       };
@@ -100,6 +103,7 @@ export function createDispatchTool(deps: {
       // turn at taskDepth + 1 for spawn-rule inheritance.
       return deps.dispatch(input as DispatchInput, {
         signal: toolCtx.signal ?? new AbortController().signal,
+        turnId: toolCtx.turnId,
         taskDepth: depth,
         requestApproval: toolCtx.requestApproval,
       });

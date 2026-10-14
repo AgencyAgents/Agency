@@ -2,6 +2,7 @@ import { type CommandTemplate, expandCommand, parseSlashInput } from "@agency/co
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import type { McpManager } from "@agency/tools";
 import { listProviders } from "../../providers-list.ts";
 import type { DaemonContext } from "../types.ts";
 
@@ -34,6 +35,16 @@ export function applySlashCommand(
   }
 }
 
+/** `/mcp__<server>__<prompt> words` in the last user message becomes the text of that prompt of an MCP server. */
+export async function applyMcpPrompt(mcp: McpManager | undefined, session: Message[]): Promise<void> {
+  const last = session[session.length - 1];
+  const block = last?.role === "user" ? last.content.find((b) => b.type === "text") : undefined;
+  if (!mcp || block?.type !== "text") return;
+  const parsed = parseSlashInput(block.text);
+  const text = parsed ? await mcp.promptText(parsed.name, parsed.args) : undefined;
+  if (text !== undefined) block.text = text;
+}
+
 export function registerCommandHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
   const { builtinsMode, commands, config, http, options, sessionScopes } = ctx;
   handlers.providers_list = async () => {
@@ -51,9 +62,16 @@ export function registerCommandHandlers(handlers: Record<string, MethodHandler>,
     const p = rawParams as { sessionId?: string } | undefined;
     if (builtinsMode && p?.sessionId) {
       const s = sessionScopes.get(p.sessionId);
-      return { failures: s ? Object.fromEntries(s.mcpFailures) : {} };
+      return {
+        failures: s ? Object.fromEntries(s.mcpFailures) : {},
+        prompts: (s?.mcp?.prompts ?? []).map((prompt) => ({
+          command: `/mcp__${prompt.server}__${prompt.name}`,
+          description: prompt.description,
+          arguments: (prompt.arguments ?? []).map((a) => a.name),
+        })),
+      };
     }
-    return { failures: {} as Record<string, string> };
+    return { failures: {} as Record<string, string>, prompts: [] };
   };
   handlers.lsp_status = async (rawParams?: unknown) => {
     const p = rawParams as { sessionId?: string } | undefined;
@@ -76,7 +94,8 @@ export function registerCommandHandlers(handlers: Record<string, MethodHandler>,
   handlers.commands_expand = async (rawParams) => {
     const { name, args } = rawParams as { name: string; args?: string };
     const tmpl = commands.find((c) => c.name === name);
-    if (!tmpl) throw new AgencyError(ErrorCode.INTERNAL, `unknown command: ${name}`, { source: "commands" });
+    if (!tmpl)
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown command: ${name}`, { source: "commands" });
     const expanded = expandCommand(tmpl.content, args ?? "", options.workspaceRoot);
     return { expanded, name };
   };

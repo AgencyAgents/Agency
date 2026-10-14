@@ -27,6 +27,8 @@ export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** The provider's own charge in USD, when it reports one. */
+  costUsd?: number;
 }
 
 export interface RunTurnParams {
@@ -54,6 +56,8 @@ export interface RunTurnResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Why a salvaged turn stopped with `error` (the provider stream died after content arrived). */
+  error?: { code: string; message: string };
 }
 
 export type TurnEvent =

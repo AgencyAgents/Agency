@@ -8,7 +8,7 @@
   "dependencies": {
     "@agency/net": "workspace:*",
     "@agency/schema": "workspace:*",
-    "gpt-tokenizer": "^2",
+    "gpt-tokenizer": "^4",
     "zod": "^4"
   },
   "devDependencies": {

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { CWD_MARKER, EXIT_MARKER, parseShellOutput, resolveShell } from "../src/shell.ts";
+import {
+  CWD_MARKER,
+  EXIT_MARKER,
+  modelCommandEnv,
+  parseShellOutput,
+  resolveConfiguredShell,
+  resolveShell,
+  setDeniedCommandEnv,
+} from "../src/shell.ts";
 
 describe("resolveShell", () => {
   test("resolves POSIX sh on macOS and Linux regardless of windowsShell", () => {
@@ -81,5 +89,65 @@ describe("parseShellOutput", () => {
   test("preserves multi-line command output before the markers", () => {
     const raw = `line one\nline two\nline three\n${EXIT_MARKER}0\n${CWD_MARKER}/x`;
     expect(parseShellOutput(raw, "/fallback").output).toBe("line one\nline two\nline three");
+  });
+});
+
+describe("resolveConfiguredShell", () => {
+  const gitBash = "C:/Program Files/Git/bin/bash.exe";
+
+  test("with no config value, Windows gets Git Bash when Git for Windows is installed", () => {
+    const shell = resolveConfiguredShell("win32", undefined, () => gitBash);
+    expect(shell.label).toBe("Git Bash");
+    // The launcher by its path: a bare bash.exe can be the WSL launcher.
+    expect(shell.command).toBe(gitBash);
+  });
+
+  test("with no config value and no Git for Windows, Windows gets PowerShell", () => {
+    expect(resolveConfiguredShell("win32", undefined, () => undefined).label).toBe("PowerShell");
+  });
+
+  test("a config value wins over the automatic choice", () => {
+    expect(resolveConfiguredShell("win32", "powershell", () => gitBash).label).toBe("PowerShell");
+    expect(resolveConfiguredShell("win32", "gitbash", () => undefined).command).toBe("bash.exe");
+  });
+
+  test("another platform keeps its POSIX shell", () => {
+    expect(resolveConfiguredShell("linux", undefined, () => gitBash).command).toBe("/bin/sh");
+  });
+});
+
+describe("modelCommandEnv", () => {
+  test("removes the provider keys of the harness and each name with KEY, SECRET or TOKEN, in any case", () => {
+    const env = {
+      AGENCY_OPENROUTER_API_KEY: "k1",
+      OPENROUTER_API_KEY: "k2",
+      GITHUB_TOKEN: "t1",
+      npm_token: "t2",
+      AWS_SECRET_ACCESS_KEY: "s",
+      PATH: "/bin",
+      HOME: "/home/u",
+    };
+    expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", HOME: "/home/u" });
+  });
+
+  test("allowEnv keeps a secret name; denyEnv wins over it, and the keys of the harness never pass", () => {
+    const env = { GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", AGENCY_X_API_KEY: "k", MY_PAT: "p", PATH: "/bin" };
+    setDeniedCommandEnv(["MY_PAT", "NPM_TOKEN"], ["GITHUB_TOKEN", "NPM_*", "AGENCY_*"]);
+    try {
+      expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", PATH: "/bin" });
+    } finally {
+      setDeniedCommandEnv([]);
+    }
+    expect(modelCommandEnv(env)).toEqual({ MY_PAT: "p", PATH: "/bin" });
+  });
+
+  test("a name of the deny list can be a pattern with *", () => {
+    const env = { MY_PAT: "p", MY_PASSWORD: "w", PATH: "/bin", PATHEXT: ".EXE" };
+    setDeniedCommandEnv(["MY_*", "PATHEXT"]);
+    try {
+      expect(modelCommandEnv(env)).toEqual({ PATH: "/bin" });
+    } finally {
+      setDeniedCommandEnv([]);
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { relative, resolve } from "node:path";
 import { scopeMatchesPattern } from "./capabilities.ts";
+import { fromMsysPath } from "./sandbox.ts";
 import type { TrustStore } from "./trust.ts";
 
 /**
@@ -13,9 +14,9 @@ export type Decision = "allow" | "ask" | "deny";
 /** How risky a tool is by nature; drives default decisions and the trust gate. */
 export type RiskTier = "safe" | "moderate" | "dangerous";
 
-/** Non-interactive permission mode. `ask` is the default; the other two are
+/** Non-interactive permission mode. `ask` is the default; the others are
  *  chosen only via the explicit `--permission-mode` flag, never silently. */
-export type PermissionMode = "ask" | "allow-edits" | "deny";
+export type PermissionMode = "ask" | "allow-edits" | "allow-all" | "deny";
 
 /** Tools `allow-edits` auto-allows: file mutations, not command execution. */
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
@@ -43,6 +44,18 @@ export interface PolicyRule {
 /** A single tool's permission entry: a bare decision or a pattern map. */
 export type ToolPermissionValue = Decision | Record<string, Decision>;
 
+/** Well-known key gating real git writes. Bare decisions only; maps fail closed. */
+export const GIT_WRITE_PERMISSION_KEY = "git_write" as const;
+/** Absent, mapped, or unknown entries deny, preserving no-git-write today. */
+export const GIT_WRITE_DEFAULT: Decision = "deny";
+
+/** Reads the git_write entry fail-closed: only a bare allow|ask|deny wins. */
+export function gitWriteDecision(permissions?: Record<string, ToolPermissionValue>): Decision {
+  const entry = permissions?.[GIT_WRITE_PERMISSION_KEY];
+  if (entry === "allow" || entry === "ask" || entry === "deny") return entry;
+  return GIT_WRITE_DEFAULT;
+}
+
 /** Everything one tool-call needs for a permission verdict. */
 export interface ToolCallPolicyRequest {
   tool: string;
@@ -51,6 +64,8 @@ export interface ToolCallPolicyRequest {
   path?: string;
   /** Raw command argument (bash). */
   command?: string;
+  /** What an ask shows when the tool has no command and no path. No rule reads it. */
+  title?: string;
 }
 
 /**
@@ -71,6 +86,8 @@ export interface ApprovalRequestLike {
   title: string;
   command?: string;
   path?: string;
+  riskTier?: RiskTier;
+  source?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -88,6 +105,8 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
  *  workspaces; this allow is unreachable there.
  */
 const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
+
+const DECISION_RANK: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
 export function isPathPatternTool(tool: string): boolean {
   return PATH_PATTERN_TOOLS.has(tool);
@@ -166,6 +185,158 @@ export function normalizeCommand(
   const keep = arity[first];
   if (keep === undefined) return words.join(" ");
   return words.slice(0, keep).join(" ");
+}
+
+/**
+ * The simple commands of a shell command line, split at `;`, `&`, `|` and line ends outside quotes.
+ * `dynamic` is true when the line has a command substitution or a process substitution.
+ */
+export function splitCommand(command: string): { parts: string[]; dynamic: boolean } {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  let dynamic = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    const next = command[i + 1];
+    if (ch === "\\" && quote !== "'") {
+      current += ch + (next ?? "");
+      i += 1;
+      continue;
+    }
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      // In double quotes the shell still runs a substitution.
+      else if (quote === '"' && (ch === "`" || (ch === "$" && next === "("))) dynamic = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "`" || ((ch === "$" || ch === "<" || ch === ">") && next === "(")) dynamic = true;
+    // A here-document, a here-string and `$'..'` hold text that this splitter does not read as the shell does.
+    else if ((ch === "<" && next === "<") || (ch === "$" && next === "'")) dynamic = true;
+    // `2>&1` and `&>file` are redirections, not the end of a command.
+    const redirection = ch === "&" && (command[i - 1] === ">" || next === ">");
+    if ((ch === ";" || ch === "|" || ch === "\n" || ch === "&") && !redirection) {
+      if (current.trim() !== "") parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim() !== "") parts.push(current.trim());
+  // `$TOOL args`: the program is a variable, so no rule saw its name.
+  if (parts.some((part) => part.startsWith("$"))) dynamic = true;
+  return { parts, dynamic };
+}
+
+/**
+ * True for a command that deletes work or history with no way back. A rule with a pattern (`git *`) does not allow
+ * such a command: it asks. The list is small and fixed, after the dangerous-command check of Codex.
+ */
+export function isDestructiveCommand(command: string): boolean {
+  const words = command.trim().split(/\s+/);
+  const program = (words[0] ?? "").toLowerCase();
+  const args = words.slice(1);
+  const text = ` ${args.join(" ")} `;
+  const short = (letter: string): boolean =>
+    args.some((arg) => /^-[A-Za-z]+$/.test(arg) && arg.includes(letter));
+  if (program === "rm") return short("r") || short("R") || args.includes("--recursive");
+  if (program === "git") {
+    if (/\sreset\s.*--hard\s/.test(text)) return true;
+    if (/\sclean\s/.test(text) && (short("f") || args.includes("--force"))) return true;
+    if (/\spush\s/.test(text))
+      return short("f") || short("d") || /\s(--force\S*|--delete|\+\S+|:\S+)\s/.test(text);
+    // These throw away changes that no commit holds: `git checkout <branch>` and `git restore --staged` do not.
+    if (/\scheckout\s/.test(text)) return /\s(--|\.|-f|--force)\s/.test(text);
+    if (/\srestore\s/.test(text)) return !/\s(--staged|-S)\s/.test(text) || /\s(--worktree|-W)\s/.test(text);
+    if (/\sstash\s(drop|clear)\s/.test(text)) return true;
+    return /\sbranch\s(.*\s)?-D\s/.test(text);
+  }
+  if (program === "find") return args.includes("-delete");
+  if (["del", "erase", "rd", "rmdir"].includes(program)) return /\s\/s\s/i.test(text);
+  if (["remove-item", "ri"].includes(program)) return /\s-r(ecurse)?\s/i.test(text);
+  return ["dd", "shred", "mkfs", "format", "diskpart"].includes(program) || program.startsWith("mkfs.");
+}
+
+const WRAPPERS: ReadonlySet<string> = new Set([
+  "sudo",
+  "env",
+  "command",
+  "nohup",
+  "time",
+  "exec",
+  "nice",
+  "xargs",
+]);
+/** Options of a wrapper that take a value in the next word. */
+const VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "-n",
+  "-P",
+  "-I",
+  "-L",
+  "-s",
+  "-d",
+  "-E",
+  "-a",
+  "-u",
+  "-g",
+]);
+/** What can stand before a command in a group, a subshell or a control structure. */
+const SHELL_PREFIX = /^(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*(\S[\s\S]*)$/;
+/** `a) cmd` and `case x in a) cmd`: the command of a case arm. */
+const CASE_ARM = /^(?:case\b[\s\S]*?\bin\s+)?[^\s()]*\)\s*(\S[\s\S]*)$/;
+/** `f() { cmd` and `function f { cmd`: the first command of a function body. */
+const FUNCTION_BODY = /^(?:function\s+)?[A-Za-z_][\w-]*\s*(?:\(\))?\s*\{\s*(\S[\s\S]*)$/;
+const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"]);
+const MAX_UNWRAP_DEPTH = 8;
+
+/**
+ * The forms of one simple command that the rules must see: itself, the command behind a wrapper
+ * (`sudo`, `env A=1`), its program without a folder or `.exe`, and the commands of `sh -c "..."`.
+ */
+export function unwrapCommand(command: string, depth = 0): string[] {
+  const forms = [command];
+  if (depth > MAX_UNWRAP_DEPTH) return forms;
+  for (const pattern of [SHELL_PREFIX, CASE_ARM, FUNCTION_BODY]) {
+    const inner = pattern.exec(command.trim())?.[1];
+    if (inner !== undefined) forms.push(...unwrapCommand(inner, depth + 1));
+  }
+  const words = command.trim().split(/\s+/);
+  const program = (words[0] ?? "").replace(/^.*[\\/]/, "").replace(/\.(exe|cmd|bat|com)$/i, "");
+  if (program === "") return forms;
+  const rest = words.slice(1);
+  if (program !== words[0]) forms.push(...unwrapCommand([program, ...rest].join(" "), depth + 1));
+  // `A=1 cmd`: the assignment is not the command.
+  else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(program)) forms.push(...unwrapCommand(rest.join(" "), depth + 1));
+  else if (WRAPPERS.has(program)) {
+    let i = 0;
+    while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
+      i += VALUE_OPTIONS.has(rest[i] ?? "") ? 2 : 1;
+    forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
+  } else if (program === "find") {
+    // `-exec cmd {} ;`: the words after the option are a command.
+    rest.forEach((word, i) => {
+      if (/^-(exec|execdir|ok|okdir)$/.test(word))
+        forms.push(...unwrapCommand(rest.slice(i + 1).join(" "), depth + 1));
+    });
+  } else if (SHELLS.has(program.toLowerCase()) || program === "eval") {
+    const flag = rest.findIndex((word) => /^(-[a-z]*c|\/c|\/r|-command)$/i.test(word));
+    const script =
+      program === "eval"
+        ? rest.join(" ").trim()
+        : flag === -1
+          ? ""
+          : rest
+              .slice(flag + 1)
+              .join(" ")
+              .trim();
+    const quoted = /^(["'])([\s\S]*)\1$/.exec(script);
+    for (const part of splitCommand(quoted ? (quoted[2] ?? "") : script).parts) {
+      forms.push(...unwrapCommand(part, depth + 1));
+    }
+  }
+  return forms.filter((form) => form.trim() !== "");
 }
 
 /**
@@ -305,22 +476,47 @@ export class PolicyEngine {
   ) {}
 
   evaluate(request: PolicyRequest): Decision {
-    // Commands are matched against both the raw and the arity-normalized
-    // form; normalize on the caller's behalf when only the raw form arrived.
+    return this.evaluateWithMatch(request).decision;
+  }
+
+  /**
+   * Same walk, also naming the first matching rule for ask-source labels. A compound shell command is
+   * judged part by part and the strictest verdict wins: a rule for `git status` must not allow `git status; rm -rf ~`.
+   */
+  evaluateWithMatch(request: PolicyRequest): { decision: Decision; matched?: PolicyRule } {
+    if (request.command === undefined) return this.evaluateOne(request);
+    const { parts, dynamic } = splitCommand(request.command);
+    let worst = this.evaluateOne(request);
+    const forms = new Set<string>();
+    for (const part of parts) for (const form of unwrapCommand(part)) forms.add(form);
+    forms.delete(request.command);
+    for (const form of forms) {
+      const verdict = this.evaluateOne({ ...request, command: form, normalizedCommand: undefined });
+      if (DECISION_RANK[verdict.decision] > DECISION_RANK[worst.decision]) worst = verdict;
+    }
+    // The shell builds a part of this command at run time: no rule saw the text that will run.
+    if (dynamic && worst.decision === "allow") return { decision: "ask" };
+    if (worst.decision === "allow" && [request.command, ...forms].some(isDestructiveCommand)) {
+      return { decision: "ask" };
+    }
+    return worst;
+  }
+
+  private evaluateOne(request: PolicyRequest): { decision: Decision; matched?: PolicyRule } {
     const subject =
       request.command !== undefined && request.normalizedCommand === undefined
         ? { ...request, normalizedCommand: normalizeCommand(request.command) }
         : request;
     for (const rule of this.rules) {
-      if (ruleMatches(rule, subject)) return rule.decision;
+      if (ruleMatches(rule, subject)) return { decision: rule.decision, matched: rule };
     }
-    return this.defaultDecision;
+    return { decision: this.defaultDecision };
   }
 }
 
 /** Workspace-relative, forward-slash form of `candidate` (absolute or relative). */
 export function relativeWorkspacePath(root: string, candidate: string): string {
-  const rel = relative(resolve(root), resolve(root, candidate)).replace(/\\/g, "/");
+  const rel = relative(resolve(root), resolve(root, fromMsysPath(candidate))).replace(/\\/g, "/");
   return rel === "" ? "." : rel;
 }
 
@@ -337,6 +533,7 @@ export class PermissionsGate implements ToolPolicy {
   private readonly engine: PolicyEngine;
   private readonly permissions: Record<string, ToolPermissionValue>;
   private itemScopes: readonly string[] | undefined;
+  private ceiling: PermissionsGate | undefined;
 
   constructor(
     private readonly options: {
@@ -358,6 +555,7 @@ export class PermissionsGate implements ToolPolicy {
   withMode(mode: PermissionMode): PermissionsGate {
     const next = new PermissionsGate({ ...this.options, permissionMode: mode });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
+    next.ceiling = this.ceiling;
     return next;
   }
 
@@ -366,6 +564,17 @@ export class PermissionsGate implements ToolPolicy {
     const next = new PermissionsGate({ ...this.options });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes, ...scopes];
     else next.itemScopes = [...scopes];
+    next.ceiling = this.ceiling;
+    return next;
+  }
+
+  /**
+   * Caps an agent's own map by the gate of the run that started the agent: the stricter verdict wins, and
+   * the run's mode answers the asks. Without it a roster entry could give an agent more than its run has.
+   */
+  withCeiling(run: PermissionsGate): PermissionsGate {
+    const next = this.withMode(run.options.permissionMode ?? this.options.permissionMode ?? "ask");
+    next.ceiling = run;
     return next;
   }
 
@@ -388,6 +597,13 @@ export class PermissionsGate implements ToolPolicy {
 
   /** The verdict without consulting approvals (the engine + defaults only). */
   decisionFor(request: ToolCallPolicyRequest): Decision {
+    const own = this.ownDecisionFor(request);
+    if (this.ceiling === undefined) return own;
+    const cap = this.ceiling.decisionFor(request);
+    return DECISION_RANK[cap] > DECISION_RANK[own] ? cap : own;
+  }
+
+  private ownDecisionFor(request: ToolCallPolicyRequest): Decision {
     if (this.outsideItemScope(request)) return "deny";
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
@@ -439,6 +655,30 @@ export class PermissionsGate implements ToolPolicy {
     return matched ?? "ask";
   }
 
+  /** Names the rule that produced an ask: explicit entry, pattern, or default. */
+  askSource(request: ToolCallPolicyRequest): string {
+    if (this.ceiling !== undefined && this.ownDecisionFor(request) !== "ask") {
+      return this.ceiling.askSource(request);
+    }
+    const entry = this.permissions[request.tool];
+    if (entry === undefined) return `default:risk-tier=${request.riskTier ?? "missing"}`;
+    if (typeof entry === "string") return `explicit:${request.tool}=${entry}`;
+    for (const [pattern, decision] of Object.entries(entry).reverse()) {
+      if (decision !== "ask") continue;
+      if (request.command !== undefined && isCommandPatternTool(request.tool)) {
+        const re = globRegExp(pattern, "command");
+        if (re.test(request.command) || re.test(normalizeCommand(request.command)))
+          return `permissions:${request.tool}:${pattern}=ask`;
+      } else if (request.path !== undefined && isPathPatternTool(request.tool)) {
+        if (globMatches(pattern, relativeWorkspacePath(this.options.workspaceRoot, request.path), "path"))
+          return `permissions:${request.tool}:${pattern}=ask`;
+      } else if (pattern === "*") {
+        return `permissions:${request.tool}:*=ask`;
+      }
+    }
+    return `permissions:${request.tool}:unmatched-map-ask`;
+  }
+
   async check(
     request: ToolCallPolicyRequest,
     ask: ((request: ApprovalRequestLike) => Promise<"once" | "always" | "reject">) | undefined,
@@ -461,15 +701,20 @@ export class PermissionsGate implements ToolPolicy {
     const decision = this.decisionFor(request);
     if (decision === "allow") return "allow";
     if (decision === "deny") return "deny";
+    // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
+    if (this.options.permissionMode === "allow-all") return "allow";
     if (this.options.permissionMode === "allow-edits" && EDIT_TOOLS.has(request.tool)) return "allow";
     if (!ask) return "deny"; // no approval surface: fail closed
 
+    const source = this.askSource(request);
     const response = await ask({
       tool: request.tool,
-      title: request.command ?? request.path ?? request.tool,
+      title: request.command ?? request.path ?? request.title ?? request.tool,
       command: request.command,
       path: request.path,
-      metadata: { riskTier: request.riskTier },
+      riskTier: request.riskTier,
+      source,
+      metadata: { riskTier: request.riskTier, source },
     });
     return response === "reject" ? "deny" : "allow";
   }

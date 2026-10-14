@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const BUDGETS = {
@@ -19,6 +19,39 @@ const BUDGETS = {
   idleRssMb: 120,
   idleCpuPercent: 5, // generous: "zero" means <5% over 2s window
 };
+
+/**
+ * Parse utime/stime (fields 14/15) from /proc pid stat, finding the
+ * comm field by its last paren. Returns undefined on any failure.
+ */
+export function parseProcStatUtimeStime(statContent: string): { utime: number; stime: number } | undefined {
+  try {
+    const closeParen = statContent.lastIndexOf(")");
+    if (closeParen === -1 || closeParen >= statContent.length - 1) return undefined;
+    const afterComm = statContent.slice(closeParen + 1).trimStart();
+    const fields = afterComm.split(/\s+/);
+    if (fields.length < 13) return undefined;
+    // utime is field 14 (1-indexed) => index 11, stime is field 15 => index 12
+    const utimeRaw = fields[11];
+    const stimeRaw = fields[12];
+    if (utimeRaw === undefined || stimeRaw === undefined) return undefined;
+    const utime = Number.parseInt(utimeRaw, 10);
+    const stime = Number.parseInt(stimeRaw, 10);
+    if (!Number.isFinite(utime) || !Number.isFinite(stime)) return undefined;
+    return { utime, stime };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Compute CPU percent from a windowed jiffy delta.
+ * cpuPercent = (deltaJiffies / clkTck / deltaWallSec) * 100
+ */
+export function windowedCpuPercent(deltaJiffies: number, clkTck: number, deltaWallSec: number): number {
+  if (deltaWallSec <= 0 || clkTck <= 0) return 0;
+  return (deltaJiffies / clkTck / deltaWallSec) * 100;
+}
 
 function findAgencyCmd(): string[] {
   const candidates = [
@@ -129,13 +162,35 @@ async function measureDaemonIdle(): Promise<{
         const rssKb = Number.parseInt(out.stdout.trim(), 10);
         if (Number.isFinite(rssKb)) rssMb = rssKb / 1024;
       }
-      // CPU over 2s window
-      const first = cpuSample(daemonPid);
-      await new Promise((r) => setTimeout(r, 2000));
-      const second = cpuSample(daemonPid);
-      if (first && second) {
-        // pcpu is instantaneous; second sample is enough for idle check
-        cpuPercent = second.user;
+      // Windowed idle CPU on Linux via /proc stat; ps fallback otherwise.
+      if (process.platform === "linux") {
+        let first: { utime: number; stime: number } | undefined;
+        try {
+          first = parseProcStatUtimeStime(readFileSync(`/proc/${daemonPid}/stat`, "utf8"));
+        } catch {}
+        await new Promise((r) => setTimeout(r, 2000));
+        let second: { utime: number; stime: number } | undefined;
+        if (first) {
+          try {
+            second = parseProcStatUtimeStime(readFileSync(`/proc/${daemonPid}/stat`, "utf8"));
+          } catch {}
+        }
+        if (first && second) {
+          const deltaUtime = second.utime - first.utime;
+          const deltaStime = second.stime - first.stime;
+          const deltaJiffies = deltaUtime + deltaStime;
+          const clkTck =
+            Number.parseInt(spawnSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).stdout.trim(), 10) || 100;
+          cpuPercent = windowedCpuPercent(deltaJiffies, clkTck, 2);
+        }
+      }
+      if (cpuPercent === undefined) {
+        const first = cpuSample(daemonPid);
+        await new Promise((r) => setTimeout(r, 2000));
+        const second = cpuSample(daemonPid);
+        if (first && second) {
+          cpuPercent = second.user;
+        }
       }
     } else {
       // Windows: RSS via ps not reliable; try to get via `tasklist` or skip

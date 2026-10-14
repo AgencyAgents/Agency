@@ -71,6 +71,7 @@ describe("Chaos: scheduler failover mid-rotation", () => {
       requestsPerMinute: 6000,
     });
     let calls = 0;
+    let quarantinedAtWait: string[] = [];
     const err = await scheduler
       .scheduleWithKeys(
         "openai",
@@ -79,15 +80,20 @@ describe("Chaos: scheduler failover mid-rotation", () => {
           calls += 1;
           throw retryable(`fail on ${key}`);
         },
-        { quarantineMs: 15 },
+        {
+          quarantineMs: 200,
+          // Read the set when the scheduler waits. Read after the call, k1's window had 7 ms left and load ate it.
+          onRetry: (_attempt, reason) => {
+            if (reason === "all keys quarantined") quarantinedAtWait = scheduler.getQuarantinedKeys().sort();
+          },
+        },
       )
       .catch((e) => e);
     // Both keys tried, both failed, maxAttempts exhausted
     expect(calls).toBeGreaterThanOrEqual(2);
     expect(err).toBeInstanceOf(AgencyError);
     expect((err as AgencyError).code).toBe(ErrorCode.RATE_LIMIT);
-    // Both keys quarantined
-    expect(scheduler.getQuarantinedKeys().sort()).toEqual(["k1", "k2"]);
+    expect(quarantinedAtWait).toEqual(["k1", "k2"]);
   });
 
   test("concurrent failover storms isolate quarantine per call group", async () => {

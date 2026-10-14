@@ -13,11 +13,9 @@ import {
   leanSummary,
   NoProgressTracker,
   newEntryId,
-  providersWithCredentials,
   type ReviewDiagnostic,
   type RunTurnResult,
   recordIntegrationCheckpoint,
-  resolveRosterProviders,
   resolveScopeFiles,
   runChildTurn,
 } from "@agency/core";
@@ -31,10 +29,10 @@ import {
 } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
-import { extractFinalText, type SessionScope, TeamMcpPool } from "@agency/tools";
-import { priceForModel, teamRunUsage } from "../costing.ts";
+import { extractFinalText, type McpTokenStore, type SessionScope, TeamMcpPool } from "@agency/tools";
+import { modelRunOptions, teamRunUsage } from "../costing.ts";
 import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
-import { type DaemonContext, oauthOverridesFor, type RunTurnParams } from "../types.ts";
+import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { createTurnApproval } from "./plan.ts";
 
@@ -45,22 +43,43 @@ export function initTeamRunState(ctx: DaemonContext): void {
   installCompletionHook(ctx);
 }
 
-// Credential-first provider resolution at team scope: roles pinned
-// to a provider with no key remap to a credentialed one with a warn.
-export function remapRosterToCredentials(ctx: DaemonContext): string[] {
-  const { config, logger, providers } = ctx;
-  const cfg = config as unknown as { agents?: Record<string, { provider?: string; model?: string }> };
-  if (!cfg.agents) return [];
-  const available = providersWithCredentials({ configProviders: providers, env: process.env });
-  if (available.length === 0) return [];
-  const { agents, remapped } = resolveRosterProviders(cfg.agents, available);
-  cfg.agents = agents;
-  for (const handle of remapped) {
+export interface AgentRoute {
+  provider: string;
+  model: string;
+  apiKey: string;
+}
+
+/**
+ * A peer runs on its pinned provider when that provider has a key. Without one it takes the lead
+ * turn's provider, model and key: a pinned model id means nothing on another provider.
+ */
+export async function routeAgent(
+  ctx: DaemonContext,
+  handle: string,
+  agent: { provider: string; model?: string },
+  leadTurnId: string | undefined,
+): Promise<AgentRoute> {
+  const { activeTurnMeta, getKeychain, logger, providers, redactor } = ctx;
+  let apiKey = "";
+  try {
+    apiKey =
+      (await resolveApiKey({
+        provider: agent.provider,
+        env: process.env,
+        keychain: await getKeychain(),
+        config: providers[agent.provider]?.apiKey,
+        ...keySourcesFor(agent.provider, providers),
+      })) ?? "";
+  } catch {}
+  const lead = leadTurnId === undefined ? undefined : activeTurnMeta.get(leadTurnId);
+  if (apiKey.length === 0 && lead !== undefined && lead.apiKey.length > 0) {
     logger.warn(
-      `agent "${handle}" remapped to provider "${agents[handle]?.provider}": no credentials for its pinned provider`,
+      `agent "${handle}" runs on ${lead.provider}/${lead.model}: no credentials for its pinned provider "${agent.provider}"`,
     );
+    return { provider: lead.provider, model: lead.model, apiKey: lead.apiKey };
   }
-  return remapped;
+  if (apiKey.length > 0) redactor.registerSecret(apiKey);
+  return { provider: agent.provider, model: agent.model ?? "", apiKey };
 }
 
 function diagnosticsForItem(ctx: DaemonContext, item: BoardItem): ReviewDiagnostic[] {
@@ -209,7 +228,7 @@ export async function attachTeamMcpPool(
   pools: Map<string, TeamMcpPool>,
   mcpServers: unknown,
   scope: SessionScope,
-  opts: { teamParent: string | undefined; handle?: string },
+  opts: { teamParent: string | undefined; handle?: string; tokens?: McpTokenStore },
 ): Promise<void> {
   if (!opts.teamParent) return;
   const split = TeamMcpPool.split(mcpServers);
@@ -220,6 +239,7 @@ export async function attachTeamMcpPool(
       pool = new TeamMcpPool(opts.teamParent, split.shared, {
         capabilities: { tools: "*", pathScopes: "*", network: "*" },
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? opts.handle ?? "main" }),
+        ...(opts.tokens ? { tokens: opts.tokens } : {}),
       });
       pools.set(opts.teamParent, pool);
       await pool.start();
@@ -251,6 +271,8 @@ export interface CompareChildSpec {
   leanPromptText: string;
   effort?: string;
   apiKey?: string;
+  /** Set by the batch when the pinned provider has no key and the default model's provider has one. */
+  route?: AgentRoute;
   itemId: string;
   key: string;
   childSessionId: string;
@@ -300,8 +322,8 @@ export async function runCompareChildTurn(
   compareClaim(boardStore, handle, itemId);
   const resolvedEffort =
     spec.effort ?? (agent.effort === "auto" ? classifyEffortFromText(prompt) : agent.effort);
-  const childProvider = agent.provider;
-  const childModel = agent.model ?? "";
+  const childProvider = spec.route?.provider ?? agent.provider;
+  const childModel = spec.route?.model ?? agent.model ?? "";
   const childModelInfo = catalogModel(childProvider, childModel);
   const clampedEffort = clampEffortForModel(resolvedEffort as EffortLevel, childModelInfo);
   team.agentStates.set(key, "working");
@@ -327,8 +349,8 @@ export async function runCompareChildTurn(
   }
   // Pre-resolved key (empty string=miss) skips per-child keychain fallback.
   // macOS securityd serializes concurrent CLI calls into a bottleneck.
-  let childApiKey = spec.apiKey ?? "";
-  if (spec.apiKey === undefined) {
+  let childApiKey = spec.route?.apiKey ?? spec.apiKey ?? "";
+  if (spec.route === undefined && spec.apiKey === undefined) {
     try {
       if (childApiKey.length === 0) {
         const kc = await getKeychain();
@@ -337,7 +359,7 @@ export async function runCompareChildTurn(
           env: process.env,
           keychain: kc,
           config: providers[childProvider]?.apiKey,
-          ...oauthOverridesFor(childProvider, providers),
+          ...keySourcesFor(childProvider, providers),
         });
         if (k) {
           childApiKey = k;
@@ -362,7 +384,7 @@ export async function runCompareChildTurn(
       .list()
       .map((m) => m.handle)
       .join(" "),
-    family: agent.provider,
+    family: childProvider,
     role: agent.role,
     handle,
     briefLine: "Compare and respond to the given prompt concisely.",
@@ -376,7 +398,7 @@ export async function runCompareChildTurn(
   });
   const childTurn = await team.limiter.run(() =>
     runChildTurn(
-      { http, eventBus, createTraceRecorder },
+      { http, eventBus, createTraceRecorder, redactToolResult: redactor.redactToolResult },
       {
         adapter: adapterFor(childProvider),
         scheduler: schedulerFor(childProvider),
@@ -390,8 +412,7 @@ export async function runCompareChildTurn(
         identity: { type: "agent", name: handle },
         capabilities: agentCaps,
         toolPolicy: agentGate,
-        pricePerMTok: childModelInfo ? priceForModel(childModelInfo.pricing) : undefined,
-        maxTokensPerRequest: childModelInfo?.maxOutputTokens,
+        ...modelRunOptions(childModelInfo),
         turnId: childTurnId,
         sessionId: childSessionId,
         cwd: options.workspaceRoot,
@@ -476,10 +497,10 @@ export function registerTeamRunHandlers(handlers: Record<string, MethodHandler>,
     };
     const sid = typeof sessionId === "string" && sessionId.length > 0 ? sessionId : "default";
     if (typeof goal !== "string" || goal.trim().length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "team_open requires goal", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "team_open requires goal", { source: "team" });
     }
     if (!Array.isArray(items) || items.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "team_open requires items", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "team_open requires items", { source: "team" });
     }
     const decision = decideEscalation({
       itemCount: items.length,
@@ -563,7 +584,7 @@ export function registerTeamRunHandlers(handlers: Record<string, MethodHandler>,
   handlers.agent_stop = async (rawParams) => {
     const { sessionId, handle } = (rawParams ?? {}) as { sessionId?: string; handle?: string };
     if (typeof handle !== "string" || handle.length === 0) {
-      throw new AgencyError(ErrorCode.INTERNAL, "agent_stop requires handle", { source: "team" });
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, "agent_stop requires handle", { source: "team" });
     }
     const sid = sessionId ?? "default";
     const team: TeamContext | undefined = teamContexts.get(sid);

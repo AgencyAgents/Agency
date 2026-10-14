@@ -54,6 +54,18 @@ describe("anthropicAdapter", () => {
     ]);
   });
 
+  test("takes the counts and the charge that a gateway reports at the end of the stream", async () => {
+    // Recorded from the Messages endpoint of OpenRouter: message_start has zero counts, message_delta has the real ones.
+    const cassette = await Bun.file(`${import.meta.dir}/../cassettes/openrouter-messages-stream.sse`).text();
+    const events = await collect(anthropicAdapter.stream(baseRequest, fakeHttp(sseResponse(cassette))));
+
+    expect(events.at(-1)).toEqual({
+      type: "message_stop",
+      stopReason: "end_turn",
+      usage: { inputTokens: 21, outputTokens: 33, cachedInputTokens: 0, costUsd: 0.00001218 },
+    });
+  });
+
   test("reassembles a streamed tool call's JSON input into a valid object", async () => {
     const cassette = await Bun.file(`${import.meta.dir}/../cassettes/anthropic-stream-tool-call.sse`).text();
     const http = fakeHttp(sseResponse(cassette));
@@ -119,7 +131,35 @@ describe("anthropicAdapter", () => {
     ]);
   });
 
-  test("maps a unified thinking level to Anthropic's budget_tokens", async () => {
+  test("a model after the 4.5 family takes adaptive thinking with an effort level, not a budget", async () => {
+    // The API documentation: these models answer 400 to a thinking budget, and hide thinking text by default.
+    const bodyFor = async (model: string, thinkingLevel: ProviderRequest["thinkingLevel"]) => {
+      let captured = "";
+      const http: HttpClient = {
+        fetch: async (_url, init) => {
+          captured = init?.body as string;
+          return sseResponse("");
+        },
+      };
+      await collect(anthropicAdapter.stream({ ...baseRequest, model, maxTokens: 8192, thinkingLevel }, http));
+      const body = JSON.parse(captured);
+      return { thinking: body.thinking, effort: body.output_config?.effort };
+    };
+    const adaptive = { type: "adaptive", display: "summarized" };
+
+    expect(await bodyFor("claude-opus-5", "high")).toEqual({ thinking: adaptive, effort: "high" });
+    expect(await bodyFor("claude-opus-4-7", "minimal")).toEqual({ thinking: adaptive, effort: "low" });
+    expect(await bodyFor("claude-fable-5-1", "max")).toEqual({ thinking: adaptive, effort: "max" });
+    // The 4.6 models have no xhigh level.
+    expect(await bodyFor("claude-sonnet-4-6", "xhigh")).toEqual({ thinking: adaptive, effort: "high" });
+    expect(await bodyFor("claude-opus-5", "off")).toEqual({ thinking: undefined, effort: undefined });
+    // The 4.5 family and older models answer 400 to adaptive thinking: they keep the budget.
+    for (const model of ["claude-sonnet-4-5", "claude-opus-4-5-20251101", "claude-opus-4-20250514"]) {
+      expect((await bodyFor(model, "minimal")).thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    }
+  });
+
+  test("maps a unified thinking level to the budget_tokens of a budget model", async () => {
     let capturedBody: string | undefined;
     const http: HttpClient = {
       fetch: async (_url, init) => {
@@ -128,10 +168,39 @@ describe("anthropicAdapter", () => {
       },
     };
 
-    await collect(anthropicAdapter.stream({ ...baseRequest, thinkingLevel: "high" }, http));
+    await collect(
+      anthropicAdapter.stream(
+        { ...baseRequest, model: "claude-sonnet-4-5", maxTokens: 32000, thinkingLevel: "high" },
+        http,
+      ),
+    );
 
     const body = JSON.parse(capturedBody!);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
+  });
+
+  test("the thinking budget stays inside the limits of the API: at least 1024 and less than max_tokens", async () => {
+    const thinkingFor = async (maxTokens: number): Promise<unknown> => {
+      let captured = "";
+      const http: HttpClient = {
+        fetch: async (_url, init) => {
+          captured = init?.body as string;
+          return sseResponse("");
+        },
+      };
+      await collect(
+        anthropicAdapter.stream(
+          { ...baseRequest, model: "claude-sonnet-4-5", maxTokens, thinkingLevel: "high" },
+          http,
+        ),
+      );
+      return JSON.parse(captured).thinking;
+    };
+
+    // 8192 is the default output limit of a model that is not in the catalog, and the budget of "high".
+    expect(await thinkingFor(8192)).toEqual({ type: "enabled", budget_tokens: 4096 });
+    // No budget of 1024 or more fits: the request goes out with no thinking, not as a sure 400.
+    expect(await thinkingFor(1024)).toBeUndefined();
   });
 
   test("omits the thinking block entirely when the level is off", async () => {
@@ -159,6 +228,41 @@ describe("anthropicAdapter", () => {
           },
         }),
         { status: 400 },
+      ),
+    );
+
+    const err = await collect(anthropicAdapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
+  test("maps the overflow error of a llama.cpp server on the messages endpoint to CONTEXT_OVERFLOW", async () => {
+    // The body is a capture from the /v1/messages endpoint of llama-server b11155.
+    const body = {
+      error: {
+        code: 400,
+        message:
+          "request (13630 tokens) exceeds the available context size (12288 tokens), try increasing it",
+        type: "exceed_context_size_error",
+        n_prompt_tokens: 13630,
+        n_ctx: 12288,
+      },
+    };
+    const http = fakeHttp(new Response(JSON.stringify(body), { status: 400 }));
+
+    const err = await collect(anthropicAdapter.stream(baseRequest, http)).catch((e) => e);
+    expect((err as AgencyError).code).toBe(ErrorCode.CONTEXT_OVERFLOW);
+  });
+
+  test("a reply that stops because the context window is full is a context overflow, not a normal end", async () => {
+    // Claude 4.5 and later accept a request that cannot fit, and stop the reply with this reason.
+    const http = fakeHttp(
+      sseResponse(
+        [
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":5}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ].join(""),
       ),
     );
 
@@ -238,6 +342,8 @@ describe("anthropicAdapter", () => {
               content: [
                 { type: "thinking", text: "unsigned history" },
                 { type: "thinking", text: "signed history", signature: "sig-123" },
+                { type: "thinking", text: "", signature: "from-gemini", family: "google" },
+                { type: "thinking", text: "own model", signature: "sig-789", family: "anthropic" },
                 { type: "redacted_thinking", data: "enc-456" },
                 { type: "text", text: "answer" },
               ],
@@ -253,9 +359,39 @@ describe("anthropicAdapter", () => {
     const assistant = body.messages[0].content;
     expect(assistant).toEqual([
       { type: "thinking", thinking: "signed history", signature: "sig-123" },
+      // The block signed by another provider is gone: this API rejects a signature that it did not issue.
+      { type: "thinking", thinking: "own model", signature: "sig-789" },
       { type: "redacted_thinking", data: "enc-456" },
       { type: "text", text: "answer" },
     ]);
+  });
+
+  test("a message that maps to no content is left out: the API rejects an empty message", async () => {
+    let capturedBody = "";
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        capturedBody = init?.body as string;
+        return sseResponse("");
+      },
+    };
+
+    await collect(
+      anthropicAdapter.stream(
+        {
+          ...baseRequest,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "first" }] },
+            { role: "assistant", content: [] },
+            { role: "assistant", content: [{ type: "thinking", text: "unsigned only" }] },
+            { role: "user", content: [{ type: "text", text: "second" }] },
+          ],
+        },
+        http,
+      ),
+    );
+
+    const messages = JSON.parse(capturedBody).messages as Array<{ role: string; content: unknown[] }>;
+    expect(messages.map((message) => message.role)).toEqual(["user", "user"]);
   });
 
   test("marks tool definitions and the conversation tail as cache breakpoints", async () => {

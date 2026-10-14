@@ -8,12 +8,13 @@ import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { runTurn } from "../../src/loop.ts";
+import { runTurn, type ToolSpec } from "../../src/loop.ts";
 import {
   COMPACTION_TARGET_RATIO,
   COMPACTION_TRIGGER_RATIO,
   collapseTranscript,
   compact,
+  compactMessages,
   countChainTokens,
   countChainTokensAsync,
   ensureOutputContract,
@@ -27,8 +28,10 @@ import {
   targetTokens,
   triggerTokens,
   truncateSummaryToCap,
+  withOverhead,
 } from "../../src/sessions/compaction.ts";
 import { SessionStore } from "../../src/sessions/store.ts";
+import { summarizeTranscript } from "../../src/sessions/summarize.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -72,6 +75,54 @@ describe("planCompaction", () => {
 });
 
 describe("compact", () => {
+  test("the user's own messages stay word for word through two compactions", async () => {
+    const store = setup();
+    const meta = store.create("s1");
+    const tokenizer = createApproximateTokenizer(1);
+    let parentId: string | null = null;
+    const say = async (role: "user" | "assistant", text: string) => {
+      const entry = await store.append(meta.id, {
+        type: "message",
+        message: { role, content: [{ type: "text", text }] },
+        parentId,
+      });
+      parentId = entry.id;
+      return entry.id;
+    };
+    const fold = async () => {
+      const outcome = await compact(
+        store,
+        meta.id,
+        parentId ?? "",
+        tokenizer,
+        { contextWindow: 2000, proactiveRatio: 0.1 },
+        async () => "The user asked for a refactor.",
+        1,
+      );
+      expect(outcome.compacted).toBe(true);
+      parentId = outcome.tipId;
+      const first = store.messagesFor(store.load(meta.id), outcome.tipId)[0]?.content[0];
+      return (first as { text: string }).text;
+    };
+    await say("user", "RULE-ONE: never edit the file billing.py");
+    await say("assistant", "a".repeat(300));
+    await say("user", "next step please");
+    const once = await fold();
+    expect(once).toContain("The user asked for a refactor.");
+    expect(once).toContain("- RULE-ONE: never edit the file billing.py");
+
+    await say("assistant", "b".repeat(300));
+    await say("user", "RULE-TWO: run the tests with make check");
+    // Larger than the part that stays word for word (560 tokens here), so the rule before it is folded.
+    await say("assistant", "c".repeat(600));
+    await say("user", "go on");
+    const twice = await fold();
+    expect(twice).toContain("- RULE-ONE: never edit the file billing.py");
+    expect(twice).toContain("- RULE-TWO: run the tests with make check");
+    // One block, not a block inside a block.
+    expect(twice.split("word for word").length).toBe(2);
+  });
+
   test("summarizes the older portion, carries todos and the recent tail forward onto a new tip", async () => {
     const store = setup();
     const meta = store.create("s1");
@@ -136,6 +187,97 @@ describe("compact", () => {
 
     expect(result.compacted).toBe(false);
     expect(result.tipId).toBe(entry.id);
+  });
+
+  const call = (id: string, pad = 0): Message => ({
+    role: "assistant",
+    content: [{ type: "tool_call", id, name: "read", input: { path: "p".repeat(pad) } }],
+  });
+  const result = (id: string): Message => ({
+    role: "user",
+    content: [{ type: "tool_result", toolCallId: id, content: "x".repeat(20), isError: false }],
+  });
+
+  /** Compacts the transcript and returns the ids of tool results whose call is gone. */
+  async function resultsWithoutCall(transcript: Message[], contextWindow: number): Promise<string[]> {
+    const store = setup();
+    const meta = store.create("s1");
+    let parentId: string | null = null;
+    for (const message of transcript) {
+      parentId = (await store.append(meta.id, { type: "message", parentId, message })).id;
+    }
+    const outcome = await compact(
+      store,
+      meta.id,
+      parentId as unknown as string,
+      createApproximateTokenizer(1),
+      { contextWindow },
+      async () => "summary",
+      4,
+      { force: true },
+    );
+    const seen = new Set<string>();
+    const lost: string[] = [];
+    for (const message of store.messagesFor(store.load(meta.id), outcome.tipId)) {
+      for (const block of message.content) {
+        if (block.type === "tool_call") seen.add(block.id);
+        if (block.type === "tool_result" && !seen.has(block.toolCallId)) lost.push(block.toolCallId);
+      }
+    }
+    return lost;
+  }
+
+  test("the summarizer's instructions stay out of the stored summary", async () => {
+    const store = setup();
+    const meta = store.create("s1");
+    let parentId: string | null = null;
+    for (const text of ["first request", "second", "third", "fourth", "fifth", "sixth"]) {
+      parentId = (await store.append(meta.id, { type: "message", parentId, message: userMsg(text) })).id;
+    }
+    const given: Array<{ transcript: string; instructions: string }> = [];
+    const outcome = await compact(
+      store,
+      meta.id,
+      parentId as unknown as string,
+      createApproximateTokenizer(1),
+      { contextWindow: 1_000_000 },
+      async (transcript, instructions) => {
+        given.push({ transcript, instructions });
+        return summarizeTranscript(transcript);
+      },
+      4,
+      { force: true },
+    );
+
+    // The model reads this summary as a user message: "MUST NOT call tools" there would stop the agent.
+    const summary = JSON.stringify(store.messagesFor(store.load(meta.id), outcome.tipId)[0]);
+    expect(summary).toContain("first request");
+    expect(summary).not.toContain("session summarizer");
+    expect(summary).not.toContain("MUST NOT");
+    expect(given[0]?.instructions).toContain("session summarizer");
+  });
+
+  test("the cut does not fall between a tool call and its result", async () => {
+    // A turn that ended without a closing reply: the last four messages start with a tool result.
+    const transcript = [
+      userMsg("first"),
+      call("c1"),
+      result("c1"),
+      call("c2"),
+      result("c2"),
+      userMsg("next"),
+    ];
+    expect(await resultsWithoutCall(transcript, 1_000_000)).toEqual([]);
+  });
+
+  test("the summary window never grows past a tool call alone, at any context size", async () => {
+    const transcript = [userMsg("first"), userMsg("second"), call("c1", 300), result("c1"), userMsg("next")];
+    const lost: Array<[number, string[]]> = [];
+    for (let contextWindow = 100; contextWindow <= 1500; contextWindow += 25) {
+      const ids = await resultsWithoutCall(transcript, contextWindow);
+      if (ids.length > 0) lost.push([contextWindow, ids]);
+    }
+    expect(lost).toEqual([]);
   });
 });
 
@@ -545,6 +687,9 @@ describe("U8 output contract", () => {
     expect(ensureOutputContract("digest", 5, 2)).toBe("digest\n[Compacted: 5 turns -> 2 sections]");
     const once = ensureOutputContract("digest", 5, 2);
     expect(ensureOutputContract(once, 5, 2)).toBe(once);
+    // Seen from a live model: one turn and one section, written in the singular.
+    const singular = "digest\n[Compacted: 1 turn -> 1 section]";
+    expect(ensureOutputContract(singular, 5, 2)).toBe(singular);
   });
 });
 
@@ -731,5 +876,413 @@ describe("U8 overflow compact and single retry", () => {
         session: [],
       }),
     ).rejects.toThrow("context full");
+  });
+
+  /** A turn of `steps` tool calls; the request that follows each step in `overflowAfter` fails once. */
+  function longTurn(steps: number, overflowAfter: number[]) {
+    const state = { runs: 0, requests: [] as Message[][] };
+    const pending = new Set(overflowAfter);
+    const tool: ToolSpec = {
+      name: "count",
+      description: "counts its own runs",
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => {
+        state.runs += 1;
+        return { content: `run ${state.runs}` };
+      },
+    };
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        state.requests.push([...request.messages]);
+        if (pending.delete(state.runs)) {
+          throw new AgencyError(ErrorCode.CONTEXT_OVERFLOW, "context full", { source: "fake" });
+        }
+        if (state.runs < steps) {
+          const id = `c${state.runs + 1}`;
+          yield { type: "tool_call_start", id, name: "count" };
+          yield { type: "tool_call_delta", id, inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const run = () =>
+      runTurn(adapter, new Scheduler(), noopHttp, {
+        identity: overflowUser,
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [tool],
+        model: "test-model",
+        apiKey: "key",
+        session: [userMsg("count")],
+      });
+    return { state, run };
+  }
+
+  test("overflow without a hook folds the transcript in memory: the turn keeps its last steps", async () => {
+    const { state, run } = longTurn(3, [3]);
+    const result = await run();
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(state.runs).toBe(3);
+    const retried = JSON.stringify(state.requests.at(-1));
+    expect(retried).toContain("[earlier conversation compacted]");
+    expect(retried).toContain("run 3");
+    // The request before the retry is the summary request: the one that overflowed is the longest.
+    const overflowed = Math.max(...state.requests.map((request) => request.length));
+    expect(state.requests.at(-1)?.length).toBeLessThan(overflowed);
+  });
+
+  test("a long turn can fold more than once: the limit is one fold for each request", async () => {
+    const { state, run } = longTurn(6, [3, 6]);
+    const result = await run();
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(state.runs).toBe(6);
+  });
+});
+
+describe("removal of old tool output before a summary", () => {
+  const noSummary = async (): Promise<string> => {
+    throw new Error("the summarizer must not run");
+  };
+  const tokenizer = createApproximateTokenizer();
+  async function longSession(store: SessionStore): Promise<string> {
+    store.create("s");
+    let tip = (await store.append("s", { type: "message", parentId: null, message: userMsg("the task") })).id;
+    for (let i = 0; i < 6; i++) {
+      const id = `c${i}`;
+      tip = (
+        await store.append("s", {
+          type: "message",
+          parentId: tip,
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_call", id, name: "read", input: { path: id } }],
+          },
+        })
+      ).id;
+      tip = (
+        await store.append("s", {
+          type: "message",
+          parentId: tip,
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", toolCallId: id, content: `${id} `.repeat(1000), isError: false },
+            ],
+          },
+        })
+      ).id;
+    }
+    return tip;
+  }
+  const resultTexts = (store: SessionStore, tipId: string): string[] =>
+    store
+      .messagesFor(store.load("s"), tipId)
+      .flatMap((message) => message.content)
+      .flatMap((block) => (block.type === "tool_result" ? [block.content] : []));
+
+  test("old results become one line each with no model call; the newest stay, and so does the user text", async () => {
+    const store = setup();
+    const tip = await longSession(store);
+    const before = countChainTokens(store.chainFor(store.load("s"), tip), tokenizer);
+    const threshold = { contextWindow: Math.ceil(before / 0.95) };
+    const outcome = await compact(store, "s", tip, tokenizer, threshold, noSummary);
+    expect(outcome.compacted).toBe(true);
+    const chain = store.chainFor(store.load("s"), outcome.tipId);
+    expect(countChainTokens(chain, tokenizer)).toBeLessThanOrEqual(targetTokens(threshold));
+    expect(chain.some((entry) => entry.type === "compaction_summary")).toBe(false);
+    const texts = resultTexts(store, outcome.tipId);
+    expect(texts).toHaveLength(6);
+    expect(texts[0]).toMatch(/^\[output removed to save context: 3000 chars/);
+    expect(texts[5]).toBe("c5 ".repeat(1000));
+    expect(store.messagesFor(store.load("s"), outcome.tipId)[0]).toEqual(userMsg("the task"));
+    // A second call has nothing more to remove and is under the trigger.
+    const again = await compact(store, "s", outcome.tipId, tokenizer, threshold, noSummary);
+    expect(again.compacted).toBe(false);
+  });
+
+  test("a compaction that the user asked for summarizes, and so does one where removal is not enough", async () => {
+    const store = setup();
+    const tip = await longSession(store);
+    let calls = 0;
+    const summarize = async (): Promise<string> => {
+      calls += 1;
+      return "summary";
+    };
+    const manual = await compact(store, "s", tip, tokenizer, { contextWindow: 10_000 }, summarize, 4, {
+      force: true,
+      trigger: "manual",
+    });
+    expect(manual.compacted).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+    calls = 0;
+    // The window is too small for the texts that removal leaves.
+    const small = await compact(store, "s", tip, tokenizer, { contextWindow: 40 }, summarize);
+    expect(small.compacted).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+  });
+});
+
+describe("the size limit of a compaction trigger", () => {
+  test("a large window compacts at the token limit, not at 90 percent; a small window is as before", () => {
+    expect(triggerTokens({ contextWindow: 1_000_000 })).toBe(220_000);
+    expect(targetTokens({ contextWindow: 1_000_000 })).toBeCloseTo((220_000 * 7) / 9, 0);
+    expect(triggerTokens({ contextWindow: 1_000_000, limitTokens: 500_000 })).toBe(500_000);
+    expect(triggerTokens({ contextWindow: 100_000 })).toBe(90_000);
+    expect(targetTokens({ contextWindow: 100_000 })).toBeCloseTo(70_000, 0);
+    expect(targetTokens({ contextWindow: 100, proactiveRatio: 0.8 })).toBeCloseTo(70, 5);
+  });
+});
+
+describe("a compaction in the middle of a turn, before the provider refuses", () => {
+  const noop: ToolSpec = {
+    name: "noop",
+    description: "does nothing",
+    inputSchema: { type: "object", properties: {} },
+    riskTier: "safe",
+    handler: async () => ({ content: "ok" }),
+  };
+  /** Each number is the input size that the provider reports for one request; the last request ends the turn. */
+  async function foldsFor(sizes: number[], contextWindow: number): Promise<number> {
+    let request = 0;
+    let folds = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        const usage = { inputTokens: sizes[request] ?? 1, outputTokens: 1 };
+        request += 1;
+        if (request === sizes.length) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage };
+          return;
+        }
+        yield { type: "tool_call_start", id: `c${request}`, name: "noop" };
+        yield { type: "tool_call_delta", id: `c${request}`, inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: `c${request}` };
+        yield { type: "message_stop", stopReason: "tool_use", usage };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: overflowUser,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [noop],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      contextWindow,
+      toolPolicy: { check: async () => "allow" },
+      onContextOverflow: async () => {
+        folds += 1;
+      },
+    });
+    expect(result.stopReason).toBe("end_turn");
+    return folds;
+  }
+
+  test("a request at the trigger size compacts before the next request, and a small one does not", async () => {
+    expect(await foldsFor([950, 100, 950, 100], 1000)).toBe(2);
+    expect(await foldsFor([800, 800, 800], 1000)).toBe(0);
+  });
+
+  test("a compaction that did not help is not tried again in the turn", async () => {
+    expect(await foldsFor([950, 950, 950, 950], 1000)).toBe(1);
+  });
+
+  test("a large window compacts at the token limit", async () => {
+    expect(await foldsFor([230_000, 100], 1_000_000)).toBe(1);
+    expect(await foldsFor([200_000, 100], 1_000_000)).toBe(0);
+  });
+});
+
+describe("the part of the history that stays word for word after a summary", () => {
+  test("the newest messages stay up to a share of the size target, not only the last four", async () => {
+    const store = setup();
+    store.create("s");
+    let tip: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      // About 100 tokens each with the approximate tokenizer.
+      tip = (
+        await store.append("s", { type: "message", parentId: tip, message: userMsg(`m${i} `.repeat(100)) })
+      ).id;
+    }
+    // Target 2800 tokens, so the part that stays has 1120: 11 messages of 100 tokens.
+    const outcome = await compact(
+      store,
+      "s",
+      tip as string,
+      createApproximateTokenizer(),
+      { contextWindow: 4000 },
+      async () => "summary",
+      4,
+      { force: true, trigger: "manual" },
+    );
+    expect(outcome.compacted).toBe(true);
+    const messages = store.messagesFor(store.load("s"), outcome.tipId);
+    const kept = messages.filter((message) =>
+      message.content.some((b) => b.type === "text" && /^m\d+ /.test(b.text)),
+    );
+    expect(kept.length).toBeGreaterThanOrEqual(8);
+    expect(kept.length).toBeLessThan(20);
+    expect(JSON.stringify(kept.at(-1))).toContain("m19 ");
+  });
+});
+
+describe("removal of old tool output in the middle of a turn", () => {
+  test("a result that the model has not read yet stays, also when it is larger than the budget", async () => {
+    const big = (id: string): Message[] => [
+      { role: "assistant", content: [{ type: "tool_call", id, name: "read", input: { path: id } }] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", toolCallId: id, content: `${id} `.repeat(1000), isError: false }],
+      },
+    ];
+    const messages = [userMsg("the task"), ...big("c0"), ...big("c1"), ...big("c2")];
+    const out = await compactMessages(
+      messages,
+      createApproximateTokenizer(),
+      // The budget for results is 280 tokens, and one result has about 750.
+      { contextWindow: 1600 },
+      async () => {
+        throw new Error("the summarizer must not run");
+      },
+    );
+    const texts = (out ?? [])
+      .flatMap((m) => m.content)
+      .flatMap((b) => (b.type === "tool_result" ? [b.content] : []));
+    expect(texts).toHaveLength(3);
+    expect(texts[0]).toMatch(/^\[output removed/);
+    expect(texts[1]).toMatch(/^\[output removed/);
+    expect(texts[2]).toBe("c2 ".repeat(1000));
+  });
+});
+
+describe("what the model is told about the limits of a turn", () => {
+  const noop: ToolSpec = {
+    name: "noop",
+    description: "does nothing",
+    inputSchema: { type: "object", properties: {} },
+    riskTier: "safe",
+    handler: async () => ({ content: "ok" }),
+  };
+  /** Runs a turn where each request costs 1 USD and calls the tool, and gives the tool results in order. */
+  async function resultsOf(options: { maxToolIterations: number; maxCostUsd?: number }): Promise<string[]> {
+    let request = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        request += 1;
+        yield { type: "tool_call_start", id: `c${request}`, name: "noop" };
+        yield { type: "tool_call_delta", id: `c${request}`, inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: `c${request}` };
+        yield {
+          type: "message_stop",
+          stopReason: "tool_use",
+          usage: { inputTokens: 1, outputTokens: 0 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler({ requestsPerMinute: 60_000 }), noopHttp, {
+      identity: overflowUser,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [noop],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      toolPolicy: { check: async () => "allow" },
+      // One token is 1 USD: small token counts keep the request scheduler out of the test.
+      pricePerMTok: { input: 1_000_000, output: 1, cachedInput: 1, cacheWrite: 1 },
+      maxToolIterations: options.maxToolIterations,
+      ...(options.maxCostUsd === undefined ? {} : { budget: { maxCostUsd: options.maxCostUsd } }),
+    });
+    return result.messages
+      .flatMap((m) => m.content)
+      .flatMap((b) => (b.type === "tool_result" ? [b.content] : []));
+  }
+
+  test("the result of a tool call says when 5 tool steps are left, one time", async () => {
+    const results = await resultsOf({ maxToolIterations: 12 });
+    expect(results).toHaveLength(12);
+    expect(results.filter((text) => text.includes("5 tool steps are left"))).toHaveLength(1);
+    expect(results[6]).toContain("5 tool steps are left");
+    expect(results[0]).toBe("ok");
+  });
+
+  test("a short turn limit gets no such line", async () => {
+    expect((await resultsOf({ maxToolIterations: 6 })).every((text) => text === "ok")).toBe(true);
+  });
+
+  test("the result says when 80 percent of the cost limit is spent, one time", async () => {
+    const results = await resultsOf({ maxToolIterations: 30, maxCostUsd: 10 });
+    const noted = results.filter((text) => text.includes("of the cost limit"));
+    expect(noted).toHaveLength(1);
+    expect(results.findIndex((text) => text.includes("of the cost limit"))).toBe(7);
+  });
+});
+
+describe("the size of the system prompt and the tool list in a compaction of a turn", () => {
+  test("the owner of the history gets the tokens of a request that are not in the history", async () => {
+    const seen: Array<number | undefined> = [];
+    let request = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        request += 1;
+        if (request === 2) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "noop" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 950, outputTokens: 0 } };
+      },
+    };
+    await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: overflowUser,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [
+        {
+          name: "noop",
+          description: "does nothing",
+          inputSchema: { type: "object", properties: {} },
+          riskTier: "safe",
+          handler: async () => ({ content: "ok" }),
+        },
+      ],
+      model: "test-model",
+      apiKey: "key",
+      session: [userMsg("x".repeat(400))],
+      contextWindow: 1000,
+      toolPolicy: { check: async () => "allow" },
+      onContextOverflow: async (overheadTokens) => {
+        seen.push(overheadTokens);
+      },
+    });
+    // The request had 950 tokens; the history (the prompt of 400 characters, a call and a result) has about 100.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeGreaterThan(800);
+    expect(seen[0]).toBeLessThan(950);
+  });
+
+  test("a threshold with such tokens leaves that room: trigger and target go down by the same size", () => {
+    const base = { contextWindow: 100_000 };
+    const less = withOverhead(base, 8_000);
+    expect(triggerTokens(less)).toBeCloseTo(triggerTokens(base) - 8_000, 0);
+    expect(targetTokens(less)).toBeCloseTo(targetTokens(base) - 8_000, 0);
+    const large = withOverhead({ contextWindow: 1_000_000 }, 8_000);
+    expect(triggerTokens(large)).toBeCloseTo(212_000, 0);
+    // More tokens than the window: the numbers stay above zero.
+    expect(triggerTokens(withOverhead({ contextWindow: 1000 }, 5000))).toBeGreaterThan(0);
   });
 });

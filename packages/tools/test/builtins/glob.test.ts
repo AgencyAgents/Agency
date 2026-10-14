@@ -113,5 +113,6 @@ describe("createGlobTool", () => {
     const fileLines = lines.filter((l) => l.endsWith(".ts"));
     // At most 500 results (the cap), but the scan scanned at most 5000
     expect(fileLines.length).toBeLessThanOrEqual(500);
-  });
+    // Creating 6000 files takes about 5 s on Windows; the tool itself needs 0.5 s.
+  }, 30_000);
 });

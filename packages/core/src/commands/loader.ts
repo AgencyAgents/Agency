@@ -45,10 +45,12 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
 export function loadCommands(options: {
   workspaceRoot: string;
   configDirOverride?: string;
+  /** False for a workspace that the user did not trust: a command file can hold shell blocks, so none loads. */
+  projectTrusted?: boolean;
 }): CommandTemplate[] {
   const projectDir = join(options.workspaceRoot, ".agency", "commands");
   const userDir = join(options.configDirOverride ?? configDir(), "commands");
-  const project = parseCommandFiles(projectDir, "project");
+  const project = options.projectTrusted === false ? [] : parseCommandFiles(projectDir, "project");
   const user = parseCommandFiles(userDir, "user");
   // project wins on name collision
   const map = new Map<string, CommandTemplate>();

@@ -37,7 +37,8 @@ describe("createKeychain", () => {
     expect(await keychain.get("anthropic")).toBe("sk-ant-secret");
   });
 
-  test("selects the windows backend on win32", async () => {
+  // Availability is PowerShell on disk, so only a Windows host can select this backend.
+  test.skipIf(process.platform !== "win32")("selects the windows backend on win32", async () => {
     const available: SpawnFn = async () => ({ stdout: "", stderr: "", exitCode: 0 });
     const keychain = await createKeychain("win32", tempDir(), available);
     expect(keychain.name).toBe("windows-dpapi");

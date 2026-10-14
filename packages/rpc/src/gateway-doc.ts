@@ -54,7 +54,9 @@ export function buildGatewayDocument(liveMethods?: readonly string[]): Record<st
                 },
               },
             },
-            "400": { description: "Malformed request body" },
+            "400": {
+              description: "Malformed request body, or parameters the handler rejects (invalid_request)",
+            },
             "401": unauthorized,
             "404": { description: "Unknown method" },
             "500": { description: "Handler threw" },

@@ -60,6 +60,7 @@ export type RpcMethod =
   | "trace_export"
   | "trace_get"
   | "trace_replay"
+  | "turns_list"
   | "undo"
   | "undo_run"
   | "wake_subscribe"
@@ -105,6 +106,11 @@ export interface ApprovalRequest {
   title: string;
   command?: string;
   path?: string;
+  riskTier?: string;
+  sessionId?: string;
+  turnId?: string;
+  source?: string;
+  argsSummary?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -196,6 +202,11 @@ export interface FallbackEvent {
 export interface ApprovalRequestedEvent {
   type: string;
   requestId: string;
+  sessionId: string;
+  turnId: string;
+  riskTier: string;
+  source: string;
+  argsSummary: string;
   request: ApprovalRequest;
 }
 export type SessionChannel = `session.${string}`;
@@ -298,7 +309,7 @@ export interface SurfaceClient {
   inbox_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Language server statuses for a session scope. */
   lsp_status(params?: Record<string, unknown>): Promise<unknown>;
-  /** MCP server failures for a session scope. */
+  /** MCP server failures and prompts for a session scope. */
   mcp_status(params?: Record<string, unknown>): Promise<unknown>;
   /** List catalog models merged with config overrides. */
   models_list(params?: Record<string, unknown>): Promise<unknown>;
@@ -356,9 +367,11 @@ export interface SurfaceClient {
   trace_get(params?: Record<string, unknown>): Promise<unknown>;
   /** Re-run a recorded turn and diff the messages. */
   trace_replay(params?: Record<string, unknown>): Promise<unknown>;
+  /** List the turns that run: id, session, model and start time. */
+  turns_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Undo the last snapshot-backed file change. */
   undo(params?: Record<string, unknown>): Promise<unknown>;
-  /** Roll a session back to its pre-turn checkpoint (Phase 8 generalizes to team runs). */
+  /** Roll a session back to its pre-turn checkpoint; with mode files-only|task-only|both restores a shadow commit's files and/or the session tip. */
   undo_run(params?: Record<string, unknown>): Promise<unknown>;
   /** Register a standing wake interest: a handle woken on scoped ready_for_review. */
   wake_subscribe(params?: Record<string, unknown>): Promise<unknown>;
@@ -423,6 +436,7 @@ export function createSurfaceClient(
     trace_export: (params) => call("trace_export", params ?? {}),
     trace_get: (params) => call("trace_get", params ?? {}),
     trace_replay: (params) => call("trace_replay", params ?? {}),
+    turns_list: (params) => call("turns_list", params ?? {}),
     undo: (params) => call("undo", params ?? {}),
     undo_run: (params) => call("undo_run", params ?? {}),
     wake_subscribe: (params) => call("wake_subscribe", params ?? {}),

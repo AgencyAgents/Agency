@@ -260,4 +260,31 @@ describe("removeReadOnlyWorktree", () => {
       }
     },
   );
+  it.skipIf(!gitAvailable)(
+    "worktrees with the same name under different parents can be created at the same time",
+    async () => {
+      const repo = mkdtempSync(join(tmpdir(), "wt-race-"));
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: repo });
+        execFileSync("git", ["config", "user.email", "qa@example.com"], { cwd: repo });
+        execFileSync("git", ["config", "user.name", "qa"], { cwd: repo });
+        writeFileSync(join(repo, "app.ts"), "export const v = 1;\n");
+        execFileSync("git", ["add", "."], { cwd: repo });
+        execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
+
+        const parents = ["a", "b", "c", "d", "e", "f"];
+        const outcomes = await Promise.allSettled(
+          parents.map((parent) =>
+            createWorktree(repo, join(repo, ".agency", "worktrees", parent, "w1"), `agency/${parent}/w1`),
+          ),
+        );
+
+        expect(outcomes.filter((outcome) => outcome.status === "rejected")).toEqual([]);
+        expect((await listWorktrees(repo)).length).toBe(parents.length + 1);
+      } finally {
+        rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+      }
+    },
+    60_000,
+  );
 });

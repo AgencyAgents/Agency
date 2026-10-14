@@ -133,10 +133,24 @@ describe("relativeWorkspacePath", () => {
   test("resolves relative input against the root", () => {
     expect(relativeWorkspacePath(root, join(".agency", "plans", "x.md"))).toBe(".agency/plans/x.md");
   });
+
+  test("reads the drive form that Git Bash prints as the same path", () => {
+    if (!isWin) return;
+    expect(relativeWorkspacePath(root, "/c/repo/src/index.ts")).toBe("src/index.ts");
+  });
 });
 
 describe("PermissionsGate", () => {
   const root = process.platform === "win32" ? join("C:", "repo") : join("/", "repo");
+
+  test("a deny rule holds for a path in the drive form that Git Bash prints", () => {
+    if (process.platform !== "win32") return;
+    const gate = new PermissionsGate({
+      permissions: { read: { "*": "allow", "secrets/**": "deny" } },
+      workspaceRoot: root,
+    });
+    expect(gate.decisionFor({ tool: "read", path: "/c/repo/secrets/key.txt" })).toBe("deny");
+  });
 
   test("a bare deny filters the tool from the offered list", () => {
     const gate = new PermissionsGate({
@@ -204,6 +218,73 @@ describe("PermissionsGate", () => {
     expect(
       await gate.check({ tool: "some-plugin-tool", riskTier: null as unknown as undefined }, undefined),
     ).toBe("deny");
+  });
+
+  test("allow-all answers every ask, but a config deny and an untrusted workspace still refuse", async () => {
+    const open = new PermissionsGate({ workspaceRoot: root }).withMode("allow-all");
+    expect(await open.check({ tool: "bash", riskTier: "dangerous" }, undefined)).toBe("allow");
+    expect(await open.check({ tool: "some-mcp-tool" }, undefined)).toBe("allow");
+    expect(await open.check({ tool: "read", path: ".env", riskTier: "safe" }, undefined)).toBe("deny");
+
+    const denied = new PermissionsGate({ permissions: { bash: "deny" }, workspaceRoot: root });
+    expect(await denied.withMode("allow-all").check({ tool: "bash", riskTier: "dangerous" }, undefined)).toBe(
+      "deny",
+    );
+
+    const untrusted = new PermissionsGate({
+      workspaceRoot: root,
+      trust: { store: createFileTrustStore(join(root, "trust.json")), root, required: true },
+    });
+    expect(
+      await untrusted.withMode("allow-all").check({ tool: "bash", riskTier: "dangerous" }, undefined),
+    ).toBe("deny");
+  });
+
+  test("a ceiling caps an agent gate: above safe, the stricter verdict of the two gates wins", async () => {
+    const agentMap = { bash: "allow", write: "allow", read: "allow" } as const;
+    const agent = new PermissionsGate({
+      permissions: agentMap,
+      workspaceRoot: root,
+      absentToolsDenied: true,
+    });
+    const verdicts = async (run: PermissionsGate) => {
+      const capped = agent.withCeiling(run);
+      return {
+        bash: await capped.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+        write: await capped.check({ tool: "write", path: "a.txt", riskTier: "moderate" }, undefined),
+        read: await capped.check({ tool: "read", path: "a.txt", riskTier: "safe" }, undefined),
+        edit: await capped.check({ tool: "edit", path: "a.txt", riskTier: "moderate" }, undefined),
+      };
+    };
+    const run = (permissions: Record<string, "allow" | "deny"> = {}) =>
+      new PermissionsGate({ permissions, workspaceRoot: root });
+
+    expect({
+      uncapped: await agent.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+      defaultMode: await verdicts(run()),
+      allowEdits: await verdicts(run().withMode("allow-edits")),
+      allowAll: await verdicts(run().withMode("allow-all")),
+      configAllowsBash: await verdicts(run({ bash: "allow" })),
+      configDeniesBash: await verdicts(run({ bash: "deny" }).withMode("allow-all")),
+    }).toEqual({
+      uncapped: "allow",
+      defaultMode: { bash: "deny", write: "deny", read: "allow", edit: "deny" },
+      allowEdits: { bash: "deny", write: "allow", read: "allow", edit: "deny" },
+      allowAll: { bash: "allow", write: "allow", read: "allow", edit: "deny" },
+      configAllowsBash: { bash: "allow", write: "deny", read: "allow", edit: "deny" },
+      configDeniesBash: { bash: "deny", write: "allow", read: "allow", edit: "deny" },
+    });
+  });
+
+  test("a ceiling stays on the gate through withMode and withItemScope", async () => {
+    const agent = new PermissionsGate({ permissions: { write: "allow" }, workspaceRoot: root });
+    const capped = agent.withCeiling(new PermissionsGate({ workspaceRoot: root }));
+    const request = { tool: "write", path: "src/a.txt", riskTier: "moderate" } as const;
+    expect({
+      mode: await capped.withMode("ask").check(request, undefined),
+      scope: await capped.withItemScope(["src/**"]).check(request, undefined),
+      modeLifts: await capped.withMode("allow-all").check(request, undefined),
+    }).toEqual({ mode: "deny", scope: "deny", modeLifts: "allow" });
   });
 
   test("a missing riskTier fails safe to ask instead of silently allowing", () => {

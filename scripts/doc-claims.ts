@@ -1,6 +1,6 @@
 /**
- * Claim gate: every backticked doc symbol must resolve to a non-test source hit.
- * Fenced blocks are skipped and path-like spans ignored; nonzero exit lists misses.
+ * Claim gate: every backticked doc symbol must resolve to a non-test source hit, and a symbol a
+ * status row calls wired must be used outside the file that declares it. Nonzero exit lists misses.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -115,6 +115,70 @@ export function findUnresolved(docs: Map<string, string[]>, corpus: string): Cla
   return gaps;
 }
 
+const STATUS_DOC = "docs/status.md";
+const COMMENT_RE = /\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm;
+const DECL_RE =
+  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|abstract class|const|let|var)\s+([A-Za-z_$][\w$]*)/;
+const TOP_LEVEL_RE =
+  /^(?:export|function|async function|class|abstract|const|let|var|enum|type|interface|declare|import)\b/;
+const WORD_RE = /[A-Za-z_$][\w$]*/g;
+
+/** Rows of the status table whose Wired cell starts with Yes, with the symbols each row names. */
+export function wiredClaims(statusMd: string): Array<{ item: string; symbols: string[] }> {
+  const claims: Array<{ item: string; symbols: string[] }> = [];
+  for (const line of statusMd.split(/\r?\n/)) {
+    const [, item, , wired] = line.split("|").map((cell) => cell.trim());
+    if (item === undefined || wired === undefined || !wired.startsWith("Yes")) continue;
+    claims.push({ item, symbols: extractSymbols(`${item} ${wired}`) });
+  }
+  return claims;
+}
+
+/**
+ * Splits sources into top-level declarations and walks name references from the root files and
+ * from module-level code. A name match counts as a use, so `declared` minus `live` is a lower bound.
+ */
+export function reachability(
+  sources: Map<string, string>,
+  isRoot: (file: string) => boolean,
+): { declared: Set<string>; live: Set<string> } {
+  const bodies = new Map<string, string[]>();
+  const queue: string[] = [];
+  for (const [file, text] of sources) {
+    let current: string | undefined;
+    for (const line of text.replace(COMMENT_RE, "").split(/\r?\n/)) {
+      if (TOP_LEVEL_RE.test(line)) current = DECL_RE.exec(line)?.[1];
+      // Module-level statements run on import, so they seed the walk like a root does.
+      if (current === undefined || isRoot(file)) queue.push(line);
+      if (current !== undefined) bodies.set(current, [...(bodies.get(current) ?? []), line]);
+    }
+  }
+  const live = new Set<string>();
+  while (queue.length > 0) {
+    for (const word of (queue.pop() as string).match(WORD_RE) ?? []) {
+      if (live.has(word) || !bodies.has(word)) continue;
+      live.add(word);
+      queue.push(...(bodies.get(word) as string[]));
+    }
+  }
+  return { declared: new Set(bodies.keys()), live };
+}
+
+/** Wired symbols that no root reaches. Names with no top-level declaration (RPC names, fields) are skipped. */
+export function findUnwired(
+  claims: Array<{ item: string; symbols: string[] }>,
+  reach: { declared: Set<string>; live: Set<string> },
+): Array<{ item: string; symbol: string }> {
+  return claims.flatMap(({ item, symbols }) =>
+    symbols
+      .filter((symbol) => reach.declared.has(symbol) && !reach.live.has(symbol))
+      .map((symbol) => ({ item, symbol })),
+  );
+}
+
+/** The CLI entrypoint and the SDK are what a user can run or import. */
+const isRootFile = (file: string): boolean => /[/]cli[/]src[/]entrypoint\.ts$|[/]sdk[/]src[/]/.test(file);
+
 if (import.meta.main) {
   const root = join(import.meta.dir, "..");
   const docs = new Map<string, string[]>();
@@ -151,5 +215,18 @@ if (import.meta.main) {
     console.log(`${gaps.length} unresolved doc symbol(s)`);
     process.exit(1);
   }
-  console.log(`doc-claims: ${srcFiles.length} source files, all backticked symbols resolve`);
+  const sources = new Map(srcFiles.map((file) => [file, readFileSync(file, "utf8")]));
+  const unwired = findUnwired(
+    wiredClaims(readFileSync(join(root, STATUS_DOC), "utf8")),
+    reachability(sources, isRootFile),
+  );
+  if (unwired.length > 0) {
+    for (const miss of unwired)
+      console.log(`${miss.symbol} (called wired, no production caller; row: ${miss.item})`);
+    console.log(`${unwired.length} unwired symbol(s) in ${STATUS_DOC}`);
+    process.exit(1);
+  }
+  console.log(
+    `doc-claims: ${srcFiles.length} source files, all backticked symbols resolve, wired rows have callers`,
+  );
 }

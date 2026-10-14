@@ -1,4 +1,4 @@
-import type { CallerIdentity, Capabilities, ToolPolicy } from "@agency/guard";
+import type { CallerIdentity, Capabilities, RequestApproval, ToolPolicy } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { CacheSegment, ProviderAdapter, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
@@ -34,9 +34,13 @@ export interface ChildTurnSpec {
   identity: CallerIdentity;
   capabilities: Capabilities;
   toolPolicy: ToolPolicy;
+  /** The approval surface of the turn that started the child. Absent means each ask of the child is refused. */
+  requestApproval?: RequestApproval;
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
+  contextWindow?: number;
+  vision?: boolean;
   turnId: string;
   sessionId: string;
   cwd: string;
@@ -55,6 +59,7 @@ export interface ChildTurnSpec {
 export interface ChildTurnDeps {
   http: HttpClient;
   eventBus?: RunTurnOptions["eventBus"];
+  redactToolResult?: RunTurnOptions["redactToolResult"];
   createTraceRecorder: (trace: ChildTurnTrace) => TraceRecorder | undefined;
 }
 
@@ -74,7 +79,9 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       identity: spec.identity,
       capabilities: spec.capabilities,
       toolPolicy: spec.toolPolicy,
+      ...(spec.requestApproval !== undefined ? { requestApproval: spec.requestApproval } : {}),
       eventBus: deps.eventBus,
+      ...(deps.redactToolResult !== undefined ? { redactToolResult: deps.redactToolResult } : {}),
       systemPrompt: spec.systemPrompt,
       ...(spec.systemSegments !== undefined ? { systemSegments: spec.systemSegments } : {}),
       tools: spec.tools,
@@ -86,6 +93,8 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       ...(spec.budget !== undefined ? { budget: spec.budget } : {}),
       ...(spec.pricePerMTok !== undefined ? { pricePerMTok: spec.pricePerMTok } : {}),
       ...(spec.maxTokensPerRequest !== undefined ? { maxTokensPerRequest: spec.maxTokensPerRequest } : {}),
+      ...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
+      ...(spec.vision !== undefined ? { vision: spec.vision } : {}),
       turnId: spec.turnId,
       sessionId: spec.sessionId,
       cwd: spec.cwd,

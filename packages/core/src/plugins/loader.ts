@@ -15,7 +15,13 @@ import {
   readSiblingAgentsMd,
   wrapHookHandler,
 } from "./context.ts";
-import { discoverSkills, resolveSkillDirs, skillToPlugin } from "./skill.ts";
+import {
+  discoverSkills,
+  resolveSkillDirs,
+  type SkillDescriptor,
+  skillListing,
+  skillToPlugin,
+} from "./skill.ts";
 import type { LoadedPlugin, PluginDefinition } from "./types.ts";
 
 export interface PluginToolRegistry {
@@ -35,6 +41,11 @@ export interface PluginLoaderOptions {
   identity?: CallerIdentity;
   /** Per-contribution byte cap for AGENTS.md injection; defaults to `DEFAULT_MAX_PLUGIN_INSTRUCTION_BYTES`. */
   maxInstructionBytes?: number;
+  /**
+   * False for a workspace that the user did not trust: its plugin files do not run and its skills and
+   * instruction files do not load. A plugin file is code, so a caller with a trust store must pass this.
+   */
+  projectTrusted?: boolean;
 }
 
 export interface PluginLoadResult {
@@ -46,6 +57,8 @@ export interface PluginLoadResult {
    * (project -> user -> npm). Append after `loadInstructions()` output.
    */
   instructions: string[];
+  /** The skills that load on demand: `instructions` lists them, and the skill tool gives their bodies. */
+  skills: SkillDescriptor[];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -214,7 +227,8 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
   const projectDir = join(options.workspaceRoot, ".agency", "plugins");
   const userDir = join(options.configDirOverride ?? configDir(), "plugins");
 
-  const projectFiles = discoverFiles(projectDir);
+  const projectTrusted = options.projectTrusted ?? true;
+  const projectFiles = projectTrusted ? discoverFiles(projectDir) : [];
   const userFiles = discoverFiles(userDir);
 
   type Source = { id: string; path: string; kind: "file" | "npm"; tier: PluginTier };
@@ -243,6 +257,7 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
   // Tier-level AGENTS.md files first (project, then user), isolated per file.
   const instructions: string[] = collectPluginTierFiles(options.workspaceRoot, options.configDirOverride, {
     maxBytes: maxInstructionBytes,
+    projectTrusted,
   });
 
   const seen = new Set<string>();
@@ -335,8 +350,11 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
   // Skills: scan skills/ directories and convert to plugin entries.
   // Skills are Markdown files (not JS modules), so they bypass the module
   // loading pipeline and are converted directly to PluginDefinitions.
-  const skillDirs = resolveSkillDirs(options.workspaceRoot, options.configDirOverride);
+  const skillDirs = resolveSkillDirs(options.workspaceRoot, options.configDirOverride).filter(
+    (entry) => projectTrusted || entry.tier !== "project",
+  );
   const skills = discoverSkills(skillDirs, logger);
+  const onDemand: SkillDescriptor[] = [];
   for (const skill of skills) {
     if (seen.has(skill.name)) {
       errors.push({ id: skill.name, error: `duplicate skill id "${skill.name}" skipped (${skill.path})` });
@@ -349,6 +367,11 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
 
     plugins.push({ id: skill.name, path: skill.path, tier: skill.tier, definition: def, unsubscribes });
 
+    // A skill with a description loads on demand. With none, the model has no way to choose it: its body stays in the prompt.
+    if (skill.description) {
+      onDemand.push(skill);
+      continue;
+    }
     try {
       instructions.push(...collectPluginAgentsTexts(def, maxInstructionBytes, skill.name));
     } catch (err) {
@@ -358,8 +381,10 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
       if (!logger) console.error(`[plugins] failed to collect instructions from skill "${skill.name}":`, err);
     }
   }
+  const listing = skillListing(onDemand);
+  if (listing !== undefined) instructions.push(listing);
 
-  return { plugins, errors, instructions };
+  return { plugins, errors, instructions, skills: onDemand };
 }
 
 export function unloadPlugins(loaded: LoadedPlugin[]): void {

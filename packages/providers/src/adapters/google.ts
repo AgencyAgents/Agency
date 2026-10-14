@@ -1,5 +1,5 @@
 import type { HttpClient } from "@agency/net";
-import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import {
   isCacheable,
   MIN_CACHEABLE_TOKENS,
@@ -10,7 +10,7 @@ import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel } from "../types.ts";
 
-const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 /**
  * Gemini's thinkingBudget is a raw token count, with -1 meaning "let the model
@@ -26,41 +26,98 @@ const THINKING_BUDGET: Record<ThinkingLevel, number> = {
   max: -1,
 };
 
-function toGeminiPart(block: ContentBlock): Record<string, unknown> | undefined {
-  switch (block.type) {
-    case "text":
-      return { text: block.text };
-    case "image":
-      return { inlineData: { mimeType: block.mimeType, data: block.data } };
-    case "tool_call":
-      return { functionCall: { name: block.name, args: block.input } };
-    case "tool_result":
-      return { functionResponse: { name: block.toolCallId, response: { content: block.content } } };
-    case "thinking":
-    case "redacted_thinking":
-      // Gemini rebuilds its own reasoning context; only the signed summary
-      // parts it emitted matter, and those ride on the function-call parts.
-      return undefined;
-  }
+function thinkingConfig(model: string, level: ThinkingLevel): Record<string, unknown> {
+  if (level !== "off") return { thinkingBudget: THINKING_BUDGET[level], includeThoughts: true };
+  // 2.5 Pro cannot turn thinking off: 128 is its lowest budget and 0 is an error.
+  return { thinkingBudget: model.includes("gemini-2.5-pro") ? 128 : THINKING_BUDGET.off };
 }
 
+/** The key goes in a header: an address is shown in errors and logs. */
+function authHeaders(request: ProviderRequest): Record<string, string> {
+  return { "content-type": "application/json", "x-goog-api-key": request.apiKey, ...request.headers };
+}
+
+/**
+ * Gemini pairs a response with its call by id and by function name: a response under any other
+ * name makes the model return an empty reply. A signature goes back on the part that it arrived with.
+ */
 function toGeminiContents(messages: Message[]): Record<string, unknown>[] {
+  const nameOfCall = new Map<string, string>();
   return messages
     .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: m.content.map(toGeminiPart).filter((p): p is Record<string, unknown> => p !== undefined),
-    }));
+    .map((m) => {
+      const parts: Record<string, unknown>[] = [];
+      for (const block of m.content) {
+        switch (block.type) {
+          case "text":
+            parts.push({ text: block.text });
+            break;
+          case "image":
+            parts.push({ inlineData: { mimeType: block.mimeType, data: block.data } });
+            break;
+          case "tool_call":
+            nameOfCall.set(block.id, block.name);
+            parts.push({ functionCall: { id: block.id, name: block.name, args: block.input } });
+            break;
+          case "tool_result":
+            parts.push({
+              functionResponse: {
+                id: block.toolCallId,
+                name: nameOfCall.get(block.toolCallId) ?? block.toolCallId,
+                response: { content: block.content },
+              },
+            });
+            break;
+          case "thinking": {
+            // The stream puts a signature right after its part, as a thinking block with no text.
+            const signed = parts.at(-1);
+            const own = block.signature !== undefined && (block.family ?? "google") === "google";
+            if (block.text === "" && own && signed && !signed.thoughtSignature) {
+              signed.thoughtSignature = block.signature;
+            }
+            break;
+          }
+          case "redacted_thinking":
+            break;
+        }
+      }
+      return { role: m.role === "assistant" ? "model" : "user", parts };
+    })
+    .filter((content) => content.parts.length > 0);
+}
+
+/** The fields of the schema subset that `parameters` takes. */
+const SUBSET_FIELDS = new Set(
+  (
+    "type format title description nullable enum items properties required anyOf propertyOrdering default example " +
+    "minItems maxItems minProperties maxProperties minLength maxLength pattern minimum maximum"
+  ).split(" "),
+);
+
+/** `parameters` rejects a keyword outside its subset, a list of types, a node with no type and `anyOf` beside other fields. */
+function fitsSubset(node: unknown): boolean {
+  if (typeof node !== "object" || node === null || Array.isArray(node)) return false;
+  const schema = node as Record<string, unknown>;
+  const keys = Object.keys(schema);
+  if (!keys.every((key) => SUBSET_FIELDS.has(key))) return false;
+  if (Array.isArray(schema.anyOf)) return keys.length === 1 && schema.anyOf.every(fitsSubset);
+  if (typeof schema.type !== "string") return false;
+  if (schema.items !== undefined && !fitsSubset(schema.items)) return false;
+  return Object.values((schema.properties ?? {}) as Record<string, unknown>).every(fitsSubset);
 }
 
 function toGeminiTools(request: ProviderRequest): Record<string, unknown>[] | undefined {
   if (!request.tools?.length) return undefined;
   return [
     {
+      // One schema that `parameters` rejects fails the whole request, so such a schema (an MCP server's, a plugin's)
+      // goes in the field that takes full JSON Schema.
       functionDeclarations: request.tools.map((t) => ({
         name: t.name,
         description: t.description,
-        parameters: t.inputSchema,
+        ...(fitsSubset(t.inputSchema)
+          ? { parameters: t.inputSchema }
+          : { parametersJsonSchema: t.inputSchema }),
       })),
     },
   ];
@@ -70,26 +127,36 @@ function buildRequestBody(
   request: ProviderRequest,
   opts: { cachedContent?: string; systemText?: string } = {},
 ): Record<string, unknown> {
+  const contents = toGeminiContents(request.messages);
   const body: Record<string, unknown> = {
-    contents: toGeminiContents(request.messages),
+    contents,
     generationConfig: {
       maxOutputTokens: request.maxTokens,
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
       ...(request.thinkingLevel
-        ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET[request.thinkingLevel] } }
+        ? { thinkingConfig: thinkingConfig(request.model, request.thinkingLevel) }
         : {}),
     },
   };
 
-  if (opts.cachedContent) body.cachedContent = opts.cachedContent;
+  if (opts.cachedContent) {
+    // The API rejects systemInstruction or tools next to cachedContent: the cache holds them.
+    // The dynamic part of the prompt leads the contents.
+    body.cachedContent = opts.cachedContent;
+    if (opts.systemText) {
+      const first = contents[0];
+      if (first?.role === "user") (first.parts as unknown[]).unshift({ text: opts.systemText });
+      else contents.unshift({ role: "user", parts: [{ text: opts.systemText }] });
+    }
+    return body;
+  }
 
-  const system = opts.systemText ?? request.system;
-  if (system) {
-    body.systemInstruction = { parts: [{ text: system }] };
+  if (request.system) {
+    body.systemInstruction = { parts: [{ text: request.system }] };
   }
 
   const tools = toGeminiTools(request);
-  if (tools && !opts.cachedContent) body.tools = tools;
+  if (tools) body.tools = tools;
 
   return body;
 }
@@ -124,9 +191,9 @@ async function explicitPrefixCache(
     request.cachePolicy?.sharedPrefixTtlSeconds ??
     SHARED_PREFIX_TTL_SECONDS;
   try {
-    const res = await http.fetch(`${BASE_URL.replace("/models", "")}/cachedContents?key=${request.apiKey}`, {
+    const res = await http.fetch(`${request.baseUrl ?? BASE_URL}/cachedContents`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders(request),
       body: JSON.stringify({
         model: `models/${request.model}`,
         systemInstruction: { parts: [{ text: stable }] },
@@ -148,12 +215,15 @@ async function explicitPrefixCache(
 const FINISH_REASON: Record<string, StopReason> = {
   STOP: "end_turn",
   MAX_TOKENS: "max_tokens",
+  // The reply reached the per-request limit and is not complete: the loop continues a cut reply.
+  CONTINUATION: "max_tokens",
   SAFETY: "refusal",
   RECITATION: "refusal",
   BLOCKLIST: "refusal",
   PROHIBITED_CONTENT: "refusal",
   SPII: "refusal",
-  MALFORMED_FUNCTION_CALL: "error",
+  LANGUAGE: "refusal",
+  IMAGE_SAFETY: "refusal",
 };
 
 /** Gemini phrases oversized inputs as a 400 INVALID_ARGUMENT (or 413). */
@@ -176,7 +246,10 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   const googleStatus = body?.error?.status;
 
   if (res.status === 401 || res.status === 403) {
-    return new AgencyError(ErrorCode.AUTH, message, { source: "google", context });
+    // A provider's own text ("User not found.") does not say which key failed.
+    const what = res.status === 401 ? "rejected the API key" : "refused access";
+    const text = `google ${what} (HTTP ${res.status}): ${message}`;
+    return new AgencyError(ErrorCode.AUTH, text, { source: "google", context });
   }
   if (res.status === 429 || googleStatus === "RESOURCE_EXHAUSTED") {
     const retryAfterMs = parseRetryAfterMs(res);
@@ -191,14 +264,16 @@ async function toAgencyError(res: Response): Promise<AgencyError> {
   if (isInputTooLong(res.status, message)) {
     return new AgencyError(ErrorCode.CONTEXT_OVERFLOW, message, { source: "google", context });
   }
-  return new AgencyError(ErrorCode.INTERNAL, message, { source: "google", context });
+  // What is left of the 4xx range is a request that the caller can correct: an unknown model, a bad parameter.
+  const code = res.status >= 400 ? ErrorCode.INVALID_REQUEST : ErrorCode.INTERNAL;
+  return new AgencyError(code, message, { source: "google", context });
 }
 
 interface GeminiPart {
   text?: string;
   thought?: boolean;
   thoughtSignature?: string;
-  functionCall?: { name: string; args: Record<string, unknown> };
+  functionCall?: { id?: string; name: string; args: Record<string, unknown> };
 }
 
 interface GeminiChunk {
@@ -206,10 +281,12 @@ interface GeminiChunk {
     content?: { parts?: GeminiPart[] };
     finishReason?: string;
   }>;
+  promptFeedback?: { blockReason?: string };
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
-    cachedTokenCount?: number;
+    cachedContentTokenCount?: number;
+    thoughtsTokenCount?: number;
   };
 }
 
@@ -223,10 +300,10 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     if (cachedContent && dynamic) dynamicSystem = dynamic;
     else if (!cachedContent) dynamicSystem = [stable, dynamic].filter(Boolean).join("\n\n") || undefined;
   }
-  const url = `${BASE_URL}/${request.model}:streamGenerateContent?alt=sse&key=${request.apiKey}`;
+  const url = `${request.baseUrl ?? BASE_URL}/models/${request.model}:streamGenerateContent?alt=sse`;
   const res = await http.fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: authHeaders(request),
     body: JSON.stringify(
       buildRequestBody(request, cachedContent ? { cachedContent, systemText: dynamicSystem } : {}),
     ),
@@ -244,18 +321,21 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
   } = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
   let sawFunctionCall = false;
-  let toolCallSeq = 0;
 
   for await (const frame of parseSse(res.body)) {
     const chunk = JSON.parse(frame.data) as GeminiChunk;
     const candidate = chunk.candidates?.[0];
+    // A blocked prompt comes back with no candidate.
+    if (chunk.promptFeedback?.blockReason) stopReason = "refusal";
 
     if (chunk.usageMetadata) {
       usage = {
         inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
-        outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-        ...(chunk.usageMetadata.cachedTokenCount !== undefined
-          ? { cachedInputTokens: chunk.usageMetadata.cachedTokenCount }
+        // Thinking tokens are billed as output and are not in the candidates count.
+        outputTokens:
+          (chunk.usageMetadata.candidatesTokenCount ?? 0) + (chunk.usageMetadata.thoughtsTokenCount ?? 0),
+        ...(chunk.usageMetadata.cachedContentTokenCount !== undefined
+          ? { cachedInputTokens: chunk.usageMetadata.cachedContentTokenCount }
           : {}),
       };
     }
@@ -266,7 +346,8 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
         // Gemini sends the whole call in one shot: there's no incremental
         // arguments stream the way Anthropic/OpenAI have, so start/delta/end
         // collapse into one immediate sequence per call.
-        const id = `call_${toolCallSeq++}`;
+        // A made-up id is unique: ids that repeat across turns are rejected by other providers.
+        const id = part.functionCall.id ?? `call_${crypto.randomUUID()}`;
         yield { type: "tool_call_start", id, name: part.functionCall.name };
         yield { type: "tool_call_delta", id, inputJsonDelta: JSON.stringify(part.functionCall.args) };
         yield { type: "tool_call_end", id };
@@ -281,7 +362,8 @@ async function* streamRaw(request: ProviderRequest, http: HttpClient): AsyncIter
     }
 
     if (candidate?.finishReason) {
-      stopReason = FINISH_REASON[candidate.finishReason] ?? "end_turn";
+      // Only STOP is a normal end: any other reason, also one that the API adds later, left the reply incomplete.
+      stopReason = FINISH_REASON[candidate.finishReason] ?? "error";
     }
   }
 

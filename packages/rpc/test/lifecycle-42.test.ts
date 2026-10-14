@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -50,9 +59,9 @@ function fakeSpawnDaemon(instanceFile: string) {
 }
 
 describe("daemon lifecycle constants (item 42)", () => {
-  test("spawn lock stale detection is 10s and default deadline is 5s", () => {
-    expect(SPAWN_LOCK_STALE_MS).toBe(10_000);
-    expect(DEFAULT_SPAWN_TIMEOUT_MS).toBe(5_000);
+  test("default deadline is 30s, and a spawn lock goes stale only after it", () => {
+    expect(DEFAULT_SPAWN_TIMEOUT_MS).toBe(30_000);
+    expect(SPAWN_LOCK_STALE_MS).toBeGreaterThan(DEFAULT_SPAWN_TIMEOUT_MS);
   });
 
   test("instance file mode is user-only 0600", () => {
@@ -153,7 +162,47 @@ describe("O_EXCL spawn lock with stale detection (item 42)", () => {
     await client.close();
   });
 
-  test("5s default deadline: a daemon that never appears rejects", async () => {
+  test("a lock that its holder has created and not written yet is not stolen", async () => {
+    const instanceDir = tempDir();
+    const ws = join(tempDir(), "ws-empty-lock");
+    writeFileSync(join(instanceDir, `${hashWorkspaceRoot(ws)}.json.lock`), "");
+
+    let spawns = 0;
+    await expect(
+      ensureDaemon({
+        workspaceRoot: ws,
+        instanceDir,
+        spawnDaemon: () => {
+          spawns += 1;
+        },
+        spawnTimeoutMs: 150,
+        pollIntervalMs: 20,
+      }),
+    ).rejects.toThrow(/did not become ready/);
+    expect(spawns).toBe(0);
+  });
+
+  test("a start that connected does not fail when the lock cannot be removed", async () => {
+    const instanceDir = tempDir();
+    const ws = join(tempDir(), "ws-busy-lock");
+    const lockFile = join(instanceDir, `${hashWorkspaceRoot(ws)}.json.lock`);
+
+    const { client } = await ensureDaemon({
+      workspaceRoot: ws,
+      instanceDir,
+      spawnDaemon: (file) => {
+        // A folder with a file in it stands for a lock that the OS refuses to remove (seen on Windows as EFAULT).
+        rmSync(lockFile);
+        mkdirSync(lockFile);
+        writeFileSync(join(lockFile, "busy"), "");
+        fakeSpawnDaemon(file);
+      },
+    });
+    expect(await client.call("ping", {})).toBe("pong");
+    await client.close();
+  });
+
+  test("a daemon that never appears rejects at the deadline", async () => {
     const start = Date.now();
     await expect(
       ensureDaemon({

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SpawnFn } from "../../src/auth/types.ts";
 import { createWindowsKeychainBackend } from "../../src/auth/windows.ts";
 
 const cleanup: string[] = [];
@@ -15,121 +16,79 @@ function tempDir(): string {
   return dir;
 }
 
-// Real DPAPI round-trip via powershell.exe; only meaningful on Windows, and
-// exercises the actual subprocess path this backend uses in production.
-// PowerShell 5.1's cold start is slow and variable (300ms-2s+), and several
-// of these tests spawn it twice (set + get), so the default 5s test timeout
-// isn't reliable margin: each test gets an explicit, longer one.
-const DPAPI_TEST_TIMEOUT_MS = 20_000;
+const noSpawn: SpawnFn = async () => {
+  throw new Error("no process may start");
+};
 
+// Real DPAPI through crypt32.dll: Windows only.
 describe.skipIf(process.platform !== "win32")("createWindowsKeychainBackend (real DPAPI)", () => {
-  test(
-    "is available on a Windows machine with PowerShell",
-    async () => {
-      expect(await createWindowsKeychainBackend(tempDir()).isAvailable()).toBe(true);
-    },
-    DPAPI_TEST_TIMEOUT_MS,
-  );
-
-  test(
-    "round-trips a secret through actual DPAPI encryption",
-    async () => {
-      const backend = createWindowsKeychainBackend(tempDir());
-      await backend.set("anthropic", "sk-ant-real-dpapi-secret");
-      expect(await backend.get("anthropic")).toBe("sk-ant-real-dpapi-secret");
-    },
-    DPAPI_TEST_TIMEOUT_MS,
-  );
-
-  test(
-    "the on-disk blob never contains the plaintext secret",
-    async () => {
-      const dir = tempDir();
-      await createWindowsKeychainBackend(dir).set("anthropic", "sk-ant-should-not-appear-in-file");
-      const raw = readFileSync(join(dir, "anthropic.dpapi"), "utf8");
-      expect(raw).not.toContain("sk-ant-should-not-appear-in-file");
-    },
-    DPAPI_TEST_TIMEOUT_MS,
-  );
-
-  test(
-    "get returns undefined for an account never set",
-    async () => {
-      expect(await createWindowsKeychainBackend(tempDir()).get("nope")).toBeUndefined();
-    },
-    DPAPI_TEST_TIMEOUT_MS,
-  );
-
-  test(
-    "delete removes the stored credential",
-    async () => {
-      const dir = tempDir();
-      const backend = createWindowsKeychainBackend(dir);
-      await backend.set("openai", "sk-value");
-      await backend.delete("openai");
-      expect(await backend.get("openai")).toBeUndefined();
-    },
-    DPAPI_TEST_TIMEOUT_MS,
-  );
-});
-
-describe("createWindowsKeychainBackend (mocked)", () => {
-  test("isAvailable reflects the spawned process's exit code", async () => {
-    const backend = createWindowsKeychainBackend(tempDir(), async () => ({
-      stdout: "",
-      stderr: "powershell not found",
-      exitCode: 1,
-    }));
-    expect(await backend.isAvailable()).toBe(false);
+  test("is available on a Windows machine", async () => {
+    expect(await createWindowsKeychainBackend(tempDir()).isAvailable()).toBe(true);
   });
 
-  test("set throws when the PowerShell encryption step fails", async () => {
-    const backend = createWindowsKeychainBackend(tempDir(), async () => ({
-      stdout: "",
-      stderr: "access denied",
-      exitCode: 1,
-    }));
-    await expect(backend.set("anthropic", "secret")).rejects.toThrow(/DPAPI/);
+  test("round-trips a secret, and set and get start no process", async () => {
+    const backend = createWindowsKeychainBackend(tempDir(), noSpawn);
+    await backend.set("anthropic", "sk-ant-real-dpapi-secret");
+    expect(await backend.get("anthropic")).toBe("sk-ant-real-dpapi-secret");
+  });
+
+  test("the on-disk blob never contains the plaintext secret", async () => {
+    const dir = tempDir();
+    await createWindowsKeychainBackend(dir).set("anthropic", "sk-ant-should-not-appear-in-file");
+    const raw = readFileSync(join(dir, "anthropic.dpapi"), "utf8");
+    expect(raw).not.toContain("sk-ant-should-not-appear-in-file");
+  });
+
+  test("a key that the PowerShell path of an earlier version stored still reads", async () => {
+    const dir = tempDir();
+    const script = [
+      "Add-Type -AssemblyName System.Security",
+      "$bytes = [System.Text.Encoding]::UTF8.GetBytes('sk-from-powershell')",
+      "$encrypted = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+      "[System.Convert]::ToBase64String($encrypted)",
+    ].join("; ");
+    const made = Bun.spawnSync(["powershell.exe", "-NoProfile", "-Command", script]);
+    writeFileSync(join(dir, "openai.dpapi"), made.stdout.toString().trim());
+    expect(await createWindowsKeychainBackend(dir, noSpawn).get("openai")).toBe("sk-from-powershell");
+  }, 20_000);
+
+  test("get returns undefined for an account never set, or a blob that DPAPI cannot open", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "broken.dpapi"), "AQAAANCMnd8bfZERDj3/g==\n");
+    const backend = createWindowsKeychainBackend(dir, noSpawn);
+    expect(await backend.get("nope")).toBeUndefined();
+    expect(await backend.get("broken")).toBeUndefined();
+  });
+
+  test("delete removes the stored credential", async () => {
+    const backend = createWindowsKeychainBackend(tempDir());
+    await backend.set("openai", "sk-value");
+    await backend.delete("openai");
+    expect(await backend.get("openai")).toBeUndefined();
   });
 
   test("migrates a legacy hex credential to the current format on read", async () => {
     const dir = tempDir();
     const scripts: string[] = [];
     const backend = createWindowsKeychainBackend(dir, async (cmd) => {
-      const script = cmd[3] ?? "";
-      scripts.push(script);
-      // The legacy decrypt path and the current re-encrypt path are distinct scripts.
-      if (script.includes("ConvertTo-SecureString")) {
-        return { stdout: "sk-migrated-secret\n", stderr: "", exitCode: 0 };
-      }
-      return { stdout: "bmV3LWNpcGhlcnRleHQ==\n", stderr: "", exitCode: 0 };
+      scripts.push(cmd[3] ?? "");
+      return { stdout: "sk-migrated-secret\n", stderr: "", exitCode: 0 };
     });
-
     // Pre-upgrade blob: bare hex with the ConvertFrom-SecureString header.
     writeFileSync(join(dir, "anthropic.dpapi"), "76492d1116743f0423413b16050a5345aabbccdd\n");
 
     expect(await backend.get("anthropic")).toBe("sk-migrated-secret");
-    // The credential file has been rewritten in the current Base64 format, so
-    // the legacy decrypt path never needs to run again.
-    expect(readFileSync(join(dir, "anthropic.dpapi"), "utf8").trim()).toBe("bmV3LWNpcGhlcnRleHQ==");
-    expect(scripts).toHaveLength(2);
-  });
-
-  test("a current-format credential is not routed through the legacy path", async () => {
-    const dir = tempDir();
-    const scripts: string[] = [];
-    const backend = createWindowsKeychainBackend(dir, async (cmd) => {
-      scripts.push(cmd[3] ?? "");
-      return { stdout: "sk-plain-secret\n", stderr: "", exitCode: 0 };
-    });
-
-    writeFileSync(join(dir, "anthropic.dpapi"), "AQAAANCMnd8bfZERDj3/g==\n");
-
-    expect(await backend.get("anthropic")).toBe("sk-plain-secret");
     expect(scripts).toHaveLength(1);
-    expect(scripts[0]).not.toContain("ConvertTo-SecureString");
+    expect(scripts[0]).toContain("ConvertTo-SecureString");
+    // The file is in the current format now: the next read needs no process.
+    expect(readFileSync(join(dir, "anthropic.dpapi"), "utf8")).not.toStartWith(
+      "76492d1116743f0423413b16050a5345",
+    );
+    expect(await createWindowsKeychainBackend(dir, noSpawn).get("anthropic")).toBe("sk-migrated-secret");
   });
+});
 
+describe("createWindowsKeychainBackend (mocked)", () => {
   test("a legacy credential that cannot be migrated reports an actionable error", async () => {
     const dir = tempDir();
     const backend = createWindowsKeychainBackend(dir, async () => ({
