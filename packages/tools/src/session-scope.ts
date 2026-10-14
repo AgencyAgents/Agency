@@ -118,6 +118,8 @@ export interface SessionScopeOptions {
   lspRegistry?: LspRegistry;
   mcpTransportFor?: McpManagerOptions["transportFor"];
   identityFor?: McpManagerOptions["identityFor"];
+  /** The sign-ins of `agency mcp login`. */
+  mcpTokens?: McpManagerOptions["tokens"];
 }
 
 export async function createSessionScope(scopeOptions: SessionScopeOptions): Promise<SessionScope> {
@@ -348,13 +350,16 @@ export async function createSessionScope(scopeOptions: SessionScopeOptions): Pro
   const startMcp = async (): Promise<void> => {
     // Explicit transportFor wins; a container sandbox routes stdio across
     // the mount (software yields undefined, keeping the default spawn path).
+    const tokens = options.mcpTokens ? { tokens: options.mcpTokens } : {};
     const containerTransportFor = transportForWithContainerSandbox(options.deps.sandbox, {
       cwd: options.workspaceRoot,
       adopt: (proc, command) => processManager.adopt(proc, command),
+      ...tokens,
     });
     mcp = await startMcpServersFromRaw(options.mcpServers, {
       capabilities: options.deps.capabilities,
       processManager,
+      ...tokens,
       transportFor: options.mcpTransportFor ?? containerTransportFor,
       registry,
       identityFor: options.identityFor,

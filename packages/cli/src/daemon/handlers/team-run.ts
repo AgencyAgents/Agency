@@ -29,7 +29,7 @@ import {
 } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
-import { extractFinalText, type SessionScope, TeamMcpPool } from "@agency/tools";
+import { extractFinalText, type McpTokenStore, type SessionScope, TeamMcpPool } from "@agency/tools";
 import { modelRunOptions, teamRunUsage } from "../costing.ts";
 import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
 import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
@@ -228,7 +228,7 @@ export async function attachTeamMcpPool(
   pools: Map<string, TeamMcpPool>,
   mcpServers: unknown,
   scope: SessionScope,
-  opts: { teamParent: string | undefined; handle?: string },
+  opts: { teamParent: string | undefined; handle?: string; tokens?: McpTokenStore },
 ): Promise<void> {
   if (!opts.teamParent) return;
   const split = TeamMcpPool.split(mcpServers);
@@ -239,6 +239,7 @@ export async function attachTeamMcpPool(
       pool = new TeamMcpPool(opts.teamParent, split.shared, {
         capabilities: { tools: "*", pathScopes: "*", network: "*" },
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? opts.handle ?? "main" }),
+        ...(opts.tokens ? { tokens: opts.tokens } : {}),
       });
       pools.set(opts.teamParent, pool);
       await pool.start();

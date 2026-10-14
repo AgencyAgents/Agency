@@ -6,6 +6,7 @@ import {
   type ContainerStdioBackend,
 } from "../container-exec.ts";
 import type { McpServerConfig } from "./config.ts";
+import { type McpBearer, type McpTokenStore, mcpBearer } from "./oauth.ts";
 
 export interface McpTransport {
   start(): Promise<void>;
@@ -20,15 +21,26 @@ export interface TransportOptions {
   adopt?: (proc: { pid?: number; kill: () => void }, command: string) => void;
   /** Host cwd the container backend maps into the mount; unset keeps the backend default. */
   cwd?: string;
+  /** The sign-ins of `agency mcp login`, for a server over HTTP. */
+  tokens?: McpTokenStore;
 }
 
 export function createMcpTransport(
-  _serverName: string,
+  serverName: string,
   config: McpServerConfig,
   options: TransportOptions = {},
 ): McpTransport {
   if (config.url) {
-    return createHttpTransport(config.url, config.headers, config.timeoutMs ?? config.requestTimeoutMs);
+    // An authorization header of the config wins over a sign-in.
+    const own = Object.keys(config.headers ?? {}).some((name) => name.toLowerCase() === "authorization");
+    const bearer = options.tokens && !own ? mcpBearer(config.url, options.tokens) : undefined;
+    return createHttpTransport(
+      serverName,
+      config.url,
+      config.headers,
+      config.timeoutMs ?? config.requestTimeoutMs,
+      bearer,
+    );
   }
   if (config.command) {
     return createStdioTransport(config.command, config.args ?? [], config.env ?? {}, options);
@@ -50,13 +62,13 @@ export function transportForWithContainerSandbox(
   const stdio = asContainerStdioBackend(sandbox);
   if (stdio) {
     return (_serverName, config) => {
-      if (config.url) return createMcpTransport(_serverName, config);
+      if (config.url) return createMcpTransport(_serverName, config, options);
       return createContainerStdioTransport(stdio, config, options);
     };
   }
   if (asContainerExecBackend(sandbox) !== undefined) {
     return (serverName, config) => {
-      if (config.url) return createMcpTransport(serverName, config);
+      if (config.url) return createMcpTransport(serverName, config, options);
       throw new AgencyError(
         ErrorCode.INTERNAL,
         `MCP server "${serverName}" needs container stdio, but the sandbox backend has no streaming spawn surface`,
@@ -109,10 +121,14 @@ function parseSseBlock(block: string): Record<string, unknown> | undefined {
 }
 
 function createHttpTransport(
+  serverName: string,
   url: string,
   headers?: Record<string, string>,
   timeoutMs?: number,
+  bearer?: McpBearer,
 ): McpTransport {
+  const authorization = (token: string | undefined): Record<string, string> =>
+    token ? { authorization: `Bearer ${token}` } : {};
   let handler: ((msg: Record<string, unknown>) => void) | undefined;
   let closeHandler: (() => void) | undefined;
   const abortController = new AbortController();
@@ -192,6 +208,7 @@ function createHttpTransport(
             method: "GET",
             headers: {
               accept: "text/event-stream",
+              ...authorization(await bearer?.token()),
               ...(headers ?? {}),
             },
             signal: abortController.signal,
@@ -214,16 +231,31 @@ function createHttpTransport(
       void pump();
     },
     async send(message) {
-      const res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-          ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
-          ...(headers ?? {}),
-        },
-        body: JSON.stringify(message),
-      });
+      const post = (token: string | undefined) =>
+        fetchWithTimeout(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
+            ...authorization(token),
+            ...(headers ?? {}),
+          },
+          body: JSON.stringify(message),
+        });
+      let res = await post(await bearer?.token());
+      if (res.status === 401) {
+        // A refused token gets one refresh; with no sign-in, or a refresh that fails, the user signs in again.
+        const fresh = await bearer?.refresh();
+        if (fresh) res = await post(fresh);
+        if (res.status === 401) {
+          throw new AgencyError(
+            ErrorCode.AUTH,
+            `MCP server "${serverName}" needs a sign-in: run \`agency mcp login ${serverName}\``,
+            { source: "mcp-transport", context: { serverName } },
+          );
+        }
+      }
       // A server with sessions gives the id in the handshake and refuses later requests without it.
       sessionId = res.headers.get("mcp-session-id") ?? sessionId;
       if (!res.ok) {

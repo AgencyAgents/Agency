@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Sign-in to MCP servers over HTTP**: `agency mcp login <server>` runs the OAuth
+  flow of the MCP authorization spec (metadata discovery, client registration,
+  PKCE in the browser) and keeps the tokens in the OS keychain; `agency mcp`
+  `logout` removes them. A session sends the token and refreshes it. Before,
+  such a server needed a key in `headers`. A failed start of an MCP server
+  now keeps its reason; before, it read "crashed".
 - **The OS sandbox protects more of the workspace**: a command can no longer
   write `.git/config` or the hooks, MCP servers and plugins of `.agency`,
   which the harness runs outside the sandbox later. `.agency/worktrees` stays

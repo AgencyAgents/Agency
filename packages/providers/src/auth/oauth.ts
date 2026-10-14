@@ -362,6 +362,18 @@ export async function exchangeCodeForToken(
   };
 }
 
+/** Opens `url` in the default browser of the user. */
+export async function openInBrowser(url: string): Promise<void> {
+  const { exec } = await import("node:child_process");
+  exec(
+    process.platform === "win32"
+      ? `start "" "${url}"`
+      : process.platform === "darwin"
+        ? `open "${url}"`
+        : `xdg-open "${url}"`,
+  );
+}
+
 export async function runOAuthFlow(
   provider: string,
   keychain: KeychainBackend,
@@ -383,17 +395,7 @@ export async function runOAuthFlow(
   const redirectUri = `http://127.0.0.1:${port}${resolved.redirectPath ?? "/callback"}`;
   const authorizeUrl = buildAuthorizeUrl(resolved, { redirectUri, state, challenge });
   try {
-    if (options.openUrl) await options.openUrl(authorizeUrl);
-    else {
-      const { exec } = await import("node:child_process");
-      const cmd =
-        process.platform === "win32"
-          ? `start "" "${authorizeUrl}"`
-          : process.platform === "darwin"
-            ? `open "${authorizeUrl}"`
-            : `xdg-open "${authorizeUrl}"`;
-      exec(cmd);
-    }
+    await (options.openUrl ?? openInBrowser)(authorizeUrl);
     const { code } = await waitForCallback;
     const token = await exchangeCodeForToken(provider, code, verifier, redirectUri, options.httpFetch, {
       clientId: options.clientId,

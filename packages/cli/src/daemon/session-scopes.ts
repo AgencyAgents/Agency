@@ -9,7 +9,13 @@ import {
 } from "@agency/core";
 import type { CallerIdentity, PermissionsGate, SandboxBackend } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
-import { createSessionScope, type SessionScope, type TeamMcpPool, type TodoPersistence } from "@agency/tools";
+import {
+  createSessionScope,
+  type McpTokenStore,
+  type SessionScope,
+  type TeamMcpPool,
+  type TodoPersistence,
+} from "@agency/tools";
 import {
   demoteScopeForLead,
   registerBoardToolsForScope,
@@ -43,6 +49,8 @@ export interface SessionScopeFactoryDeps {
   gateForAgent: (handle: string) => PermissionsGate;
   sharedPluginTools: ToolSpec[];
   getCtx: () => DaemonContext;
+  /** The sign-ins of `agency mcp login`. */
+  mcpTokens: McpTokenStore;
 }
 
 export function createSessionScopes(deps: SessionScopeFactoryDeps): {
@@ -66,6 +74,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
     gateForAgent,
     sharedPluginTools,
     getCtx,
+    mcpTokens,
   } = deps;
   const snapshotDir = storagePaths(options.workspaceRoot).snapshotsDir;
   const sessionScopes = new Map<string, SessionScope>();
@@ -95,11 +104,13 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         todoPersistence,
         mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),
         lspServers: config.lspServers,
+        mcpTokens,
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
       });
       await attachTeamMcpPool(teamMcpPools, mcpServers, scope, {
         teamParent,
         ...(handle ? { handle } : {}),
+        tokens: mcpTokens,
       });
       for (const t of sharedPluginTools) {
         try {

@@ -67,6 +67,7 @@ import {
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import {
+  keychainTokenStore,
   loadProjectMcpServers,
   resolveConfiguredShell,
   setDeniedCommandEnv,
@@ -495,6 +496,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     gateForAgent,
     sharedPluginTools,
     getCtx: () => ctx,
+    mcpTokens: keychainTokenStore(getKeychain),
   });
   const inboxStore = new InboxStore();
   const channelStore = new ChannelStore();

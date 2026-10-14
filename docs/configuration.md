@@ -372,6 +372,8 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 
 Configured under `mcpServers` / `lspServers`. The MCP layer accepts stdio (`command`+`args`) and HTTP (`url`) servers, optional `headers`, and per-request timeouts. LSP is a minimal client that decorates read/write/edit results with diagnostics. Failures surface via `providers_list` / `mcp_status` / `lsp_status` RPC and per-turn `mcp_server_down` system reminders.
 
+An HTTP server that needs a sign-in (OAuth, as the MCP authorization spec has it) fails at the start of a session with the reason `MCP server "<name>" needs a sign-in: run `agency mcp login <name>``. `agency mcp login <name>` finds the authorization server of the server (from its 401 or its well-known metadata), registers Agency there as a client, opens the browser for the sign-in with PKCE, and keeps the tokens in the OS keychain. A new session then sends the token, and refreshes it a minute before it ends, or once when the server refuses it. `agency mcp logout <name>` removes the tokens. An `Authorization` header in `headers` wins over a sign-in. A server whose authorization server takes no client registration has no sign-in here: it needs a key in `headers`. Tested against a local server only: no sign-in to a real MCP server has run.
+
 MCP servers come from three places:
 
 - `mcpServers` in the user config.

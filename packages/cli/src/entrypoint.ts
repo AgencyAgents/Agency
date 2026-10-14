@@ -37,6 +37,7 @@ import type { Message } from "@agency/schema";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
+import { mcpCmd } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
@@ -74,6 +75,8 @@ Commands:
   auth login <provider> --device
                            RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
+  mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
+  mcp logout <server>      Remove the sign-in of an MCP server
   plugin install <dir> [--overwrite]
                            Install a Claude Code / Codex plugin
   plugin list              Show installed skills and plugin modules
@@ -171,6 +174,8 @@ export interface EntrypointDeps {
   instanceDir?: string;
   /** Overrides the keychain backend (tests). */
   keychain?: KeychainBackend;
+  /** Opens the sign-in page of `mcp login` (tests); default: the browser. */
+  openUrl?: (url: string) => Promise<void> | void;
   /** Reads the API key for `auth login`; default reads a hidden TTY line or piped stdin. */
   keyReader?: (prompt: string) => Promise<string>;
   /** Overrides the stdin that `-p -` reads the prompt from (tests). */
@@ -1384,6 +1389,18 @@ Subcommands:
     }
     case "plugin":
       return pluginCmd(parsed, deps, out, err);
+    case "mcp":
+      return mcpCmd({
+        action: parsed.subcommand,
+        name: parsed.args[0],
+        workspaceRoot: workspaceRootOf(parsed, deps),
+        ...(deps.configDir ? { configDir: deps.configDir } : {}),
+        env: envOf(deps),
+        ...(deps.keychain ? { keychain: deps.keychain } : {}),
+        ...(deps.openUrl ? { openUrl: deps.openUrl } : {}),
+        out,
+        err,
+      });
     case "workflow":
       return workflowCmd(parsed, deps, out, err);
     case "review":

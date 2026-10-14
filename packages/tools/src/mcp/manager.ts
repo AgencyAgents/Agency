@@ -11,6 +11,7 @@ import {
 } from "./adapt.ts";
 import { McpClient, type McpPromptDefinition } from "./client.ts";
 import { type McpServerConfig, type McpServersConfig, parseMcpServers } from "./config.ts";
+import type { McpTokenStore } from "./oauth.ts";
 import { createMcpTransport, type McpTransport } from "./transport.ts";
 
 export function mcpIdentityFor(_serverName: string, handle?: string): CallerIdentity {
@@ -23,6 +24,8 @@ export interface McpManagerOptions {
   capabilities: Capabilities;
   processManager?: ProcessManager;
   transportFor?: (serverName: string, config: McpServerConfig) => McpTransport;
+  /** The sign-ins of `agency mcp login`, for the servers over HTTP of the default transport. */
+  tokens?: McpTokenStore;
   registry?: ToolRegistry;
   maxRestarts?: number;
   baseBackoffMs?: number;
@@ -273,6 +276,7 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       transport = options.transportFor
         ? options.transportFor(name, config)
         : createMcpTransport(name, config, {
+            ...(options.tokens ? { tokens: options.tokens } : {}),
             adopt: options.processManager
               ? (proc, command) => {
                   options.processManager?.adopt(
@@ -320,10 +324,11 @@ export async function startMcpServers(options: McpManagerOptions): Promise<McpMa
       const detail = failureDetail(error, transport);
       failures.set(name, detail);
       if (client) {
+        // Out of the map first: the close handler of a client in the map writes "crashed" over the detail.
+        clients.delete(name);
         try {
           await client.close();
         } catch {}
-        clients.delete(name);
       }
       if (transport) transports.delete(name);
       removeToolsFor(name);
