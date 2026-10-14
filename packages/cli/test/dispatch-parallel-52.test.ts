@@ -113,7 +113,11 @@ function parallelAdapter(state: {
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
           return;
         }
-        if (txt.includes("compare prompt")) {
+        // The team digest comes after the prompt, as a user message of its own.
+        const asked = msgs.some((m) =>
+          m.content.some((b) => ((b as { text?: string }).text ?? "").includes("compare prompt")),
+        );
+        if (asked) {
           await allEntered(state);
           yield { type: "text_delta", text: "compare output" };
           yield { type: "message_stop", stopReason: "end_turn", usage: { ...USAGE } };
@@ -217,6 +221,7 @@ describe("daemon parallel specialists (item 52)", () => {
     expect(res.results.map((r) => r.handle)).toEqual(HANDLES);
     for (const r of res.results) {
       expect(r.result).toContain(r.handle);
+      expect(r.result).toContain("compare output");
     }
   });
 });
