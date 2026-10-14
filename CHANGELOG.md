@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`.claude/CLAUDE.md` and `CLAUDE.local.md`**: the other project instruction files of
+  Claude Code load beside `CLAUDE.md`.
 - **Plugins of the Claude Code settings**: `agency plugin sync` installs the `enabledPlugins`
   of `.claude/settings.json` from the marketplaces of `extraKnownMarketplaces` or those
   Claude Code added; `agency plugin install <plugin>@<marketplace>` installs one; a marketplace

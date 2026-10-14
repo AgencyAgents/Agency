@@ -6,8 +6,17 @@ import { requireTrust } from "@agency/guard";
 import { foreignHome } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 
-/** The instruction files of a folder, in this order: those of Codex and Pi, Claude Code, and Gemini CLI. */
-const INSTRUCTION_NAMES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
+/**
+ * The instruction files of a folder, in this order: those of Codex and Pi, Claude Code (`CLAUDE.md`, or
+ * `.claude/CLAUDE.md`, and the personal `CLAUDE.local.md`), and Gemini CLI.
+ */
+const INSTRUCTION_NAMES = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  join(".claude", "CLAUDE.md"),
+  "CLAUDE.local.md",
+  "GEMINI.md",
+];
 
 /** Per-instruction-file read cap. AGENTS.md / CLAUDE.md is repo-controlled
  *  content, so a multi-gigabyte file (malicious or accidental) would otherwise
@@ -214,7 +223,8 @@ export function nestedInstructions(
       const path = join(dir, name);
       if (!existsSync(path) || !statSync(path).isFile()) continue;
       const raw = readTextCapped(path, maxFileBytes);
-      const text = name === "AGENTS.md" ? raw : expandImports(raw, dir, workspaceRoot, maxFileBytes);
+      const text =
+        name === "AGENTS.md" ? raw : expandImports(raw, dirname(path), workspaceRoot, maxFileBytes);
       // A CLAUDE.md that repeats AGENTS.md (a copy, a link or an import) counts once.
       if (text.trim() === "" || texts.some((t) => t.trim() === text.trim())) continue;
       texts.push(text);
@@ -249,7 +259,7 @@ export function loadUserAgentInstructions(
   const texts = files
     .filter((file) => !(files.includes(override) && file === join(home, ".codex", "AGENTS.md")))
     .map((file) =>
-      /(CLAUDE|GEMINI)\.md$/.test(file)
+      /(CLAUDE(\.local)?|GEMINI)\.md$/.test(file)
         ? expandImports(readTextCapped(file, maxFileBytes), dirname(file), home, maxFileBytes)
         : readTextCapped(file, maxFileBytes),
     )
@@ -292,7 +302,7 @@ export function loadInstructions(
   const scoped = new Set(scopedRuleFiles(workspaceRoot));
   const texts = files.map((f) => {
     const raw = readTextCapped(f, maxFileBytes);
-    const text = /(CLAUDE|GEMINI)\.md$/.test(f)
+    const text = /(CLAUDE(\.local)?|GEMINI)\.md$/.test(f)
       ? expandImports(raw, dirname(f), workspaceRoot, maxFileBytes)
       : raw;
     if (f.endsWith(".mdc") || f.endsWith(".instructions.md")) return scopedRuleText(text);

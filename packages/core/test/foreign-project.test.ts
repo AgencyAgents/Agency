@@ -36,6 +36,8 @@ test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, J
     "AGENTS.md": "agents text",
     "CLAUDE.md": "agents text",
     "GEMINI.md": "gemini text",
+    ".claude/CLAUDE.md": "dot claude text",
+    "CLAUDE.local.md": "local claude text",
     ".cursorrules": "legacy cursor rule",
     ".windsurfrules": "windsurf rule",
     ".clinerules": "cline rule",
@@ -69,6 +71,8 @@ test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, J
   expect(text.split("agents text")).toHaveLength(2);
   for (const part of [
     "gemini text",
+    "dot claude text",
+    "local claude text",
     "legacy cursor rule",
     "windsurf rule",
     "cline rule",
