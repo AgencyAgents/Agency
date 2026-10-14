@@ -37,6 +37,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `codeMode` | `true \| false \| "host"` | `false` | Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox with no network, no write access and, of your files, only those of the runner: bubblewrap on Linux, Seatbelt on macOS, an AppContainer with no capability on Windows (the container `agency.script` gets read access to the runner file at the start of the daemon; it writes only in its own temporary folder). `"host"` runs it with no isolation, with the authority of a shell command, and only with the `software` sandbox backend. On Windows the sandbox of `true` ran on this machine: a script read its input and called tools, and its read of a user file, its write and its network call were refused. On Linux and macOS it never ran: tests cover its arguments only |
 | `mcpDeferTools` | `"auto" \| "always" \| "never"` | `"auto"` | When the schemas of the MCP tools stay out of a request until the model loads them (see MCP / LSP) |
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
+| `outputStyle` | string | — | The name of an output style: its text joins the instructions (see Output styles) |
 | `memory` | boolean | `true` | The `memory` tool and its notes in the prompt (see Memory) |
 | `userAgentPlugins` | boolean | `false` | Also loads the code plugins of the user folders of OpenCode and Pi (see Plugins of other agents) |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
@@ -326,6 +327,10 @@ A session can hold a goal: a condition that must be true before a turn ends. Whe
 
 The team report that `/goal` showed before is now `/report [outcome]`.
 
+## Output styles
+
+`"outputStyle": "<name>"` adds an output style to the instructions of each turn, as the output styles of Claude Code do. A style is a Markdown file whose `name` (in its frontmatter, else the file name) is the name, and whose text says how to write the replies. Agency looks in `.agency/output-styles/` and `.claude/output-styles/` of a trusted workspace, then `output-styles/` of the config folder, then `~/.claude/output-styles/`. `agency plugin install` puts the styles of a plugin in `.agency/output-styles/`. The style joins the instructions and does not take the place of the base prompt, also with `keep-coding-instructions: false`. The value `default` adds nothing. A name that is not found is named in the daemon log.
+
 ## Memory
 
 The `memory` tool keeps notes for the later sessions of a workspace, as the auto memory of Claude Code does. The model adds a note (one line), removes the notes that contain a text, or shows them. The notes are in `memory/<workspace id>.md` of the data folder of Agency (outside the repository, readable only by you), and each turn has them at the end of its instructions, with the warning that a note can be out of date. The file holds at most 200 notes of at most 1,000 characters; you can edit it by hand. `"memory": false` in the config removes the tool and the notes from the prompt.
@@ -424,7 +429,7 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 - The `bin/` folder of a plugin is on the `PATH` of each shell command while the plugin is installed, as in Claude Code.
 - The LSP servers of a Claude Code plugin (`.lsp.json`, and the `lspServers` key of the manifest, which wins on a name) go to `.agency/lsp/<plugin>.json` in the form of `lspServers`: the extensions of `extensionToLanguage` are `extensions`, and its first language is `languageId`. A trusted workspace loads them; a server of `lspServers` of the config wins on a name.
 - `${CLAUDE_PLUGIN_DATA}` becomes `.agency/plugin-data/<plugin>/`, a folder that a new install of the plugin keeps. A hook command gets `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` in its environment too.
-- The `userConfig` of a Claude Code plugin is not asked for: `${user_config.KEY}` becomes `${CLAUDE_PLUGIN_OPTION_KEY}`, a variable of the environment that you set before the daemon starts. The install names each variable. Output styles, themes, monitors, workflows and `settings.json` of a plugin are named as not installed.
+- The `userConfig` of a Claude Code plugin is not asked for: `${user_config.KEY}` becomes `${CLAUDE_PLUGIN_OPTION_KEY}`, a variable of the environment that you set before the daemon starts. The install names each variable. The output styles of a plugin (`output-styles/`) go to `.agency/output-styles/`. Themes, monitors, workflows and `settings.json` of a plugin are named as not installed.
 - The extensions of a Pi package (`pi.extensions`, default `extensions/`) stay in the copy of the package, and `.agency/plugins/<plugin>.ts` imports them. They run as the Pi extensions of a workspace do, below.
 - A repository can be a marketplace of Claude Code (`.claude-plugin/marketplace.json`), Cursor (`.cursor-plugin/marketplace.json`) or Codex (`.agents/plugins/marketplace.json`).
 

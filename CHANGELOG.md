@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Output styles**: `"outputStyle"` names a Markdown style of `.agency/output-styles/`,
+  `.claude/output-styles/`, the config folder or `~/.claude/output-styles/`, whose text
+  joins the instructions. A plugin installs its `output-styles/`.
 - **Memory**: a `memory` tool keeps notes for the later sessions of a workspace, in a file
   of the user's data folder, and each turn has them in its instructions, as the auto
   memory of Claude Code. `"memory": false` turns it off.
@@ -26,7 +29,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   gives a hook `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` in its environment, maps
   `${user_config.KEY}` to the variable `${CLAUDE_PLUGIN_OPTION_KEY}`, installs a root
   `SKILL.md` and commands that the manifest maps by name, and names the parts that do
-  not install (output styles, themes, monitors, workflows, `settings.json`).
+  not install (themes, monitors, workflows, `settings.json`).
 - **LSP servers of plugins**: the `.lsp.json` and `lspServers` of a Claude Code plugin
   install to `.agency/lsp/<plugin>.json`, and a trusted workspace starts them as the
   `lspServers` of the config.

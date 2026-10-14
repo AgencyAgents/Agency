@@ -28,6 +28,7 @@ import {
   loadPlugins,
   memoryFile,
   mergeCommandHooks,
+  outputStyleInstructions,
   SessionStore,
   storagePaths,
   type ToolSpec,
@@ -463,6 +464,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginCommands = collectPluginCommands(pluginResult.plugins);
     pluginInstructions = pluginResult.instructions;
   }
+  pluginInstructions.push(
+    ...outputStyleInstructions({
+      name: config.outputStyle,
+      workspaceRoot: options.workspaceRoot,
+      ...(options.configDir === undefined ? {} : { configDirOverride: options.configDir }),
+      projectTrusted,
+      warn: (message) => logger.warn(message),
+    }),
+  );
 
   const activeTurnMeta = new Map<string, ActiveTurnMeta>();
 

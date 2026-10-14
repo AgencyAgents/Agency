@@ -7,6 +7,7 @@ import { resolveFileRoster } from "../src/agents/files.ts";
 import { expandCommand, loadCommands } from "../src/commands/loader.ts";
 import { discoverSkills, resolveSkillDirs } from "../src/plugins/skill.ts";
 import { loadInstructions } from "../src/prompt/instructions.ts";
+import { outputStyleInstructions } from "../src/prompt/output-style.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -177,6 +178,38 @@ test("the user files of other agents load at the user tier, and AGENCY_AGENTS_HO
     process.env.AGENCY_AGENTS_HOME = "off";
     expect(discoverSkills(resolveSkillDirs(ws, config))).toEqual([]);
     expect(loadCommands({ workspaceRoot: ws, configDirOverride: config })).toEqual([]);
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
+});
+
+test("an output style comes from the project, the config folder or ~/.claude by its name, and a project one needs trust", () => {
+  const ws = folder({
+    ".claude/output-styles/terse.md":
+      "---\nname: Terse\ndescription: Short\nkeep-coding-instructions: true\n---\nKeep it short.",
+  });
+  const config = folder({ "output-styles/pirate.md": "Talk like a pirate." });
+  const home = folder({ ".claude/output-styles/poem.md": '---\nname: "Poem"\n---\nAnswer in verse.' });
+  const before = process.env.AGENCY_AGENTS_HOME;
+  process.env.AGENCY_AGENTS_HOME = home;
+  try {
+    const style = (name: string | undefined, projectTrusted = true) =>
+      outputStyleInstructions({ name, workspaceRoot: ws, configDirOverride: config, projectTrusted });
+    expect(style("terse")).toEqual(['Output style "Terse": write each reply in this style.\nKeep it short.']);
+    expect(style("pirate")[0]).toContain("Talk like a pirate.");
+    expect(style("Poem")[0]).toContain("Answer in verse.");
+    expect(style("terse", false)).toEqual([]);
+    expect(style("default")).toEqual([]);
+    expect(style(undefined)).toEqual([]);
+    const warnings: string[] = [];
+    outputStyleInstructions({
+      name: "nope",
+      workspaceRoot: ws,
+      projectTrusted: true,
+      configDirOverride: config,
+      warn: (w) => warnings.push(w),
+    });
+    expect(warnings[0]).toContain('no output style "nope"');
   } finally {
     process.env.AGENCY_AGENTS_HOME = before;
   }

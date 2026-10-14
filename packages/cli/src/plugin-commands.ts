@@ -38,6 +38,8 @@ export interface InstallReceipt {
   rulesInstalled?: string[];
   /** The module files in .agency/plugins/ (the Pi extensions of a Pi package). */
   modulesInstalled?: string[];
+  /** The output styles in .agency/output-styles/. */
+  outputStylesInstalled?: string[];
   installedAt: string;
 }
 
@@ -68,6 +70,7 @@ export function pluginInstallCmd(
     hooksInstalled: report.hooksInstalled,
     rulesInstalled: report.rulesInstalled,
     modulesInstalled: report.modulesInstalled,
+    outputStylesInstalled: report.outputStylesInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -90,6 +93,12 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Rules installed (.agency/rules/, added to the instructions):");
     for (const rule of report.rulesInstalled) lines.push(`  - ${rule}`);
+  }
+
+  if (report.outputStylesInstalled.length > 0) {
+    lines.push("");
+    lines.push('Output styles installed (.agency/output-styles/, chosen with "outputStyle" of the config):');
+    for (const style of report.outputStylesInstalled) lines.push(`  - ${style}`);
   }
 
   if (report.modulesInstalled.length > 0) {
@@ -353,6 +362,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
   let rulesToDelete: string[] = [];
+  let stylesToDelete: string[] = [];
   let modulesToDelete: string[] = [];
   let pluginName = name;
 
@@ -363,6 +373,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
       skillsToDelete = receipt.skillsInstalled.filter(isFileName);
       agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
       rulesToDelete = (receipt.rulesInstalled ?? []).filter(isFileName);
+      stylesToDelete = (receipt.outputStylesInstalled ?? []).filter(isFileName);
       modulesToDelete = (receipt.modulesInstalled ?? []).filter(isFileName);
       if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
@@ -412,6 +423,12 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     return true;
   });
   if (deletedRules.length > 0) lines.push(`Deleted rule files: ${deletedRules.join(", ")}`);
+  for (const style of stylesToDelete) {
+    const stylePath = join(workspaceRoot, ".agency", "output-styles", style);
+    if (!existsSync(stylePath)) continue;
+    rmSync(stylePath);
+    lines.push(`Deleted the output style ${style}.`);
+  }
   for (const module of modulesToDelete) {
     const modulePath = join(workspaceRoot, ".agency", "plugins", module);
     if (!existsSync(modulePath)) continue;

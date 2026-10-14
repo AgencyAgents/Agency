@@ -53,6 +53,8 @@ export interface ImportClaudePluginReport {
   partsSkipped: string[];
   /** Module files written into .agency/plugins/: the Pi extensions of a Pi package. */
   modulesInstalled: string[];
+  /** Output style files written into .agency/output-styles/. */
+  outputStylesInstalled: string[];
   /** The LSP servers that are now in .agency/lsp/<plugin>.json, where the daemon loads them. */
   lspServers: string[];
   /** The `bin/` folder of the plugin, on the PATH of shell commands; absent when it has none. */
@@ -104,6 +106,8 @@ interface Manifest {
   commands: string[];
   agents: string[];
   rules: string[];
+  /** The folders of the output styles of a Claude Code plugin. */
+  outputStyles?: string[];
   contextFile?: string;
   /** The module files of the extensions of a Pi package. */
   extensions: string[];
@@ -212,6 +216,7 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
       ...(isRecord(raw.commands) ? { commandMap: raw.commands } : {}),
       agents: partDirs(raw.agents, "agents"),
       rules: format === "cursor" ? partDirs(raw.rules, "rules") : [],
+      outputStyles: partDirs(raw.outputStyles, "output-styles"),
     };
   }
   logger?.warn(`[importer] no plugin manifest found in ${sourceDir}`);
@@ -520,6 +525,7 @@ export function importClaudePlugin(
     rulesInstalled: [],
     partsSkipped: manifest.partsSkipped,
     modulesInstalled: [],
+    outputStylesInstalled: [],
     lspServers: [],
     optionVariables: manifest.userConfig.map(optionVariable),
   };
@@ -716,6 +722,16 @@ export function importClaudePlugin(
       report.commandsInstalled.push(target);
   }
 
+  for (const stylesDir of existingDirs(sourceDir, manifest.outputStyles ?? [], logger)) {
+    for (const entry of readdirSync(stylesDir).sort()) {
+      if (extname(entry) !== ".md") continue;
+      const targetFile = join(workspaceRoot, ".agency", "output-styles", entry);
+      const text = readFileSync(join(stylesDir, entry), "utf8");
+      if (writePart(targetFile, text, `output style "${entry}"`, write))
+        report.outputStylesInstalled.push(entry);
+    }
+  }
+
   // -----------------------------------------------------------------------
   // 7. Rules of Cursor and the context file of Gemini -> .agency/rules/
   // -----------------------------------------------------------------------
@@ -754,7 +770,6 @@ export function importClaudePlugin(
 
   // The parts of a Claude Code plugin that have no counterpart here.
   for (const [part, reason] of [
-    ["output-styles", "Agency has no output styles"],
     ["themes", "Agency has no themes"],
     ["monitors", "Agency has no monitors"],
     ["workflows", "run a workflow file with agency workflow run"],

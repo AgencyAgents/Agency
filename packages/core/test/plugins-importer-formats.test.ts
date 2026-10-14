@@ -202,6 +202,7 @@ test("a Claude Code plugin: bin on the PATH, the data folder and the root in hoo
       },
     }),
     "output-styles/terse.md": "---\nname: terse\n---\nShort.",
+    "themes/dracula.json": "{}",
   });
   const ws = folder({});
   const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
@@ -212,7 +213,9 @@ test("a Claude Code plugin: bin on the PATH, the data folder and the root in hoo
   expect(report.commandsInstalled).toEqual(["about.md", "deploy.md"]);
   expect(read(ws, "commands", "about.md")).toBe("---\ndescription: Summarize\n---\nSummarize the repo.");
   expect(read(ws, "commands", "deploy.md")).toBe("Deploy $ARGUMENTS");
-  expect(report.partsSkipped).toEqual(["output-styles: Agency has no output styles"]);
+  expect(report.partsSkipped).toEqual(["themes: Agency has no themes"]);
+  expect(report.outputStylesInstalled).toEqual(["terse.md"]);
+  expect(read(ws, "output-styles", "terse.md")).toBe("---\nname: terse\n---\nShort.");
   expect(existsSync(data)).toBe(true);
   expect(report.mcpServers).toEqual({
     api: {
