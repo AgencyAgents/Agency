@@ -72,20 +72,37 @@ enabled = false
       mcpServers: { kiro: { command: "kiro-srv", autoApprove: [] } },
     }),
     ".mcp.json": JSON.stringify({ mcpServers: { cx: { command: "claude-wins" } } }),
+    ".github/mcp.json": JSON.stringify({
+      mcpServers: { cop: { type: "local", command: "cop-srv", tools: ["*"] } },
+    }),
+    ".amp/settings.json": JSON.stringify({ "amp.mcpServers": { amp: { url: "https://amp.test/mcp" } } }),
+    ".crush.json": JSON.stringify({
+      mcp: { cr: { type: "http", url: "https://cr.test/mcp", headers: { Authorization: "Bearer $TOKEN" } } },
+    }),
+    ".qwen/settings.json": JSON.stringify({ mcpServers: { qw: { command: "qw-srv", env: { K: "$ORG" } } } }),
+    ".kilocode/mcp.json": JSON.stringify({ mcpServers: { kilo: { command: "kilo-srv" } } }),
   });
   const servers = loadProjectMcpServers(ws, (w) => warnings.push(w), env);
   expect(Object.keys(servers).sort()).toEqual([
+    "amp",
+    "cop",
+    "cr",
     "cur",
     "cx",
     "figma",
     "gem",
+    "kilo",
     "kiro",
     "oc",
     "ocr",
     "pi",
+    "qw",
     "roo",
     "vs",
   ]);
+  expect(servers.cop).toEqual({ command: "cop-srv" });
+  expect(servers.cr).toEqual({ url: "https://cr.test/mcp", headers: { Authorization: "Bearer t-1" } });
+  expect(servers.qw).toEqual({ command: "qw-srv", env: { K: "o-1" } });
   expect(servers.vs).toEqual({ command: "node", args: [`${ws}/s.js`] });
   expect(servers.cur).toEqual({ url: "https://c.test/mcp", headers: { Authorization: "Bearer t-1" } });
   expect(servers.gem).toEqual({ url: "https://g.test/mcp", requestTimeoutMs: 5000 });
@@ -105,6 +122,18 @@ test("mcp import reads the user file of a client and keeps the variables for the
   const home = folder({
     ".cursor/mcp.json": JSON.stringify({ mcpServers: { c: { command: "c", env: { K: "${env:TOKEN}" } } } }),
     ".codex/config.toml": '[mcp_servers.x]\nurl = "https://x.test/mcp"\nbearer_token_env_var = "TOKEN"\n',
+    ".config/goose/config.yaml": [
+      "extensions:",
+      "  developer: { type: builtin, name: developer, enabled: true }",
+      "  fs: { type: stdio, cmd: npx, args: [-y, fs], env_keys: [KEY], envs: { A: '1' }, enabled: true }",
+      "  remote: { type: streamable_http, uri: https://r.test/mcp, headers: {}, enabled: true }",
+      "  off: { type: stdio, cmd: x, enabled: false }",
+    ].join("\n"),
+    ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json": JSON.stringify(
+      {
+        mcpServers: { cl: { command: "cl-srv", autoApprove: [] }, gone: { command: "x", disabled: true } },
+      },
+    ),
   });
   const where = { home, env: {}, platform: "linux" as const };
   expect(MCP_IMPORT_SOURCES).toContain("claude-desktop");
@@ -117,6 +146,11 @@ test("mcp import reads the user file of a client and keeps the variables for the
     x: { url: "https://x.test/mcp", headers: { Authorization: "Bearer ${TOKEN}" } },
   });
   expect(importMcpServers("gemini", where)).toBeUndefined();
+  expect(importMcpServers("goose", where)?.servers).toEqual({
+    fs: { command: "npx", args: ["-y", "fs"], env: { KEY: "${KEY}", A: "1" } },
+    remote: { url: "https://r.test/mcp", headers: {} },
+  });
+  expect(importMcpServers("cline", where)?.servers).toEqual({ cl: { command: "cl-srv" } });
 
   const configDir = folder({ "mcp/cursor.json": JSON.stringify({ mcpServers: cursor?.servers }) });
   expect(loadUserMcpServers(configDir, () => {}, env)).toEqual({ c: { command: "c", env: { K: "t-1" } } });

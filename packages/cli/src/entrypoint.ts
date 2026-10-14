@@ -102,7 +102,8 @@ Commands:
   mcp remove <name>        Remove an MCP server that mcp add added
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
   mcp import <client>      Copy the MCP servers of Claude Code, Cursor, Codex, Gemini,
-                           OpenCode, Pi, VS Code, Windsurf, Zed or Claude Desktop
+                           OpenCode, Pi, VS Code, Windsurf, Zed, Claude Desktop, Copilot
+                           CLI, Amp, Crush, Goose, Qwen Code, Cline, Roo Code or Kilo Code
   mcp logout <server>      Remove the sign-in of an MCP server
   mcp serve                Serve Agency as an MCP server on stdio: its tool "agency" runs
                            a turn. --permission-mode and --model of the server apply

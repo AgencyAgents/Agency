@@ -83,6 +83,36 @@ const codex = (server: Raw): Raw | undefined => {
   });
 };
 
+/** `$VAR` of a shell form (Crush) as `${VAR}` in each string; `$(command)` stays as it is. */
+const shellVars = (value: unknown): unknown => {
+  if (typeof value === "string") return value.replace(/\$(\w+)/g, (_m, name: string) => `\${${name}}`);
+  if (Array.isArray(value)) return value.map(shellVars);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, shellVars(item)]));
+  }
+  return value;
+};
+
+const crush = (server: Raw): Raw | undefined => shellVars(base(server)) as Raw | undefined;
+
+/** An extension of Goose: `builtin` and the other kinds are parts of Goose itself, not MCP servers. */
+const goose = (server: Raw): Raw | undefined => {
+  if (server.enabled === false) return undefined;
+  // The values of `env_keys` are in the keyring of Goose: here they come from the environment.
+  const keys = Array.isArray(server.env_keys) ? server.env_keys.map(String) : [];
+  const env = { ...Object.fromEntries(keys.map((key) => [key, `\${${key}}`])), ...record(server.envs) };
+  if (server.type === "stdio") {
+    return defined({
+      command: server.cmd,
+      args: server.args,
+      env: Object.keys(env).length > 0 ? env : undefined,
+    });
+  }
+  return server.type === "streamable_http"
+    ? defined({ url: server.uri, headers: server.headers })
+    : undefined;
+};
+
 const zed = (server: Raw): Raw | undefined => {
   const command = record(server.command);
   if (typeof server.command === "string" || Object.keys(command).length === 0) return base(server);
@@ -98,9 +128,67 @@ function appConfig(where: ClientHome, ...parts: string[]): string {
 }
 const xdg = (where: ClientHome, ...parts: string[]): string =>
   join(where.env.XDG_CONFIG_HOME ?? join(where.home, ".config"), ...parts);
+/** The MCP file of an extension of VS Code (Cline, Roo Code, Kilo Code) in its global storage. */
+const vscodeStorage = (where: ClientHome, extension: string, file: string): string =>
+  appConfig(where, "Code", "User", "globalStorage", extension, "settings", file);
 
 const CLIENTS = {
-  roo: { project: [".roo/mcp.json"], user: () => [], key: "mcpServers", normalize: base },
+  roo: {
+    project: [".roo/mcp.json"],
+    user: (w) => [vscodeStorage(w, "rooveterinaryinc.roo-cline", "mcp_settings.json")],
+    key: "mcpServers",
+    normalize: base,
+  },
+  kilo: {
+    project: [".kilocode/mcp.json"],
+    user: (w) => [vscodeStorage(w, "kilocode.kilo-code", "mcp_settings.json")],
+    key: "mcpServers",
+    normalize: base,
+  },
+  cline: {
+    project: [],
+    user: (w) => [vscodeStorage(w, "saoudrizwan.claude-dev", "cline_mcp_settings.json")],
+    key: "mcpServers",
+    normalize: base,
+  },
+  copilot: {
+    project: [".github/mcp.json"],
+    user: (w) => [join(w.home, ".copilot", "mcp-config.json")],
+    key: "mcpServers",
+    normalize: base,
+  },
+  amp: {
+    project: [".amp/settings.json", ".amp/settings.jsonc"],
+    user: (w) => [xdg(w, "amp", "settings.json"), xdg(w, "amp", "settings.jsonc")],
+    key: "amp.mcpServers",
+    normalize: base,
+  },
+  crush: {
+    project: ["crush.json", ".crush.json"],
+    user: (w) => [
+      w.platform === "win32"
+        ? join(w.env.LOCALAPPDATA ?? join(w.home, "AppData", "Local"), "crush", "crush.json")
+        : xdg(w, "crush", "crush.json"),
+    ],
+    key: "mcp",
+    normalize: crush,
+  },
+  goose: {
+    project: [],
+    user: (w) => [
+      w.platform === "win32"
+        ? join(appData(w), "Block", "goose", "config", "config.yaml")
+        : xdg(w, "goose", "config.yaml"),
+    ],
+    key: "extensions",
+    normalize: goose,
+  },
+  qwen: {
+    project: [".qwen/settings.json"],
+    user: (w) => [join(w.home, ".qwen", "settings.json")],
+    key: "mcpServers",
+    normalize: gemini,
+  },
   kiro: {
     project: [".kiro/settings/mcp.json"],
     user: (w) => [join(w.home, ".kiro", "settings", "mcp.json")],
@@ -199,6 +287,7 @@ function readClientFile(
   const text = readFileSync(file, "utf8");
   let raw: unknown;
   if (file.endsWith(".toml")) raw = Bun.TOML.parse(text);
+  else if (file.endsWith(".yaml")) raw = Bun.YAML.parse(text);
   else {
     const errors: unknown[] = [];
     raw = parseJsonc(text, errors as never, { allowTrailingComma: true });

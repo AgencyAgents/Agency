@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **MCP files of more clients**: the project files of Copilot CLI (`.github/mcp.json`),
+  Amp, Crush, Qwen Code and Kilo Code give MCP servers, and `agency mcp import` reads the
+  user files of Copilot CLI, Amp, Crush, Goose, Qwen Code, Cline, Roo Code and Kilo Code.
 - **GitHub Copilot files**: the `.github/instructions/*.instructions.md` files (by
   `applyTo`), the prompt files of `.github/prompts/` as commands, the skills of
   `.github/skills/`, and the custom agents of `.github/agents/` and `.github/chatmodes/`
