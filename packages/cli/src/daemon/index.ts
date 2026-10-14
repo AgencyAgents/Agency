@@ -16,12 +16,14 @@ import {
   DispatchStateStore,
   dataDir,
   EventBus,
+  foreignHookPaths,
   type HookRunOptions,
   hasBoardItemShape,
   InboxStore,
   Logger,
   loadCommands,
   loadConfig,
+  loadForeignHooks,
   loadHookFiles,
   loadPlugins,
   mergeCommandHooks,
@@ -299,6 +301,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...filesOf(mcpDir),
     join(options.workspaceRoot, ".mcp.json"),
     ...clientProjectPaths(options.workspaceRoot),
+    ...foreignHookPaths(options.workspaceRoot),
     userMcpDir,
     ...filesOf(userMcpDir),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.
@@ -357,6 +360,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const commandHooks: CommandHooks = mergeCommandHooks(
     config.hooks ?? {},
     projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
+    // The hooks that Claude Code, Codex, Cursor and Gemini CLI keep in the workspace.
+    projectTrusted ? loadForeignHooks(options.workspaceRoot, (message) => logger.warn(message)) : {},
   );
   // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
   const hookRun: HookRunOptions = {

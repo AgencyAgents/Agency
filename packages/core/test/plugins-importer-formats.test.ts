@@ -136,3 +136,23 @@ test("a Claude Code agent with keys that have no use here installs as an agent f
   });
   expect(existsSync(join(ws, ".agency", "rules"))).toBe(false);
 });
+
+test("the hooks of a Cursor plugin install with their events mapped and the plugin root in place", () => {
+  const src = folder({
+    ".cursor-plugin/plugin.json": JSON.stringify({ name: "cur-hooks" }),
+    "hooks/hooks.json": JSON.stringify({
+      version: 1,
+      hooks: { afterFileEdit: [{ command: "node ${CURSOR_PLUGIN_ROOT}/fmt.js" }] },
+    }),
+  });
+  const ws = folder({});
+  const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+  expect(report.hooksInstalled).toEqual(["PostToolUse"]);
+  const root = join(ws, ".agency", "plugin-roots", "cur-hooks").replaceAll("\\", "/");
+  expect(JSON.parse(read(ws, "hooks", "cur-hooks.json")).hooks.PostToolUse).toEqual([
+    {
+      matcher: "write|edit",
+      hooks: [{ type: "command", command: `node ${root}/fmt.js`, cursor: { event: "afterFileEdit" } }],
+    },
+  ]);
+});

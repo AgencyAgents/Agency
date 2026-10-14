@@ -6,6 +6,7 @@ import { geminiTemplate } from "../commands/loader.ts";
 import type { Logger } from "../logger.ts";
 import { cursorRuleText } from "../prompt/instructions.ts";
 import { COMMAND_HOOK_EVENTS, type CommandHooks, CommandHooksSchema } from "./command-hooks.ts";
+import { convertForeignHooks } from "./foreign-hooks.ts";
 import { SKILL_NAME_RE } from "./manifest.ts";
 import { parseSkillFrontmatter } from "./skill.ts";
 
@@ -113,7 +114,7 @@ function partDirs(value: unknown, fallback: string): string[] {
   const paths = listed.length > 0 ? listed : [fallback];
   return paths.map((path) => {
     const plain = path.replace(/^\.\//, "");
-    return plain.includes("*") ? dirname(plain.slice(0, plain.indexOf("*")) + "x") : plain;
+    return plain.includes("*") ? dirname(`${plain.slice(0, plain.indexOf("*"))}x`) : plain;
   });
 }
 
@@ -471,7 +472,14 @@ export function importClaudePlugin(
     cpSync(sourceDir, root, { recursive: true, filter: (path) => basename(path) !== ".git" });
     copied = true;
   };
-  const hooksSource = resolveHooks(sourceDir, manifest, logger);
+  const rawHooks = resolveHooks(sourceDir, manifest, logger);
+  // The hooks of Cursor and Gemini CLI have their own events and fields.
+  const hooksSource =
+    rawHooks !== undefined && (manifest.format === "cursor" || manifest.format === "gemini")
+      ? convertForeignHooks(manifest.format, rawHooks, sourceDir, (message) =>
+          logger?.warn(`[importer] ${message}`),
+        )
+      : rawHooks;
   if (hooksSource) {
     const { hooks, skipped } = parseHooks(hooksSource, root);
     report.hooksSkipped = skipped;

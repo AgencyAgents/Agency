@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Hooks of other agents**: a trusted workspace runs the hooks of
+  `.claude/settings.json`, `.claude/settings.local.json`, `.codex/hooks.json`,
+  `.cursor/hooks.json` and `.gemini/settings.json`. Cursor and Gemini events map to the
+  events here, and a Cursor hook gets its own input and answers as in Cursor. A
+  matcher can name a tool by its name in another agent (`Shell`, `run_shell_command`,
+  `WebFetch`). The hooks of a Cursor plugin or a Gemini extension install converted.
 - **Plugins of Cursor, Codex, Gemini CLI and Pi**: `agency plugin install` now takes a
   Cursor plugin (rules, skills, agents, commands, `mcp.json`), a Gemini CLI extension
   (context file, TOML commands, MCP servers), the portable `plugin.json` of Codex, and

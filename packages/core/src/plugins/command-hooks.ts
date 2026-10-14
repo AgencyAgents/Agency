@@ -41,6 +41,15 @@ const GroupSchema = z.object({
         /** Runs in the background: the event does not wait, and the hook cannot block it. */
         async: z.boolean().optional(),
         asyncRewake: z.boolean().optional(),
+        /** A hook of Cursor: it gets the input of that event and answers in the form of Cursor. */
+        cursor: z
+          .object({
+            event: z.string(),
+            /** A shell hook of Cursor tests its matcher on the command line. */
+            matcher: z.string().optional(),
+            failClosed: z.boolean().optional(),
+          })
+          .optional(),
       }),
       z.object({
         type: z.literal("http"),
@@ -91,10 +100,25 @@ export interface HookOutcome {
 const DEFAULT_TIMEOUT_S = 60;
 const MAX_OUTPUT_CHARS = 10_000;
 
+/** The names of a tool in Claude Code, Codex, Cursor and Gemini CLI: a hook of theirs names it so. */
+const TOOL_ALIASES: Record<string, string[]> = {
+  bash: ["Shell", "run_shell_command", "local_shell"],
+  read: ["read_file", "ReadFile"],
+  write: ["write_file"],
+  edit: ["MultiEdit", "replace", "StrReplace", "apply_patch"],
+  grep: ["search_file_content", "grep_search"],
+  fetch: ["WebFetch", "web_fetch"],
+  websearch: ["google_web_search", "web_search"],
+  todo_write: ["TodoWrite", "write_todos"],
+  spawn: ["Task", "Agent"],
+};
+const namesOf = (subject: string): string[] => [subject, ...(TOOL_ALIASES[subject] ?? [])];
+
 function matches(matcher: string | undefined, subject: string | undefined): boolean {
   if (matcher === undefined || matcher === "" || matcher === "*" || subject === undefined) return true;
   try {
-    return new RegExp(`^(?:${matcher})$`, "i").test(subject);
+    const re = new RegExp(`^(?:${matcher})$`, "i");
+    return namesOf(subject).some((name) => re.test(name));
   } catch {
     return false;
   }
@@ -114,8 +138,9 @@ const TOOL_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
  */
 export function hookIfMatches(rule: string, tool: unknown, toolInput: unknown, cwd: string): boolean {
   const parsed = /^([^()]+?)(?:\(([\s\S]*)\))?$/.exec(rule.trim());
-  if (!parsed || typeof tool !== "string" || parsed[1]?.toLowerCase() !== tool.toLowerCase()) return false;
-  const pattern = parsed[2]?.replace(/:\*$/, "*");
+  const named = parsed?.[1]?.toLowerCase();
+  if (typeof tool !== "string" || !namesOf(tool).some((name) => name.toLowerCase() === named)) return false;
+  const pattern = parsed?.[2]?.replace(/:\*$/, "*");
   if (pattern === undefined || pattern === "" || pattern === "*") return true;
   const input = (toolInput ?? {}) as Record<string, unknown>;
   if (typeof input.command === "string") {
@@ -280,6 +305,57 @@ async function runPrompt(
 }
 
 /**
+ * A hook of Cursor in the form of a command result: it gets the input of its own event, and its answer
+ * (`permission: "deny"`, `continue: false`, `followup_message`, `additional_context`) becomes that of Claude Code.
+ */
+async function runCursor(
+  command: string,
+  cursor: NonNullable<Extract<HookEntry, { type: "command" }>["cursor"]>,
+  input: Record<string, unknown>,
+  opts: HookRunOptions,
+  timeoutS: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+  const line = typeof toolInput.command === "string" ? toolInput.command : undefined;
+  try {
+    if (cursor.matcher !== undefined && line !== undefined && !new RegExp(cursor.matcher).test(line)) {
+      return { code: 0, stdout: "", stderr: "" };
+    }
+  } catch {
+    return { code: 0, stdout: "", stderr: "" };
+  }
+  const path = toolInput.path ?? toolInput.file_path;
+  const stdin = JSON.stringify({
+    ...input,
+    hook_event_name: cursor.event,
+    conversation_id: input.session_id,
+    workspace_roots: [opts.cwd],
+    cwd: opts.cwd,
+    ...(line === undefined ? {} : { command: line }),
+    ...(typeof path === "string" ? { file_path: path } : {}),
+  });
+  const out = await runOne(command, stdin, opts, timeoutS);
+  if (out.code !== 0 && out.code !== 2) {
+    return cursor.failClosed
+      ? { code: 2, stdout: "", stderr: out.stderr || `a ${cursor.event} hook failed` }
+      : out;
+  }
+  if (out.code === 2) return out;
+  const answer = parseJson(out.stdout) ?? {};
+  const message = [answer.agent_message, answer.user_message].find((m): m is string => typeof m === "string");
+  const reply = (value: unknown) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
+  if (answer.permission === "deny" || answer.continue === false) {
+    return reply({ decision: "block", reason: message ?? `blocked by a ${cursor.event} hook` });
+  }
+  if (typeof answer.followup_message === "string")
+    return reply({ decision: "block", reason: answer.followup_message });
+  if (typeof answer.additional_context === "string") {
+    return reply({ hookSpecificOutput: { additionalContext: answer.additional_context } });
+  }
+  return { code: 0, stdout: "", stderr: "" };
+}
+
+/**
  * What a background hook that ended gives the model, as in Claude Code: on exit code 2 of `asyncRewake` its stderr
  * (or stdout), otherwise `additionalContext` and `systemMessage` of a JSON answer, alone on stdout or on a line of its own.
  */
@@ -362,7 +438,9 @@ export async function runCommandHooks(
           ? await runHttp(entry, stdin, timeoutS)
           : entry.type === "prompt"
             ? await runPrompt(entry, stdin, event, opts)
-            : await runOne(entry.command, stdin, opts, timeoutS);
+            : entry.cursor !== undefined
+              ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS)
+              : await runOne(entry.command, stdin, opts, timeoutS);
       // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
       if (event === "PermissionDenied") {
         if (
@@ -380,7 +458,14 @@ export async function runCommandHooks(
       // The answer of a PermissionRequest hook, in the form of Claude Code.
       const behavior = (specific.decision as { behavior?: unknown } | undefined)?.behavior;
       if (event === "PermissionRequest" && behavior === "allow") return { allow: true };
-      if (json?.decision === "block" || specific.permissionDecision === "deny" || behavior === "deny") {
+      // `deny` is the decision of a Gemini CLI hook.
+      const decision = json?.decision;
+      if (
+        decision === "block" ||
+        decision === "deny" ||
+        specific.permissionDecision === "deny" ||
+        behavior === "deny"
+      ) {
         const reason = json?.reason ?? specific.permissionDecisionReason;
         return { block: typeof reason === "string" && reason ? reason : `blocked by a ${event} hook` };
       }
