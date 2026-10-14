@@ -16,6 +16,7 @@ import {
   environmentDate,
   type GitRunner,
   gatherEnvironmentInfo,
+  type HookRunOptions,
   type InboxStore,
   type Logger,
   loadInstructions,
@@ -23,6 +24,7 @@ import {
   type PluginAgentContribution,
   type PluginCommandContribution,
   type ProviderConfig,
+  parseModelRef,
   resolveSmallModel,
   type SessionStore,
   type SystemReminder,
@@ -54,6 +56,7 @@ import {
   type ModelInfo,
   openaiAdapter,
   type ProviderAdapter,
+  resolveApiKey,
   type Scheduler,
   type ThinkingLevel,
   type Usage,
@@ -420,6 +423,37 @@ export function checkTeamBudgets(params: {
   if (teamUsd !== undefined && params.teamTotal >= teamUsd) {
     throw new Error(`team budget exceeded: ${params.teamTotal} >= ${teamUsd}`);
   }
+}
+
+/** The model of a prompt hook: that of the hook, else `small_model`, else `model`, with the key of its provider. */
+export function promptHookModel(opts: {
+  config: Config;
+  providers: Record<string, ProviderConfig>;
+  adapterFor: (provider: string) => ProviderAdapter;
+  http: HttpClient;
+  getKeychain: () => Promise<KeychainBackend>;
+}): NonNullable<HookRunOptions["askModel"]> {
+  return async (prompt, model, signal) => {
+    const ref = parseModelRef(model ?? opts.config.small_model ?? opts.config.model ?? "");
+    if (!ref) throw new Error("a prompt hook needs small_model or model in the config");
+    const apiKey = await resolveApiKey({
+      provider: ref.provider,
+      env: process.env,
+      keychain: await opts.getKeychain().catch(() => undefined),
+      config: opts.providers[ref.provider]?.apiKey,
+      ...keySourcesFor(ref.provider, opts.providers),
+    });
+    if (!apiKey) throw new Error(`a prompt hook has no key for ${ref.provider}`);
+    let text = "";
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: prompt }] }];
+    // Room for the thinking of a reasoning model before its short answer.
+    for await (const event of opts
+      .adapterFor(ref.provider)
+      .stream({ model: ref.model, apiKey, messages, maxTokens: 2048, signal }, opts.http)) {
+      if (event.type === "text_delta") text += event.text;
+    }
+    return text;
+  };
 }
 
 /**

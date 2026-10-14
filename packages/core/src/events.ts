@@ -55,7 +55,14 @@ export interface AgencyEvents {
   "board.item.complete": { itemId: string; status: string };
   "pre.merge": { sessionId: string; restored: string[] };
   "cost.threshold": { reason: string; sessionId?: string };
-  "turn.stop": { sessionId?: string; turnId?: string; taskDepth: number; stopHookActive: boolean };
+  "turn.stop": {
+    sessionId?: string;
+    turnId?: string;
+    taskDepth: number;
+    stopHookActive: boolean;
+    /** The text of the reply that ends the turn. */
+    lastAssistantMessage?: string;
+  };
   event: { event: string; payload: unknown };
 }
 

@@ -296,3 +296,54 @@ describe("command hooks of the config in a session", () => {
     expect(JSON.parse(lines[0] ?? "")).toMatchObject({ session_id: "hook-s1", reason: "other" });
   }, 30000);
 });
+
+describe("a prompt hook in a session", () => {
+  test("a Stop prompt hook asks small_model, and its reason keeps the turn going until it says ok", async () => {
+    const configDir = tmp("cfg");
+    writeFileSync(
+      join(configDir, "config.jsonc"),
+      JSON.stringify({
+        small_model: "anthropic/test-small",
+        hooks: { Stop: [{ hooks: [{ type: "prompt", prompt: "Did the agent run the tests? $ARGUMENTS" }] }] },
+      }),
+    );
+    const workspaceRoot = tmp("ws");
+    const requests: { model: string; text: string }[] = [];
+    let judged = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        const text = JSON.stringify(request.messages);
+        requests.push({ model: request.model, text });
+        if (text.includes("Did the agent run the tests?")) {
+          judged += 1;
+          yield {
+            type: "text_delta",
+            text: judged === 1 ? '{"ok": false, "reason": "run the tests first"}' : '{"ok": true}',
+          };
+        } else yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage };
+      },
+    };
+    const daemon = await createAgentDaemon({
+      workspaceRoot,
+      configDir,
+      trustStorePath: join(tmp("trust"), "trust.json"),
+      instanceFile: join(workspaceRoot, ".agency", "instance.json"),
+      sessionsDir: tmp("sess"),
+      adapterFor: () => adapter,
+      http: noopHttp,
+      tools: [],
+    });
+    daemons.push(daemon);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+    clients.push(client);
+
+    expect((await send(client, "fix the bug")).stopReason).toBe("end_turn");
+    const judges = requests.filter((r) => r.text.includes("Did the agent run the tests?"));
+    expect(judges.map((r) => r.model)).toEqual(["test-small", "test-small"]);
+    const turns = requests.filter((r) => r.model === "test-model");
+    expect(turns).toHaveLength(2);
+    expect(turns[1]?.text).toContain("run the tests first");
+  }, 30000);
+});

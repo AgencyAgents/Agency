@@ -227,12 +227,13 @@ describe("what an install makes runnable", () => {
             },
           ],
           Stop: [{ hooks: [{ type: "prompt", prompt: "is the work done?" }] }],
+          SubagentStop: [{ hooks: [{ type: "agent", prompt: "check the work" }] }],
         },
       });
       const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
-      expect(report.hooksInstalled).toEqual(["PreToolUse"]);
+      expect(report.hooksInstalled).toEqual(["PreToolUse", "Stop"]);
       expect(report.hooksSkipped).toEqual([
-        { event: "Stop", reason: "its entries are not command or http hooks" },
+        { event: "SubagentStop", reason: "its entries are not command, http or prompt hooks" },
       ]);
       const installed = loadHookFiles(join(ws, ".agency", "hooks"));
       const entry = installed.PreToolUse?.[0]?.hooks[0];

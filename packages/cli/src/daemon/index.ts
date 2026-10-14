@@ -109,6 +109,7 @@ import {
   commandPolicyFromPermissions,
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
+  promptHookModel,
   resolveAdapter,
   sessionEnvironmentStore,
 } from "./types.ts";
@@ -355,6 +356,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const hookRun: HookRunOptions = {
     cwd: options.workspaceRoot,
     shell,
+    askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
     // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
     onBackgroundOutput: (sessionId, text) => {
       const id = sessionId ?? "default";

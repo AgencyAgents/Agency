@@ -495,6 +495,7 @@ export async function runTurn(
             turnId: options.turnId,
             taskDepth: options.taskDepth ?? 0,
             stopHookActive: stopBlocked,
+            lastAssistantMessage: turn.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join(""),
           });
           const reasons = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
           if (reasons.length > 0) {

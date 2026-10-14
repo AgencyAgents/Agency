@@ -265,6 +265,59 @@ describe("runCommandHooks", () => {
     expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
   });
 
+  test("a prompt hook asks the model with the event in place of $ARGUMENTS, and ok false blocks with the reason", async () => {
+    const asked: { prompt: string; model: string | undefined }[] = [];
+    let reply = '{"ok": false, "reason": "the tests did not run"}';
+    const opts = {
+      cwd: dir,
+      askModel: async (prompt: string, model: string | undefined) => {
+        asked.push({ prompt, model });
+        return reply;
+      },
+    };
+    const hooks = CommandHooksSchema.parse({
+      Stop: [
+        { hooks: [{ type: "prompt", prompt: "Did the agent run the tests? $ARGUMENTS", model: "or/small" }] },
+      ],
+    });
+    const stop = () => runCommandHooks(hooks, "Stop", { session_id: "s1", stop_hook_active: false }, opts);
+    expect(await stop()).toEqual({ block: "the tests did not run" });
+    expect(asked[0]?.model).toBe("or/small");
+    expect(asked[0]?.prompt).toStartWith(
+      `Did the agent run the tests? {"hook_event_name":"Stop","cwd":${JSON.stringify(dir)},"session_id":"s1"`,
+    );
+    expect(asked[0]?.prompt).toContain('{"ok": true}');
+
+    // The model says the condition can never hold: the stop goes on.
+    reply = 'Sure: {"ok": false, "reason": "no tests exist", "impossible": true}';
+    expect(await stop()).toEqual({});
+    reply = '{"ok": true}';
+    expect(await stop()).toEqual({});
+    reply = "I think it is fine";
+    expect(await stop()).toEqual({});
+    // A failed model call, or no model at all, does not block.
+    expect(await runCommandHooks(hooks, "Stop", {}, { cwd: dir })).toEqual({});
+    expect(
+      await runCommandHooks(
+        hooks,
+        "Stop",
+        {},
+        { cwd: dir, askModel: () => Promise.reject(new Error("down")) },
+      ),
+    ).toEqual({});
+
+    // As in Claude Code: no effect on a PermissionRequest, and no run on an event without prompt hooks.
+    reply = '{"ok": false, "reason": "no"}';
+    const on = (event: keyof CommandHooks) =>
+      CommandHooksSchema.parse({ [event]: [{ hooks: [{ type: "prompt", prompt: "x" }] }] });
+    expect(
+      await runCommandHooks(on("PermissionRequest"), "PermissionRequest", { tool_name: "bash" }, opts),
+    ).toEqual({});
+    const before = asked.length;
+    expect(await runCommandHooks(on("SessionStart"), "SessionStart", {}, opts)).toEqual({});
+    expect(asked.length).toBe(before);
+  });
+
   test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
     const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');
     const compaction = on("PreCompact", cmd, "manual");
@@ -382,6 +435,14 @@ describe("hooks in the loop", () => {
     expect(result.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(result.messages[2]?.content).toEqual([{ type: "text", text: "the tests did not run" }]);
     expect(result.stopReason).toBe("end_turn");
+  });
+
+  test("a stop hook gets the text of the last reply as last_assistant_message", async () => {
+    const bus = new EventBus();
+    const { cmd, read } = capture("stop-last");
+    attachCommandHooks(bus, on("Stop", cmd), { cwd: dir });
+    await turn(scripted(0).adapter, bus, []);
+    expect(await read()).toMatchObject({ hook_event_name: "Stop", last_assistant_message: "answer 1" });
   });
 
   test("a stop hook does not run for a subagent", async () => {

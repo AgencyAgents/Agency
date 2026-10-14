@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Prompt hooks**: a hook of `"type": "prompt"` asks a model (`small_model` by
+  default) whether the event meets a condition, and `{"ok": false, "reason"}`
+  blocks, as in Claude Code. Live: a `Stop` hook made DeepSeek V4 Flash add a word it
+  had left out, then let the turn end. `agency plugin install` now installs the
+  prompt hooks of a plugin; it skipped them before. `Stop` and `SubagentStop` hooks
+  get `last_assistant_message`, the text of the last reply.
 - **HTTP hooks**: a hook of `"type": "http"` sends the event as a JSON POST to its
   `url`, and its JSON answer blocks or adds context as the stdout of a command does.
   Headers can hold the environment variables of `allowedEnvVars`, as in Claude

@@ -51,10 +51,21 @@ const GroupSchema = z.object({
         timeout: z.number().positive().optional(),
         if: z.string().optional(),
       }),
+      z.object({
+        type: z.literal("prompt"),
+        /** A question to a model about the event: `$ARGUMENTS` becomes the event as JSON. */
+        prompt: z.string().min(1),
+        /** provider/model. Default: `small_model`, else `model` of the config. */
+        model: z.string().optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
     ]),
   ),
 });
-type HttpHook = Extract<z.infer<typeof GroupSchema>["hooks"][number], { type: "http" }>;
+type HookEntry = z.infer<typeof GroupSchema>["hooks"][number];
+type HttpHook = Extract<HookEntry, { type: "http" }>;
+type PromptHook = Extract<HookEntry, { type: "prompt" }>;
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
 export const CommandHooksSchema = z.object(
@@ -121,6 +132,8 @@ export interface HookRunOptions {
   shell?: { command: string; buildArgs: (command: string) => string[] };
   /** Text for the model from a background hook that ended: the daemon puts it in the inbox of the session. */
   onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
+  /** The reply of a model to a prompt hook. Absent: a prompt hook fails, and does not block. */
+  askModel?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<string>;
 }
 
 function runOne(
@@ -208,6 +221,60 @@ async function runHttp(
   }
 }
 
+/** The events of Claude Code that take a prompt hook, of those that run here. */
+const PROMPT_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PostToolBatch",
+  "PermissionRequest",
+  "Stop",
+  "SubagentStop",
+  "UserPromptSubmit",
+  "UserPromptExpansion",
+]);
+const PROMPT_TIMEOUT_S = 30;
+const PROMPT_RULE =
+  'Answer with one JSON object and nothing else: {"ok": true} when the condition holds, or {"ok": false, "reason": "<what the agent must do>"} when it does not. Add "impossible": true when the condition can never hold.';
+
+/**
+ * A prompt hook in the form of a command result, as in Claude Code: `ok: false` blocks with the reason, except on a
+ * PermissionRequest, and on a stop that the model calls impossible. Another answer, or a failed call, does not block.
+ */
+async function runPrompt(
+  entry: PromptHook,
+  input: string,
+  event: CommandHookEvent,
+  opts: HookRunOptions,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  if (opts.askModel === undefined) return { code: null, stdout: "", stderr: "no model for a prompt hook" };
+  const question = entry.prompt.includes("$ARGUMENTS")
+    ? entry.prompt.replaceAll("$ARGUMENTS", input)
+    : `${entry.prompt}\n\n${input}`;
+  try {
+    const reply = await opts.askModel(
+      `${question}\n\n${PROMPT_RULE}`,
+      entry.model,
+      AbortSignal.timeout((entry.timeout ?? PROMPT_TIMEOUT_S) * 1000),
+    );
+    const answer = parseJson(/\{[\s\S]*\}/.exec(reply)?.[0] ?? "");
+    if (answer?.ok === true) return { code: 0, stdout: "", stderr: "" };
+    if (answer?.ok !== false) return { code: 1, stdout: "", stderr: "the answer has no ok" };
+    const stop = event === "Stop" || event === "SubagentStop";
+    if (event === "PermissionRequest" || (stop && answer.impossible === true)) {
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    const reason = typeof answer.reason === "string" && answer.reason ? answer.reason : undefined;
+    return {
+      code: 0,
+      stdout: JSON.stringify({ decision: "block", ...(reason ? { reason } : {}) }),
+      stderr: "",
+    };
+  } catch {
+    return { code: null, stdout: "", stderr: "" };
+  }
+}
+
 /**
  * What a background hook that ended gives the model, as in Claude Code: on exit code 2 of `asyncRewake` its stderr
  * (or stdout), otherwise `additionalContext` and `systemMessage` of a JSON answer, alone on stdout or on a line of its own.
@@ -283,11 +350,14 @@ export async function runCommandHooks(
         });
         continue;
       }
+      if (entry.type === "prompt" && !PROMPT_EVENTS.has(event)) continue;
       const timeoutS = entry.timeout ?? DEFAULT_TIMEOUT_S;
       const out =
         entry.type === "http"
           ? await runHttp(entry, stdin, timeoutS)
-          : await runOne(entry.command, stdin, opts, timeoutS);
+          : entry.type === "prompt"
+            ? await runPrompt(entry, stdin, event, opts)
+            : await runOne(entry.command, stdin, opts, timeoutS);
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);
@@ -356,7 +426,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       if (out.context !== undefined) throw new HookBlock(out.context);
     }),
     bus.on("turn.stop", async (payload) => {
-      const p = payload as { sessionId?: string; taskDepth: number; stopHookActive: boolean };
+      const p = payload as AgencyEvents["turn.stop"];
       // A subagent is not the session: its end has its own event.
       const out = await runCommandHooks(
         hooks,
@@ -364,6 +434,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
         {
           session_id: p.sessionId,
           stop_hook_active: p.stopHookActive,
+          last_assistant_message: p.lastAssistantMessage,
           ...(p.taskDepth > 0 && p.sessionId ? { agent_type: agentTypes.get(p.sessionId) } : {}),
         },
         opts,
