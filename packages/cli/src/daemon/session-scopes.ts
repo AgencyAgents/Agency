@@ -21,6 +21,11 @@ import { attachTeamMcpPool, teamMcpDedicatedServers } from "./handlers/team-run.
 import type { TeamContext } from "./team-context.ts";
 import type { AgentDaemonOptions, DaemonContext } from "./types.ts";
 
+/** Git Bash (MSYS) does not start under the restricted token of the `os` backend on Windows: that backend gets PowerShell. */
+export function sandboxWindowsShell(config: Config): Config["windowsShell"] {
+  return config.windowsShell ?? (config.sandbox?.backend === "os" ? "powershell" : undefined);
+}
+
 export interface SessionScopeFactoryDeps {
   options: AgentDaemonOptions;
   config: Config;
@@ -85,7 +90,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         snapshotDir,
         snapshotJournalFile: join(snapshotDir, "journals", `${sessionId}.journal.jsonl`),
         formatter: config.formatter,
-        windowsShell: config.windowsShell,
+        windowsShell: sandboxWindowsShell(config),
         ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
         todoPersistence,
         mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),

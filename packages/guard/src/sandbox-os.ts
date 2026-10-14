@@ -7,6 +7,7 @@ import {
   type SandboxBackend,
   SandboxBoundary,
 } from "./sandbox.ts";
+import { prepareWindowsSandbox, windowsSandboxHelper, windowsSandboxSid } from "./sandbox-win.ts";
 
 export interface OsSandboxOptions {
   /** Commands get the network. Default: no network. */
@@ -15,6 +16,8 @@ export interface OsSandboxOptions {
   platform?: NodeJS.Platform;
   bwrapBin?: string;
   seatbeltBin?: string;
+  /** The `windowsShell` of the config: Git Bash does not start under the restricted token of Windows. */
+  windowsShell?: "powershell" | "gitbash" | "cmd";
 }
 
 /**
@@ -127,14 +130,15 @@ export function scriptSandboxAvailable(): Promise<boolean> {
 }
 
 /**
- * Runs each shell command in a sandbox of the operating system: bubblewrap on Linux, Seatbelt on macOS.
- * Paths and permission rules are those of the software boundary. There is no backend for Windows.
+ * Runs each shell command in a sandbox of the operating system: bubblewrap on Linux, Seatbelt on macOS, a
+ * write-restricted token on Windows. Paths and permission rules are those of the software boundary.
  */
 export class OsSandboxBackend implements SandboxBackend {
   private readonly local: SandboxBoundary;
   private readonly root: string;
   private readonly platform: NodeJS.Platform;
   private readonly allowNetwork: boolean;
+  private readonly sid: string;
 
   constructor(
     root: string,
@@ -151,6 +155,7 @@ export class OsSandboxBackend implements SandboxBackend {
     }
     this.platform = options.platform ?? process.platform;
     this.allowNetwork = options.allowNetwork ?? false;
+    this.sid = windowsSandboxSid(this.root);
   }
 
   resolvePath(candidate: string): string {
@@ -178,6 +183,7 @@ export class OsSandboxBackend implements SandboxBackend {
       );
       return [this.options.seatbeltBin ?? "/usr/bin/sandbox-exec", "-p", profile, ...argv];
     }
+    if (this.platform === "win32") return [...windowsSandboxHelper(), this.sid, "--", ...argv];
     throw new AgencyError(ErrorCode.INTERNAL, `sandbox.backend "os" has no backend for ${this.platform}`, {
       source: "sandbox-os",
     });
@@ -185,13 +191,29 @@ export class OsSandboxBackend implements SandboxBackend {
 
   /** True when the sandbox program of this platform starts a command. */
   async isAvailable(): Promise<boolean> {
-    if (this.platform !== "linux" && this.platform !== "darwin") return false;
+    if (this.platform === "win32") {
+      // Here the folders get the rules of the SID, one time for each daemon start.
+      if (this.windowsRefusal() !== undefined || !(await prepareWindowsSandbox(this.root, this.sid)))
+        return false;
+    } else if (this.platform !== "linux" && this.platform !== "darwin") return false;
+    const probe = this.platform === "win32" ? ["cmd.exe", "/d", "/c", "exit 0"] : ["true"];
     try {
-      const probe = Bun.spawn(this.wrap(["true"]), { stdout: "ignore", stderr: "ignore" });
-      return (await probe.exited) === 0;
+      const child = Bun.spawn(this.wrap(probe), { stdout: "ignore", stderr: "ignore" });
+      return (await child.exited) === 0;
     } catch {
       return false;
     }
+  }
+
+  /** Why Windows refuses the config, before any probe. */
+  private windowsRefusal(): string | undefined {
+    if (this.options.windowsShell === "gitbash") {
+      return 'sandbox.backend is "os", but Git Bash (MSYS) does not start under the restricted token of Windows. Remove windowsShell or set it to "powershell" or "cmd".';
+    }
+    if (!this.allowNetwork) {
+      return 'sandbox.backend is "os", but on Windows a command cannot be kept off the network without administrator rights. Set sandbox.allowNetwork to true to accept that, or set sandbox.backend to "software".';
+    }
+    return undefined;
   }
 
   unavailableReason(): string {
@@ -201,7 +223,13 @@ export class OsSandboxBackend implements SandboxBackend {
     if (this.platform === "darwin") {
       return 'sandbox.backend is "os" but /usr/bin/sandbox-exec did not start a command. Set sandbox.backend to "software".';
     }
-    return `sandbox.backend "os" works on Linux and macOS only, and this is ${this.platform}. Set sandbox.backend to "software".`;
+    if (this.platform === "win32") {
+      return (
+        this.windowsRefusal() ??
+        'sandbox.backend is "os", but the restricted token of Windows did not start a command, or the workspace did not take its access rule. Set sandbox.backend to "software".'
+      );
+    }
+    return `sandbox.backend "os" works on Linux, macOS and Windows only, and this is ${this.platform}. Set sandbox.backend to "software".`;
   }
 
   async exec(

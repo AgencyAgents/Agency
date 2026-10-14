@@ -39,7 +39,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
 | `sandbox.backend` | `software\|docker\|os` | `software` | Sandbox backend: in-process boundary, container exec, or the sandbox of the operating system |
-| `sandbox.allowNetwork` | `boolean` | `false` | With the `os` backend: shell commands get the network |
+| `sandbox.allowNetwork` | `boolean` | `false` | With the `os` backend: shell commands get the network. On Windows it must be `true` |
 | `sandbox.image` | string | — | Image for one-shot `docker run` exec |
 | `sandbox.container` | string | — | Existing container for `docker exec`; unset means `docker run --rm` |
 | `sandbox.containerRoot` | string | — | Container-side mount point; defaults to `/workspace` |
@@ -217,7 +217,16 @@ The system prompt of a turn is a base text, then the environment block, the proj
 
 ## Sandbox of the operating system
 
-`sandbox.backend: "os"` runs each shell command of the model in a sandbox of the operating system: bubblewrap (`bwrap`) on Linux and Seatbelt (`sandbox-exec`) on macOS, the programs that Claude Code uses. A command can read the disk, can write only in the workspace and in a temporary folder, cannot write `.git/hooks`, and has no network. `sandbox.allowNetwork: true` gives it the network. The daemon does not start when the sandbox program does not work, and it never falls back to no sandbox. There is no such backend for Windows. A command in the background (`background: true`) runs in the same sandbox. Status: the arguments and the profile have tests, but no Linux or macOS machine has run this backend yet. Do not count on it before that run.
+`sandbox.backend: "os"` runs each shell command of the model in a sandbox of the operating system: bubblewrap (`bwrap`) on Linux and Seatbelt (`sandbox-exec`) on macOS, the programs that Claude Code uses. A command can read the disk, can write only in the workspace and in a temporary folder, cannot write `.git/hooks`, and has no network. `sandbox.allowNetwork: true` gives it the network. The daemon does not start when the sandbox program does not work, and it never falls back to no sandbox. A command in the background (`background: true`) runs in the same sandbox. Status: the arguments and the profile have tests, but no Linux or macOS machine has run this backend yet. Do not count on it before that run.
+
+On Windows the backend starts each command under a write-restricted token, through a small helper process (the hidden command `__sandbox` of the binary). The token holds an own SID for each workspace. At the start of the daemon, the workspace and a temporary folder of the workspace (in the temporary folder of the user) get an access rule that lets this SID write, and `.git\hooks` gets a rule that denies it; the rules stay on the folders. A command can then write only in these two folders, and in a folder that gives write access to `Everyone` (the NUL device needs this). `TEMP` and `TMP` of the command name the temporary folder of the workspace. A job object ends all processes of the command when it is cancelled or times out. Limits:
+
+- Windows cannot keep a command off the network without administrator rights. The daemon does not start until `sandbox.allowNetwork` is `true`.
+- Git Bash (MSYS) does not start under such a token: its shared memory refuses the token. The backend uses PowerShell when `windowsShell` has no value, and the daemon does not start with `windowsShell: "gitbash"`. Programs of Git Bash (`sed`, `awk` from `Git\usr\bin`) also do not start; `git` itself works.
+- A command reads what the user can read.
+- Each command takes about 150 ms more: the helper loads the binary.
+
+Measured on Windows 11: PowerShell, `cmd`, `git`, Bun and Python run; a write outside the workspace and in `.git\hooks` is denied; a timeout ends a child process of the command.
 
 ## Long runs
 

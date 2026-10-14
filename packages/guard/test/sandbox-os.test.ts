@@ -70,9 +70,9 @@ describe("OS sandbox arguments", () => {
     expect(buildScriptSandboxArgv(["x"], [], "win32")).toBeUndefined();
   });
 
-  test("on Windows the backend is not available, and the daemon start fails with the reason", async () => {
-    const windows = new OsSandboxBackend("C:/ws", {}, undefined, { platform: "win32" });
-    expect(await windows.isAvailable()).toBe(false);
-    await expect(ensureSandboxAvailable(windows)).rejects.toThrow("Linux and macOS only");
+  test("on another platform the backend is not available, and the daemon start fails with the reason", async () => {
+    const other = new OsSandboxBackend("/ws", {}, undefined, { platform: "freebsd" });
+    expect(await other.isAvailable()).toBe(false);
+    await expect(ensureSandboxAvailable(other)).rejects.toThrow("Linux, macOS and Windows only");
   });
 });

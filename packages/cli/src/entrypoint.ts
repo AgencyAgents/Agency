@@ -17,6 +17,7 @@ import {
   SessionStore,
   storagePaths,
 } from "@agency/core";
+import { runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
@@ -1435,6 +1436,7 @@ if (import.meta.main) {
     await (await import("./daemon-entry.ts")).runDaemonEntry(process.argv.slice(3));
   }
   if (process.argv[2] === CODE_COMMAND) await runCodeChild();
+  if (process.argv[2] === SANDBOX_COMMAND) runSandboxChild();
   await noteAvailableUpdate(process.argv.slice(2));
   // Awaited: a bare promise does not hold the process open, and an empty stdin read then exits 0 with no output.
   process.exit(await runEntrypoint());

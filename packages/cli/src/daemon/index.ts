@@ -92,7 +92,7 @@ import { registerTeamSurfaceHandlers } from "./handlers/team-surface.ts";
 import { registerTraceHandlers } from "./handlers/trace.ts";
 import { registerTurnHandlers } from "./handlers/turn.ts";
 import { createModelCatalog } from "./model-catalog.ts";
-import { createSessionScopes } from "./session-scopes.ts";
+import { createSessionScopes, sandboxWindowsShell } from "./session-scopes.ts";
 import { buildStateSnapshot, sessionKeyForEvent } from "./state-snapshot.ts";
 import { TaskUsageTracker } from "./task-ledger.ts";
 import { createTeamContext, type TeamContext } from "./team-context.ts";
@@ -119,6 +119,7 @@ export function createSandboxBackend(
   commandPolicy: CommandPolicy,
   externalDecision: ExternalDirectoryDecision | undefined,
   sandboxConfig?: Config["sandbox"],
+  windowsShell?: Config["windowsShell"],
 ): SandboxBackend {
   if (sandboxConfig?.backend === "docker") {
     return new DockerSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
@@ -134,6 +135,7 @@ export function createSandboxBackend(
   if (sandboxConfig?.backend === "os") {
     return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
       allowNetwork: sandboxConfig.allowNetwork,
+      ...(windowsShell ? { windowsShell } : {}),
     });
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
@@ -199,13 +201,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
   setDeniedCommandEnv(config.sandbox?.denyEnv ?? []);
-  const shell = resolveConfiguredShell(process.platform, config.windowsShell);
+  const shell = resolveConfiguredShell(process.platform, sandboxWindowsShell(config));
   const shellLabel = shell.label;
   const sandbox = createSandboxBackend(
     options.workspaceRoot,
     commandPolicy,
     (resolved) => gate.externalDirectoryDecision(resolved),
     config.sandbox,
+    config.windowsShell,
   );
   // Fail-closed Docker gate at boot (not lazy scope creation): a docker
   // backend without a reachable daemon refuses to serve rather than running

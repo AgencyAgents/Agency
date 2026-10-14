@@ -7,4 +7,5 @@ export * from "./redactor.ts";
 export * from "./sandbox.ts";
 export * from "./sandbox-docker.ts";
 export * from "./sandbox-os.ts";
+export * from "./sandbox-win.ts";
 export * from "./trust.ts";

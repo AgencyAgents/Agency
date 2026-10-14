@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "@agency/core";
-import { DockerSandboxBackend, SandboxBoundary } from "@agency/guard";
+import { DockerSandboxBackend, OsSandboxBackend, SandboxBoundary } from "@agency/guard";
+import { sandboxWindowsShell } from "../src/daemon/session-scopes.ts";
 import { createSandboxBackend } from "../src/daemon.ts";
 
 const dirs: string[] = [];
@@ -57,6 +58,25 @@ describe("daemon sandbox backend selection", () => {
       config.sandbox,
     );
     expect(sandbox).toBeInstanceOf(SandboxBoundary);
+  });
+
+  test("the os backend gets PowerShell on Windows unless the config names a shell, and Git Bash stops it", () => {
+    const load = (flags: Record<string, unknown>) =>
+      loadConfig({ globalDir: tempDir("agency-sandbox-global-"), env: {}, flags });
+    expect(sandboxWindowsShell(load({ sandbox: { backend: "os" } }))).toBe("powershell");
+    expect(sandboxWindowsShell(load({ sandbox: { backend: "os" }, windowsShell: "cmd" }))).toBe("cmd");
+    expect(sandboxWindowsShell(load({}))).toBeUndefined();
+
+    const config = load({ sandbox: { backend: "os", allowNetwork: true }, windowsShell: "gitbash" });
+    const sandbox = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      config.sandbox,
+      config.windowsShell,
+    ) as OsSandboxBackend;
+    expect(sandbox).toBeInstanceOf(OsSandboxBackend);
+    if (process.platform === "win32") expect(sandbox.unavailableReason()).toContain("Git Bash (MSYS)");
   });
 
   test("docker flag boots the container backend with config options", () => {

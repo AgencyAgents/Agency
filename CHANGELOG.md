@@ -670,6 +670,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **Sandbox of the operating system on Windows**: `sandbox.backend: "os"`
+  runs each command under a write-restricted token. A command writes
+  only in the workspace and in a temporary folder of its own, not in
+  `.git\hooks`. A job object ends the command and its children. It needs
+  `sandbox.allowNetwork: true` (no network block without administrator
+  rights) and PowerShell or `cmd`: Git Bash (MSYS) does not start under
+  the token.
 - **A background command stays in the sandbox**: with the `os` backend it
   runs in the sandbox, with `docker` it is refused. Before, `background: true`
   ran the command on the host, outside every backend.
