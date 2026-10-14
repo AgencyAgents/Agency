@@ -286,6 +286,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A deny rule on one command**: the refusal said that the whole tool was not
+  permitted and not to call it again, so a model gave up on the other commands of the
+  task. A refusal of a command or a path now names that call and says that another call
+  of the tool can be permitted.
 - **`shell.env` hooks**: the variables that a `shell.env` hook of a plugin set did not
   reach the shell command, and an async hook ran after the command started. The loop
   now waits for the hooks and gives their variables to the command, also to a command
