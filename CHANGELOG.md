@@ -670,6 +670,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **The binary starts about 45 ms faster**: it is compiled to bytecode, so
+  each start skips the parse of the bundle. This also counts for each
+  command of the Windows sandbox, which starts the binary as its helper.
+  Measured on Windows: `agency --version` 233 to 189 ms, a sandboxed
+  command 264 to 220 ms (medians of 10). The binary is 9 MB larger (94.7 MB).
 - **`if` and background hooks**: a hook with `"if": "Bash(git push *)"`
   runs only for a tool call that matches the rule. Before, `if` was
   dropped, so such a hook ran for every call of the tool. `async` and

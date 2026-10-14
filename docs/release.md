@@ -16,7 +16,7 @@ bun run typecheck:test
 bun run test:ci                           # the CI shards; one `bun test` process for all tests does not finish on Windows
 
 bun scripts/build.ts --targets bun-linux-x64,bun-darwin-arm64 --version 0.1.0 --outdir dist
-bun scripts/build.ts --max-size-mb 100        # default budget: 100 MB (Bun ~90 MB runtime floor on Windows + ~1 MB app)
+bun scripts/build.ts --max-size-mb 100        # default budget: 100 MB (Bun ~90 MB runtime floor on Windows + ~1 MB app + ~9 MB bytecode)
 bun scripts/sbom.ts --out dist/agency.cdx.json
 bun scripts/sbom.ts --reproducible            # deterministic SBOM (no timestamp, name-based serial)
 ```

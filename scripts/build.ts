@@ -100,6 +100,9 @@ async function compile(target: string, outfile: string, version: string): Promis
       "build",
       "--compile",
       "--minify",
+      // Each start, also each command of the Windows sandbox helper, skips the parse: about 45 ms less, 9 MB more.
+      "--bytecode",
+      "--format=esm",
       "--sourcemap=none",
       "--define",
       defineVersion,
