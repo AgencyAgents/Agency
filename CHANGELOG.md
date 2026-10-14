@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **A saved key reads in under 15 ms on Windows**: the key store calls DPAPI
+  in `crypt32.dll` directly. Before, each read and each save started
+  PowerShell: about 430 ms for each turn with a key from `agency auth login`.
+  Measured on one machine: read 430 to 13 ms (under 1 ms after the first), save
+  454 to 5 ms. The file format is the same in both directions.
 - **Secret variables stay out of model commands**: a `bash` command of the
   model no longer gets a variable with `KEY`, `SECRET` or `TOKEN` in its
   name, nor one that `provider.<id>.env` names, as in Codex. Before, only
