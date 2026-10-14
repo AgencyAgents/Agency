@@ -265,3 +265,43 @@ export const P = async () => ({ tool: { ${tool}: tool({ description: "d", args: 
     process.env.AGENCY_AGENTS_HOME = before;
   }
 });
+
+test("the user code plugins of OpenCode and Pi load only when userAgentPlugins asks for them", async () => {
+  const oc = (tool: string) => `import { tool } from "@opencode-ai/plugin";
+export const P = async () => ({ tool: { ${tool}: tool({ description: "d", args: {}, async execute() { return "ok"; } }) } });
+`;
+  const home = folder({
+    ".config/opencode/plugins/mine.ts": oc("own"),
+    ".config/opencode/opencode.json": JSON.stringify({ plugin: ["oc-user"] }),
+    ".config/opencode/node_modules/oc-user/package.json": JSON.stringify({
+      name: "oc-user",
+      type: "module",
+      main: "i.js",
+    }),
+    ".config/opencode/node_modules/oc-user/i.js": oc("npm"),
+    ".pi/agent/extensions/safe.ts": PI_EXTENSION,
+  });
+  const before = process.env.AGENCY_AGENTS_HOME;
+  process.env.AGENCY_AGENTS_HOME = home;
+  try {
+    const load = async (userAgentPlugins: boolean) => {
+      const registry = new Registry();
+      const result = await loadPlugins({
+        workspaceRoot: folder({}),
+        bus: new EventBus(),
+        registry,
+        configDirOverride: folder({}),
+        projectTrusted: false,
+        userAgentPlugins,
+      });
+      return { names: [...registry.tools.keys()].sort(), tiers: result.plugins.map((p) => p.tier) };
+    };
+    expect((await load(false)).names).toEqual([]);
+    expect(await load(true)).toEqual({
+      names: ["mine_own", "oc_user_npm", "safe_greet"],
+      tiers: ["user", "user", "user"],
+    });
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
+});

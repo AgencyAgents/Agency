@@ -48,6 +48,8 @@ export interface PluginLoaderOptions {
    * instruction files do not load. A plugin file is code, so a caller with a trust store must pass this.
    */
   projectTrusted?: boolean;
+  /** Also the code plugins of the user folders of OpenCode and Pi (`userAgentPlugins` of the config): they are code. */
+  userAgentPlugins?: boolean;
 }
 
 export interface PluginLoadResult {
@@ -179,22 +181,18 @@ const moduleId = (file: string): string =>
     : basename(file).replace(/\.(m?js|cjs|ts|mts)$/, "");
 
 /**
- * The npm plugins of the `plugin` key of `opencode.json`, where npm or OpenCode installed them: `.opencode/`, the
- * workspace, then the cache of OpenCode. A package that is in none of them has no `path`: nothing is installed here.
+ * The npm plugins of the `plugin` key of the `opencode.json` of `dir`, where npm or OpenCode installed them: the first
+ * of `bases`, then the cache of OpenCode. A package that is in none of them has no `path`: nothing is installed here.
  */
-function openCodeNpmPlugins(workspaceRoot: string): Array<{ name: string; path?: string }> {
-  const file = ["opencode.json", "opencode.jsonc"].map((name) => join(workspaceRoot, name)).find(existsSync);
+function openCodeNpmPlugins(dir: string, bases: string[]): Array<{ name: string; path?: string }> {
+  const file = ["opencode.json", "opencode.jsonc"].map((name) => join(dir, name)).find(existsSync);
   if (file === undefined) return [];
   const raw = parseJsonc(readFileSync(file, "utf8"), [], { allowTrailingComma: true }) as {
     plugin?: unknown;
   };
   const specs = Array.isArray(raw?.plugin) ? raw.plugin.filter((spec) => typeof spec === "string") : [];
   const home = foreignHome();
-  const bases = [
-    join(workspaceRoot, ".opencode"),
-    workspaceRoot,
-    ...(home ? [join(home, ".cache", "opencode")] : []),
-  ];
+  if (home) bases.push(join(home, ".cache", "opencode"));
   return specs.map((spec: string) => {
     // The version of `name@1.2.0` is for npm: the copy on disk counts.
     const name = spec.replace(/(.)@[^/]*$/, "$1");
@@ -289,25 +287,33 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
 
   type Source = { id: string; path: string; kind: "file" | "npm" | "opencode" | "pi"; tier: PluginTier };
   const sources: Source[] = [];
-  // The code plugins that OpenCode and Pi keep in a trusted workspace run through a shim of their API.
-  if (projectTrusted) {
-    const root = options.workspaceRoot;
-    for (const dir of [join(root, ".opencode", "plugins"), join(root, ".opencode", "plugin")]) {
-      for (const f of discoverFiles(dir))
-        sources.push({ id: moduleId(f), path: f, kind: "opencode", tier: "project" });
+  // The code plugins of OpenCode and Pi run through a shim of their API: those of a trusted workspace, and the user's
+  // own when the config asks for them.
+  const foreignCode = (
+    openCodeDir: string,
+    piDir: string,
+    configFolder: string,
+    npmBases: string[],
+    tier: PluginTier,
+  ): void => {
+    for (const dir of [join(openCodeDir, "plugins"), join(openCodeDir, "plugin")]) {
+      for (const f of discoverFiles(dir)) sources.push({ id: moduleId(f), path: f, kind: "opencode", tier });
     }
-    for (const f of discoverPiExtensions(join(root, ".pi", "extensions"))) {
-      sources.push({ id: moduleId(f), path: f, kind: "pi", tier: "project" });
-    }
-    for (const { name, path } of openCodeNpmPlugins(root)) {
+    for (const f of discoverPiExtensions(piDir)) sources.push({ id: moduleId(f), path: f, kind: "pi", tier });
+    for (const { name, path } of openCodeNpmPlugins(configFolder, npmBases)) {
       const id = name.replace(/^@/, "").replace(/[^a-zA-Z0-9]/g, "_");
-      if (path !== undefined) sources.push({ id, path, kind: "opencode", tier: "project" });
+      if (path !== undefined) sources.push({ id, path, kind: "opencode", tier });
       else
         errors.push({
           id,
           error: `the OpenCode plugin "${name}" is not installed: run OpenCode once, or npm install ${name}`,
         });
     }
+  };
+  if (projectTrusted) {
+    const root = options.workspaceRoot;
+    const openCode = join(root, ".opencode");
+    foreignCode(openCode, join(root, ".pi", "extensions"), root, [openCode, root], "project");
     // The `bin/` folder of an installed plugin is on the PATH of a shell command, as in Claude Code.
     const bins = pluginBinDirs(root);
     if (bins.length > 0) {
@@ -325,6 +331,11 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
         unsubscribes: [off],
       });
     }
+  }
+  const home = options.userAgentPlugins ? foreignHome() : undefined;
+  if (home !== undefined) {
+    const openCode = join(home, ".config", "opencode");
+    foreignCode(openCode, join(home, ".pi", "agent", "extensions"), openCode, [openCode], "user");
   }
   for (const f of projectFiles)
     sources.push({

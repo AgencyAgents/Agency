@@ -140,6 +140,8 @@ export const ConfigSchema = z
      */
     codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
     lspServers: z.record(z.string(), z.unknown()).optional(),
+    /** Loads the code plugins of the user folders of OpenCode and Pi too. Off by default: they are code. */
+    userAgentPlugins: z.boolean().optional(),
     /**
      * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
      * `external_directory` key gating out-of-workspace access. Unlisted tools
