@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -55,7 +55,14 @@ import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { mcpCmd, mcpServe } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
-import { pluginInstallSource, pluginListCmd, pluginRemoveCmd, pluginUpdateCmd } from "./plugin-commands.ts";
+import {
+  claudePluginSource,
+  pluginInstallSource,
+  pluginListCmd,
+  pluginRemoveCmd,
+  pluginSyncCmd,
+  pluginUpdateCmd,
+} from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
 import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
@@ -112,6 +119,8 @@ Commands:
                            Install a Claude Code / Codex plugin from a folder, a git URL
                            or owner/repo (#ref: a branch or tag)
   plugin list              Show installed skills and plugin modules
+  plugin sync              Install the enabledPlugins of .claude/settings.json from their
+                           marketplaces (extraKnownMarketplaces, or those Claude Code added)
   plugin update <name>     Install a plugin again from the source of its install
   plugin remove <name>     Remove an installed plugin
   review [<ref>]           Review the changes of the workspace and change no file:
@@ -1439,6 +1448,9 @@ Subcommands:
                                Install a Claude Code / Codex plugin from a folder, a git URL or
                                owner/repo (#ref for a branch or tag). [plugin] picks one of a marketplace
   list                         Show installed skills and plugin modules
+  install <plugin>@<marketplace>
+                               Install a plugin of a marketplace that the Claude Code settings name
+  sync [--overwrite]           Install the enabledPlugins of .claude/settings.json
   update <name>                Install a plugin again from the source of its install
   remove <name>                Remove an installed plugin`);
     return 0;
@@ -1451,7 +1463,18 @@ Subcommands:
       return 1;
     }
     try {
-      const report = pluginInstallSource(sourceDir, parsed.args[1], workspaceRoot, parsed.overwrite, err);
+      // `plugin@marketplace`, as Claude Code names a plugin: the marketplace comes from its settings.
+      const byId =
+        parsed.args[1] === undefined && /^[\w.-]+@[\w.-]+$/.test(sourceDir) && !existsSync(sourceDir)
+          ? claudePluginSource(sourceDir, workspaceRoot)
+          : undefined;
+      const report = pluginInstallSource(
+        byId?.source ?? sourceDir,
+        byId?.plugin ?? parsed.args[1],
+        workspaceRoot,
+        parsed.overwrite,
+        err,
+      );
       out(report);
       const { createFileTrustStore } = await import("@agency/guard");
       const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));
@@ -1466,6 +1489,12 @@ Subcommands:
   if (parsed.subcommand === "list") {
     out(pluginListCmd(workspaceRoot));
     return 0;
+  }
+
+  if (parsed.subcommand === "sync") {
+    const { text, failed } = pluginSyncCmd(workspaceRoot, parsed.overwrite, err);
+    out(text);
+    return failed ? 1 : 0;
   }
 
   if (parsed.subcommand === "update") {

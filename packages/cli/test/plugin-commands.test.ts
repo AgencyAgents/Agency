@@ -169,6 +169,60 @@ function gitRepo(files: Record<string, string>, copyFixtureTo?: string): string 
   return pathToFileURL(repo).href;
 }
 
+describe("plugins of the Claude Code settings", () => {
+  test("sync installs the enabledPlugins from the marketplaces of the settings, and plugin@marketplace installs one", async () => {
+    const market = tempDir("agency-plugin-mk-");
+    cpSync(FIXTURE_DIR, join(market, "plugins", "test-plugin"), { recursive: true });
+    mkdirSync(join(market, ".claude-plugin"));
+    writeFileSync(
+      join(market, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        name: "mk",
+        owner: { name: "o" },
+        plugins: [{ name: "test-plugin", source: "./plugins/test-plugin" }],
+      }),
+    );
+    // A plugin in a folder of another repository.
+    const repo = gitRepo({}, "tools/p");
+    const subMarket = tempDir("agency-plugin-mk2-");
+    mkdirSync(join(subMarket, ".claude-plugin"));
+    writeFileSync(
+      join(subMarket, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        name: "mk2",
+        owner: { name: "o" },
+        plugins: [{ name: "test-plugin", source: { source: "git-subdir", url: repo, path: "tools/p" } }],
+      }),
+    );
+    const settings = {
+      extraKnownMarketplaces: {
+        mk: { source: { source: "directory", path: market } },
+        mk2: { source: { source: "directory", path: subMarket } },
+      },
+      enabledPlugins: { "test-plugin@mk": true, "gone@nowhere": true, "off@mk": false },
+    };
+    const ws = tempDir("agency-plugin-sync-ws-");
+    mkdirSync(join(ws, ".claude"));
+    writeFileSync(join(ws, ".claude", "settings.json"), JSON.stringify(settings));
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "sync"], c.deps)).toBe(1);
+    expect(c.out.at(-1)).toContain(`test-plugin@mk: installed from ${market}`);
+    expect(c.out.at(-1)).toContain('gone@nowhere: The marketplace "nowhere" is not known');
+    expect(c.out.at(-1)).not.toContain("off@mk");
+    expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
+    await runEntrypoint(["plugin", "sync"], c.deps);
+    expect(c.out.at(-1)).toContain("test-plugin@mk: installed already");
+
+    const other = tempDir("agency-plugin-sub-ws-");
+    mkdirSync(join(other, ".claude"));
+    writeFileSync(join(other, ".claude", "settings.json"), JSON.stringify(settings));
+    c.deps.cwd = other;
+    expect(await runEntrypoint(["plugin", "install", "test-plugin@mk2"], c.deps)).toBe(0);
+    expect(existsSync(join(other, ".agency", "commands", "help.md"))).toBe(true);
+  });
+});
+
 describe("plugin install from git", () => {
   test("a git URL, owner/repo and #ref are sources; a folder that exists is not", () => {
     const here = tempDir("agency-plugin-local-");

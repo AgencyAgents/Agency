@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Plugins of the Claude Code settings**: `agency plugin sync` installs the `enabledPlugins`
+  of `.claude/settings.json` from the marketplaces of `extraKnownMarketplaces` or those
+  Claude Code added; `agency plugin install <plugin>@<marketplace>` installs one; a marketplace
+  entry can be a `git-subdir` source.
 - **`env` of `.claude/settings.json`**: in a trusted workspace its variables reach each
   shell command, as Claude Code sets them for each session.
 - **`agency plugin update <plugin>`**: installs a plugin again from the source of its

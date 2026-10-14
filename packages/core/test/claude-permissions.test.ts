@@ -8,6 +8,7 @@ import {
   loadClaudeSettingsEnv,
   permissionsFromRules,
 } from "../src/config/claude-permissions.ts";
+import { claudeEnabledPlugins, claudeMarketplaceSource } from "../src/config/claude-plugins.ts";
 
 test("Claude Code permission rules become the permissions map here, and deny wins over allow", () => {
   const { permissions, skipped } = permissionsFromRules({
@@ -112,5 +113,43 @@ test("the env of the Claude Code settings of a workspace: settings.local.json wi
     expect(loadClaudeSettingsEnv(join(ws, "none"))).toEqual({});
   } finally {
     rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("a marketplace of Claude Code resolves from the settings, then from the marketplaces that Claude Code added", () => {
+  const root = mkdtempSync(join(tmpdir(), "agency-cc-market-"));
+  try {
+    const ws = join(root, "ws");
+    const home = join(root, "home");
+    const copy = join(home, ".claude", "plugins", "marketplaces", "added");
+    mkdirSync(join(ws, ".claude"), { recursive: true });
+    mkdirSync(copy, { recursive: true });
+    const github = (repo: string, extra: object = {}) => ({ source: { source: "github", repo, ...extra } });
+    writeFileSync(
+      join(ws, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: { "a@team": true, "b@team": false, bad: true },
+        extraKnownMarketplaces: { team: github("org/team"), sub: github("org/mono", { path: "market" }) },
+      }),
+    );
+    writeFileSync(
+      join(ws, ".claude", "settings.local.json"),
+      JSON.stringify({ extraKnownMarketplaces: { team: github("me/fork", { ref: "dev" }) } }),
+    );
+    writeFileSync(
+      join(home, ".claude", "plugins", "known_marketplaces.json"),
+      JSON.stringify({ added: { ...github("x/added"), installLocation: copy }, gone: github("x/gone") }),
+    );
+    expect(claudeEnabledPlugins(ws)).toEqual(["a@team"]);
+    expect(claudeMarketplaceSource("team", ws, home)).toBe("me/fork#dev");
+    expect(claudeMarketplaceSource("added", ws, home)).toBe(copy);
+    expect(claudeMarketplaceSource("gone", ws, home)).toBe("x/gone");
+    expect(claudeMarketplaceSource("claude-plugins-official", ws, home)).toBe(
+      "anthropics/claude-plugins-official",
+    );
+    expect(claudeMarketplaceSource("nowhere", ws, home)).toBeUndefined();
+    expect(() => claudeMarketplaceSource("sub", ws, home)).toThrow("subfolder market");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -12,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
+  claudeEnabledPlugins,
+  claudeMarketplaceSource,
   hasPluginManifest,
   importClaudePlugin,
   Logger,
@@ -216,7 +218,9 @@ function withClone<T>(git: GitSource, use: (dir: string) => T): T {
   }
 }
 
-type MarketplaceSource = string | { source?: string; repo?: string; url?: string; ref?: string };
+type MarketplaceSource =
+  | string
+  | { source?: string; repo?: string; url?: string; ref?: string; path?: string };
 
 /** The marketplace files of Claude Code, Cursor and Codex. */
 const MARKETPLACE_FILES = [
@@ -232,7 +236,7 @@ const MARKETPLACE_FILES = [
 function marketplacePlugin(
   root: string,
   name: string | undefined,
-): { dir: string } | { git: GitSource } | undefined {
+): { dir: string } | { git: GitSource; subdir?: string } | undefined {
   const file = MARKETPLACE_FILES.map((parts) => join(root, ...parts)).find((path) => existsSync(path));
   if (file === undefined || hasPluginManifest(root)) return undefined;
   const market = JSON.parse(readFileSync(file, "utf8")) as {
@@ -265,6 +269,11 @@ function marketplacePlugin(
   }
   if (source.source === "url" && GIT_URL.test(source.url ?? ""))
     return { git: { url: source.url ?? "", ...ref } };
+  // A plugin in a folder of another repository, a monorepo: `url` is a git URL or owner/repo.
+  if (source.source === "git-subdir" && source.url !== undefined && source.path !== undefined) {
+    const git = gitSource(`${source.url}${source.ref === undefined ? "" : `#${source.ref}`}`);
+    if (git !== undefined) return { git, subdir: source.path };
+  }
   throw new Error(`The source of "${entry.name}" has a form that Agency cannot install`);
 }
 
@@ -293,9 +302,58 @@ export function pluginInstallSource(
     const picked = marketplacePlugin(root, name);
     if (picked === undefined) return run(root);
     if ("dir" in picked) return run(picked.dir);
-    return withClone(picked.git, run);
+    return withClone(picked.git, (dir) => {
+      const plugin = resolve(dir, picked.subdir ?? "");
+      const inside = relative(dir, plugin);
+      if (inside.startsWith("..") || isAbsolute(inside)) {
+        throw new Error(`The plugin folder ${picked.subdir} is outside its repository`);
+      }
+      return run(plugin);
+    });
   };
   return git === undefined ? install(source) : withClone(git, install);
+}
+
+/** `plugin install <plugin>@<marketplace>`: the marketplace that the settings of Claude Code name, as Claude Code finds it. */
+export function claudePluginSource(id: string, workspaceRoot: string): { source: string; plugin: string } {
+  const [plugin = "", market = ""] = id.split("@");
+  const source = claudeMarketplaceSource(market, workspaceRoot);
+  if (source === undefined) {
+    throw new Error(
+      `The marketplace "${market}" is not known: name it in extraKnownMarketplaces of .claude/settings.json, or add it in Claude Code`,
+    );
+  }
+  return { source, plugin };
+}
+
+/**
+ * `plugin sync`: installs the plugins that `enabledPlugins` of the Claude Code settings of the workspace names, from
+ * their marketplaces. An installed one stays unless `overwrite`. ponytail: each plugin clones its marketplace again.
+ */
+export function pluginSyncCmd(
+  workspaceRoot: string,
+  overwrite: boolean,
+  errSink: (line: string) => void,
+): { text: string; failed: boolean } {
+  const ids = claudeEnabledPlugins(workspaceRoot);
+  if (ids.length === 0)
+    return { text: "The Claude Code settings of this workspace enable no plugin.", failed: false };
+  let failed = false;
+  const lines = ids.map((id) => {
+    const [name = ""] = id.split("@");
+    if (!overwrite && existsSync(join(workspaceRoot, ".agency", "skills", name, "receipt.json"))) {
+      return `${id}: installed already`;
+    }
+    try {
+      const { source, plugin } = claudePluginSource(id, workspaceRoot);
+      pluginInstallSource(source, plugin, workspaceRoot, overwrite, errSink);
+      return `${id}: installed from ${source}`;
+    } catch (error) {
+      failed = true;
+      return `${id}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+  return { text: lines.join("\n"), failed };
 }
 
 /** `plugin update <name>`: the plugin again from the source of its install. Its data folder stays. */
