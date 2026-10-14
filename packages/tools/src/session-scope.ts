@@ -206,7 +206,7 @@ export async function createSessionScope(scopeOptions: SessionScopeOptions): Pro
     registry.register(tool);
   }
   registry.register(createQuestionTool());
-  if (options.websearch?.endpoint) {
+  if (options.websearch) {
     registry.register(createWebSearchTool(options.deps, options.http, options.websearch));
   }
   if (lspRegistry) {

@@ -202,7 +202,13 @@ export const ConfigSchema = z
      * Web search for the websearch tool: a GET endpoint the query is appended
      * to as `?q=`. Absent means the tool is not offered to the model at all.
      */
-    websearch: z.object({ endpoint: z.string().optional() }).optional(),
+    websearch: z
+      .object({
+        endpoint: z.string().optional(),
+        /** The OpenRouter model of a search when there is no endpoint. Default `deepseek/deepseek-v4-flash`. */
+        model: z.string().optional(),
+      })
+      .optional(),
     /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
     plugins: z.array(z.string()).optional(),
     /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */

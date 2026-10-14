@@ -52,7 +52,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `sandbox.forecastCostUsd` | number | — | Pre-dispatch cost threshold that triggers an ask |
 | `formatter` | `{command?: string[]}` | — | Appended with the file path after each write/edit |
 | `windowsShell` | `powershell\|gitbash\|cmd` | — | Windows only. With no value: `gitbash` when Git for Windows is installed (its `bin\bash.exe`, found from `git` on PATH), otherwise `powershell`. Models write bash with far fewer errors than Windows PowerShell 5.1 |
-| `websearch` | `{endpoint?: string}` | — | GET endpoint queried as `?q=`; absent = tool not offered |
+| `websearch` | `{endpoint?: string, model?: string}` | — | `endpoint`: a GET endpoint queried as `?q=`. With no endpoint, the `websearch` tool searches through the web plugin of OpenRouter when the `openrouter` provider has a key, with `model` (default `deepseek/deepseek-v4-flash`): 5 results with title, URL and an excerpt. Measured: 0.0072 USD for 3 results, about 1 cent a search; this cost is not in the cost of the turn. With neither, the tool is not offered |
 | `plugins` | `string[]` | — | npm packages to load as plugins |
 | `compactionInstructions` | string | — | Text for the model that writes the summary of a compaction: what the summary must keep. It goes after the built-in rules and comes first where the two disagree. It has no effect on the offline summary |
 | `compactionLimit` | number | `220000` | Tokens of history at which a session is compacted when the window of the model is larger. A smaller window is compacted at 90 percent of its size |

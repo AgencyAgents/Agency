@@ -9,12 +9,14 @@ import {
 } from "@agency/core";
 import type { CallerIdentity, PermissionsGate, SandboxBackend } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
+import { GATEWAY_BASE_URLS, resolveApiKey } from "@agency/providers";
 import {
   createSessionScope,
   type McpTokenStore,
   type SessionScope,
   type TeamMcpPool,
   type TodoPersistence,
+  type WebSearchConfig,
 } from "@agency/tools";
 import {
   demoteScopeForLead,
@@ -25,7 +27,29 @@ import { buildDispatchTool } from "./handlers/dispatch.ts";
 import { buildSpawnTool } from "./handlers/session.ts";
 import { attachTeamMcpPool, teamMcpDedicatedServers } from "./handlers/team-run.ts";
 import type { TeamContext } from "./team-context.ts";
-import type { AgentDaemonOptions, DaemonContext } from "./types.ts";
+import { type AgentDaemonOptions, type DaemonContext, keySourcesFor } from "./types.ts";
+
+/** The search endpoint of the config, or else OpenRouter's web search when the openrouter provider has a key. */
+export async function webSearchFor(config: Config, ctx: DaemonContext): Promise<WebSearchConfig | undefined> {
+  if (config.websearch?.endpoint) return { endpoint: config.websearch.endpoint };
+  const apiKey = async () =>
+    resolveApiKey({
+      provider: "openrouter",
+      env: process.env,
+      keychain: await ctx.getKeychain().catch(() => undefined),
+      config: ctx.providers.openrouter?.apiKey,
+      ...keySourcesFor("openrouter", ctx.providers),
+    }).catch(() => undefined);
+  if ((await apiKey()) === undefined) return undefined;
+  return {
+    openrouter: {
+      baseUrl:
+        ctx.providers.openrouter?.baseUrl ?? GATEWAY_BASE_URLS.openrouter ?? "https://openrouter.ai/api/v1",
+      model: config.websearch?.model ?? "deepseek/deepseek-v4-flash",
+      apiKey,
+    },
+  };
+}
 
 /** Git Bash (MSYS) does not start under the restricted token of the `os` backend on Windows: that backend gets PowerShell. */
 export function sandboxWindowsShell(config: Config): Config["windowsShell"] {
@@ -92,6 +116,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
           break;
         }
       }
+      const websearch = await webSearchFor(config, getCtx());
       const scope = await createSessionScope({
         deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
         http,
@@ -100,7 +125,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         snapshotJournalFile: join(snapshotDir, "journals", `${sessionId}.journal.jsonl`),
         formatter: config.formatter,
         windowsShell: sandboxWindowsShell(config),
-        ...(config.websearch?.endpoint ? { websearch: { endpoint: config.websearch.endpoint } } : {}),
+        ...(websearch ? { websearch } : {}),
         todoPersistence,
         mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),
         lspServers: config.lspServers,

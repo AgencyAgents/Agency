@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Web search with no setup for OpenRouter users**: with no `websearch.endpoint`,
+  the `websearch` tool searches through OpenRouter's web plugin when the
+  `openrouter` provider has a key, and gives 5 results with title, URL and
+  an excerpt. Before, the tool was not offered without an endpoint. Live: one
+  search found the Bun 1.4 release page and the model gave its date. A search
+  costs about 1 cent, which the cost of the turn does not count.
 - **Sign-in to MCP servers over HTTP**: `agency mcp login <server>` runs the OAuth
   flow of the MCP authorization spec (metadata discovery, client registration,
   PKCE in the browser) and keeps the tokens in the OS keychain; `agency mcp`
