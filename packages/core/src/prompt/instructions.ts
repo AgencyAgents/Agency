@@ -77,6 +77,7 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
     ...filesIn(join(workspaceRoot, ".clinerules"), ".md"),
     ...filesIn(join(workspaceRoot, ".roo", "rules"), ".md"),
     ...scopedRuleFiles(workspaceRoot),
+    ...filesIn(join(workspaceRoot, ".claude", "rules"), ".md"),
     ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
     ...filesIn(join(workspaceRoot, ".github", "instructions"), ".instructions.md"),
     ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
@@ -112,6 +113,18 @@ export function scopedRuleText(text: string, manualByDefault = true): string {
   if (globs) return `Files that match ${globs}:\n${body.trim()}`;
   if (field("description")) return `When the task is about: ${field("description")}\n${body.trim()}`;
   return manualByDefault ? "" : body.trim();
+}
+
+/** A rule of `.claude/rules`: its `paths` (a YAML list or one glob) say which files it is for; with none it applies always. */
+export function claudeRuleText(text: string): string {
+  const { body } = splitFrontmatter(text);
+  const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text.trimStart())?.[1];
+  let paths: unknown;
+  try {
+    paths = block === undefined ? undefined : (Bun.YAML.parse(block) as { paths?: unknown } | null)?.paths;
+  } catch {}
+  const globs = Array.isArray(paths) ? paths.map(String).join(", ") : typeof paths === "string" ? paths : "";
+  return globs === "" ? body.trim() : `Files that match ${globs}:\n${body.trim()}`;
 }
 
 /**
@@ -204,6 +217,11 @@ export function loadUserAgentInstructions(
       /(CLAUDE|GEMINI)\.md$/.test(file)
         ? expandImports(readTextCapped(file, maxFileBytes), dirname(file), home, maxFileBytes)
         : readTextCapped(file, maxFileBytes),
+    )
+    .concat(
+      filesIn(join(home, ".claude", "rules"), ".md").map((file) =>
+        claudeRuleText(readTextCapped(file, maxFileBytes)),
+      ),
     );
   return texts.filter(
     (text, index) => text.trim() !== "" && texts.findIndex((t) => t.trim() === text.trim()) === index,
@@ -243,6 +261,7 @@ export function loadInstructions(
       ? expandImports(raw, dirname(f), workspaceRoot, maxFileBytes)
       : raw;
     if (f.endsWith(".mdc") || f.endsWith(".instructions.md")) return scopedRuleText(text);
+    if (f.startsWith(join(workspaceRoot, ".claude", "rules"))) return claudeRuleText(text);
     return scoped.has(f) ? scopedRuleText(text, false) : text;
   });
   // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.

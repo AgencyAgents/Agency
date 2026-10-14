@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Rules of Claude Code**: `.claude/rules/**/*.md` join the instructions of a trusted
+  workspace, a rule with `paths` for the files that match them.
 - **`@path` imports of `CLAUDE.md` and `GEMINI.md`**: the imported file takes the place of
   the import, five levels deep, from inside the workspace only. A `CLAUDE.md` that only
   imports `AGENTS.md` counts once.

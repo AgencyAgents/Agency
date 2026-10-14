@@ -26,7 +26,7 @@ function folder(files: Record<string, string>): string {
 
 const skill = (name: string) => `---\nname: ${name}\ndescription: ${name} skill\n---\nbody of ${name}\n`;
 
-test("the rules of Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro and Augment join the instructions, once each", () => {
+test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro and Augment join the instructions, once each", () => {
   const ws = folder({
     "AGENTS.md": "agents text",
     "CLAUDE.md": "agents text",
@@ -50,10 +50,16 @@ test("the rules of Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro an
     ".github/instructions/ts.instructions.md": '---\napplyTo: "**/*.ts"\n---\ncopilot ts rule',
     ".github/instructions/team/all.instructions.md": '---\napplyTo: "**"\n---\ncopilot all rule',
     ".github/instructions/manual.instructions.md": "copilot manual rule",
+    ".claude/rules/api.md": '---\npaths:\n  - "src/api/**"\n  - "lib/**"\n---\nclaude api rule',
+    ".claude/rules/docs/one.md": '---\npaths: "docs/**"\n---\nclaude docs rule',
+    ".claude/rules/style.md": "claude style rule",
   });
   const trust = createFileTrustStore(join(folder({}), "trust.json"));
   trust.trust(ws);
   const text = loadInstructions(trust, ws, ws).join("\n---\n");
+  expect(text).toContain("Files that match src/api/**, lib/**:\nclaude api rule");
+  expect(text).toContain("Files that match docs/**:\nclaude docs rule");
+  expect(text).toContain("---\nclaude style rule");
   // AGENTS.md and CLAUDE.md with the same text count once.
   expect(text.split("agents text")).toHaveLength(2);
   for (const part of [
@@ -256,8 +262,14 @@ test("the user instructions of Claude Code, Codex, Gemini, OpenCode and Pi load;
     ".gemini/GEMINI.md": "claude user rule",
     ".config/opencode/AGENTS.md": "",
     ".pi/agent/AGENTS.md": "pi user rule",
+    ".claude/rules/go.md": '---\npaths: "**/*.go"\n---\nclaude user go rule',
   });
-  expect(loadUserAgentInstructions(home)).toEqual(["claude user rule", "codex override", "pi user rule"]);
+  expect(loadUserAgentInstructions(home)).toEqual([
+    "claude user rule",
+    "codex override",
+    "pi user rule",
+    "Files that match **/*.go:\nclaude user go rule",
+  ]);
 });
 
 test("the @path imports of CLAUDE.md load, inside the workspace only, and not in code", () => {
