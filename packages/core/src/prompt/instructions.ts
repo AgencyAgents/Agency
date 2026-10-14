@@ -2,6 +2,7 @@ import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from
 import { basename, dirname, join } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
+import { foreignHome } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 
 /** The instruction files of a folder, in this order: those of Codex and Pi, Claude Code, and Gemini CLI. */
@@ -131,6 +132,32 @@ function readTextCapped(file: string, maxBytes: number): string {
   } finally {
     closeSync(fd);
   }
+}
+
+/** The instruction files that other agents load in every project. Codex reads its override in place of AGENTS.md. */
+const FOREIGN_USER_INSTRUCTIONS = [
+  [".claude", "CLAUDE.md"],
+  [".codex", "AGENTS.override.md"],
+  [".codex", "AGENTS.md"],
+  [".gemini", "GEMINI.md"],
+  [".config", "opencode", "AGENTS.md"],
+  [".pi", "agent", "AGENTS.md"],
+];
+
+/** The user instructions of other agents (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); a copy of another counts once. */
+export function loadUserAgentInstructions(
+  home: string | undefined = foreignHome(),
+  maxFileBytes = DEFAULT_MAX_INSTRUCTION_BYTES,
+): string[] {
+  if (home === undefined) return [];
+  const files = FOREIGN_USER_INSTRUCTIONS.map((parts) => join(home, ...parts)).filter(
+    (file) => existsSync(file) && statSync(file).isFile(),
+  );
+  const override = join(home, ".codex", "AGENTS.override.md");
+  const texts = files
+    .filter((file) => !(files.includes(override) && file === join(home, ".codex", "AGENTS.md")))
+    .map((file) => readTextCapped(file, maxFileBytes));
+  return texts.filter((text, index) => text.trim() !== "" && texts.indexOf(text) === index);
 }
 
 /**

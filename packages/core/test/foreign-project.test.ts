@@ -6,7 +6,7 @@ import { createFileTrustStore } from "@agency/guard";
 import { resolveFileRoster } from "../src/agents/files.ts";
 import { expandCommand, loadCommands } from "../src/commands/loader.ts";
 import { discoverSkills, resolveSkillDirs } from "../src/plugins/skill.ts";
-import { loadInstructions } from "../src/prompt/instructions.ts";
+import { loadInstructions, loadUserAgentInstructions } from "../src/prompt/instructions.ts";
 import { outputStyleInstructions } from "../src/prompt/output-style.ts";
 
 const dirs: string[] = [];
@@ -246,4 +246,16 @@ test("an output style comes from the project, the config folder or ~/.claude by 
   } finally {
     process.env.AGENCY_AGENTS_HOME = before;
   }
+});
+
+test("the user instructions of Claude Code, Codex, Gemini, OpenCode and Pi load; the override of Codex wins", () => {
+  const home = folder({
+    ".claude/CLAUDE.md": "claude user rule",
+    ".codex/AGENTS.override.md": "codex override",
+    ".codex/AGENTS.md": "codex plain",
+    ".gemini/GEMINI.md": "claude user rule",
+    ".config/opencode/AGENTS.md": "",
+    ".pi/agent/AGENTS.md": "pi user rule",
+  });
+  expect(loadUserAgentInstructions(home)).toEqual(["claude user rule", "codex override", "pi user rule"]);
 });

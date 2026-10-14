@@ -22,6 +22,7 @@ import {
   type InboxStore,
   type Logger,
   loadInstructions,
+  loadUserAgentInstructions,
   mcpServerDownReminder,
   type PluginAgentContribution,
   type PluginCommandContribution,
@@ -192,6 +193,8 @@ export interface ResolveSystemPromptOptions {
   pluginInstructions?: readonly string[];
   /** The notes of the `memory` tool go last in the instructions. */
   memoryFile?: string;
+  /** `userAgentInstructions` of the config: the user instructions of other agents go first. */
+  userAgentInstructions?: boolean;
   /** Environment block per session id. A block that changes between turns ends the prompt cache of the full history. */
   environments?: EnvironmentStore;
 }
@@ -667,6 +670,7 @@ export interface DaemonContext {
   pluginInstructions: readonly string[];
   /** The notes file of the `memory` tool; absent when `memory` of the config is false. */
   memoryFile?: string;
+  userAgentInstructions?: boolean;
   /** Shell hooks of the config: the turn handler runs the prompt and session events itself. */
   commandHooks: import("@agency/core").CommandHooks;
   hookRun: import("@agency/core").HookRunOptions;
@@ -793,6 +797,7 @@ export function resolvePrompt(
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
     familyPresetOverlay: composeFromParts ? role : undefined,
     instructions: instructions ?? [
+      ...(options.userAgentInstructions ? loadUserAgentInstructions() : []),
       ...projectInstructions(options),
       ...(options.pluginInstructions ?? []),
       ...memoryInstructions(options.memoryFile),

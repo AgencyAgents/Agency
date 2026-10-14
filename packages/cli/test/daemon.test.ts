@@ -1552,6 +1552,22 @@ describe("resolveSystemPrompt", () => {
     expect(system).not.toContain("<system-reminder>");
   });
 
+  test("the user instructions of other agents join only with userAgentInstructions", () => {
+    const home = tempRoot();
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "the user rule of claude");
+    const before = process.env.AGENCY_AGENTS_HOME;
+    process.env.AGENCY_AGENTS_HOME = home;
+    try {
+      const prompt = (userAgentInstructions: boolean) =>
+        resolveSystemPrompt(params(), { workspaceRoot: tempRoot(), git: () => null, userAgentInstructions });
+      expect(prompt(true)).toContain("the user rule of claude");
+      expect(prompt(false)).not.toContain("the user rule of claude");
+    } finally {
+      process.env.AGENCY_AGENTS_HOME = before;
+    }
+  });
+
   test("mcp start failures become mcp_server_down reminders", () => {
     const system = resolveSystemPrompt(params(), {
       workspaceRoot: tempRoot(),

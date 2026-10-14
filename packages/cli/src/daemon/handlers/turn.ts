@@ -591,6 +591,7 @@ export async function executeTurn(
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
               memoryFile: ctx.memoryFile,
+              userAgentInstructions: ctx.userAgentInstructions,
               environments: ctx.sessionEnvironments,
             });
             result = await runTurn(adapterFor(resolvedProvider), schedulerFor(resolvedProvider), http, {
@@ -702,6 +703,7 @@ export async function executeTurn(
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
               memoryFile: ctx.memoryFile,
+              userAgentInstructions: ctx.userAgentInstructions,
               environments: ctx.sessionEnvironments,
             });
             try {
@@ -765,6 +767,7 @@ export async function executeTurn(
               trustStore,
               pluginInstructions: ctx.pluginInstructions,
               memoryFile: ctx.memoryFile,
+              userAgentInstructions: ctx.userAgentInstructions,
               environments: ctx.sessionEnvironments,
             });
             writeTurnCassette(traceRecorder, params, sysPrompt, collectedTraceEvents, result);

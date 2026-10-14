@@ -674,6 +674,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trustStore,
     pluginInstructions,
     ...(config.memory === false ? {} : { memoryFile: memoryFile(options.workspaceRoot) }),
+    userAgentInstructions: config.userAgentInstructions === true,
     commandHooks,
     hookRun,
     teamContexts,

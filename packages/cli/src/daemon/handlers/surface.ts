@@ -403,6 +403,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       trustStore: ctx.trustStore,
       pluginInstructions: ctx.pluginInstructions,
       memoryFile: ctx.memoryFile,
+      userAgentInstructions: ctx.userAgentInstructions,
     });
     return { prompt: resolved.text, segments: resolved.segments };
   };
