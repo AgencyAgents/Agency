@@ -342,3 +342,63 @@ test("the AGENTS.md and CLAUDE.md of a subfolder come once, with the first file 
   expect(nestedInstructions(ws, "top.ts", seen)).toBeUndefined();
   expect(nestedInstructions(ws, "../outside/a.ts", seen)).toBeUndefined();
 });
+
+test("the instructions, commands and agents of opencode.json load, inside the workspace only", () => {
+  const parent = folder({ "outside.md": "SECRET OUTSIDE" });
+  const ws = join(parent, "ws");
+  const files: Record<string, string> = {
+    "opencode.jsonc": JSON.stringify({
+      instructions: ["CONTRIBUTING.md", "docs/*.md", "../outside.md", "https://x.test/rules.md"],
+      command: {
+        test: { template: "Run the tests of $ARGUMENTS", description: "Run tests" },
+        "bad name": { template: "x" },
+      },
+      agent: {
+        review: {
+          description: "Reviews code",
+          prompt: "{file:./prompts/review.txt}",
+          model: "anthropic/claude-sonnet-5",
+          tools: { write: false, edit: false, bash: true },
+        },
+        build: { mode: "primary", prompt: "You build." },
+        quiet: { description: "No prompt" },
+        leak: { prompt: "{file:../outside.md}" },
+      },
+    }),
+    "CONTRIBUTING.md": "contributing rule",
+    "docs/style.md": "docs style rule",
+    "prompts/review.txt": "You review code.",
+  };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(ws, path)), { recursive: true });
+    writeFileSync(join(ws, path), text);
+  }
+  const trust = createFileTrustStore(join(folder({}), "trust.json"));
+  trust.trust(ws);
+  const text = loadInstructions(trust, ws, ws).join("\n---\n");
+  expect(text).toContain("contributing rule");
+  expect(text).toContain("docs style rule");
+  expect(text).not.toContain("SECRET");
+
+  const commands = loadCommands({ workspaceRoot: ws, configDirOverride: folder({}) });
+  expect(commands.map((c) => c.name)).toEqual(["test"]);
+  expect(expandCommand(commands[0]?.content ?? "", "api", ws)).toBe("Run the tests of api");
+  expect(commands[0]?.description).toBe("Run tests");
+
+  const { agents } = resolveFileRoster({
+    workspaceRoot: ws,
+    configDirOverride: folder({}),
+    configAgents: {},
+    seed: false,
+  });
+  expect(agents.get("review")).toMatchObject({
+    description: "Reviews code",
+    systemPrompt: "You review code.",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    permissions: { write: "deny", edit: "deny", notebook_edit: "deny" },
+  });
+  expect(agents.has("build")).toBe(false);
+  expect(agents.has("quiet")).toBe(false);
+  expect(agents.get("leak")?.systemPrompt).toBe("{file:../outside.md}");
+});

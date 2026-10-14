@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
+import { openCodeConfig } from "../config/opencode.ts";
 import { foreignHome } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 
@@ -90,6 +91,7 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
     ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
     ...filesIn(join(workspaceRoot, ".github", "instructions"), ".instructions.md"),
     ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
+    ...openCodeInstructionFiles(workspaceRoot),
   ];
 }
 
@@ -157,6 +159,32 @@ function readTextCapped(file: string, maxBytes: number): string {
   }
 }
 
+/** True for a file inside `root`, links followed: a workspace must not name a file outside it. */
+export function isFileInside(root: string, file: string): boolean {
+  try {
+    const rel = relative(realpathSync(root), realpathSync(file));
+    return statSync(file).isFile() && rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/** The files that `instructions` of the `opencode.json` of a workspace names, as paths or globs inside it. */
+function openCodeInstructionFiles(workspaceRoot: string): string[] {
+  const patterns = openCodeConfig(workspaceRoot).instructions;
+  if (!Array.isArray(patterns)) return [];
+  const out: string[] = [];
+  for (const pattern of patterns) {
+    // ponytail: a URL of OpenCode is not fetched.
+    if (typeof pattern !== "string" || /^https?:/.test(pattern)) continue;
+    for (const rel of new Bun.Glob(pattern).scanSync({ cwd: workspaceRoot, onlyFiles: true, dot: true })) {
+      const file = resolve(workspaceRoot, rel);
+      if (isFileInside(workspaceRoot, file) && !out.includes(file)) out.push(file);
+    }
+  }
+  return out;
+}
+
 /**
  * The `@path` imports of a CLAUDE.md or GEMINI.md: the text of the file in place of the import, as Claude Code and
  * Gemini CLI take it, five levels deep. A path that is not a file inside `root` stays as it is: a workspace must not
@@ -170,14 +198,7 @@ export function expandImports(
   depth = 0,
 ): string {
   if (depth >= 5) return text;
-  const inside = (file: string): boolean => {
-    try {
-      const rel = relative(realpathSync(root), realpathSync(file));
-      return statSync(file).isFile() && rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-    } catch {
-      return false;
-    }
-  };
+  const inside = (file: string): boolean => isFileInside(root, file);
   const load = (match: string, lead: string, ref: string): string => {
     // A sentence can end on the path: its stop is not part of it.
     const [, path = ref, stop = ""] = /^(.*?)([.,;:!?)]*)$/.exec(ref) ?? [];

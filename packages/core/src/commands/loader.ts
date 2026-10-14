@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
+import { openCodeConfig } from "../config/opencode.ts";
 import { configDir, foreignHome } from "../paths.ts";
 import { expandAtFiles, parseCommandFile, runShellBlocks, substituteArgs } from "./runtime.ts";
 
@@ -76,6 +77,26 @@ function parseGeminiCommands(dir: string, source: "project" | "user"): CommandTe
   return out;
 }
 
+/** The `command` map of the `opencode.json` of the workspace: each `template`, with its `description`. */
+function openCodeCommands(root: string): CommandTemplate[] {
+  const commands = openCodeConfig(root).command;
+  if (typeof commands !== "object" || commands === null) return [];
+  return Object.entries(commands).flatMap(([name, raw]) => {
+    const command = raw as { template?: unknown; description?: unknown } | null;
+    if (typeof command?.template !== "string" || !/^[\w:.-]+$/.test(name)) return [];
+    const description = typeof command.description === "string" ? { description: command.description } : {};
+    return [
+      {
+        name,
+        content: command.template,
+        path: join(root, "opencode.json"),
+        source: "project" as const,
+        ...description,
+      },
+    ];
+  });
+}
+
 /** The user command folders of other agents, in Markdown with the syntax of Claude Code. */
 const FOREIGN_USER_COMMAND_DIRS = [
   [".claude", "commands"],
@@ -109,6 +130,7 @@ export function loadCommands(options: {
           ...parseGeminiCommands(join(root, ".gemini", "commands"), "project"),
           ...FOREIGN_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(root, ...parts), "project")),
           ...parseCommandFiles(join(root, ".github", "prompts"), "project", ".prompt.md"),
+          ...openCodeCommands(root),
           // Last: `.agency/commands` wins on a name.
           ...parseCommandFiles(projectDir, "project"),
         ];

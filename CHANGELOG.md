@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`opencode.json` of a workspace**: its `instructions` files, its `command` map and its
+  `agent` map (subagents, with the `tools` it turns off) load in a trusted workspace.
 - **`.claude/CLAUDE.md` and `CLAUDE.local.md`**: the other project instruction files of
   Claude Code load beside `CLAUDE.md`.
 - **Plugins of the Claude Code settings**: `agency plugin sync` installs the `enabledPlugins`

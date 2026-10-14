@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { openCodeConfig } from "../config/opencode.ts";
 import { type AgentConfig, DEFAULT_ROSTER, ToolPermissionSchema } from "../config/schema.ts";
 import { configDir, foreignHome } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
+import { isFileInside } from "../prompt/instructions.ts";
 
 export const AGENT_FILE_FIELDS = [
   "role",
@@ -50,6 +52,18 @@ const COPILOT_TOOL_SETS: Record<string, string[]> = {
   fetch: ["fetch"],
   todo: ["todo_write"],
   todos: ["todo_write"],
+};
+/** The tools of OpenCode that the `tools` map of its agent turns off, as tools here. */
+const OPENCODE_TOOLS: Record<string, string[]> = {
+  write: ["write"],
+  edit: ["edit", "notebook_edit"],
+  patch: ["edit"],
+  bash: ["bash"],
+  read: ["read"],
+  grep: ["grep"],
+  glob: ["glob"],
+  webfetch: ["fetch"],
+  todowrite: ["todo_write"],
 };
 /** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
 const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);
@@ -321,6 +335,43 @@ const FOREIGN_USER_AGENT_DIRS = [
   [".config", "opencode", "agents"],
 ];
 
+/**
+ * The subagents of the `agent` map of the `opencode.json` of a workspace: `prompt` (with `{file:path}` inside the
+ * workspace), `description`, `model` as `provider/model`, and a `tools` map whose `false` denies a tool. A primary
+ * agent of OpenCode (`build`, `plan`) and one with no prompt are left out.
+ */
+function openCodeAgents(workspaceRoot: string, warn: (message: string) => void): Map<string, FileAgentDef> {
+  const out = new Map<string, FileAgentDef>();
+  const file = join(workspaceRoot, "opencode.json");
+  const agents = openCodeConfig(workspaceRoot).agent;
+  for (const [handle, raw] of Object.entries(typeof agents === "object" && agents !== null ? agents : {})) {
+    const agent = raw as Record<string, unknown>;
+    if (agent?.disable === true || agent.mode === "primary" || typeof agent.prompt !== "string") continue;
+    if (!HANDLE_RE.test(handle)) {
+      warn(`skipped: the agent "${handle}" of ${file} needs a name that matches [a-z][a-z0-9-]*`);
+      continue;
+    }
+    const prompt = agent.prompt.replace(/\{file:([^}]+)\}/g, (match, path: string) => {
+      const target = resolve(dirname(file), path);
+      return isFileInside(workspaceRoot, target) ? readFileSync(target, "utf8") : match;
+    });
+    const def: FileAgentDef = { handle, role: handle, systemPrompt: prompt.trim(), source: "project", file };
+    if (typeof agent.description === "string") def.description = agent.description;
+    const slash = typeof agent.model === "string" ? agent.model.indexOf("/") : -1;
+    if (typeof agent.model === "string" && slash > 0) {
+      def.provider = agent.model.slice(0, slash);
+      def.model = agent.model.slice(slash + 1);
+    }
+    const tools = typeof agent.tools === "object" && agent.tools !== null ? agent.tools : {};
+    const off = Object.entries(tools).flatMap(([name, on]) =>
+      on === false ? (OPENCODE_TOOLS[name] ?? []) : [],
+    );
+    if (off.length > 0) def.permissions = Object.fromEntries(off.map((tool) => [tool, "deny" as const]));
+    if (def.systemPrompt !== "") out.set(handle, def);
+  }
+  return out;
+}
+
 /** Merge order: config/seed base, then user files, then project files. */
 export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const base = opts.configAgents ?? DEFAULT_ROSTER;
@@ -353,6 +404,7 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
       merged.set(handle, def);
     }
   }
+  for (const [handle, def] of openCodeAgents(opts.workspaceRoot, warn)) merged.set(handle, def);
   // The custom agents of Copilot, after its older chat modes.
   for (const dir of ["chatmodes", "agents"]) {
     for (const [handle, def] of loadAgentDir(
