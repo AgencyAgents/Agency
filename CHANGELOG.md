@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Code plugins of OpenCode and Pi**: the plugins of `.opencode/plugins/` and the
+  extensions of `.pi/extensions/` run in a trusted workspace through a shim of their
+  API: tools, the tool-call hooks that block, `shell.env`, events, and Pi's `exec`.
+  Agency gives the imports `@opencode-ai/plugin`, `typebox` and the Pi packages. A Pi
+  package that `agency plugin install` installs now runs its extensions too.
 - **Hooks of other agents**: a trusted workspace runs the hooks of
   `.claude/settings.json`, `.claude/settings.local.json`, `.codex/hooks.json`,
   `.cursor/hooks.json` and `.gemini/settings.json`. Cursor and Gemini events map to the

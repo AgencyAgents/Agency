@@ -34,6 +34,8 @@ export interface InstallReceipt {
   hooksInstalled?: string[];
   /** Absent in a receipt from before rules were installed. */
   rulesInstalled?: string[];
+  /** The module files in .agency/plugins/ (the Pi extensions of a Pi package). */
+  modulesInstalled?: string[];
   installedAt: string;
 }
 
@@ -63,6 +65,7 @@ export function pluginInstallCmd(
     agentsInstalled: report.agentsInstalled,
     hooksInstalled: report.hooksInstalled,
     rulesInstalled: report.rulesInstalled,
+    modulesInstalled: report.modulesInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -85,6 +88,12 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Rules installed (.agency/rules/, added to the instructions):");
     for (const rule of report.rulesInstalled) lines.push(`  - ${rule}`);
+  }
+
+  if (report.modulesInstalled.length > 0) {
+    lines.push("");
+    lines.push("Pi extensions installed (.agency/plugins/, they run code in the daemon):");
+    for (const module of report.modulesInstalled) lines.push(`  - ${module}`);
   }
 
   if (report.partsSkipped.length > 0) {
@@ -325,6 +334,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
   let rulesToDelete: string[] = [];
+  let modulesToDelete: string[] = [];
   let pluginName = name;
 
   if (existsSync(receiptPath)) {
@@ -334,6 +344,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
       skillsToDelete = receipt.skillsInstalled.filter(isFileName);
       agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
       rulesToDelete = (receipt.rulesInstalled ?? []).filter(isFileName);
+      modulesToDelete = (receipt.modulesInstalled ?? []).filter(isFileName);
       if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
@@ -382,6 +393,12 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     return true;
   });
   if (deletedRules.length > 0) lines.push(`Deleted rule files: ${deletedRules.join(", ")}`);
+  for (const module of modulesToDelete) {
+    const modulePath = join(workspaceRoot, ".agency", "plugins", module);
+    if (!existsSync(modulePath)) continue;
+    rmSync(modulePath);
+    lines.push(`Deleted the module ${module}.`);
+  }
   const hooksFile = pluginHooksFile(workspaceRoot, pluginName);
   if (existsSync(hooksFile)) {
     rmSync(hooksFile);

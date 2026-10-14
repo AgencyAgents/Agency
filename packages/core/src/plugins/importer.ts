@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { McpServerConfigSchema, normalizeMcpServers } from "@agency/tools";
 import { parseAgentFile, renderAgentFile } from "../agents/files.ts";
 import { geminiTemplate } from "../commands/loader.ts";
@@ -50,6 +51,8 @@ export interface ImportClaudePluginReport {
   rulesInstalled: string[];
   /** Parts of the plugin that cannot run here, each with the reason. */
   partsSkipped: string[];
+  /** Module files written into .agency/plugins/: the Pi extensions of a Pi package. */
+  modulesInstalled: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +98,8 @@ interface Manifest {
   agents: string[];
   rules: string[];
   contextFile?: string;
+  /** The module files of the extensions of a Pi package. */
+  extensions: string[];
   partsSkipped: string[];
 }
 
@@ -145,12 +150,26 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
       hooks: raw.hooks,
       mcpServers: raw.mcpServers,
       partsSkipped: [] as string[],
+      extensions: [] as string[],
     };
     if (format === "pi") {
+      // An extension is a module file, or a folder with an index.
+      const indexOf = (dir: string): string | undefined =>
+        ["index.ts", "index.js"].find((index) => existsSync(join(sourceDir, dir, index)));
       const extensions = partDirs(pi?.extensions, "extensions").flatMap((path) => {
         const full = join(sourceDir, path);
         if (!existsSync(full)) return [];
-        return statSync(full).isDirectory() ? readdirSync(full).map((entry) => `${path}/${entry}`) : [path];
+        if (!statSync(full).isDirectory()) return [path];
+        const own = indexOf(path);
+        if (own !== undefined) return [`${path}/${own}`];
+        return readdirSync(full)
+          .sort()
+          .flatMap((entry) => {
+            if (statSync(join(full, entry)).isFile())
+              return /\.(m?js|m?ts)$/.test(entry) ? [`${path}/${entry}`] : [];
+            const index = indexOf(`${path}/${entry}`);
+            return index === undefined ? [] : [`${path}/${entry}/${index}`];
+          });
       });
       return {
         ...base,
@@ -158,7 +177,7 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
         commands: partDirs(pi?.prompts, "prompts"),
         agents: [],
         rules: [],
-        partsSkipped: extensions.map((path) => `Pi extension ${path}: it needs the Pi runtime`),
+        extensions,
       };
     }
     if (format === "gemini") {
@@ -420,6 +439,7 @@ export function importClaudePlugin(
     commandsInstalled: [],
     rulesInstalled: [],
     partsSkipped: manifest.partsSkipped,
+    modulesInstalled: [],
   };
   const write = { overwrite, logger };
 
@@ -582,6 +602,21 @@ export function importClaudePlugin(
     const text = readFileSync(join(sourceDir, manifest.contextFile), "utf8");
     const targetFile = join(workspaceRoot, ".agency", "rules", target);
     if (writePart(targetFile, text, `rule "${target}"`, write)) report.rulesInstalled.push(target);
+  }
+
+  // -----------------------------------------------------------------------
+  // 8. Pi extensions: a module of .agency/plugins/ imports them from the copy of the package
+  // -----------------------------------------------------------------------
+  if (manifest.extensions.length > 0) {
+    keepPluginFiles();
+    const target = `${manifest.name}.ts`;
+    const names = manifest.extensions.map((_, index) => `extension${index}`);
+    const imports = manifest.extensions.map(
+      (path, index) => `import ${names[index]} from ${JSON.stringify(pathToFileURL(join(root, path)).href)};`,
+    );
+    const text = `// The Pi extensions of ${manifest.name}, written by agency plugin install.\n${imports.join("\n")}\nexport const piExtensions = [${names.join(", ")}];\n`;
+    const targetFile = join(workspaceRoot, ".agency", "plugins", target);
+    if (writePart(targetFile, text, `module "${target}"`, write)) report.modulesInstalled.push(target);
   }
 
   return report;

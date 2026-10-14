@@ -193,6 +193,11 @@ A trusted workspace also gives the files that other agents keep in it, so a proj
 - Skills: the `skills/<name>/SKILL.md` folders of `.claude/`, `.agents/`, `.cursor/`, `.codex/`, `.pi/`, `.opencode/` and `.gemini/`. `.agency/skills/` wins on a name.
 - Commands: the Markdown commands of `.claude/commands/`, `.cursor/commands/`, `.opencode/commands/` and `.pi/prompts/`, and the TOML commands of Gemini CLI in `.gemini/commands/`. In a TOML command, `{{args}}` is `$ARGUMENTS`, `@{path}` adds the file, `!{command}` adds the output of the command, and a file in a subfolder is `/<folder>:<name>`. With no `{{args}}`, the words after the command go after the prompt, as in Gemini CLI. `.agency/commands/` wins on a name.
 - Agents: the agent files of `.claude/agents/`, `.cursor/agents/`, `.codex/agents/` and `.opencode/agents/`. Their keys that have no use here (`maxTurns` of Claude Code, `mode` of OpenCode, `is_background` of Cursor and others) are left out. `readonly: true` of Cursor gives the agent the read tools only, and a `model` of OpenCode such as `anthropic/claude-sonnet-5` sets the provider and the model. `.agency/agents/` wins on a name.
+- Code: the plugins of OpenCode in `.opencode/plugins/` (or `.opencode/plugin/`), and the extensions of Pi in `.pi/extensions/` (a module file, or a folder with `index.ts`). They run in the daemon as a plugin module does, through a shim of the API of their agent.
+  - An OpenCode plugin is each function that the file exports. It gets `directory`, `worktree`, `project` and `$` (the shell of Bun). Its hooks `tool.execute.before` (a throw blocks the call), `tool.execute.after`, `shell.env`, `event` and `permission.ask` run on the events here, and its `tool` map adds tools. Its `client` talks to an OpenCode server, so each call of it fails.
+  - A Pi extension gets `pi`. `registerTool` adds a tool; `on` runs `tool_call` (`{ block: true, reason }` blocks), `tool_result`, `session_start`, `before_agent_start` and `agent_end`; `exec` runs a program. A command, a shortcut, a renderer and the other events do nothing. `ctx.hasUI` is false, and `ctx.ui.confirm` gives false.
+  - Agency gives the imports `@opencode-ai/plugin` (`tool`, and `tool.schema`, which is zod), `typebox` and `@sinclair/typebox` (`Type`), and the Pi packages `pi-coding-agent` and `pi-ai` of `@earendil-works` or `@mariozechner` (`Type`, `StringEnum`). Another package that the code imports must be installed in its folder.
+  - A tool of such a plugin has no risk tier, so it asks as an MCP tool does.
 
 ## Permissions
 
@@ -402,7 +407,7 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 - Agent files are written in the form of an agent file here: their keys that have no use here are left out, as for the agent folders of other agents above.
 - The rules of a Cursor plugin (`rules/`) go to `.agency/rules/<plugin>-<rule>.md`, with the mapping of `alwaysApply`, `globs` and `description` above. The context file of a Gemini extension (`contextFileName`, default `GEMINI.md`) goes to `.agency/rules/<plugin>.md`. Both join the instructions of a trusted workspace.
 - MCP servers come from `.mcp.json`, `mcp.json` or the `mcpServers` key of the manifest. `httpUrl` of Gemini is `url`, and `${env:VAR}` of Cursor is `${VAR}`. `${CLAUDE_PLUGIN_ROOT}`, `${CURSOR_PLUGIN_ROOT}`, `${PLUGIN_ROOT}` and `${extensionPath}` become the folder of the installed plugin, and `${/}` becomes `/`.
-- The extensions of a Pi package are TypeScript code for the API of Pi. They are not installed, and the install names each one.
+- The extensions of a Pi package (`pi.extensions`, default `extensions/`) stay in the copy of the package, and `.agency/plugins/<plugin>.ts` imports them. They run as the Pi extensions of a workspace do, below.
 - A repository can be a marketplace of Claude Code (`.claude-plugin/marketplace.json`), Cursor (`.cursor-plugin/marketplace.json`) or Codex (`.agents/plugins/marketplace.json`).
 
 The hooks of a plugin install with its other parts:

@@ -98,7 +98,7 @@ test("a portable plugin.json takes its skill folder from the manifest, and its m
   expect(Object.keys(report.mcpServers)).toEqual(["p"]);
 });
 
-test("a Pi package installs its skills and prompts, and names the extensions that it skipped", () => {
+test("a Pi package installs its skills, prompts and a module for its extensions", () => {
   const src = folder({
     "package.json": JSON.stringify({
       name: "@me/pi-tools",
@@ -118,7 +118,9 @@ test("a Pi package installs its skills and prompts, and names the extensions tha
     skillsInstalled: ["pis"],
     commandsInstalled: ["hello.md"],
   });
-  expect(report.partsSkipped).toEqual(["Pi extension src/ext.ts: it needs the Pi runtime"]);
+  expect(report.partsSkipped).toEqual([]);
+  expect(report.modulesInstalled).toEqual(["pi-tools.ts"]);
+  expect(read(ws, "plugins", "pi-tools.ts")).toContain("export const piExtensions = [extension0];");
 });
 
 test("a Claude Code agent with keys that have no use here installs as an agent file of Agency", () => {

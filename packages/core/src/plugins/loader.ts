@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import type { EventBus } from "../events.ts";
@@ -15,6 +15,7 @@ import {
   readSiblingAgentsMd,
   wrapHookHandler,
 } from "./context.ts";
+import { openCodePlugins, piExtensions, registerForeignModules } from "./foreign-modules.ts";
 import {
   discoverSkills,
   resolveSkillDirs,
@@ -171,6 +172,20 @@ function extractDefinition(rawModule: Record<string, unknown>, id: string): Plug
   return def;
 }
 
+const moduleId = (file: string): string =>
+  basename(file) === "index.ts" || basename(file) === "index.js"
+    ? basename(dirname(file))
+    : basename(file).replace(/\.(m?js|cjs|ts|mts)$/, "");
+
+/** The extensions of a Pi folder: its module files, and each subfolder with an `index.ts` or `index.js`. */
+function discoverPiExtensions(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const folders = readdirSync(dir)
+    .flatMap((entry) => ["index.ts", "index.js"].map((index) => join(dir, entry, index)))
+    .filter((file) => existsSync(file));
+  return [...discoverFiles(dir), ...folders].sort();
+}
+
 function discoverFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
   const entries = readdirSync(dir);
@@ -214,6 +229,7 @@ async function loadNpmPackage(spec: string, logger?: Logger): Promise<Record<str
 }
 
 export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginLoadResult> {
+  registerForeignModules();
   const bus = options.bus;
   const logger = options.logger;
   const capabilities = options.capabilities ?? { tools: "*", pathScopes: "*", network: "none" };
@@ -231,8 +247,19 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
   const projectFiles = projectTrusted ? discoverFiles(projectDir) : [];
   const userFiles = discoverFiles(userDir);
 
-  type Source = { id: string; path: string; kind: "file" | "npm"; tier: PluginTier };
+  type Source = { id: string; path: string; kind: "file" | "npm" | "opencode" | "pi"; tier: PluginTier };
   const sources: Source[] = [];
+  // The code plugins that OpenCode and Pi keep in a trusted workspace run through a shim of their API.
+  if (projectTrusted) {
+    const root = options.workspaceRoot;
+    for (const dir of [join(root, ".opencode", "plugins"), join(root, ".opencode", "plugin")]) {
+      for (const f of discoverFiles(dir))
+        sources.push({ id: moduleId(f), path: f, kind: "opencode", tier: "project" });
+    }
+    for (const f of discoverPiExtensions(join(root, ".pi", "extensions"))) {
+      sources.push({ id: moduleId(f), path: f, kind: "pi", tier: "project" });
+    }
+  }
   for (const f of projectFiles)
     sources.push({
       id: basename(f).replace(/\.(m?js|cjs|ts|mts)$/, ""),
@@ -269,14 +296,29 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
     seen.add(src.id);
 
     let mod: Record<string, unknown> | undefined;
-    if (src.kind === "file") mod = await loadModuleFile(src.path, logger);
-    else mod = await loadNpmPackage(src.path, logger);
+    if (src.kind === "npm") mod = await loadNpmPackage(src.path, logger);
+    else mod = await loadModuleFile(src.path, logger);
 
     if (!mod) {
       errors.push({ id: src.id, error: `failed to load ${src.path}` });
       continue;
     }
-    const def = extractDefinition(mod, src.id);
+    let def: PluginDefinition | undefined;
+    try {
+      const root = options.workspaceRoot;
+      // `plugin install` writes `piExtensions` for the extensions of a Pi package.
+      const pi =
+        src.kind === "pi" ? [mod.default] : Array.isArray(mod.piExtensions) ? mod.piExtensions : undefined;
+      def =
+        src.kind === "opencode"
+          ? await openCodePlugins(mod, src.id, root)
+          : pi !== undefined
+            ? await piExtensions(pi, src.id, root, logger)
+            : extractDefinition(mod, src.id);
+    } catch (error) {
+      errors.push({ id: src.id, error: `the plugin ${src.path} failed to start: ${String(error)}` });
+      continue;
+    }
     if (!def) {
       errors.push({
         id: src.id,
