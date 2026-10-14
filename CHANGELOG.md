@@ -676,6 +676,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   `asyncRewake` hooks run in the background; before, the event waited
   for them and they could block it. 18 of the 54 hooks in the 16 hook
   files of Claude Code plugins on the test PC use one of these fields.
+- **`UserPromptExpansion` and `StopFailure` hooks**: the first runs when a
+  typed command becomes the prompt and can refuse it, the second when a
+  turn ends on a provider error. 15 of the 33 hook events of Claude Code
+  now run.
 - **Sandbox of the operating system on Windows**: `sandbox.backend: "os"`
   runs each command under a write-restricted token. A command writes
   only in the workspace and in a temporary folder of its own, not in

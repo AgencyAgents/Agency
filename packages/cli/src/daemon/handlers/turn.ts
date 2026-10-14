@@ -10,6 +10,7 @@ import {
   LEAD_WITHHELD_TOOLS,
   type LoopEvent,
   parseHandles,
+  parseSlashInput,
   runCommandHooks,
   runTurn,
   TraceRecorder,
@@ -76,15 +77,53 @@ export function registerTurnHandlers(handlers: Record<string, MethodHandler>, ct
 /** The source of the error that a prompt hook's refusal throws: session_send removes the prompt on it. */
 export const PROMPT_HOOK_SOURCE = "prompt-hook";
 
+/** The type of a provider error in the names of Claude Code, for the StopFailure hook. */
+const STOP_FAILURE_TYPES: Partial<Record<ErrorCode, string>> = {
+  [ErrorCode.AUTH]: "authentication_failed",
+  [ErrorCode.RATE_LIMIT]: "rate_limit",
+  [ErrorCode.OVERLOAD]: "overloaded",
+  [ErrorCode.TRANSIENT]: "server_error",
+  [ErrorCode.NETWORK]: "unknown",
+  [ErrorCode.PROXY]: "unknown",
+};
+
+/** The input of a UserPromptExpansion hook: a typed command that became the text of the prompt. */
+type PromptExpansion = Record<
+  "expansion_type" | "command_name" | "command_args" | "command_source" | "prompt",
+  string
+>;
+
+function userTextOf(session: RunTurnParams["session"]): string {
+  const block = session.at(-1)?.content?.find((c: { type: string }) => c.type === "text") as
+    | { text?: string }
+    | undefined;
+  return typeof block?.text === "string" ? block.text : "";
+}
+
 /** Runs the prompt hooks of the config. Their text goes to the session inbox: the loop stores it with the turn. */
 async function runPromptHooks(
   ctx: DaemonContext,
   sessionId: string,
   prompt: string,
   session: RunTurnParams["session"],
+  expansion?: PromptExpansion,
 ): Promise<void> {
   const opts = ctx.hookRun;
   const context: string[] = [];
+  if (expansion) {
+    const expanded = await runCommandHooks(
+      ctx.commandHooks,
+      "UserPromptExpansion",
+      { session_id: sessionId, ...expansion },
+      opts,
+    );
+    if (expanded.block !== undefined) {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `a hook blocked the command: ${expanded.block}`, {
+        source: PROMPT_HOOK_SOURCE,
+      });
+    }
+    if (expanded.context !== undefined) context.push(expanded.context);
+  }
   // No reply in the history yet: this is the first prompt of the session.
   if (!session.some((m) => m.role === "assistant")) {
     const start = await runCommandHooks(
@@ -356,6 +395,7 @@ export async function executeTurn(
             });
           } catch {}
         }
+        const typed = userTextOf(params.session);
         applySlashCommand(commands, options.workspaceRoot, params.session);
         if (params.images?.length) {
           const last = params.session[params.session.length - 1];
@@ -371,6 +411,18 @@ export async function executeTurn(
           await turnScope.todos.hydrate(sessionId);
           await applyMcpPrompt(turnScope.mcp, params.session);
         }
+        const slash = parseSlashInput(typed);
+        const template = slash && commands.find((c) => c.name === slash.name);
+        const expansion: PromptExpansion | undefined =
+          slash && userTextOf(params.session) !== typed
+            ? {
+                expansion_type: template ? "slash_command" : "mcp_prompt",
+                command_name: slash.name,
+                command_args: slash.args,
+                command_source: template ? template.source : "mcp",
+                prompt: typed,
+              }
+            : undefined;
         const requestApproval = createTurnApproval(ctx, params, sessionId, eventStream);
         const fallbackRef = (() => {
           const fm = (config as unknown as { fallback_model?: string }).fallback_model;
@@ -523,7 +575,7 @@ export async function executeTurn(
                 payload: { sessionId, prompt: promptText },
               });
             } catch {}
-            if (!childInfo) await runPromptHooks(ctx, sessionId, promptText, params.session);
+            if (!childInfo) await runPromptHooks(ctx, sessionId, promptText, params.session, expansion);
             const mainPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: effectiveMcpFailures,
@@ -773,6 +825,21 @@ export async function executeTurn(
           turnId: params.turnId,
           error: error instanceof Error ? error.message : String(error),
         });
+        const failure = error instanceof AgencyError ? STOP_FAILURE_TYPES[error.code] : undefined;
+        if (failure !== undefined && !((params as { taskDepth?: number }).taskDepth ?? 0)) {
+          // No decision control: the error goes back at once, and the hook runs on.
+          void runCommandHooks(
+            ctx.commandHooks,
+            "StopFailure",
+            {
+              session_id: params.sessionId ?? "default",
+              error: failure,
+              error_details: (error as AgencyError).message,
+              last_assistant_message: `API Error: ${(error as AgencyError).message}`,
+            },
+            ctx.hookRun,
+          ).catch(() => {});
+        }
         telemetry.recordCrash("run_turn", error);
         throw error;
       } finally {

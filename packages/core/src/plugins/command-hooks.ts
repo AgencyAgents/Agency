@@ -10,7 +10,9 @@ export const COMMAND_HOOK_EVENTS = [
   "PostToolUse",
   "PostToolUseFailure",
   "UserPromptSubmit",
+  "UserPromptExpansion",
   "Stop",
+  "StopFailure",
   "SubagentStart",
   "SubagentStop",
   "PreCompact",
@@ -174,10 +176,16 @@ export async function runCommandHooks(
   input: Record<string, unknown>,
   opts: HookRunOptions,
 ): Promise<HookOutcome> {
-  // What a matcher tests: the tool, the trigger of a compaction, the agent type, or the type of a notification.
-  const subject = [input.tool_name, input.trigger, input.agent_type, input.notification_type].find(
-    (value): value is string => typeof value === "string",
-  );
+  // What a matcher tests: the tool, the trigger of a compaction, the agent type, the type of a notification, the
+  // typed command, or the type of a provider error.
+  const subject = [
+    input.tool_name,
+    input.trigger,
+    input.agent_type,
+    input.notification_type,
+    input.command_name,
+    input.error,
+  ].find((value): value is string => typeof value === "string");
   const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
   const context: string[] = [];
   for (const group of hooks[event] ?? []) {

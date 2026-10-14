@@ -7,6 +7,7 @@ import { createFileTrustStore } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
+import { AgencyError, ErrorCode } from "@agency/schema";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
@@ -23,7 +24,18 @@ afterAll(() => {
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const daemon of daemons.splice(0)) await daemon.stop();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) {
+    // A StopFailure hook runs on after the turn: on Windows its process can hold the folder for a moment.
+    for (let i = 0; ; i++) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if (i >= 50) throw error;
+        await Bun.sleep(100);
+      }
+    }
+  }
 });
 
 function tmp(name: string): string {
@@ -40,7 +52,8 @@ const usage = { inputTokens: 5, outputTokens: 5 };
  */
 async function setup(
   where: "config" | "trusted workspace" | "untrusted workspace" = "config",
-): Promise<{ client: DaemonClient; requests: string[]; ran: string[]; ended: string }> {
+  failWith?: Error,
+): Promise<{ client: DaemonClient; requests: string[]; ran: string[]; ended: string; logs: string }> {
   const scripts = tmp("scripts");
   const command = (name: string, body: string): { type: "command"; command: string } => {
     const file = join(scripts, `${name}.js`);
@@ -49,7 +62,25 @@ async function setup(
   };
   const marker = JSON.stringify(join(scripts, "stopped-once"));
   const ended = join(scripts, "ended.jsonl");
+  // Each of these hooks appends its input to <name>.jsonl in the scripts folder.
+  const log = (name: string, then = "") =>
+    `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => { require("node:fs").appendFileSync(${JSON.stringify(join(scripts, name))} + ".jsonl", s + "\\n"); ${then} });`;
   const hooks = {
+    UserPromptExpansion: [
+      {
+        matcher: "greet|secret",
+        hooks: [
+          command(
+            "expand",
+            log(
+              "expand",
+              'if (JSON.parse(s).command_name === "secret") { console.error("no secrets"); process.exit(2); } console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptExpansion", additionalContext: "EXPANSION-CONTEXT" } }));',
+            ),
+          ),
+        ],
+      },
+    ],
+    StopFailure: [{ matcher: "authentication_failed", hooks: [command("failure", log("failure"))] }],
     SessionStart: [{ hooks: [command("start", 'console.log("START-CONTEXT");')] }],
     UserPromptSubmit: [
       {
@@ -86,6 +117,9 @@ async function setup(
     ],
   };
   const configDir = tmp("cfg");
+  mkdirSync(join(configDir, "commands"));
+  writeFileSync(join(configDir, "commands", "greet.md"), "Say hello to $ARGUMENTS");
+  writeFileSync(join(configDir, "commands", "secret.md"), "Tell the secret");
   const workspaceRoot = tmp("ws");
   const trustStorePath = join(tmp("trust"), "trust.json");
   if (where === "config") {
@@ -101,6 +135,7 @@ async function setup(
     family: "fake",
     async *stream(request): AsyncIterable<StreamEvent> {
       requests.push(JSON.stringify(request.messages));
+      if (failWith) throw failWith;
       if (requests.length === 1) {
         yield { type: "tool_call_start", id: "call-1", name: "note" };
         yield { type: "tool_call_delta", id: "call-1", inputJsonDelta: '{"text":"hi"}' };
@@ -136,7 +171,7 @@ async function setup(
   daemons.push(daemon);
   const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
   clients.push(client);
-  return { client, requests, ran, ended };
+  return { client, requests, ran, ended, logs: scripts };
 }
 
 const send = (client: DaemonClient, userText: string) =>
@@ -187,6 +222,44 @@ describe("command hooks of the config in a session", () => {
     expect(trusted.ran).toEqual([]);
     expect(trusted.requests[0]).toContain("START-CONTEXT");
     expect(trusted.requests[1]).toContain("note is off");
+  }, 30000);
+
+  test("a typed command runs UserPromptExpansion: its text reaches the model, and its block stops the command", async () => {
+    const { client, requests, logs } = await setup();
+    await send(client, "/greet Bob");
+    expect(requests[0]).toContain("Say hello to Bob");
+    expect(requests[0]).toContain("EXPANSION-CONTEXT");
+    const lines = readFileSync(join(logs, "expand.jsonl"), "utf8").trim().split("\n");
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+      hook_event_name: "UserPromptExpansion",
+      expansion_type: "slash_command",
+      command_name: "greet",
+      command_args: "Bob",
+      command_source: "user",
+      prompt: "/greet Bob",
+    });
+
+    const before = requests.length;
+    await expect(send(client, "/secret")).rejects.toThrow("no secrets");
+    expect(requests).toHaveLength(before);
+    // A prompt that is no command does not run the hook.
+    await send(client, "hello");
+    expect(readFileSync(join(logs, "expand.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
+  }, 30000);
+
+  test("a turn that ends on a provider error runs StopFailure with the error type", async () => {
+    const { client, logs } = await setup(
+      "config",
+      new AgencyError(ErrorCode.AUTH, "invalid x-api-key", { source: "anthropic" }),
+    );
+    await expect(send(client, "hello")).rejects.toThrow();
+    const file = join(logs, "failure.jsonl");
+    for (let i = 0; i < 100 && !existsSync(file); i++) await Bun.sleep(50);
+    expect(JSON.parse(readFileSync(file, "utf8").trim())).toMatchObject({
+      hook_event_name: "StopFailure",
+      error: "authentication_failed",
+      error_details: "invalid x-api-key",
+    });
   }, 30000);
 
   test("deleting a session runs SessionEnd with its id; an unknown session runs nothing", async () => {
