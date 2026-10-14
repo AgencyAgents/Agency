@@ -10,6 +10,7 @@ import {
   getSessionTitle,
   loadConfig,
   OUTPUT_CUT_NOTE,
+  ownerOnlyDirs,
   parseModelRef,
   type RetentionPolicy,
   reportStorage,
@@ -1437,6 +1438,7 @@ if (import.meta.main) {
   }
   if (process.argv[2] === CODE_COMMAND) await runCodeChild();
   if (process.argv[2] === SANDBOX_COMMAND) runSandboxChild();
+  ownerOnlyDirs();
   await noteAvailableUpdate(process.argv.slice(2));
   // Awaited: a bare promise does not hold the process open, and an empty stdin read then exits 0 with no output.
   process.exit(await runEntrypoint());

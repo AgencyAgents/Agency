@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Dirent, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, type Dirent, existsSync, mkdirSync, rmSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -30,6 +30,23 @@ export function cacheDir(env: NodeJS.ProcessEnv = process.env, platform: string 
     return join(homedir(), "Library", "Caches", "Agency");
   }
   return join(env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "agency");
+}
+
+/**
+ * Off Windows, where the profile folders are private already: sessions, logs and approvals hold code and tool
+ * output, so the data and config folders are the user's alone (0700). A folder it cannot change stays as it is.
+ */
+export function ownerOnlyDirs(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): void {
+  if (platform === "win32") return;
+  for (const dir of [dataDir(env, platform), configDir(env, platform)]) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+    } catch {}
+  }
 }
 
 export function logDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {

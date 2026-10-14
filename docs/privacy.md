@@ -22,6 +22,8 @@
 | Telemetry | `dataDir()/telemetry/events.jsonl` | Only when `telemetryEnabled` |
 | Keys | OS keychain | See below |
 
+On Linux and macOS, each start of `agency` makes `dataDir()` and `<configDir>` readable by your user only (mode `0700`): the sessions, logs and approvals hold code and tool output. On Windows these folders are in your profile, which other users cannot read.
+
 ### Keys
 
 `@agency/providers` resolves keys per turn in this order:

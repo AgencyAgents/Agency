@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Data and config folders are private on Linux and macOS**: each start of
+  `agency` sets them to `0700`. Before, they had the mode of the umask,
+  often `0755`, so another user of the machine could read the sessions and
+  logs. Not run on Linux or macOS yet: the test skips on Windows.
 - **Fast steps no longer wait for the request rate**: the daemon paces a known
   provider at the rate of its API (`openrouter` 200 a minute, `openai` 500), which
   the provider table had but the daemon did not use. Before, each provider got 60
