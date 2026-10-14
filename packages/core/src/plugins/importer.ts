@@ -53,6 +53,10 @@ export interface ImportClaudePluginReport {
   partsSkipped: string[];
   /** Module files written into .agency/plugins/: the Pi extensions of a Pi package. */
   modulesInstalled: string[];
+  /** The `bin/` folder of the plugin, on the PATH of shell commands; absent when it has none. */
+  binDir?: string;
+  /** The variables that give the values of the `userConfig` of a Claude Code plugin. */
+  optionVariables: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,10 @@ interface Manifest {
   contextFile?: string;
   /** The module files of the extensions of a Pi package. */
   extensions: string[];
+  /** Commands that a Claude Code manifest maps by name: `{ "about": { "content" | "source", "description" } }`. */
+  commandMap?: Record<string, unknown>;
+  /** The keys of the `userConfig` of a Claude Code manifest. */
+  userConfig: string[];
   partsSkipped: string[];
 }
 
@@ -151,6 +159,7 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
       mcpServers: raw.mcpServers,
       partsSkipped: [] as string[],
       extensions: [] as string[],
+      userConfig: isRecord(raw.userConfig) ? Object.keys(raw.userConfig) : [],
     };
     if (format === "pi") {
       // An extension is a module file, or a folder with an index.
@@ -194,8 +203,9 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
     return {
       ...base,
       skills: partDirs(raw.skills, "skills"),
-      // Claude Code can map commands as an object: the default folder then.
+      // Claude Code can map commands by name: the default folder too then.
       commands: partDirs(isRecord(raw.commands) ? undefined : raw.commands, "commands"),
+      ...(isRecord(raw.commands) ? { commandMap: raw.commands } : {}),
       agents: partDirs(raw.agents, "agents"),
       rules: format === "cursor" ? partDirs(raw.rules, "rules") : [],
     };
@@ -218,8 +228,14 @@ function existingDirs(sourceDir: string, paths: string[], logger?: Logger): stri
     });
 }
 
-/** Puts the folder of the installed plugin in place of the root variable of each format. */
-function withPluginRoot(text: string, root: string): string {
+/** The variable that gives the value of a `userConfig` key, as Claude Code names it for a hook. */
+const optionVariable = (key: string): string => `CLAUDE_PLUGIN_OPTION_${key.toUpperCase()}`;
+
+/**
+ * Puts the folder of the installed plugin in place of the root variable of each format, and its data folder in place
+ * of `${CLAUDE_PLUGIN_DATA}`. A `${user_config.KEY}` becomes the variable that gives that value.
+ */
+function withPluginRoot(text: string, root: string, data: string): string {
   const path = root.replaceAll("\\", "/");
   let out = text;
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal root variables of Claude Code, Cursor and Gemini
@@ -231,8 +247,14 @@ function withPluginRoot(text: string, root: string): string {
   ]) {
     out = out.replaceAll(variable, path);
   }
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: the path separator of Gemini
-  return out.replaceAll("${/}", "/");
+  out = out.replace(/\$\{user_config\.(\w+)\}/g, (_, key: string) => `\${${optionVariable(key)}}`);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the data variable of Claude Code, the path separator of Gemini
+  return out.replaceAll("${CLAUDE_PLUGIN_DATA}", data.replaceAll("\\", "/")).replaceAll("${/}", "/");
+}
+
+/** The folder of `${CLAUDE_PLUGIN_DATA}`: it outlives a new install of the plugin, and `plugin remove` deletes it. */
+export function pluginDataDir(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "plugin-data", pluginName);
 }
 
 /** Where the files of an installed plugin stay, for the hook commands that name them. */
@@ -252,11 +274,12 @@ export function pluginHooksFile(workspaceRoot: string, pluginName: string): stri
 
 /**
  * The command hooks of a plugin, for the events that this harness runs. `${CLAUDE_PLUGIN_ROOT}` in a command
- * becomes `root`, the folder that holds the plugin's files after the install.
+ * becomes `root`, the folder that holds the plugin's files after the install; a command gets both folders as variables.
  */
 function parseHooks(
   hooksRaw: Record<string, unknown>,
   root: string,
+  data: string,
 ): { hooks: CommandHooks; skipped: Array<{ event: string; reason: string }> } {
   const hooks: CommandHooks = {};
   const skipped: Array<{ event: string; reason: string }> = [];
@@ -270,7 +293,13 @@ function parseHooks(
       skipped.push({ event, reason: "its entries are not command, http or prompt hooks" });
       continue;
     }
-    Object.assign(hooks, JSON.parse(withPluginRoot(JSON.stringify(parsed.data), root)));
+    const converted = JSON.parse(withPluginRoot(JSON.stringify(parsed.data), root, data)) as CommandHooks;
+    for (const group of Object.values(converted).flat()) {
+      for (const entry of group?.hooks ?? []) {
+        if (entry.type === "command") entry.env = { CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data };
+      }
+    }
+    Object.assign(hooks, converted);
   }
   return { hooks, skipped };
 }
@@ -383,6 +412,20 @@ function writePart(
   return true;
 }
 
+/** The files that `paths` name inside the plugin: a path that goes outside it is skipped. */
+function existingFiles(sourceDir: string, paths: string[], logger?: Logger): string[] {
+  const root = resolve(sourceDir);
+  return paths
+    .map((path) => resolve(root, path))
+    .filter((file) => {
+      if (!file.startsWith(`${root}${sep}`)) {
+        logger?.warn(`[importer] skipping ${file}: it is outside the plugin`);
+        return false;
+      }
+      return existsSync(file) && statSync(file).isFile();
+    });
+}
+
 /** The files of a folder and its subfolders, as paths relative to it, sorted. */
 function filesUnder(dir: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf8" })
@@ -440,42 +483,54 @@ export function importClaudePlugin(
     rulesInstalled: [],
     partsSkipped: manifest.partsSkipped,
     modulesInstalled: [],
+    optionVariables: manifest.userConfig.map(optionVariable),
   };
   const write = { overwrite, logger };
 
   // -----------------------------------------------------------------------
   // 2. Skills: <skills folder>/<name>/SKILL.md -> .agency/skills/<name>/
   // -----------------------------------------------------------------------
-  for (const skillsDir of existingDirs(sourceDir, manifest.skills, logger)) {
-    for (const entry of readdirSync(skillsDir).sort()) {
-      const skillDirPath = join(skillsDir, entry);
-      const skillFile = join(skillDirPath, "SKILL.md");
-      if (!statSync(skillDirPath).isDirectory() || !existsSync(skillFile)) continue;
+  const skillFolders = existingDirs(sourceDir, manifest.skills, logger).flatMap((skillsDir) =>
+    readdirSync(skillsDir)
+      .sort()
+      .map((entry) => ({ skillDirPath: join(skillsDir, entry), entry })),
+  );
+  // As in Claude Code: a plugin with no skills folder can be one skill, with its SKILL.md at the root.
+  const rootSkill = join(workspaceRoot, ".agency", "skills");
+  if (
+    skillFolders.length === 0 &&
+    existsSync(join(sourceDir, "SKILL.md")) &&
+    !resolve(rootSkill).startsWith(`${resolve(sourceDir)}${sep}`)
+  ) {
+    skillFolders.push({ skillDirPath: sourceDir, entry: manifest.name });
+  }
+  for (const { skillDirPath, entry } of skillFolders) {
+    const skillFile = join(skillDirPath, "SKILL.md");
+    if (!statSync(skillDirPath).isDirectory() || !existsSync(skillFile)) continue;
 
-      const parsed = parseSkillFrontmatter(readFileSync(skillFile, "utf8"));
-      const skillName = parsed.name ?? entry;
-      if (!SKILL_NAME_RE.test(skillName)) {
-        logger?.warn(`[importer] skipping skill "${skillName}": its name must match ${SKILL_NAME_RE.source}`);
+    const parsed = parseSkillFrontmatter(readFileSync(skillFile, "utf8"));
+    const skillName = parsed.name ?? entry;
+    if (!SKILL_NAME_RE.test(skillName)) {
+      logger?.warn(`[importer] skipping skill "${skillName}": its name must match ${SKILL_NAME_RE.source}`);
+      continue;
+    }
+
+    const targetDir = join(workspaceRoot, ".agency", "skills", skillName);
+    const targetFile = join(targetDir, "SKILL.md");
+    if (existsSync(targetFile)) {
+      if (!overwrite) {
+        logger?.warn(
+          `[importer] skill "${skillName}" already exists at ${targetFile}, skipping ` +
+            `(use overwrite: true to replace)`,
+        );
         continue;
       }
-
-      const targetDir = join(workspaceRoot, ".agency", "skills", skillName);
-      const targetFile = join(targetDir, "SKILL.md");
-      if (existsSync(targetFile)) {
-        if (!overwrite) {
-          logger?.warn(
-            `[importer] skill "${skillName}" already exists at ${targetFile}, skipping ` +
-              `(use overwrite: true to replace)`,
-          );
-          continue;
-        }
-        logger?.info(`[importer] overwriting skill "${skillName}" at ${targetFile}`);
-      }
-
-      // The whole folder: a skill names its own files (references, scripts) by a path that starts at its folder.
-      cpSync(skillDirPath, targetDir, { recursive: true });
-      report.skillsInstalled.push(skillName);
+      logger?.info(`[importer] overwriting skill "${skillName}" at ${targetFile}`);
     }
+
+    // The whole folder: a skill names its own files (references, scripts) by a path that starts at its folder.
+    cpSync(skillDirPath, targetDir, { recursive: true, filter: (path) => basename(path) !== ".git" });
+    report.skillsInstalled.push(skillName);
   }
 
   // -----------------------------------------------------------------------
@@ -486,6 +541,7 @@ export function importClaudePlugin(
   const inPlace = resolve(copyTo).startsWith(`${resolve(sourceDir)}${sep}`);
   const root = inPlace ? sourceDir : copyTo;
   let copied = inPlace;
+  const data = pluginDataDir(workspaceRoot, manifest.name);
   // Hook commands and MCP servers name files of the plugin: its files stay in the workspace, as the source folder can go away.
   const keepPluginFiles = (): void => {
     if (copied) return;
@@ -501,11 +557,12 @@ export function importClaudePlugin(
         )
       : rawHooks;
   if (hooksSource) {
-    const { hooks, skipped } = parseHooks(hooksSource, root);
+    const { hooks, skipped } = parseHooks(hooksSource, root, data);
     report.hooksSkipped = skipped;
     report.hooksInstalled = Object.keys(hooks);
     if (report.hooksInstalled.length > 0) {
       keepPluginFiles();
+      mkdirSync(data, { recursive: true });
       const file = pluginHooksFile(workspaceRoot, manifest.name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ hooks }, null, 2)}\n`, "utf8");
@@ -520,13 +577,23 @@ export function importClaudePlugin(
     const client =
       manifest.format === "gemini" ? "gemini" : manifest.format === "cursor" ? "cursor" : undefined;
     const servers = client === undefined ? mcpRaw : normalizeMcpServers(client, mcpRaw);
-    report.mcpServers = parseMcpServers(JSON.parse(withPluginRoot(JSON.stringify(servers), root)), logger);
+    const text = JSON.stringify(servers);
+    report.mcpServers = parseMcpServers(JSON.parse(withPluginRoot(text, root, data)), logger);
     if (Object.keys(report.mcpServers).length > 0) {
       keepPluginFiles();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal data variable of Claude Code
+      if (text.includes("${CLAUDE_PLUGIN_DATA}")) mkdirSync(data, { recursive: true });
       const file = pluginMcpFile(workspaceRoot, manifest.name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ mcpServers: report.mcpServers }, null, 2)}\n`, "utf8");
     }
+  }
+
+  // The commands of `bin/` are on the PATH of a shell command while the plugin is installed, as in Claude Code.
+  const bin = join(sourceDir, "bin");
+  if (existsSync(bin) && statSync(bin).isDirectory()) {
+    keepPluginFiles();
+    report.binDir = join(root, "bin");
   }
 
   // -----------------------------------------------------------------------
@@ -583,6 +650,24 @@ export function importClaudePlugin(
     }
   }
 
+  for (const [name, spec] of Object.entries(manifest.commandMap ?? {})) {
+    if (!isRecord(spec) || !SKILL_NAME_RE.test(name)) continue;
+    let body = typeof spec.content === "string" ? spec.content : undefined;
+    if (body === undefined && typeof spec.source === "string") {
+      const [file] = existingFiles(sourceDir, [spec.source], logger);
+      if (file !== undefined) body = readFileSync(file, "utf8");
+    }
+    if (body === undefined) continue;
+    const head =
+      typeof spec.description === "string" && !body.startsWith("---")
+        ? `---\ndescription: ${spec.description}\n---\n`
+        : "";
+    const target = `${name}.md`;
+    const targetFile = join(workspaceRoot, ".agency", "commands", target);
+    if (writePart(targetFile, `${head}${body}`, `command "${target}"`, write))
+      report.commandsInstalled.push(target);
+  }
+
   // -----------------------------------------------------------------------
   // 7. Rules of Cursor and the context file of Gemini -> .agency/rules/
   // -----------------------------------------------------------------------
@@ -617,6 +702,17 @@ export function importClaudePlugin(
     const text = `// The Pi extensions of ${manifest.name}, written by agency plugin install.\n${imports.join("\n")}\nexport const piExtensions = [${names.join(", ")}];\n`;
     const targetFile = join(workspaceRoot, ".agency", "plugins", target);
     if (writePart(targetFile, text, `module "${target}"`, write)) report.modulesInstalled.push(target);
+  }
+
+  // The parts of a Claude Code plugin that have no counterpart here.
+  for (const [part, reason] of [
+    ["output-styles", "Agency has no output styles"],
+    ["themes", "Agency has no themes"],
+    ["monitors", "Agency has no monitors"],
+    ["workflows", "run a workflow file with agency workflow run"],
+    ["settings.json", "Agency does not take the settings of a plugin"],
+  ]) {
+    if (existsSync(join(sourceDir, part as string))) report.partsSkipped.push(`${part}: ${reason}`);
   }
 
   return report;

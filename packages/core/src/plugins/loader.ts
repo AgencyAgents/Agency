@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
 import type { EventBus } from "../events.ts";
@@ -177,6 +177,16 @@ const moduleId = (file: string): string =>
     ? basename(dirname(file))
     : basename(file).replace(/\.(m?js|cjs|ts|mts)$/, "");
 
+/** The `bin/` folders of the plugins that `agency plugin install` keeps in the workspace. */
+function pluginBinDirs(workspaceRoot: string): string[] {
+  const roots = join(workspaceRoot, ".agency", "plugin-roots");
+  if (!existsSync(roots)) return [];
+  return readdirSync(roots)
+    .sort()
+    .map((name) => join(roots, name, "bin"))
+    .filter((dir) => existsSync(dir) && statSync(dir).isDirectory());
+}
+
 /** The extensions of a Pi folder: its module files, and each subfolder with an `index.ts` or `index.js`. */
 function discoverPiExtensions(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -258,6 +268,23 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
     }
     for (const f of discoverPiExtensions(join(root, ".pi", "extensions"))) {
       sources.push({ id: moduleId(f), path: f, kind: "pi", tier: "project" });
+    }
+    // The `bin/` folder of an installed plugin is on the PATH of a shell command, as in Claude Code.
+    const bins = pluginBinDirs(root);
+    if (bins.length > 0) {
+      // Windows names the variable `Path`: a second key would leave one of the two unused.
+      const key = Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ?? "PATH";
+      const off = bus.on("shell.env", (payload) => {
+        const env = (payload as { env: Record<string, string> }).env;
+        env[key] = [...bins, env[key] ?? process.env[key] ?? ""].join(delimiter);
+      });
+      plugins.push({
+        id: "plugin-bin",
+        path: join(root, ".agency", "plugin-roots"),
+        tier: "project",
+        definition: { id: "plugin-bin" },
+        unsubscribes: [off],
+      });
     }
   }
   for (const f of projectFiles)

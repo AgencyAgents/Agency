@@ -41,6 +41,8 @@ const GroupSchema = z.object({
         /** Runs in the background: the event does not wait, and the hook cannot block it. */
         async: z.boolean().optional(),
         asyncRewake: z.boolean().optional(),
+        /** Variables of the process: a plugin hook gets `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA`. */
+        env: z.record(z.string(), z.string()).optional(),
         /** A hook of Cursor: it gets the input of that event and answers in the form of Cursor. */
         cursor: z
           .object({
@@ -170,6 +172,7 @@ function runOne(
   stdin: string,
   opts: HookRunOptions,
   timeoutS: number | undefined,
+  env?: Record<string, string>,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const { cwd, shell } = opts;
@@ -177,7 +180,7 @@ function runOne(
       cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
+      env: { ...process.env, ...env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
     };
     const child = shell
       ? spawn(shell.command, shell.buildArgs(command), spawnOptions)
@@ -314,6 +317,7 @@ async function runCursor(
   input: Record<string, unknown>,
   opts: HookRunOptions,
   timeoutS: number,
+  env?: Record<string, string>,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
   const line = typeof toolInput.command === "string" ? toolInput.command : undefined;
@@ -334,7 +338,7 @@ async function runCursor(
     ...(line === undefined ? {} : { command: line }),
     ...(typeof path === "string" ? { file_path: path } : {}),
   });
-  const out = await runOne(command, stdin, opts, timeoutS);
+  const out = await runOne(command, stdin, opts, timeoutS, env);
   if (out.code !== 0 && out.code !== 2) {
     return cursor.failClosed
       ? { code: 2, stdout: "", stderr: out.stderr || `a ${cursor.event} hook failed` }
@@ -424,6 +428,7 @@ export async function runCommandHooks(
           stdin,
           opts,
           rewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
+          entry.env,
         ).then((out) => {
           const text = backgroundOutput(out, rewake);
           const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
@@ -439,8 +444,8 @@ export async function runCommandHooks(
           : entry.type === "prompt"
             ? await runPrompt(entry, stdin, event, opts)
             : entry.cursor !== undefined
-              ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS)
-              : await runOne(entry.command, stdin, opts, timeoutS);
+              ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, entry.env)
+              : await runOne(entry.command, stdin, opts, timeoutS, entry.env);
       // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
       if (event === "PermissionDenied") {
         if (

@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **More of a Claude Code plugin**: `agency plugin install` puts the `bin/` folder of a
+  plugin on the PATH of shell commands, gives `${CLAUDE_PLUGIN_DATA}` a data folder,
+  gives a hook `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` in its environment, maps
+  `${user_config.KEY}` to the variable `${CLAUDE_PLUGIN_OPTION_KEY}`, installs a root
+  `SKILL.md` and commands that the manifest maps by name, and names the parts that do
+  not install (output styles, themes, monitors, workflows, `settings.json`).
 - **`agency mcp serve`**: Agency is an MCP server on stdio with one tool, `agency`, that
   runs a turn of a session, so that Claude Code, Codex or Cursor can give it a task. The
   permission mode comes from the flags of the server, never from a call.

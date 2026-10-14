@@ -15,6 +15,7 @@ import {
   hasPluginManifest,
   importClaudePlugin,
   Logger,
+  pluginDataDir,
   pluginHooksFile,
   pluginMcpFile,
   pluginRootDir,
@@ -94,6 +95,17 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Pi extensions installed (.agency/plugins/, they run code in the daemon):");
     for (const module of report.modulesInstalled) lines.push(`  - ${module}`);
+  }
+
+  if (report.binDir !== undefined) {
+    lines.push("");
+    lines.push(`Commands of ${report.binDir} are on the PATH of shell commands.`);
+  }
+
+  if (report.optionVariables.length > 0) {
+    lines.push("");
+    lines.push("Its settings (userConfig) come from these variables of the environment of Agency:");
+    for (const variable of report.optionVariables) lines.push(`  - ${variable}`);
   }
 
   if (report.partsSkipped.length > 0) {
@@ -410,6 +422,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     lines.push("Deleted its MCP servers.");
   }
   rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
+  rmSync(pluginDataDir(workspaceRoot, pluginName), { recursive: true, force: true });
 
   return lines.join("\n");
 }

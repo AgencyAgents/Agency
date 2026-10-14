@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { parseAgentFile } from "../src/agents/files.ts";
+import { EventBus } from "../src/events.ts";
+import { loadHookFiles, runCommandHooks } from "../src/plugins/command-hooks.ts";
 import { importClaudePlugin } from "../src/plugins/importer.ts";
+import { loadPlugins } from "../src/plugins/loader.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -151,10 +154,95 @@ test("the hooks of a Cursor plugin install with their events mapped and the plug
   const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
   expect(report.hooksInstalled).toEqual(["PostToolUse"]);
   const root = join(ws, ".agency", "plugin-roots", "cur-hooks").replaceAll("\\", "/");
-  expect(JSON.parse(read(ws, "hooks", "cur-hooks.json")).hooks.PostToolUse).toEqual([
+  expect(JSON.parse(read(ws, "hooks", "cur-hooks.json")).hooks.PostToolUse).toMatchObject([
     {
       matcher: "write|edit",
       hooks: [{ type: "command", command: `node ${root}/fmt.js`, cursor: { event: "afterFileEdit" } }],
     },
   ]);
+});
+
+test("a Claude Code plugin: bin on the PATH, the data folder and the root in hook variables, userConfig as variables, commands by name", async () => {
+  const src = folder({
+    ".claude-plugin/plugin.json": JSON.stringify({
+      name: "cc-kit",
+      userConfig: {
+        api_url: { type: "string", title: "API URL" },
+        api_token: { type: "string", sensitive: true },
+      },
+      commands: {
+        about: { content: "Summarize the repo.", description: "Summarize" },
+        deploy: { source: "./extra/deploy.md" },
+        away: { source: "../outside.md" },
+      },
+    }),
+    "bin/cc-tool": "#!/bin/sh\necho tool\n",
+    "extra/deploy.md": "Deploy $ARGUMENTS",
+    "hook.js":
+      'console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: process.env.CLAUDE_PLUGIN_ROOT + "|" + process.env.CLAUDE_PLUGIN_DATA } }));',
+    "hooks/hooks.json": JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [
+          {
+            hooks: [
+              { type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hook.js" "${CLAUDE_PLUGIN_DATA}"' },
+            ],
+          },
+        ],
+      },
+    }),
+    ".mcp.json": JSON.stringify({
+      mcpServers: {
+        api: {
+          command: "node",
+          args: ["${CLAUDE_PLUGIN_DATA}/s.js"],
+          env: { TOKEN: "${user_config.api_token}" },
+        },
+      },
+    }),
+    "output-styles/terse.md": "---\nname: terse\n---\nShort.",
+  });
+  const ws = folder({});
+  const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+  const root = join(ws, ".agency", "plugin-roots", "cc-kit");
+  const data = join(ws, ".agency", "plugin-data", "cc-kit");
+  expect(report.binDir).toBe(join(root, "bin"));
+  expect(report.optionVariables).toEqual(["CLAUDE_PLUGIN_OPTION_API_URL", "CLAUDE_PLUGIN_OPTION_API_TOKEN"]);
+  expect(report.commandsInstalled).toEqual(["about.md", "deploy.md"]);
+  expect(read(ws, "commands", "about.md")).toBe("---\ndescription: Summarize\n---\nSummarize the repo.");
+  expect(read(ws, "commands", "deploy.md")).toBe("Deploy $ARGUMENTS");
+  expect(report.partsSkipped).toEqual(["output-styles: Agency has no output styles"]);
+  expect(existsSync(data)).toBe(true);
+  expect(report.mcpServers).toEqual({
+    api: {
+      command: "node",
+      args: [`${data.replaceAll("\\", "/")}/s.js`],
+      env: { TOKEN: "${CLAUDE_PLUGIN_OPTION_API_TOKEN}" },
+    },
+  });
+
+  // The hook script reads both folders from its environment, as in Claude Code.
+  const hooks = loadHookFiles(join(ws, ".agency", "hooks"));
+  const outcome = await runCommandHooks(hooks, "UserPromptSubmit", { prompt: "hi" }, { cwd: ws });
+  expect(outcome.context).toBe(`${root}|${data}`);
+
+  // The bin folder is on the PATH of a shell command.
+  const bus = new EventBus();
+  await loadPlugins({ workspaceRoot: ws, bus, configDirOverride: folder({}) });
+  const payload = { env: {} as Record<string, string> };
+  await bus.emitAsync("shell.env", payload);
+  const path = Object.entries(payload.env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
+  expect(path.split(delimiter)[0]).toBe(join(root, "bin"));
+});
+
+test("a plugin with SKILL.md at its root and no skills folder is one skill", () => {
+  const src = folder({
+    ".claude-plugin/plugin.json": JSON.stringify({ name: "solo" }),
+    "SKILL.md": "---\ndescription: The one skill\n---\nDo the thing.",
+    "ref.md": "a reference",
+  });
+  const ws = folder({});
+  const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+  expect(report.skillsInstalled).toEqual(["solo"]);
+  expect(read(ws, "skills", "solo", "ref.md")).toBe("a reference");
 });
