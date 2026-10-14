@@ -1,4 +1,4 @@
-import { dlopen, FFIType, type Pointer, ptr } from "bun:ffi";
+import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,6 +56,26 @@ const psQuote = (text: string): string => `'${text.replace(/'/g, "''")}'`;
 export async function prepareWindowsSandbox(root: string, sid: string): Promise<boolean> {
   const temp = windowsSandboxTemp(sid);
   mkdirSync(temp, { recursive: true });
+  return addAccessRules(sid, [
+    `Add-Rule ${psQuote(root)} 'Modify' 'Allow'`,
+    `Add-Rule ${psQuote(temp)} 'Modify' 'Allow'`,
+    `$hooks = Join-Path ${psQuote(root)} '.git\\hooks'`,
+    "if (Test-Path -LiteralPath $hooks) { Add-Rule $hooks 'Write, Delete, DeleteSubdirectoriesAndFiles' 'Deny' }",
+  ]);
+}
+
+/** Lets the script container read and run the files of the runner: of the user's disk, it sees only these. */
+export async function prepareScriptContainer(readPaths: string[]): Promise<boolean> {
+  const sid = scriptContainerSidText();
+  if (sid === undefined) return false;
+  return addAccessRules(
+    sid,
+    readPaths.map((path) => `Add-Rule ${psQuote(path)} 'ReadAndExecute' 'Allow'`),
+  );
+}
+
+/** Runs `Add-Rule <path> <rights> <type>` lines for one SID. A rule that is there already is not added again. */
+async function addAccessRules(sid: string, lines: string[]): Promise<boolean> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$sid = New-Object System.Security.Principal.SecurityIdentifier ${psQuote(sid)}`,
@@ -64,13 +84,11 @@ export async function prepareWindowsSandbox(root: string, sid: string): Promise<
     "  $acl = $item.GetAccessControl('Access')",
     "  $has = $acl.Access | Where-Object { $_.IdentityReference.Value -eq $sid.Value -and $_.AccessControlType -eq $type }",
     "  if ($has) { return }",
-    "  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $rights, 'ContainerInherit,ObjectInherit', 'None', $type)))",
+    "  $inherit = if ($item.PSIsContainer) { 'ContainerInherit,ObjectInherit' } else { 'None' }",
+    "  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $rights, $inherit, 'None', $type)))",
     "  $item.SetAccessControl($acl)",
     "}",
-    `Add-Rule ${psQuote(root)} 'Modify' 'Allow'`,
-    `Add-Rule ${psQuote(temp)} 'Modify' 'Allow'`,
-    `$hooks = Join-Path ${psQuote(root)} '.git\\hooks'`,
-    "if (Test-Path -LiteralPath $hooks) { Add-Rule $hooks 'Write, Delete, DeleteSubdirectoriesAndFiles' 'Deny' }",
+    ...lines,
   ].join("\n");
   const powershell = join(
     process.env.SystemRoot ?? "C:\\Windows",
@@ -107,6 +125,29 @@ function openApis() {
     AssignProcessToJobObject: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
     ResumeThread: { args: [FFIType.ptr], returns: FFIType.u32 },
     TerminateProcess: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+    InitializeProcThreadAttributeList: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    UpdateProcThreadAttribute: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    CreateProcessW: {
+      args: [
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.i32,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+        FFIType.ptr,
+      ],
+      returns: FFIType.i32,
+    },
   }).symbols;
   const advapi32 = dlopen("advapi32.dll", {
     OpenProcessToken: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
@@ -164,6 +205,8 @@ const GENERIC_ALL = 0x10000000;
 const CREATE_SUSPENDED = 0x4;
 const CREATE_UNICODE_ENVIRONMENT = 0x400;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+const EXTENDED_STARTUPINFO_PRESENT = 0x80000;
+const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x20009n;
 
 const wide = (text: string): Buffer => Buffer.from(`${text}\0`, "utf16le");
 const pinned: Uint8Array[] = [];
@@ -246,20 +289,7 @@ export function runRestricted(sid: string, argv: string[]): number {
   if (!advapi32.SetTokenInformation(restricted, 6, ptr(defaultDacl), 8)) return fail("SetTokenInformation");
   advapi32.SetSecurityInfo(restricted, 6, 4, null, null, ptr(acl), null);
 
-  // STARTUPINFOW (104 bytes): the command gets the standard handles of this process.
-  const startup = new Uint8Array(104);
-  const startupView = new DataView(startup.buffer);
-  startupView.setUint32(0, 104, true);
-  startupView.setUint32(60, 0x100, true);
-  for (const [offset, which] of [
-    [80, -10],
-    [88, -11],
-    [96, -12],
-  ] as const) {
-    const handle = kernel32.GetStdHandle(which >>> 0);
-    if (handle) kernel32.SetHandleInformation(handle, 1, 1);
-    startupView.setBigUint64(offset, BigInt(handle ?? 0), true);
-  }
+  const startup = startupWithStdHandles(kernel32, 104);
   const info = new Uint8Array(24);
   const commandLine = [program, ...argv.slice(1)].map(quoteWindowsArg).join(" ");
   // The user's own temporary folder is not writable: the command gets the folder of the SID.
@@ -287,10 +317,39 @@ export function runRestricted(sid: string, argv: string[]): number {
   ) {
     return fail("CreateProcessAsUserW");
   }
+  return runInJob(kernel32, info, fail);
+}
+
+/** STARTUPINFOW (104 bytes) or STARTUPINFOEXW (112): the command gets the standard handles of this process. */
+function startupWithStdHandles(
+  kernel32: ReturnType<typeof openApis>["kernel32"],
+  size: 104 | 112,
+): Uint8Array {
+  const startup = new Uint8Array(size);
+  const view = new DataView(startup.buffer);
+  view.setUint32(0, size, true);
+  view.setUint32(60, 0x100, true);
+  for (const [offset, which] of [
+    [80, -10],
+    [88, -11],
+    [96, -12],
+  ] as const) {
+    const handle = kernel32.GetStdHandle(which >>> 0);
+    if (handle) kernel32.SetHandleInformation(handle, 1, 1);
+    view.setBigUint64(offset, BigInt(handle ?? 0), true);
+  }
+  return startup;
+}
+
+/** Puts the suspended child of PROCESS_INFORMATION in a job, starts it, and returns its exit code. */
+function runInJob(
+  kernel32: ReturnType<typeof openApis>["kernel32"],
+  info: Uint8Array,
+  fail: (what: string) => number,
+): number {
   const infoView = new DataView(info.buffer);
   const child = Number(infoView.getBigUint64(0, true)) as Pointer;
   const thread = Number(infoView.getBigUint64(8, true)) as Pointer;
-
   // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (144 bytes), LimitFlags at offset 16.
   const job = kernel32.CreateJobObjectW(null, null);
   const limits = new Uint8Array(144);
@@ -311,8 +370,113 @@ export function runRestricted(sid: string, argv: string[]): number {
   return code[0] ?? 1;
 }
 
-/** The helper process: `<helper> <sid> -- <argv...>`. */
+/** The mode word of the helper for a script: in place of a SID, `<helper> appcontainer -- <argv...>`. */
+export const APPCONTAINER_MODE = "appcontainer";
+/** The AppContainer of the scripts of the `code` tool. With no capability it has no network and no user files. */
+const SCRIPT_CONTAINER = "agency.script";
+
+function openContainerApis() {
+  return dlopen("userenv.dll", {
+    CreateAppContainerProfile: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    DeriveAppContainerSidFromAppContainerName: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  }).symbols;
+}
+
+/** The SID of the script container; the profile is made on first use and stays. */
+function scriptContainerSid(): number | undefined {
+  const userenv = openContainerApis();
+  const name = wide(SCRIPT_CONTAINER);
+  const out = new BigUint64Array(1);
+  if (userenv.CreateAppContainerProfile(ptr(name), ptr(name), ptr(name), null, 0, ptr(out)) === 0) {
+    return Number(out[0]);
+  }
+  return userenv.DeriveAppContainerSidFromAppContainerName(ptr(name), ptr(out)) === 0
+    ? Number(out[0])
+    : undefined;
+}
+
+/** The SID of the script container as text, for an access rule. */
+export function scriptContainerSidText(): string | undefined {
+  const sid = scriptContainerSid();
+  if (sid === undefined) return undefined;
+  const advapi32 = dlopen("advapi32.dll", {
+    ConvertSidToStringSidW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  }).symbols;
+  const out = new BigUint64Array(1);
+  if (!advapi32.ConvertSidToStringSidW(sid as unknown as Pointer, ptr(out))) return undefined;
+  const chars = new Uint16Array(toArrayBuffer(Number(out[0]) as Pointer, 0, 512));
+  const end = chars.indexOf(0);
+  return String.fromCharCode(...chars.subarray(0, end === -1 ? chars.length : end));
+}
+
+/** Runs `argv` in the script container, in a job that ends with this process. */
+export function runInAppContainer(argv: string[]): number {
+  const { kernel32 } = openApis();
+  const fail = (what: string): number => {
+    process.stderr.write(`agency sandbox: ${what} failed (Windows error ${kernel32.GetLastError()})\n`);
+    return 125;
+  };
+  const program = argv[0] === undefined ? undefined : (Bun.which(argv[0]) ?? undefined);
+  if (program === undefined) {
+    process.stderr.write(`agency sandbox: command not found: ${argv[0] ?? ""}\n`);
+    return 127;
+  }
+  const sid = scriptContainerSid();
+  if (sid === undefined) return fail("CreateAppContainerProfile");
+  // SECURITY_CAPABILITIES: the container SID, then no capabilities.
+  const capabilities = new Uint8Array(24);
+  new DataView(capabilities.buffer).setBigUint64(0, BigInt(sid), true);
+  const size = new BigUint64Array(1);
+  kernel32.InitializeProcThreadAttributeList(null, 1, 0, ptr(size));
+  const list = new Uint8Array(Number(size[0]));
+  // Windows reads both through the pointers in STARTUPINFOEX, after the last use of these names.
+  pinned.push(capabilities, list);
+  if (!kernel32.InitializeProcThreadAttributeList(ptr(list), 1, 0, ptr(size))) {
+    return fail("InitializeProcThreadAttributeList");
+  }
+  if (
+    !kernel32.UpdateProcThreadAttribute(
+      ptr(list),
+      0,
+      PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+      ptr(capabilities),
+      24n,
+      null,
+      null,
+    )
+  ) {
+    return fail("UpdateProcThreadAttribute");
+  }
+  const startup = startupWithStdHandles(kernel32, 112);
+  new DataView(startup.buffer).setBigUint64(104, BigInt(ptr(list)), true);
+  const info = new Uint8Array(24);
+  const commandLine = [program, ...argv.slice(1)].map(quoteWindowsArg).join(" ");
+  if (
+    !kernel32.CreateProcessW(
+      ptr(wide(program)),
+      ptr(wide(commandLine)),
+      null,
+      null,
+      1,
+      CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+      null,
+      null,
+      ptr(startup),
+      ptr(info),
+    )
+  ) {
+    return fail("CreateProcessW");
+  }
+  return runInJob(kernel32, info, fail);
+}
+
+/** The helper process: `<helper> <sid> -- <argv...>`, or `<helper> appcontainer -- <argv...>` for a script. */
 export function runSandboxChild(): never {
   const separator = process.argv.indexOf("--");
-  process.exit(runRestricted(process.argv[separator - 1] ?? "", process.argv.slice(separator + 1)));
+  const mode = process.argv[separator - 1] ?? "";
+  const argv = process.argv.slice(separator + 1);
+  process.exit(mode === APPCONTAINER_MODE ? runInAppContainer(argv) : runRestricted(mode, argv));
 }

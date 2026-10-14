@@ -12,7 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureSandboxAvailable } from "../src/sandbox-docker.ts";
-import { OsSandboxBackend } from "../src/sandbox-os.ts";
+import {
+  buildScriptSandboxArgv,
+  OsSandboxBackend,
+  scriptSandboxAvailable,
+  scriptSandboxEnv,
+} from "../src/sandbox-os.ts";
 import { quoteWindowsArg, windowsSandboxSid, windowsSandboxTemp } from "../src/sandbox-win.ts";
 
 const dirs: string[] = [];
@@ -111,3 +116,50 @@ describe.skipIf(process.platform !== "win32")("Windows sandbox: commands under t
     expect(readFileSync(beat).length).toBe(size);
   }, 60_000);
 });
+
+describe.skipIf(process.platform !== "win32")(
+  "Windows script sandbox: an AppContainer with no capability",
+  () => {
+    test("a script talks on stdin and stdout, and has no network, no user files and no write outside", async () => {
+      expect(await scriptSandboxAvailable([process.execPath])).toBe(true);
+      const secret = join(tmp("secret"), "secret.txt");
+      writeFileSync(secret, "s3cret");
+      const outside = join(tmp("outside"), "w.txt");
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("open") });
+      const script = `(async () => {
+      const fs = require("fs");
+      const out = {};
+      try { fs.readFileSync(${JSON.stringify(secret)}, "utf8"); out.read = "open"; } catch (e) { out.read = e.code; }
+      try { fs.writeFileSync(${JSON.stringify(outside)}, "x"); out.write = "open"; } catch (e) { out.write = e.code; }
+      try { await fetch("http://127.0.0.1:${server.port}/"); out.net = "open"; } catch { out.net = "blocked"; }
+      let s = "";
+      for await (const chunk of process.stdin) s += chunk;
+      out.stdin = s.trim();
+      console.log(JSON.stringify(out));
+      process.exit(3);
+    })();`;
+      try {
+        const argv = buildScriptSandboxArgv([process.execPath, "-e", script], [process.execPath]) ?? [];
+        const child = Bun.spawn(argv, {
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          env: scriptSandboxEnv(),
+        });
+        child.stdin.write("from the loop");
+        child.stdin.end();
+        const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+        expect(code).toBe(3);
+        expect(JSON.parse(out)).toEqual({
+          read: "EPERM",
+          write: "EPERM",
+          net: "blocked",
+          stdin: "from the loop",
+        });
+        expect(existsSync(outside)).toBe(false);
+      } finally {
+        server.stop(true);
+      }
+    }, 60_000);
+  },
+);

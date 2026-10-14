@@ -7,7 +7,13 @@ import {
   type SandboxBackend,
   SandboxBoundary,
 } from "./sandbox.ts";
-import { prepareWindowsSandbox, windowsSandboxHelper, windowsSandboxSid } from "./sandbox-win.ts";
+import {
+  APPCONTAINER_MODE,
+  prepareScriptContainer,
+  prepareWindowsSandbox,
+  windowsSandboxHelper,
+  windowsSandboxSid,
+} from "./sandbox-win.ts";
 
 export interface OsSandboxOptions {
   /** Commands get the network. Default: no network. */
@@ -70,7 +76,7 @@ export function buildSeatbeltProfile(root: string, allowNetwork: boolean, tmpDir
 
 /**
  * The argv that runs a script process with no network, no write access and no view of the user's files: it talks
- * only on its stdin and stdout. `readPaths` are the files of the runner. Undefined where there is no backend (Windows).
+ * only on its stdin and stdout. `readPaths` are the files of the runner. On Windows, an AppContainer with no capability.
  */
 export function buildScriptSandboxArgv(
   argv: string[],
@@ -110,15 +116,32 @@ export function buildScriptSandboxArgv(
     ].join("\n");
     return ["/usr/bin/sandbox-exec", "-p", profile, ...argv];
   }
+  if (platform === "win32") return [...windowsSandboxHelper(), APPCONTAINER_MODE, "--", ...argv];
   return undefined;
+}
+
+/** The environment of the script process: nothing of the user's. The Windows container finds its profile by LOCALAPPDATA. */
+export function scriptSandboxEnv(platform: NodeJS.Platform = process.platform): Record<string, string> {
+  const env: Record<string, string> = { PATH: "/usr/bin:/bin" };
+  if (platform !== "win32") return env;
+  for (const name of ["SystemRoot", "LOCALAPPDATA"]) {
+    const value = process.env[name];
+    if (value) env[name] = value;
+  }
+  return env;
 }
 
 let scriptSandboxProbe: Promise<boolean> | undefined;
 
-/** True when the script sandbox of this platform starts a process. One probe for the life of the daemon. */
-export function scriptSandboxAvailable(): Promise<boolean> {
+/**
+ * True when the script sandbox of this platform starts a process. One probe for the life of the daemon. On Windows
+ * the container first gets read access to `readPaths`, the files of the runner.
+ */
+export function scriptSandboxAvailable(readPaths: string[] = []): Promise<boolean> {
   scriptSandboxProbe ??= (async () => {
-    const argv = buildScriptSandboxArgv(["/usr/bin/true"], []);
+    const windows = process.platform === "win32";
+    if (windows && !(await prepareScriptContainer(readPaths))) return false;
+    const argv = buildScriptSandboxArgv(windows ? ["cmd.exe", "/d", "/c", "exit 0"] : ["/usr/bin/true"], []);
     if (argv === undefined) return false;
     try {
       return (await Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).exited) === 0;

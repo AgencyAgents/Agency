@@ -16,7 +16,7 @@ import {
   TraceRecorder,
   withTrace,
 } from "@agency/core";
-import { buildScriptSandboxArgv, scriptSandboxAvailable } from "@agency/guard";
+import { buildScriptSandboxArgv, scriptSandboxAvailable, scriptSandboxEnv } from "@agency/guard";
 import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -479,7 +479,7 @@ export async function executeTurn(
         // `true` needs the script sandbox. `"host"` runs the script with the authority of a shell command, so it is
         // only for the software backend: a sandbox for commands must not have a tool that goes around it.
         const isolatedRunner =
-          config.codeMode === true && (await scriptSandboxAvailable())
+          config.codeMode === true && (await scriptSandboxAvailable(codeRunnerReadPaths()))
             ? buildScriptSandboxArgv(codeRunner(), codeRunnerReadPaths())
             : undefined;
         if (config.codeMode === true && !isolatedRunner && !codeModeWarned) {
@@ -493,7 +493,7 @@ export async function executeTurn(
           toolOffered(tool: string, riskTier?: "dangerous"): boolean;
         }): CoreToolSpec[] => {
           if (!gate.toolOffered(CODE_TOOL, "dangerous")) return [];
-          if (isolatedRunner) return [codeTool(() => ({ PATH: "/usr/bin:/bin" }), isolatedRunner)];
+          if (isolatedRunner) return [codeTool(() => scriptSandboxEnv(), isolatedRunner)];
           return hostCode ? [codeTool(() => modelCommandEnv())] : [];
         };
         try {

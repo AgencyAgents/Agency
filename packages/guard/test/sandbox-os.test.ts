@@ -67,7 +67,8 @@ describe("OS sandbox arguments", () => {
     expect(denyRead).toBeGreaterThan(-1);
     expect(lines.indexOf('(allow file-read* (subpath "/opt/agency"))')).toBeGreaterThan(denyRead);
 
-    expect(buildScriptSandboxArgv(["x"], [], "win32")).toBeUndefined();
+    expect(buildScriptSandboxArgv(["x"], [], "win32")?.slice(-3)).toEqual(["appcontainer", "--", "x"]);
+    expect(buildScriptSandboxArgv(["x"], [], "freebsd")).toBeUndefined();
   });
 
   test("on another platform the backend is not available, and the daemon start fails with the reason", async () => {

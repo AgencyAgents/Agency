@@ -670,6 +670,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **The `code` tool on Windows, in a sandbox**: `codeMode: true` runs the script
+  in an AppContainer with no capability: no network, no write outside its
+  own temporary folder, and of the user's files only the runner. Before,
+  Windows had no script sandbox and the tool was not offered.
 - **The binary starts about 45 ms faster**: it is compiled to bytecode, so
   each start skips the parse of the bundle. This also counts for each
   command of the Windows sandbox, which starts the binary as its helper.
