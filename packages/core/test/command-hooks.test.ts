@@ -135,6 +135,48 @@ describe("runCommandHooks", () => {
     }
   }, 20_000);
 
+  test("a background hook gives the model its additionalContext, or the stderr of asyncRewake with exit code 2", async () => {
+    const got: [string | undefined, string][] = [];
+    const opts = {
+      cwd: dir,
+      onBackgroundOutput: (sessionId: string | undefined, text: string) => got.push([sessionId, text]),
+    };
+    const background = (name: string, body: string, flag: object): CommandHooks => ({
+      Stop: [{ hooks: [{ type: "command", command: hook(name, body), ...flag }] }],
+    });
+    const json = JSON.stringify({
+      hookSpecificOutput: { additionalContext: "tests passed" },
+      systemMessage: "note",
+    });
+    await runCommandHooks(
+      background("bg-json", `console.log("log line"); console.log(${JSON.stringify(json)});`, {
+        async: true,
+      }),
+      "Stop",
+      { session_id: "s1" },
+      opts,
+    );
+    await runCommandHooks(
+      background("bg-wake", 'console.error("build broke"); process.exit(2);', { asyncRewake: true }),
+      "Stop",
+      { session_id: "s2" },
+      opts,
+    );
+    // Neither plain output nor exit code 2 of a hook that does not ask to wake reaches the model.
+    await runCommandHooks(
+      background("bg-plain", 'console.log("plain"); process.exit(2);', { async: true }),
+      "Stop",
+      { session_id: "s3" },
+      opts,
+    );
+    for (let i = 0; i < 100 && got.length < 2; i++) await Bun.sleep(50);
+    await Bun.sleep(500);
+    expect(got.sort()).toEqual([
+      ["s1", "tests passed\nnote"],
+      ["s2", "build broke"],
+    ]);
+  }, 20_000);
+
   test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
     const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');
     const compaction = on("PreCompact", cmd, "manual");

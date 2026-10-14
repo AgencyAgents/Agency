@@ -105,6 +105,8 @@ export interface HookRunOptions {
   cwd: string;
   /** The shell that runs each command: the daemon gives the shell of its bash tool. Absent means the system shell. */
   shell?: { command: string; buildArgs: (command: string) => string[] };
+  /** Text for the model from a background hook that ended: the daemon puts it in the inbox of the session. */
+  onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
 }
 
 function runOne(
@@ -156,6 +158,26 @@ function runOne(
   });
 }
 
+/**
+ * What a background hook that ended gives the model, as in Claude Code: on exit code 2 of `asyncRewake` its stderr
+ * (or stdout), otherwise `additionalContext` and `systemMessage` of a JSON answer, alone on stdout or on a line of its own.
+ */
+function backgroundOutput(out: { code: number | null; stdout: string; stderr: string }, rewake: boolean) {
+  if (rewake && out.code === 2) return out.stderr || out.stdout || undefined;
+  if (out.code !== 0) return undefined;
+  const json =
+    parseJson(out.stdout) ??
+    out.stdout
+      .split("\n")
+      .map((line) => parseJson(line.trim()))
+      .findLast(Boolean);
+  const specific = (json?.hookSpecificOutput ?? {}) as Record<string, unknown>;
+  const parts = [specific.additionalContext, json?.systemMessage].filter(
+    (part): part is string => typeof part === "string" && part !== "",
+  );
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
 function parseJson(text: string): Record<string, unknown> | undefined {
   if (!text.startsWith("{")) return undefined;
   try {
@@ -198,13 +220,17 @@ export async function runCommandHooks(
         continue;
       }
       if (entry.async || entry.asyncRewake) {
-        // ponytail: the output of a background hook does not reach the model; add a queue for the next turn when a plugin needs it.
+        const rewake = entry.asyncRewake === true;
         void runOne(
           entry.command,
           stdin,
           opts,
-          entry.asyncRewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
-        );
+          rewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
+        ).then((out) => {
+          const text = backgroundOutput(out, rewake);
+          const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
+          if (text !== undefined) opts.onBackgroundOutput?.(sessionId, text);
+        });
         continue;
       }
       const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);

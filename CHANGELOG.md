@@ -674,6 +674,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   in an AppContainer with no capability: no network, no write outside its
   own temporary folder, and of the user's files only the runner. Before,
   Windows had no script sandbox and the tool was not offered.
+- **The output of a background hook reaches the model**: the
+  `additionalContext` and `systemMessage` of an `async` hook, and the stderr of
+  an `asyncRewake` hook on exit code 2, go to the model before its next request.
 - **The binary starts about 45 ms faster**: it is compiled to bytecode, so
   each start skips the parse of the bundle. This also counts for each
   command of the Windows sandbox, which starts the binary as its helper.

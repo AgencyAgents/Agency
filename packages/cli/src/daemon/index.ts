@@ -341,7 +341,20 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
   );
   // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
-  const hookRun: HookRunOptions = { cwd: options.workspaceRoot, shell };
+  const hookRun: HookRunOptions = {
+    cwd: options.workspaceRoot,
+    shell,
+    // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
+    onBackgroundOutput: (sessionId, text) => {
+      const id = sessionId ?? "default";
+      const box = sessionInboxes.get(id) ?? [];
+      sessionInboxes.set(id, box);
+      box.push({
+        role: "user",
+        content: [{ type: "text", text: `<hook-context>\n${text}\n</hook-context>` }],
+      });
+    },
+  };
   attachCommandHooks(eventBus, commandHooks, hookRun);
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];

@@ -81,7 +81,20 @@ async function setup(
       },
     ],
     StopFailure: [{ matcher: "authentication_failed", hooks: [command("failure", log("failure"))] }],
-    SessionStart: [{ hooks: [command("start", 'console.log("START-CONTEXT");')] }],
+    SessionStart: [
+      {
+        hooks: [
+          command("start", 'console.log("START-CONTEXT");'),
+          {
+            ...command(
+              "background",
+              'console.log(JSON.stringify({ hookSpecificOutput: { additionalContext: "BACKGROUND-CONTEXT" } }));',
+            ),
+            async: true,
+          },
+        ],
+      },
+    ],
     UserPromptSubmit: [
       {
         hooks: [
@@ -260,6 +273,14 @@ describe("command hooks of the config in a session", () => {
       error: "authentication_failed",
       error_details: "invalid x-api-key",
     });
+  }, 30000);
+
+  test("the text of a background hook reaches the model one time, in a later request", async () => {
+    const { client, requests } = await setup();
+    await send(client, "take a note");
+    await Bun.sleep(1000);
+    await send(client, "and now?");
+    expect(count(requests.at(-1) ?? "", "BACKGROUND-CONTEXT")).toBe(1);
   }, 30000);
 
   test("deleting a session runs SessionEnd with its id; an unknown session runs nothing", async () => {
