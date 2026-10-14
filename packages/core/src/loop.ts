@@ -79,6 +79,10 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
 /** Erased tool type for registries holding mixed-input tools. */
 export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
 
+/** The model is told one time when this number of tool steps is left, and when this share of the cost limit is spent. */
+const LOW_STEPS = 5;
+const COST_NOTE_SHARE = 0.8;
+
 export interface Budget {
   maxTokens?: number;
   maxCostUsd?: number;
@@ -340,6 +344,7 @@ export async function runTurn(
   // The size of the last request as the provider counted it. Zero after a compaction: the next request gives the new size.
   let requestTokens = 0;
   let proactiveFolds = true;
+  let costNoted = false;
   const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> =>
     compactMessages(
       messages,
@@ -528,6 +533,28 @@ export async function runTurn(
         }
       }
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
+      // A model does not know the limits of its turn. The line goes into a result: the history stays append-only.
+      const notes: string[] = [];
+      const stepsLeft = maxToolIterations - iteration - 1;
+      if (stepsLeft === LOW_STEPS && maxToolIterations >= 2 * LOW_STEPS) {
+        notes.push(
+          `${LOW_STEPS} tool steps are left in this turn. Finish the task, or say what is not done.`,
+        );
+      }
+      const costLimit = options.budget?.maxCostUsd;
+      if (!costNoted && costLimit !== undefined && spentCostUsd >= costLimit * COST_NOTE_SHARE) {
+        costNoted = true;
+        notes.push(
+          `${Math.round((spentCostUsd / costLimit) * 100)} percent of the cost limit of this turn is spent. Finish the task, or say what is not done.`,
+        );
+      }
+      const last = results.at(-1);
+      if (notes.length > 0 && last?.type === "tool_result") {
+        results[results.length - 1] = {
+          ...last,
+          content: `${last.content}\n\n[harness: ${notes.join(" ")}]`,
+        };
+      }
       await append({ role: "user", content: results });
     } catch (error) {
       if (tracer && modelSpanId) {

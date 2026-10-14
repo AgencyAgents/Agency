@@ -1164,6 +1164,70 @@ describe("removal of old tool output in the middle of a turn", () => {
   });
 });
 
+describe("what the model is told about the limits of a turn", () => {
+  const noop: ToolSpec = {
+    name: "noop",
+    description: "does nothing",
+    inputSchema: { type: "object", properties: {} },
+    riskTier: "safe",
+    handler: async () => ({ content: "ok" }),
+  };
+  /** Runs a turn where each request costs 1 USD and calls the tool, and gives the tool results in order. */
+  async function resultsOf(options: { maxToolIterations: number; maxCostUsd?: number }): Promise<string[]> {
+    let request = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        request += 1;
+        yield { type: "tool_call_start", id: `c${request}`, name: "noop" };
+        yield { type: "tool_call_delta", id: `c${request}`, inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: `c${request}` };
+        yield {
+          type: "message_stop",
+          stopReason: "tool_use",
+          usage: { inputTokens: 1, outputTokens: 0 },
+        };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler({ requestsPerMinute: 60_000 }), noopHttp, {
+      identity: overflowUser,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [noop],
+      model: "test-model",
+      apiKey: "key",
+      session: [],
+      toolPolicy: { check: async () => "allow" },
+      // One token is 1 USD: small token counts keep the request scheduler out of the test.
+      pricePerMTok: { input: 1_000_000, output: 1, cachedInput: 1, cacheWrite: 1 },
+      maxToolIterations: options.maxToolIterations,
+      ...(options.maxCostUsd === undefined ? {} : { budget: { maxCostUsd: options.maxCostUsd } }),
+    });
+    return result.messages
+      .flatMap((m) => m.content)
+      .flatMap((b) => (b.type === "tool_result" ? [b.content] : []));
+  }
+
+  test("the result of a tool call says when 5 tool steps are left, one time", async () => {
+    const results = await resultsOf({ maxToolIterations: 12 });
+    expect(results).toHaveLength(12);
+    expect(results.filter((text) => text.includes("5 tool steps are left"))).toHaveLength(1);
+    expect(results[6]).toContain("5 tool steps are left");
+    expect(results[0]).toBe("ok");
+  });
+
+  test("a short turn limit gets no such line", async () => {
+    expect((await resultsOf({ maxToolIterations: 6 })).every((text) => text === "ok")).toBe(true);
+  });
+
+  test("the result says when 80 percent of the cost limit is spent, one time", async () => {
+    const results = await resultsOf({ maxToolIterations: 30, maxCostUsd: 10 });
+    const noted = results.filter((text) => text.includes("of the cost limit"));
+    expect(noted).toHaveLength(1);
+    expect(results.findIndex((text) => text.includes("of the cost limit"))).toBe(7);
+  });
+});
+
 describe("the size of the system prompt and the tool list in a compaction of a turn", () => {
   test("the owner of the history gets the tokens of a request that are not in the history", async () => {
     const seen: Array<number | undefined> = [];

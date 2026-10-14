@@ -670,6 +670,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **The model is told the limits of its turn**: the result of a tool
+  call says one time when 5 tool steps are left, and one time when
+  80 percent of the cost limit of the turn is spent. Before, a turn
+  ended at a limit with no warning to the model.
 - **`SessionEnd` hook**: runs when a session is deleted. 13 of the 33
   hook events of Claude Code now run.
 - **`/compact <session> [provider/model] [instructions]`**: words
