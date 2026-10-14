@@ -1885,7 +1885,10 @@ describe("dispatch cost forecast wiring", () => {
       session: [],
     }) as Promise<RunTurnRpcResult>;
 
-    await new Promise((r) => setTimeout(r, 200));
+    // A fixed wait of 200 ms missed the request under the load of the full suite on Linux.
+    for (let i = 0; i < 100 && !events.some((e) => e.type === "approval_requested"); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const ask = events.find((e) => e.type === "approval_requested");
     expect(ask?.requestId).toBeTruthy();
     await client.call("approval_respond", { requestId: ask?.requestId, decision: "reject" });
