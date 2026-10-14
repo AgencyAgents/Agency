@@ -431,8 +431,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // The variables that the SessionStart hooks of a session wrote to its CLAUDE_ENV_FILE reach each of its shell commands.
   eventBus.on("shell.env", (payload) => {
     const { env, sessionId } = payload as { env: Record<string, string>; sessionId?: string };
-    const file = sessionId === undefined ? undefined : envFileOf(sessionId);
-    if (file === undefined || !existsSync(file)) return;
+    // A turn with no session runs its hooks as the session "default" (handlers/turn.ts).
+    const file = envFileOf(sessionId ?? "default");
+    if (!existsSync(file)) return;
     Object.assign(env, parseEnvFile(readFileSync(file, "utf8"), { ...process.env, ...env }));
   });
   let pluginInstructions: string[] = [];
