@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Fast steps no longer wait for the request rate**: the daemon paces a known
+  provider at the rate of its API (`openrouter` 200 a minute, `openai` 500), which
+  the provider table had but the daemon did not use. Before, each provider got 60
+  a minute, so after 6 quick requests each step waited 1 s. Measured: a turn of
+  25 fast tool steps through `openrouter` took 20.1 s, now 2.2 s.
 - **More git commands that lose work ask first**: `git checkout` with `--`,
   `.` or `-f`, `git restore` of the working tree, `git stash drop`,
   `git stash clear` and a remote branch delete through `git push` now ask in

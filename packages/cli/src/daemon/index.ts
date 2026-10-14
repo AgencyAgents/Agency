@@ -49,7 +49,12 @@ import {
 } from "@agency/guard";
 
 import { createHttpClient } from "@agency/net";
-import { createKeychain, type KeychainBackend, Scheduler } from "@agency/providers";
+import {
+  BUILTIN_PROVIDER_METADATA,
+  createKeychain,
+  type KeychainBackend,
+  Scheduler,
+} from "@agency/providers";
 import {
   type DaemonServer,
   type HttpGatewayServer,
@@ -523,7 +528,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const schedulerFor = (provider: string): Scheduler => {
     let scheduler = schedulers.get(provider);
     if (!scheduler) {
-      const requestsPerMinute = providers[provider]?.requestsPerMinute;
+      // The rate of a known API: at the 60 of an unknown provider, a turn of fast steps waited 1 s for each request.
+      const requestsPerMinute =
+        providers[provider]?.requestsPerMinute ??
+        BUILTIN_PROVIDER_METADATA.find((meta) => meta.id === provider)?.rateLimit?.requestsPerMinute;
       scheduler = new Scheduler({
         maxConcurrent: 8,
         ...(requestsPerMinute === undefined ? {} : { requestsPerMinute }),
