@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **GitHub Copilot files**: the `.github/instructions/*.instructions.md` files (by
+  `applyTo`), the prompt files of `.github/prompts/` as commands, the skills of
+  `.github/skills/`, and the custom agents of `.github/agents/` and `.github/chatmodes/`
+  load in a trusted workspace.
 - **`agency mcp add`, `add-json`, `list`, `get` and `remove`**: add an MCP server with
   the flags of `claude mcp add` (`--env`, `--header`, `--transport`, `--scope`), to a file
   of the user config or to the `.mcp.json` of the workspace, and show where each server

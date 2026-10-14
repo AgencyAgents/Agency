@@ -47,6 +47,9 @@ test("the rules of Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro an
     ".cursor/rules/chosen.mdc": "---\ndescription: Database migrations\n---\nmigration rule",
     ".cursor/rules/manual.mdc": "---\nalwaysApply: false\n---\nmanual rule",
     ".cursor/rules/plain.md": "not a cursor rule",
+    ".github/instructions/ts.instructions.md": '---\napplyTo: "**/*.ts"\n---\ncopilot ts rule',
+    ".github/instructions/team/all.instructions.md": '---\napplyTo: "**"\n---\ncopilot all rule',
+    ".github/instructions/manual.instructions.md": "copilot manual rule",
   });
   const trust = createFileTrustStore(join(folder({}), "trust.json"));
   trust.trust(ws);
@@ -65,6 +68,8 @@ test("the rules of Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro an
     "kiro rule",
     "augment rule",
     "Files that match **/*.test.ts:\nkiro test rule",
+    "Files that match **/*.ts:\ncopilot ts rule",
+    "copilot all rule",
   ]) {
     expect(text).toContain(part);
   }
@@ -86,13 +91,24 @@ test("skills of the project folders of other agents load, and .agency/skills win
     ".pi/skills/pi/SKILL.md": skill("pi"),
     ".opencode/skills/oc/SKILL.md": skill("oc"),
     ".gemini/skills/gem/SKILL.md": skill("gem"),
+    ".github/skills/gh/SKILL.md": skill("gh"),
   });
   const skills = discoverSkills(resolveSkillDirs(ws, folder({})));
-  expect(skills.map((s) => s.name).sort()).toEqual(["cc", "cdx", "cur", "gem", "oc", "pi", "shared", "std"]);
+  expect(skills.map((s) => s.name).sort()).toEqual([
+    "cc",
+    "cdx",
+    "cur",
+    "gem",
+    "gh",
+    "oc",
+    "pi",
+    "shared",
+    "std",
+  ]);
   expect(skills.find((s) => s.name === "shared")?.path).toContain(".agency");
 });
 
-test("commands of Claude Code, Cursor, OpenCode, Pi and Gemini load; a Gemini TOML command is converted", () => {
+test("commands of Claude Code, Cursor, OpenCode, Pi, Gemini and Copilot load; a Gemini TOML command is converted", () => {
   const ws = folder({
     ".claude/commands/review.md": "---\ndescription: Review\n---\nReview $ARGUMENTS",
     ".cursor/commands/fix.md": "Fix the bug",
@@ -101,12 +117,15 @@ test("commands of Claude Code, Cursor, OpenCode, Pi and Gemini load; a Gemini TO
     ".gemini/commands/gcs/sync.toml":
       'description = "Sync"\nprompt = """Sync {{args}}\n@{notes.md}\n!{echo hi}"""\n',
     ".gemini/commands/plain.toml": 'prompt = "Explain"\n',
+    ".github/prompts/doc.prompt.md": "---\ndescription: Document\nmode: agent\n---\nDocument the code",
     ".agency/commands/review.md": "Agency review $ARGUMENTS",
     "notes.md": "the notes",
   });
   const commands = loadCommands({ workspaceRoot: ws, configDirOverride: folder({}) });
-  expect(commands.map((c) => c.name)).toEqual(["fix", "gcs:sync", "plain", "plan", "review", "test"]);
+  expect(commands.map((c) => c.name)).toEqual(["doc", "fix", "gcs:sync", "plain", "plan", "review", "test"]);
   const byName = (name: string) => commands.find((c) => c.name === name)?.content ?? "";
+  expect(commands.find((c) => c.name === "doc")?.description).toBe("Document");
+  expect(expandCommand(byName("doc"), "of the loop", ws)).toBe("Document the code\n\nof the loop");
   expect(byName("review")).toBe("Agency review $ARGUMENTS");
   expect(commands.find((c) => c.name === "gcs:sync")?.description).toBe("Sync");
   expect(expandCommand(byName("gcs:sync"), "bucket", ws, { shell: true })).toBe("Sync bucket\nthe notes\nhi");
@@ -116,7 +135,7 @@ test("commands of Claude Code, Cursor, OpenCode, Pi and Gemini load; a Gemini TO
   );
 });
 
-test("agent files of Claude Code, Cursor and OpenCode load with their unknown keys left out", () => {
+test("agent files of Claude Code, Cursor, OpenCode and Copilot load with their unknown keys left out", () => {
   const ws = folder({
     ".claude/agents/reviewer.md":
       "---\nname: reviewer\ndescription: Reviews code\ntools: Read, Grep\nmodel: sonnet\nmaxTurns: 5\n---\nYou review.",
@@ -125,6 +144,11 @@ test("agent files of Claude Code, Cursor and OpenCode load with their unknown ke
     ".opencode/agents/docs.md":
       "---\ndescription: Writes docs\nmode: subagent\nmodel: anthropic/claude-sonnet-5\npermission:\n  edit: deny\n---\nYou write docs.",
     ".claude/agents/Bad Name.md": "---\ndescription: x\n---\nx",
+    ".github/agents/planner.agent.md":
+      "---\ndescription: Plans work\ntools: ['search', 'fetch', 'github/*']\nmodel: Claude Sonnet 4.5 (copilot)\nhandoffs:\n  - label: Go\n---\nYou plan.",
+    ".github/chatmodes/fixer.chatmode.md":
+      "---\ndescription: Fixes bugs\ntools: ['edit/editFiles', 'runCommands']\n---\nYou fix.",
+    ".github/agents/asker.agent.md": "---\ndescription: Asks GitHub\ntools: ['github/*']\n---\nYou ask.",
   });
   const warnings: string[] = [];
   const { agents } = resolveFileRoster({
@@ -143,6 +167,15 @@ test("agent files of Claude Code, Cursor and OpenCode load with their unknown ke
     systemPrompt: "You write docs.",
   });
   expect(warnings.join("\n")).toContain("Bad Name");
+  // Copilot: its tool sets map to tools here, and its display name of a model is left out.
+  expect(agents.get("planner")).toMatchObject({
+    description: "Plans work",
+    tools: ["fetch", "glob", "grep", "read"],
+    systemPrompt: "You plan.",
+  });
+  expect(agents.get("planner")?.model).toBeUndefined();
+  expect(agents.get("fixer")?.tools).toEqual(["bash", "edit", "notebook_edit", "write"]);
+  expect(agents.get("asker")?.tools).toEqual(["glob", "grep", "read"]);
 });
 
 test("the user files of other agents load at the user tier, and AGENCY_AGENTS_HOME=off reads none", () => {

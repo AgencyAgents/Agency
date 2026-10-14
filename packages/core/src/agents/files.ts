@@ -37,6 +37,20 @@ const CLAUDE_TOOL_NAMES: Record<string, string> = {
   TodoWrite: "todo_write",
   NotebookEdit: "notebook_edit",
 };
+/** The tool sets of a Copilot agent (`edit`, `runCommands`, `edit/editFiles`) as tools here; any other is left out. */
+const COPILOT_TOOL_SETS: Record<string, string[]> = {
+  edit: ["edit", "notebook_edit", "write"],
+  search: ["glob", "grep", "read"],
+  codebase: ["glob", "grep", "read"],
+  read: ["read"],
+  execute: ["bash"],
+  runCommands: ["bash"],
+  runInTerminal: ["bash"],
+  web: ["fetch", "websearch"],
+  fetch: ["fetch"],
+  todo: ["todo_write"],
+  todos: ["todo_write"],
+};
 /** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
 const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);
 
@@ -90,8 +104,12 @@ function parseStringList(raw: string, file: string, field: string): string[] {
  * Parse one agent file: strict frontmatter, body is the role prompt. `foreign` reads the file of another agent: its
  * other keys are left out, `readonly` of Cursor gives the read tools, and a `provider/model` of OpenCode is split.
  */
-export function parseAgentFile(text: string, file: string, foreign = false): FileAgentDef {
-  const handle = basename(file, ".md");
+export function parseAgentFile(
+  text: string,
+  file: string,
+  foreign: boolean | "copilot" = false,
+): FileAgentDef {
+  const handle = basename(file).replace(/(\.agent|\.chatmode)?\.md$/, "");
   if (!HANDLE_RE.test(handle)) {
     throw new Error(`agent file ${file}: handle "${handle}" must match [a-z][a-z0-9-]*`);
   }
@@ -121,7 +139,8 @@ export function parseAgentFile(text: string, file: string, foreign = false): Fil
     if (provider.length === 0) fail(file, "provider", "must be non-empty");
     def.provider = provider;
   }
-  let model = split.fields.model;
+  // A Copilot agent keeps the parent's model: Copilot names a model for display only (`GPT-5 (copilot)`).
+  let model = foreign === "copilot" ? undefined : split.fields.model;
   const slash = model?.indexOf("/") ?? -1;
   if (foreign && model !== undefined && slash > 0 && split.fields.provider === undefined) {
     def.provider = model.slice(0, slash);
@@ -139,7 +158,12 @@ export function parseAgentFile(text: string, file: string, foreign = false): Fil
     }
     def.effort = effort as AgentConfig["effort"];
   }
-  if (split.fields.tools !== undefined) {
+  if (foreign === "copilot" && split.fields.tools !== undefined) {
+    // ponytail: an agent of only MCP or unknown tool sets gets the read tools, not every tool.
+    const sets = split.fields.tools.replace(/[[\]'"]/g, "").split(",");
+    const tools = sets.flatMap((set) => COPILOT_TOOL_SETS[set.trim().split("/")[0] ?? ""] ?? []);
+    def.tools = tools.length > 0 ? [...new Set(tools)].sort() : ["glob", "grep", "read"];
+  } else if (split.fields.tools !== undefined) {
     def.tools = parseStringList(split.fields.tools, file, "tools").map(
       (name) => CLAUDE_TOOL_NAMES[name] ?? name,
     );
@@ -219,7 +243,7 @@ function loadAgentDir(
   dir: string,
   source: AgentSource,
   warn: (message: string) => void,
-  foreign = false,
+  foreign: boolean | "copilot" = false,
 ): Map<string, FileAgentDef> {
   const out = new Map<string, FileAgentDef>();
   for (const file of discoverAgentFiles(dir)) {
@@ -328,6 +352,16 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
     )) {
       merged.set(handle, def);
     }
+  }
+  // The custom agents of Copilot, after its older chat modes.
+  for (const dir of ["chatmodes", "agents"]) {
+    for (const [handle, def] of loadAgentDir(
+      join(opts.workspaceRoot, ".github", dir),
+      "project",
+      warn,
+      "copilot",
+    ))
+      merged.set(handle, def);
   }
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
   for (const [handle, def] of loadAgentDir(projectDir, "project", warn)) merged.set(handle, def);

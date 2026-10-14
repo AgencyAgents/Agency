@@ -76,6 +76,7 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
     ...filesIn(join(workspaceRoot, ".roo", "rules"), ".md"),
     ...scopedRuleFiles(workspaceRoot),
     ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
+    ...filesIn(join(workspaceRoot, ".github", "instructions"), ".instructions.md"),
     ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
   ];
 }
@@ -91,17 +92,21 @@ function scopedRuleFiles(workspaceRoot: string): string[] {
 
 /**
  * A rule as instruction text: its frontmatter says when it applies (`alwaysApply`, `globs` and `description` of Cursor
- * and Continue, `inclusion` and `fileMatchPattern` of Kiro, `type` of Augment). A rule that only a mention calls is
+ * and Continue, `inclusion` and `fileMatchPattern` of Kiro, `type` of Augment, `applyTo` of Copilot). A rule that only a mention calls is
  * left out; a rule with none of these keys is too in Cursor, and applies always in the others.
  */
 export function scopedRuleText(text: string, manualByDefault = true): string {
   const { fields, body } = splitFrontmatter(text);
   const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
   if (field("inclusion") === "manual" || field("type") === "manual") return "";
+  const globs = field("globs") ?? field("fileMatchPattern") ?? field("applyTo");
   const always =
-    field("alwaysApply") === "true" || field("inclusion") === "always" || field("type") === "always_apply";
+    field("alwaysApply") === "true" ||
+    field("inclusion") === "always" ||
+    field("type") === "always_apply" ||
+    globs === "**" ||
+    globs === "**/*";
   if (always) return body.trim();
-  const globs = field("globs") ?? field("fileMatchPattern");
   if (globs) return `Files that match ${globs}:\n${body.trim()}`;
   if (field("description")) return `When the task is about: ${field("description")}\n${body.trim()}`;
   return manualByDefault ? "" : body.trim();
@@ -157,7 +162,7 @@ export function loadInstructions(
   const scoped = new Set(scopedRuleFiles(workspaceRoot));
   const texts = files.map((f) => {
     const text = readTextCapped(f, maxFileBytes);
-    if (f.endsWith(".mdc")) return scopedRuleText(text);
+    if (f.endsWith(".mdc") || f.endsWith(".instructions.md")) return scopedRuleText(text);
     return scoped.has(f) ? scopedRuleText(text, false) : text;
   });
   // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.

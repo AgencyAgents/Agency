@@ -237,7 +237,7 @@ describe("resolveSkillDirs", () => {
   test("returns dirs in priority order with correct tiers", () => {
     const ws = "/tmp/test";
     const dirs = resolveSkillDirs(ws, "/custom/config");
-    const agents = [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini"];
+    const agents = [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini", ".github"];
     expect(dirs).toEqual([
       { dir: join(ws, ".agency", "skills"), tier: "project" },
       { dir: join(ws, "skills"), tier: "project" },

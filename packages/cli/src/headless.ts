@@ -85,9 +85,9 @@ export function hasTrustGatedContent(workspaceRoot: string): boolean {
       existsSync(file),
     ) ||
     // The skills, commands and agents of other agents load from a trusted workspace too.
-    [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini"].some((agent) =>
-      ["skills", "commands", "agents", "prompts", "plugins", "plugin", "extensions"].some((dir) =>
-        existsSync(join(workspaceRoot, agent, dir)),
+    [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini", ".github"].some((agent) =>
+      ["skills", "commands", "agents", "prompts", "plugins", "plugin", "extensions", "chatmodes"].some(
+        (dir) => existsSync(join(workspaceRoot, agent, dir)),
       ),
     )
   );

@@ -13,18 +13,20 @@ export interface CommandTemplate {
   description?: string;
 }
 
-function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemplate[] {
+/** `.prompt.md` reads the prompt files of Copilot: with no `$ARGUMENTS`, the words of the command go after the prompt. */
+function parseCommandFiles(dir: string, source: "project" | "user", ext = ".md"): CommandTemplate[] {
   if (!existsSync(dir)) return [];
   const entries = readdirSync(dir);
   const out: CommandTemplate[] = [];
   for (const e of entries) {
-    if (!e.endsWith(".md")) continue;
+    if (!e.endsWith(ext)) continue;
     const full = join(dir, e);
     try {
       const st = statSync(full);
       if (!st.isFile()) continue;
-      const text = readFileSync(full, "utf8");
-      const name = basename(e, ".md");
+      const raw = readFileSync(full, "utf8");
+      const text = ext === ".md" || raw.includes("$ARGUMENTS") ? raw : `${raw}\n\n$ARGUMENTS`;
+      const name = basename(e, ext);
       // Frontmatter description wins, else the first heading.
       const parsed = parseCommandFile(text);
       let description = parsed.description;
@@ -106,6 +108,7 @@ export function loadCommands(options: {
       : [
           ...parseGeminiCommands(join(root, ".gemini", "commands"), "project"),
           ...FOREIGN_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(root, ...parts), "project")),
+          ...parseCommandFiles(join(root, ".github", "prompts"), "project", ".prompt.md"),
           // Last: `.agency/commands` wins on a name.
           ...parseCommandFiles(projectDir, "project"),
         ];

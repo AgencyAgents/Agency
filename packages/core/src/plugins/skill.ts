@@ -250,8 +250,8 @@ export function resolveSkillDirs(workspaceRoot: string, configDirOverride?: stri
   // Project-level skills: <project>/skills/ (same tier, project wins on collision)
   dirs.push({ dir: join(workspaceRoot, "skills"), tier: "project" });
 
-  // The skill folders of other agents in the project: Claude Code, the shared `.agents`, Cursor, Codex, Pi, OpenCode, Gemini.
-  for (const agent of [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini"]) {
+  // The skill folders of other agents in the project: Claude Code, the shared `.agents`, Cursor, Codex, Pi, OpenCode, Gemini, Copilot.
+  for (const agent of [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini", ".github"]) {
     dirs.push({ dir: join(workspaceRoot, agent, "skills"), tier: "project" });
   }
 
