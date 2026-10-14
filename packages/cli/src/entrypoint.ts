@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import {
   CODE_COMMAND,
   type Config,
@@ -44,7 +45,7 @@ import type { Message } from "@agency/schema";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
-import { mcpCmd } from "./mcp-commands.ts";
+import { mcpCmd, mcpServe } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import { pluginInstallSource, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
@@ -88,6 +89,8 @@ Commands:
   mcp import <client>      Copy the MCP servers of Claude Code, Cursor, Codex, Gemini,
                            OpenCode, Pi, VS Code, Windsurf, Zed or Claude Desktop
   mcp logout <server>      Remove the sign-in of an MCP server
+  mcp serve                Serve Agency as an MCP server on stdio: its tool "agency" runs
+                           a turn. --permission-mode and --model of the server apply
   plugin install <source> [plugin] [--overwrite]
                            Install a Claude Code / Codex plugin from a folder, a git URL
                            or owner/repo (#ref: a branch or tag)
@@ -208,6 +211,8 @@ export interface EntrypointDeps {
    *  interactive session emits session.compacted instead of firing into the
    *  void. Defaults to a fresh bus per invocation. */
   bus?: EventBus;
+  /** The request lines of `mcp serve` (tests); default: stdin. */
+  mcpInput?: AsyncIterable<string>;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -730,6 +735,48 @@ async function runPrintMode(
     return reportTurn(() => {}, err, parsed, result);
   }
   return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
+}
+
+/** `mcp serve`: each call of the `agency` tool is a `-p --session` turn. The permission mode comes from the flags of
+ *  the server only: the caller is a model, and must not choose its own permissions. */
+function mcpServeCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  if (deps.mcpInput === undefined) {
+    // ponytail: the protocol owns stdout, so a stray console.log goes to stderr. Process-wide, as a real server is.
+    console.log = console.error;
+  }
+  return mcpServe({
+    version: VERSION,
+    input: deps.mcpInput ?? createInterface({ input: process.stdin }),
+    out,
+    turn: async (call) => {
+      let payload = "";
+      const run: ParsedArgv = {
+        ...parsed,
+        format: "json",
+        streamJson: false,
+        session: call.session,
+        ...(call.cwd === undefined ? {} : { workspace: call.cwd }),
+        ...(call.model === undefined ? {} : { model: call.model, provider: undefined }),
+      };
+      try {
+        await runPrintMode(run, call.prompt, deps, (line) => (payload = line), err);
+        const result = JSON.parse(payload) as RunTurnRpcResult;
+        const text = assistantText(result.messages);
+        const failure =
+          result.error?.message ?? (result.budgetExceeded ? t("cli.error.budget_exceeded") : undefined);
+        return failure === undefined
+          ? { text, isError: false }
+          : { text: [text, failure].filter(Boolean).join("\n"), isError: true };
+      } catch (error) {
+        return { text: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    },
+  });
 }
 
 const STRUCTURED_OUTPUT_NOTE = `When the work is done, call the ${STRUCTURED_OUTPUT_TOOL} tool one time with the final answer.`;
@@ -1467,6 +1514,7 @@ Subcommands:
     case "plugin":
       return pluginCmd(parsed, deps, out, err);
     case "mcp":
+      if (parsed.subcommand === "serve") return mcpServeCmd(parsed, deps, out, err);
       return mcpCmd({
         action: parsed.subcommand,
         name: parsed.args[0],

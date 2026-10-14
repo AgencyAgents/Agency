@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`agency mcp serve`**: Agency is an MCP server on stdio with one tool, `agency`, that
+  runs a turn of a session, so that Claude Code, Codex or Cursor can give it a task. The
+  permission mode comes from the flags of the server, never from a call.
 - **Rules and MCP files of Roo Code, Kiro, Junie, Augment and Continue**: their rule
   files join the instructions of a trusted workspace, with the `inclusion` of Kiro and
   the `type` of Augment mapped, and `.roo/mcp.json` and `.kiro/settings/mcp.json` give

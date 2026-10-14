@@ -1308,3 +1308,92 @@ describe("daemon status", () => {
     expect(out.join("\n")).toContain("not running");
   });
 });
+
+describe("mcp serve", () => {
+  test("serves the agency tool over JSON-RPC: a call is a session turn with the permission mode of the server", async () => {
+    const fake = fakeClient();
+    const { out, deps } = capture();
+    const requests = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "agency", arguments: { prompt: "fix it", model: "openai/fake-2" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "agency", arguments: { prompt: "x", session: "../up" } },
+      },
+      { jsonrpc: "2.0", id: 5, method: "resources/list" },
+      { jsonrpc: "2.0", id: 6, method: "initialize", params: { protocolVersion: "1999-01-01" } },
+    ];
+    const code = await runEntrypoint(
+      ["mcp", "serve", "--model", "openai/fake-1", "--permission-mode", "allow-edits"],
+      {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir: tempDir("agency-ep-sessions-"),
+        ensureClient: async () => fake.client,
+        mcpInput: (async function* () {
+          for (const request of requests) yield JSON.stringify(request);
+        })(),
+      },
+    );
+    expect(code).toBe(0);
+    const replies = new Map(out.map((line) => JSON.parse(line)).map((reply) => [reply.id, reply]));
+    expect(replies.size).toBe(6);
+    expect(replies.get(1).result).toMatchObject({
+      protocolVersion: "2025-06-18",
+      serverInfo: { name: "agency" },
+    });
+    expect(replies.get(6).result.protocolVersion).toBe("2025-11-25");
+    expect(replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["agency"]);
+    const call = replies.get(3).result;
+    expect(call.isError).toBe(false);
+    expect(call.structuredContent.text).toBe("hi from the fake daemon");
+    expect(call.structuredContent.session).toMatch(/^mcp-/);
+    expect(replies.get(4).error.code).toBe(-32602);
+    expect(replies.get(5).error.code).toBe(-32601);
+    const sends = fake.calls.filter((c) => c.method === "session_send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.params).toMatchObject({
+      sessionId: call.structuredContent.session,
+      userText: "fix it",
+      model: "fake-2",
+      permissionMode: "allow-edits",
+      nonInteractive: true,
+    });
+  });
+
+  test("a turn that fails is a tool result with isError, and the server goes on", async () => {
+    const { out, deps } = capture();
+    const call = (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "agency", arguments: { prompt: "hi", session: "s1" } },
+    });
+    await runEntrypoint(["mcp", "serve", "--model", "openai/fake-1"], {
+      ...baseDeps({ env: {} }),
+      ...deps,
+      mcpInput: (async function* () {
+        yield JSON.stringify(call(1));
+        yield "not json";
+        yield JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" });
+      })(),
+    });
+    const replies = out.map((line) => JSON.parse(line));
+    expect(replies.find((r) => r.id === 1).result).toMatchObject({
+      isError: true,
+      structuredContent: { session: "s1" },
+    });
+    expect(replies.find((r) => r.id === 1).result.content[0].text).toContain("No API key for openai");
+    expect(replies.find((r) => r.id === null).error.code).toBe(-32700);
+    expect(replies.find((r) => r.id === 2).result).toEqual({});
+  });
+});

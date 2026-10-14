@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -120,5 +121,140 @@ export async function mcpCmd(options: {
     return 1;
   }
   out(t("cli.mcp.signed_in", { name }));
+  return 0;
+}
+
+/** One call of the `agency` tool of `agency mcp serve`. */
+export interface McpTurnCall {
+  prompt: string;
+  session: string;
+  cwd?: string;
+  model?: string;
+}
+
+const MCP_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
+const AGENCY_TOOL = {
+  name: "agency",
+  description:
+    "Runs the Agency coding agent on a task in a workspace and returns its answer. To continue the conversation of an earlier call, pass its session.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt: { type: "string", description: "The task or the question." },
+      cwd: { type: "string", description: "The workspace folder. Default: the folder of the server." },
+      session: { type: "string", description: "The session of an earlier call, to continue it." },
+      model: { type: "string", description: "provider/model. Default: the model of the config." },
+    },
+    required: ["prompt"],
+  },
+  outputSchema: {
+    type: "object",
+    properties: { text: { type: "string" }, session: { type: "string" } },
+    required: ["text", "session"],
+  },
+};
+
+class RpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** `agency mcp serve`: Agency as an MCP server on stdio, with one tool that runs a turn, as `codex mcp-server` does. */
+export async function mcpServe(options: {
+  version: string;
+  input: AsyncIterable<string>;
+  out: (line: string) => void;
+  turn: (call: McpTurnCall) => Promise<{ text: string; isError: boolean }>;
+}): Promise<number> {
+  const send = (message: object) => options.out(JSON.stringify({ jsonrpc: "2.0", ...message }));
+  const answer = async (method: unknown, params: Record<string, unknown>): Promise<object> => {
+    switch (method) {
+      case "initialize": {
+        const asked = params.protocolVersion;
+        return {
+          protocolVersion: MCP_PROTOCOL_VERSIONS.includes(asked as string)
+            ? asked
+            : MCP_PROTOCOL_VERSIONS.at(-1),
+          capabilities: { tools: {} },
+          serverInfo: { name: "agency", version: options.version },
+        };
+      }
+      case "ping":
+        return {};
+      case "tools/list":
+        return { tools: [AGENCY_TOOL] };
+      case "tools/call": {
+        const args = (params.arguments ?? {}) as Record<string, unknown>;
+        if (params.name !== AGENCY_TOOL.name)
+          throw new RpcError(-32602, `unknown tool: ${String(params.name)}`);
+        if (typeof args.prompt !== "string" || args.prompt.trim() === "") {
+          throw new RpcError(-32602, "prompt must be a non-empty string");
+        }
+        // The session names a file: a caller must not reach outside the sessions folder.
+        if (args.session !== undefined && !/^[\w-]{1,128}$/.test(String(args.session))) {
+          throw new RpcError(-32602, "session must be 1-128 letters, digits, _ or -");
+        }
+        for (const key of ["cwd", "model"]) {
+          if (args[key] !== undefined && typeof args[key] !== "string") {
+            throw new RpcError(-32602, `${key} must be a string`);
+          }
+        }
+        const session = (args.session as string | undefined) ?? `mcp-${randomUUID()}`;
+        const { text, isError } = await options.turn({
+          prompt: args.prompt,
+          session,
+          ...(args.cwd === undefined ? {} : { cwd: args.cwd as string }),
+          ...(args.model === undefined ? {} : { model: args.model as string }),
+        });
+        return {
+          content: [
+            { type: "text", text },
+            { type: "text", text: `session: ${session}` },
+          ],
+          structuredContent: { text, session },
+          isError,
+        };
+      }
+      default:
+        throw new RpcError(-32601, `method not found: ${String(method)}`);
+    }
+  };
+
+  // ponytail: no notifications/cancelled; a call runs to its end. Add when a client cancels long turns.
+  const pending = new Set<Promise<void>>();
+  for await (const line of options.input) {
+    if (line.trim() === "") continue;
+    let request: { id?: string | number | null; method?: unknown; params?: unknown };
+    try {
+      request = JSON.parse(line);
+    } catch {
+      send({ id: null, error: { code: -32700, message: "parse error" } });
+      continue;
+    }
+    const { id } = request;
+    if (id === undefined || id === null) continue;
+    const params = (
+      typeof request.params === "object" && request.params !== null ? request.params : {}
+    ) as Record<string, unknown>;
+    const job = answer(request.method, params).then(
+      (result) => send({ id, result }),
+      (error: unknown) =>
+        send({
+          id,
+          error: {
+            code: error instanceof RpcError ? error.code : -32603,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        }),
+    );
+    pending.add(job);
+    void job.finally(() => pending.delete(job));
+  }
+  await Promise.all(pending);
   return 0;
 }

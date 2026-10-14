@@ -214,7 +214,7 @@ export const en = {
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
   "cli.mcp.usage":
-    "Usage: agency mcp login <server> | agency mcp logout <server> | agency mcp import <client>",
+    "Usage: agency mcp login <server> | agency mcp logout <server> | agency mcp import <client> | agency mcp serve",
   "cli.mcp.import_usage": "Usage: agency mcp import <client>. Clients: {sources}",
   "cli.mcp.import_none": "No MCP file of {source} was found.",
   "cli.mcp.import_empty": "The file of {source} ({file}) has no MCP servers. Nothing was written.",

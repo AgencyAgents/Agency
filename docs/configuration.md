@@ -445,6 +445,10 @@ With many MCP tools, their schemas are most of a request. `mcpDeferTools` contro
 
 An image in the result of an MCP tool goes to the model as an image, and the text of the result has `[image <mime type>]` in its place.
 
+### Agency as an MCP server
+
+`agency mcp serve` makes Agency an MCP server on stdio, as `codex mcp-server` does, so that Claude Code, Codex, Cursor or another client can give a task to Agency. It has one tool, `agency`, with the arguments `prompt` (required), `cwd` (the workspace; default: the folder of the server), `session` and `model` (`provider/model`). Each call is one turn of a session, as `agency -p --session` runs it. The result is the answer and its `session`; pass that `session` to a later call to continue the conversation. A call with no `session` starts a new one (`mcp-<uuid>`). The permission mode comes only from the flags of the server (`--permission-mode`, default `ask`), never from a call, because the caller is a model: with `ask`, a call that needs an approval is refused. For Claude Code: `claude mcp add agency -- agency mcp serve --permission-mode auto`.
+
 A server that declares resources gives the model two tools: `mcp_list_resources` (each resource with its server and its URI) and `mcp_read_resource` (`server`, `uri`). A server that declares prompts gives one slash command for each prompt: `/mcp__<server>__<prompt>`, the name form of Claude Code. The words after the command are the arguments of the prompt in their order, and the last argument takes the rest of the text. The text of the prompt replaces the command as the user message. `mcp_status` and `/mcp` list the commands of a session. The client reads all pages of each list.
 
 ## Themes and keybinds (deferred — frontend follows separately)
