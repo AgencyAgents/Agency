@@ -197,18 +197,29 @@ function readClientFile(
     raw = parseJsonc(text, errors as never, { allowTrailingComma: true });
     if (errors.length > 0) throw new Error("the file is not valid JSON");
   }
-  const servers: Record<string, Raw> = {};
-  for (const [name, entry] of Object.entries(record(record(raw)[client.key]))) {
-    const server = client.normalize(record(entry));
-    if (server === undefined) continue;
+  const servers = normalizeServers(client, record(raw)[client.key]);
+  for (const [name, server] of Object.entries(servers)) {
     // VS Code asks the user for an input; Agency has no such question.
     if (JSON.stringify(server).includes("${input:")) {
       warn(`MCP server "${name}" of ${file} needs an input that its client asks for: it is skipped`);
-      continue;
+      delete servers[name];
     }
-    servers[name] = toClaudeVariables(server) as Raw;
   }
   return servers;
+}
+
+function normalizeServers(client: McpClient, servers: unknown): Record<string, Raw> {
+  const out: Record<string, Raw> = {};
+  for (const [name, entry] of Object.entries(record(servers))) {
+    const server = client.normalize(record(entry));
+    if (server !== undefined) out[name] = toClaudeVariables(server) as Raw;
+  }
+  return out;
+}
+
+/** A server map in the format of a client (a Gemini extension, a Cursor plugin), in the form of `mcpServers`. */
+export function normalizeMcpServers(source: McpImportSource, servers: unknown): Record<string, Raw> {
+  return normalizeServers(CLIENTS[source], servers);
 }
 
 const projectFiles = (workspaceRoot: string) =>

@@ -384,9 +384,19 @@ Hooks come from two places, and the daemon runs those of the user config first:
 
 A plugin module can do the same from code: a handler of `tool.execute.before`, `tool.execute.after` or `turn.stop` that returns `{ block: "reason" }` blocks in the same way.
 
-### Hooks of a Claude Code plugin
+### Plugins of other agents
 
-`agency plugin install <folder>` installs the hooks of a Claude Code plugin with its skills, commands and agents:
+`agency plugin install <source>` takes a plugin of Claude Code (`.claude-plugin/plugin.json`), Codex (`.codex-plugin/plugin.json`, or the portable `plugin.json` at the root), Cursor (`.cursor-plugin/plugin.json`), a Gemini CLI extension (`gemini-extension.json`) or a Pi package (a `package.json` with a `pi` key or the keyword `pi-package`). The first manifest found in that order sets the format. The plugin name of a Pi package is its npm name with no scope.
+
+- Skills come from `skills/`, or from the folders that the `skills` key of the manifest names (the `pi.skills` key of a Pi package).
+- Commands come from `commands/` (`.md`, `.mdc`, `.markdown`, `.txt`), or from the folders of the `commands` key; the prompts of a Pi package (`pi.prompts`, default `prompts/`) are commands too. The TOML commands of a Gemini extension are converted as those of `.gemini/commands/`, and `gcs/sync.toml` becomes `/gcs-sync`, because a file name on Windows cannot hold `:`.
+- Agent files are written in the form of an agent file here: their keys that have no use here are left out, as for the agent folders of other agents above.
+- The rules of a Cursor plugin (`rules/`) go to `.agency/rules/<plugin>-<rule>.md`, with the mapping of `alwaysApply`, `globs` and `description` above. The context file of a Gemini extension (`contextFileName`, default `GEMINI.md`) goes to `.agency/rules/<plugin>.md`. Both join the instructions of a trusted workspace.
+- MCP servers come from `.mcp.json`, `mcp.json` or the `mcpServers` key of the manifest. `httpUrl` of Gemini is `url`, and `${env:VAR}` of Cursor is `${VAR}`. `${CLAUDE_PLUGIN_ROOT}`, `${CURSOR_PLUGIN_ROOT}`, `${PLUGIN_ROOT}` and `${extensionPath}` become the folder of the installed plugin, and `${/}` becomes `/`.
+- The extensions of a Pi package are TypeScript code for the API of Pi. They are not installed, and the install names each one.
+- A repository can be a marketplace of Claude Code (`.claude-plugin/marketplace.json`), Cursor (`.cursor-plugin/marketplace.json`) or Codex (`.agents/plugins/marketplace.json`).
+
+The hooks of a plugin install with its other parts:
 
 - The command, http and prompt hooks of the events in the table above go to `.agency/hooks/<plugin>.json`. The install prints each event that it installed, and each event that it skipped with the reason (an event that does not exist here, or an entry of another type, such as `agent`).
 - The files of the plugin are copied to `.agency/plugin-roots/<plugin>/`, and `${CLAUDE_PLUGIN_ROOT}` in a command becomes that folder. The source folder can thus go away.

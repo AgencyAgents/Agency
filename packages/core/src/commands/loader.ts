@@ -43,7 +43,7 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
 }
 
 /** The prompt of a Gemini CLI command in the syntax of a command here: `{{args}}`, `@{file}` and `!{shell}`. */
-function geminiTemplate(prompt: string): string {
+export function geminiTemplate(prompt: string): string {
   const body = prompt.replace(/@\{([^}]+)\}/g, "@$1").replace(/!\{([^}]+)\}/g, "!`$1`");
   // As in Gemini CLI: with no `{{args}}`, the words of the command go after the prompt.
   return body.includes("{{args}}") ? body.replaceAll("{{args}}", "$ARGUMENTS") : `${body}\n\n$ARGUMENTS`;

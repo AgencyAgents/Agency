@@ -1,8 +1,10 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { McpServerConfigSchema } from "@agency/tools";
-import { parseAgentFile } from "../agents/files.ts";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { McpServerConfigSchema, normalizeMcpServers } from "@agency/tools";
+import { parseAgentFile, renderAgentFile } from "../agents/files.ts";
+import { geminiTemplate } from "../commands/loader.ts";
 import type { Logger } from "../logger.ts";
+import { cursorRuleText } from "../prompt/instructions.ts";
 import { COMMAND_HOOK_EVENTS, type CommandHooks, CommandHooksSchema } from "./command-hooks.ts";
 import { SKILL_NAME_RE } from "./manifest.ts";
 import { parseSkillFrontmatter } from "./skill.ts";
@@ -43,6 +45,10 @@ export interface ImportClaudePluginReport {
   agentsInstalled: string[];
   /** Command filenames that were installed into .agency/commands/. */
   commandsInstalled: string[];
+  /** Rule files written into .agency/rules/: the rules of a Cursor plugin, the context file of a Gemini extension. */
+  rulesInstalled: string[];
+  /** Parts of the plugin that cannot run here, each with the reason. */
+  partsSkipped: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -63,50 +69,150 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/**
- * Read the plugin manifest from either .claude-plugin/plugin.json or
- * .codex-plugin/plugin.json. Returns undefined when neither exists or
- * the manifest lacks a "name" field.
- */
-function readManifest(
-  sourceDir: string,
-  _logger?: Logger,
-):
-  | { name: string; version?: string; description?: string; hooks?: unknown; mcpServers?: unknown }
-  | undefined {
-  const claudePath = join(sourceDir, ".claude-plugin", "plugin.json");
-  const codexPath = join(sourceDir, ".codex-plugin", "plugin.json");
+/** The plugin formats of other agents, by the manifest file that names each, first match wins. */
+const MANIFESTS = [
+  ["claude", join(".claude-plugin", "plugin.json")],
+  ["codex", join(".codex-plugin", "plugin.json")],
+  ["cursor", join(".cursor-plugin", "plugin.json")],
+  ["gemini", "gemini-extension.json"],
+  // The portable form of Codex and of agent-plugins.org.
+  ["portable", "plugin.json"],
+  ["pi", "package.json"],
+] as const;
+type PluginFormat = (typeof MANIFESTS)[number][0];
 
-  let manifestPath: string | undefined;
-  if (existsSync(claudePath)) {
-    manifestPath = claudePath;
-  } else if (existsSync(codexPath)) {
-    manifestPath = codexPath;
+interface Manifest {
+  format: PluginFormat;
+  name: string;
+  version?: string;
+  description?: string;
+  hooks?: unknown;
+  mcpServers?: unknown;
+  /** Folders of each part, relative to the plugin root. */
+  skills: string[];
+  commands: string[];
+  agents: string[];
+  rules: string[];
+  contextFile?: string;
+  partsSkipped: string[];
+}
+
+/** True when `dir` holds the manifest of a plugin in one of the formats that `plugin install` takes. */
+export function hasPluginManifest(dir: string): boolean {
+  return readManifest(dir) !== undefined;
+}
+
+/** The folders that a manifest key names, or the default folder. A glob such as `./prompts/*.md` names its folder. */
+function partDirs(value: unknown, fallback: string): string[] {
+  const listed =
+    typeof value === "string"
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((v) => typeof v === "string")
+        : [];
+  const paths = listed.length > 0 ? listed : [fallback];
+  return paths.map((path) => {
+    const plain = path.replace(/^\.\//, "");
+    return plain.includes("*") ? dirname(plain.slice(0, plain.indexOf("*")) + "x") : plain;
+  });
+}
+
+/** The manifest of a plugin in any of the formats, or undefined when the folder has none with a name. */
+function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined {
+  for (const [format, file] of MANIFESTS) {
+    const raw = readJsonFile(join(sourceDir, file));
+    if (!isRecord(raw)) continue;
+    const pi = isRecord(raw.pi) ? raw.pi : undefined;
+    // Any package has a package.json: only a Pi package counts.
+    if (
+      format === "pi" &&
+      pi === undefined &&
+      !(Array.isArray(raw.keywords) && raw.keywords.includes("pi-package"))
+    ) {
+      continue;
+    }
+    if (typeof raw.name !== "string" || raw.name.length === 0) {
+      logger?.warn(`[importer] manifest at ${join(sourceDir, file)} has no "name" field`);
+      return undefined;
+    }
+    const base = {
+      format,
+      // An npm name has a scope: `@me/tools` is the plugin `tools`.
+      name: format === "pi" ? raw.name.replace(/^@[^/]+\//, "") : raw.name,
+      ...(typeof raw.version === "string" ? { version: raw.version } : {}),
+      ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      hooks: raw.hooks,
+      mcpServers: raw.mcpServers,
+      partsSkipped: [] as string[],
+    };
+    if (format === "pi") {
+      const extensions = partDirs(pi?.extensions, "extensions").flatMap((path) => {
+        const full = join(sourceDir, path);
+        if (!existsSync(full)) return [];
+        return statSync(full).isDirectory() ? readdirSync(full).map((entry) => `${path}/${entry}`) : [path];
+      });
+      return {
+        ...base,
+        skills: partDirs(pi?.skills, "skills"),
+        commands: partDirs(pi?.prompts, "prompts"),
+        agents: [],
+        rules: [],
+        partsSkipped: extensions.map((path) => `Pi extension ${path}: it needs the Pi runtime`),
+      };
+    }
+    if (format === "gemini") {
+      const context = typeof raw.contextFileName === "string" ? raw.contextFileName : "GEMINI.md";
+      return {
+        ...base,
+        skills: ["skills"],
+        commands: ["commands"],
+        agents: ["agents"],
+        rules: [],
+        ...(existsSync(join(sourceDir, context)) ? { contextFile: context } : {}),
+      };
+    }
+    return {
+      ...base,
+      skills: partDirs(raw.skills, "skills"),
+      // Claude Code can map commands as an object: the default folder then.
+      commands: partDirs(isRecord(raw.commands) ? undefined : raw.commands, "commands"),
+      agents: partDirs(raw.agents, "agents"),
+      rules: format === "cursor" ? partDirs(raw.rules, "rules") : [],
+    };
   }
+  logger?.warn(`[importer] no plugin manifest found in ${sourceDir}`);
+  return undefined;
+}
 
-  if (!manifestPath) {
-    _logger?.warn(`[importer] no manifest found at ${claudePath} or ${codexPath}`);
-    return undefined;
+/** The folders of a part that exist inside the plugin: a path that goes outside it is skipped. */
+function existingDirs(sourceDir: string, paths: string[], logger?: Logger): string[] {
+  const root = resolve(sourceDir);
+  return paths
+    .map((path) => resolve(root, path))
+    .filter((dir) => {
+      if (dir !== root && !dir.startsWith(`${root}${sep}`)) {
+        logger?.warn(`[importer] skipping ${dir}: it is outside the plugin`);
+        return false;
+      }
+      return existsSync(dir) && statSync(dir).isDirectory();
+    });
+}
+
+/** Puts the folder of the installed plugin in place of the root variable of each format. */
+function withPluginRoot(text: string, root: string): string {
+  const path = root.replaceAll("\\", "/");
+  let out = text;
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal root variables of Claude Code, Cursor and Gemini
+  for (const variable of [
+    "${CLAUDE_PLUGIN_ROOT}",
+    "${CURSOR_PLUGIN_ROOT}",
+    "${PLUGIN_ROOT}",
+    "${extensionPath}",
+  ]) {
+    out = out.replaceAll(variable, path);
   }
-
-  const raw = readJsonFile(manifestPath);
-  if (!isRecord(raw)) {
-    _logger?.warn(`[importer] manifest at ${manifestPath} is not a valid JSON object`);
-    return undefined;
-  }
-
-  if (typeof raw.name !== "string" || raw.name.length === 0) {
-    _logger?.warn(`[importer] manifest at ${manifestPath} has no "name" field`);
-    return undefined;
-  }
-
-  return raw as {
-    name: string;
-    version?: string;
-    description?: string;
-    hooks?: unknown;
-    mcpServers?: unknown;
-  };
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the path separator of Gemini
+  return out.replaceAll("${/}", "/");
 }
 
 /** Where the files of an installed plugin stay, for the hook commands that name them. */
@@ -144,10 +250,7 @@ function parseHooks(
       skipped.push({ event, reason: "its entries are not command, http or prompt hooks" });
       continue;
     }
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code hook command
-    const placeholder = "${CLAUDE_PLUGIN_ROOT}";
-    const text = JSON.stringify(parsed.data).replaceAll(placeholder, root.replaceAll("\\", "/"));
-    Object.assign(hooks, JSON.parse(text));
+    Object.assign(hooks, JSON.parse(withPluginRoot(JSON.stringify(parsed.data), root)));
   }
   return { hooks, skipped };
 }
@@ -207,6 +310,22 @@ function resolveHooks(
 }
 
 /**
+ * The MCP server map of a plugin: `.mcp.json` (Claude Code, Codex), `mcp.json` (Cursor, the portable form), or the
+ * `mcpServers` key of the manifest, as a map or as a path.
+ */
+function resolveMcpServers(sourceDir: string, manifest: Manifest): unknown {
+  for (const file of [".mcp.json", "mcp.json"]) {
+    const raw = readJsonFile(join(sourceDir, file));
+    if (isRecord(raw)) return raw.mcpServers ?? raw;
+  }
+  if (typeof manifest.mcpServers === "string") {
+    const raw = readJsonFile(join(sourceDir, manifest.mcpServers));
+    return isRecord(raw) ? (raw.mcpServers ?? raw) : undefined;
+  }
+  return manifest.mcpServers;
+}
+
+/**
  * Validate MCP server entries against McpServerConfigSchema. Returns only
  * entries that pass validation, logging warnings for failures.
  */
@@ -223,18 +342,45 @@ function parseMcpServers(mcpRaw: Record<string, unknown>, logger?: Logger): Reco
   return valid;
 }
 
+/** Writes one file of a part, or warns when it exists and `overwrite` is off. Returns true when it wrote. */
+function writePart(
+  targetFile: string,
+  content: string,
+  what: string,
+  opts: { overwrite: boolean; logger?: Logger },
+): boolean {
+  if (existsSync(targetFile)) {
+    if (!opts.overwrite) {
+      opts.logger?.warn(
+        `[importer] ${what} already exists at ${targetFile}, skipping (use overwrite: true to replace)`,
+      );
+      return false;
+    }
+    opts.logger?.info(`[importer] overwriting ${what} at ${targetFile}`);
+  }
+  mkdirSync(dirname(targetFile), { recursive: true });
+  writeFileSync(targetFile, content, "utf8");
+  return true;
+}
+
+/** The files of a folder and its subfolders, as paths relative to it, sorted. */
+function filesUnder(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((entry) => statSync(join(dir, entry)).isFile())
+    .sort();
+}
+
+const COMMAND_EXTENSIONS = new Set([".md", ".mdc", ".markdown", ".txt"]);
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
 /**
- * Import a Claude Code / OpenAI Codex plugin from an unpacked directory into
- * Agency-native state. Skills, commands, and agents are copied into .agency/
- * as runnable files; only MCP servers are reported for manual config merge.
+ * Import a plugin of Claude Code, Codex, Cursor, Gemini CLI or Pi from an unpacked directory into Agency-native state.
+ * Skills, commands, agents and rules are copied into .agency/ as runnable files, hooks and MCP servers into the files
+ * that the daemon reads.
  *
- * @param sourceDir - Absolute path to the unpacked plugin directory.
- * @param opts - Options including workspaceRoot, overwrite flag, and logger.
- * @returns A structured report of what was installed, mapped, and found.
  * @throws If no valid manifest is found (missing or missing "name" field).
  */
 export function importClaudePlugin(
@@ -249,8 +395,9 @@ export function importClaudePlugin(
   const manifest = readManifest(sourceDir, logger);
   if (!manifest) {
     throw new Error(
-      `No valid plugin manifest found in ${sourceDir}. ` +
-        `Expected .claude-plugin/plugin.json or .codex-plugin/plugin.json with a "name" field.`,
+      `No valid plugin manifest found in ${sourceDir}. Expected .claude-plugin/plugin.json, ` +
+        `.codex-plugin/plugin.json, .cursor-plugin/plugin.json, gemini-extension.json, plugin.json, ` +
+        `or a package.json of a Pi package, with a "name" field.`,
     );
   }
 
@@ -270,54 +417,29 @@ export function importClaudePlugin(
     agentsFound: [],
     agentsInstalled: [],
     commandsInstalled: [],
+    rulesInstalled: [],
+    partsSkipped: manifest.partsSkipped,
   };
+  const write = { overwrite, logger };
 
   // -----------------------------------------------------------------------
-  // 2. Skills: skills/<name>/SKILL.md -> .agency/skills/<name>/SKILL.md
+  // 2. Skills: <skills folder>/<name>/SKILL.md -> .agency/skills/<name>/
   // -----------------------------------------------------------------------
-  const skillsDir = join(sourceDir, "skills");
-  if (existsSync(skillsDir)) {
-    let entries: string[];
-    try {
-      entries = readdirSync(skillsDir);
-    } catch {
-      logger?.warn(`[importer] cannot read skills directory: ${skillsDir}`);
-      entries = [];
-    }
-
-    for (const entry of entries.sort()) {
+  for (const skillsDir of existingDirs(sourceDir, manifest.skills, logger)) {
+    for (const entry of readdirSync(skillsDir).sort()) {
       const skillDirPath = join(skillsDir, entry);
-      let st: ReturnType<typeof statSync>;
-      try {
-        st = statSync(skillDirPath);
-      } catch {
-        continue;
-      }
-      if (!st.isDirectory()) continue;
-
       const skillFile = join(skillDirPath, "SKILL.md");
-      if (!existsSync(skillFile)) continue;
+      if (!statSync(skillDirPath).isDirectory() || !existsSync(skillFile)) continue;
 
-      let raw: string;
-      try {
-        raw = readFileSync(skillFile, "utf8");
-      } catch {
-        logger?.warn(`[importer] cannot read skill file: ${skillFile}`);
-        continue;
-      }
-
-      // Reuse the existing frontmatter parser
-      const parsed = parseSkillFrontmatter(raw);
+      const parsed = parseSkillFrontmatter(readFileSync(skillFile, "utf8"));
       const skillName = parsed.name ?? entry;
       if (!SKILL_NAME_RE.test(skillName)) {
         logger?.warn(`[importer] skipping skill "${skillName}": its name must match ${SKILL_NAME_RE.source}`);
         continue;
       }
 
-      // Write to .agency/skills/<name>/SKILL.md
       const targetDir = join(workspaceRoot, ".agency", "skills", skillName);
       const targetFile = join(targetDir, "SKILL.md");
-
       if (existsSync(targetFile)) {
         if (!overwrite) {
           logger?.warn(
@@ -363,16 +485,14 @@ export function importClaudePlugin(
   }
 
   // -----------------------------------------------------------------------
-  // 4. MCP servers: .mcp.json
+  // 4. MCP servers, with the keys of Gemini and Cursor mapped
   // -----------------------------------------------------------------------
-  // The file of the plugin, with or with no `mcpServers` key, or the same key of the manifest.
-  const mcpFile = readJsonFile(join(sourceDir, ".mcp.json"));
-  const mcpRaw = isRecord(mcpFile) ? (mcpFile.mcpServers ?? mcpFile) : manifest.mcpServers;
+  const mcpRaw = resolveMcpServers(sourceDir, manifest);
   if (isRecord(mcpRaw)) {
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder of a Claude Code plugin
-    const placeholder = "${CLAUDE_PLUGIN_ROOT}";
-    const text = JSON.stringify(mcpRaw).replaceAll(placeholder, root.replaceAll("\\", "/"));
-    report.mcpServers = parseMcpServers(JSON.parse(text), logger);
+    const client =
+      manifest.format === "gemini" ? "gemini" : manifest.format === "cursor" ? "cursor" : undefined;
+    const servers = client === undefined ? mcpRaw : normalizeMcpServers(client, mcpRaw);
+    report.mcpServers = parseMcpServers(JSON.parse(withPluginRoot(JSON.stringify(servers), root)), logger);
     if (Object.keys(report.mcpServers).length > 0) {
       keepPluginFiles();
       const file = pluginMcpFile(workspaceRoot, manifest.name);
@@ -382,97 +502,78 @@ export function importClaudePlugin(
   }
 
   // -----------------------------------------------------------------------
-  // 5. Agents: agents/*.md -> .agency/agents/*.md (validated, runnable)
+  // 5. Agents: agents/*.md -> .agency/agents/*.md, as agent files of Agency
   // -----------------------------------------------------------------------
-  const agentsDir = join(sourceDir, "agents");
-  if (existsSync(agentsDir)) {
-    let entries: string[];
-    try {
-      entries = readdirSync(agentsDir);
-    } catch {
-      logger?.warn(`[importer] cannot read agents directory: ${agentsDir}`);
-      entries = [];
-    }
-
-    for (const entry of entries.sort()) {
+  for (const agentsDir of existingDirs(sourceDir, manifest.agents, logger)) {
+    for (const entry of readdirSync(agentsDir).sort()) {
       if (!entry.endsWith(".md")) continue;
       const agentName = basename(entry, ".md");
       report.agentsFound.push(agentName);
       const sourceFile = join(agentsDir, entry);
-      let raw: string;
+      let text: string;
       try {
-        raw = readFileSync(sourceFile, "utf8");
-      } catch {
-        logger?.warn(`[importer] cannot read agent file: ${sourceFile}`);
-        continue;
-      }
-      try {
-        parseAgentFile(raw, sourceFile);
+        // The keys of another agent that have no use here are left out, and the file is written in the form here.
+        text = renderAgentFile(parseAgentFile(readFileSync(sourceFile, "utf8"), sourceFile, true));
       } catch (err) {
         logger?.warn(`[importer] skipping invalid agent "${agentName}": ${String(err)}`);
         continue;
       }
-      const targetDir = join(workspaceRoot, ".agency", "agents");
-      const targetFile = join(targetDir, entry);
-      if (existsSync(targetFile)) {
-        if (!overwrite) {
-          logger?.warn(
-            `[importer] agent "${agentName}" already exists at ${targetFile}, skipping ` +
-              `(use overwrite: true to replace)`,
-          );
-          continue;
-        }
-        logger?.info(`[importer] overwriting agent "${agentName}" at ${targetFile}`);
-      }
-      mkdirSync(targetDir, { recursive: true });
-      writeFileSync(targetFile, raw, "utf8");
-      report.agentsInstalled.push(agentName);
+      const targetFile = join(workspaceRoot, ".agency", "agents", entry);
+      if (writePart(targetFile, text, `agent "${agentName}"`, write)) report.agentsInstalled.push(agentName);
     }
   }
 
   // -----------------------------------------------------------------------
-  // 6. Commands: commands/*.md -> .agency/commands/
+  // 6. Commands: Markdown and the TOML of Gemini CLI -> .agency/commands/
   // -----------------------------------------------------------------------
-  const commandsDir = join(sourceDir, "commands");
-  if (existsSync(commandsDir)) {
-    let entries: string[];
-    try {
-      entries = readdirSync(commandsDir);
-    } catch {
-      logger?.warn(`[importer] cannot read commands directory: ${commandsDir}`);
-      entries = [];
-    }
-
-    for (const entry of entries.sort()) {
-      if (!entry.endsWith(".md")) continue;
+  for (const commandsDir of existingDirs(sourceDir, manifest.commands, logger)) {
+    // Only Gemini CLI names a command by its subfolder.
+    const entries =
+      manifest.format === "gemini"
+        ? filesUnder(commandsDir)
+        : readdirSync(commandsDir)
+            .filter((entry) => statSync(join(commandsDir, entry)).isFile())
+            .sort();
+    for (const entry of entries) {
       const sourceFile = join(commandsDir, entry);
-
-      const targetDir = join(workspaceRoot, ".agency", "commands");
-      const targetFile = join(targetDir, entry);
-
-      if (existsSync(targetFile)) {
-        if (!overwrite) {
-          logger?.warn(
-            `[importer] command "${entry}" already exists at ${targetFile}, skipping ` +
-              `(use overwrite: true to replace)`,
-          );
-          continue;
-        }
-        logger?.info(`[importer] overwriting command "${entry}" at ${targetFile}`);
-      }
-
-      let content: string;
-      try {
-        content = readFileSync(sourceFile, "utf8");
-      } catch {
-        logger?.warn(`[importer] cannot read command file: ${sourceFile}`);
+      let name = basename(entry, extname(entry));
+      let content = readFileSync(sourceFile, "utf8");
+      if (manifest.format === "gemini") {
+        if (extname(entry) !== ".toml") continue;
+        const raw = Bun.TOML.parse(content) as { prompt?: unknown; description?: unknown };
+        if (typeof raw.prompt !== "string") continue;
+        // A colon cannot be in a file name on Windows: `gcs/sync.toml` is `/gcs-sync`.
+        name = relative(commandsDir, sourceFile).slice(0, -".toml".length).replace(/[\\/]/g, "-");
+        const head = typeof raw.description === "string" ? `---\ndescription: ${raw.description}\n---\n` : "";
+        content = `${head}${geminiTemplate(raw.prompt)}`;
+      } else if (!COMMAND_EXTENSIONS.has(extname(entry))) {
         continue;
       }
-
-      mkdirSync(targetDir, { recursive: true });
-      writeFileSync(targetFile, content, "utf8");
-      report.commandsInstalled.push(entry);
+      const target = `${name}.md`;
+      const targetFile = join(workspaceRoot, ".agency", "commands", target);
+      if (writePart(targetFile, content, `command "${target}"`, write)) report.commandsInstalled.push(target);
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // 7. Rules of Cursor and the context file of Gemini -> .agency/rules/
+  // -----------------------------------------------------------------------
+  for (const rulesDir of existingDirs(sourceDir, manifest.rules, logger)) {
+    for (const entry of filesUnder(rulesDir)) {
+      if (![".md", ".mdc", ".markdown"].includes(extname(entry))) continue;
+      const text = cursorRuleText(readFileSync(join(rulesDir, entry), "utf8"));
+      // A rule that Cursor adds only on `@name` has no place here.
+      if (text === "") continue;
+      const target = `${manifest.name}-${basename(entry, extname(entry))}.md`;
+      const targetFile = join(workspaceRoot, ".agency", "rules", target);
+      if (writePart(targetFile, text, `rule "${target}"`, write)) report.rulesInstalled.push(target);
+    }
+  }
+  if (manifest.contextFile !== undefined) {
+    const target = `${manifest.name}.md`;
+    const text = readFileSync(join(sourceDir, manifest.contextFile), "utf8");
+    const targetFile = join(workspaceRoot, ".agency", "rules", target);
+    if (writePart(targetFile, text, `rule "${target}"`, write)) report.rulesInstalled.push(target);
   }
 
   return report;

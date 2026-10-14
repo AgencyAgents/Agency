@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Plugins of Cursor, Codex, Gemini CLI and Pi**: `agency plugin install` now takes a
+  Cursor plugin (rules, skills, agents, commands, `mcp.json`), a Gemini CLI extension
+  (context file, TOML commands, MCP servers), the portable `plugin.json` of Codex, and
+  a Pi package (skills and prompts; its TypeScript extensions are named as not
+  installed). Plugin agents of any format are written as agent files of Agency, so a
+  Claude Code agent with keys such as maxTurns or memory no longer fails. The marketplace files
+  of Cursor and Codex work as that of Claude Code.
 - **Projects of other agents work as they are**: a trusted workspace now gives the
   instructions of `GEMINI.md`, `.cursorrules`, `.cursor/rules/*.mdc` (with
   `alwaysApply`, `globs` and `description`), `.windsurfrules`, `.clinerules` and

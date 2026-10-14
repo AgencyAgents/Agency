@@ -71,7 +71,7 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
 }
 
 /** A Cursor rule as instruction text: its frontmatter says when it applies. A rule that only `@name` calls is left out. */
-function cursorRuleText(text: string): string {
+export function cursorRuleText(text: string): string {
   const { fields, body } = splitFrontmatter(text);
   const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
   if (field("alwaysApply") === "true") return body.trim();

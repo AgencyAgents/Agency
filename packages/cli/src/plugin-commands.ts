@@ -11,7 +11,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { importClaudePlugin, Logger, pluginHooksFile, pluginMcpFile, pluginRootDir } from "@agency/core";
+import {
+  hasPluginManifest,
+  importClaudePlugin,
+  Logger,
+  pluginHooksFile,
+  pluginMcpFile,
+  pluginRootDir,
+} from "@agency/core";
 
 // ---------------------------------------------------------------------------
 // Install receipt shape
@@ -25,6 +32,8 @@ export interface InstallReceipt {
   agentsInstalled: string[];
   /** Absent in a receipt from before hooks were installed. */
   hooksInstalled?: string[];
+  /** Absent in a receipt from before rules were installed. */
+  rulesInstalled?: string[];
   installedAt: string;
 }
 
@@ -53,6 +62,7 @@ export function pluginInstallCmd(
     commandsInstalled: report.commandsInstalled,
     agentsInstalled: report.agentsInstalled,
     hooksInstalled: report.hooksInstalled,
+    rulesInstalled: report.rulesInstalled,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -69,6 +79,18 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Skills installed:");
     for (const s of report.skillsInstalled) lines.push(`  - ${s}`);
+  }
+
+  if (report.rulesInstalled.length > 0) {
+    lines.push("");
+    lines.push("Rules installed (.agency/rules/, added to the instructions):");
+    for (const rule of report.rulesInstalled) lines.push(`  - ${rule}`);
+  }
+
+  if (report.partsSkipped.length > 0) {
+    lines.push("");
+    lines.push("Not installed:");
+    for (const part of report.partsSkipped) lines.push(`  - ${part}`);
   }
 
   if (report.hooksInstalled.length > 0) {
@@ -154,19 +176,23 @@ function withClone<T>(git: GitSource, use: (dir: string) => T): T {
 
 type MarketplaceSource = string | { source?: string; repo?: string; url?: string; ref?: string };
 
+/** The marketplace files of Claude Code, Cursor and Codex. */
+const MARKETPLACE_FILES = [
+  [".claude-plugin", "marketplace.json"],
+  [".cursor-plugin", "marketplace.json"],
+  [".agents", "plugins", "marketplace.json"],
+];
+
 /**
- * The plugin of `.claude-plugin/marketplace.json` that `name` names, or its only plugin. Undefined when the folder
- * is a plugin itself, or no marketplace.
+ * The plugin of a marketplace file that `name` names, or its only plugin. Undefined when the folder is a plugin
+ * itself, or no marketplace.
  */
 function marketplacePlugin(
   root: string,
   name: string | undefined,
 ): { dir: string } | { git: GitSource } | undefined {
-  const file = join(root, ".claude-plugin", "marketplace.json");
-  const manifest = ["claude", "codex"].some((kind) =>
-    existsSync(join(root, `.${kind}-plugin`, "plugin.json")),
-  );
-  if (manifest || !existsSync(file)) return undefined;
+  const file = MARKETPLACE_FILES.map((parts) => join(root, ...parts)).find((path) => existsSync(path));
+  if (file === undefined || hasPluginManifest(root)) return undefined;
   const market = JSON.parse(readFileSync(file, "utf8")) as {
     plugins?: { name: string; source: MarketplaceSource }[];
     metadata?: { pluginRoot?: string };
@@ -298,6 +324,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   let commandsToDelete: string[] = [];
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
+  let rulesToDelete: string[] = [];
   let pluginName = name;
 
   if (existsSync(receiptPath)) {
@@ -306,6 +333,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
       commandsToDelete = receipt.commandsInstalled.filter(isFileName);
       skillsToDelete = receipt.skillsInstalled.filter(isFileName);
       agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
+      rulesToDelete = (receipt.rulesInstalled ?? []).filter(isFileName);
       if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
@@ -347,6 +375,13 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     }
   }
   if (deletedAgents.length > 0) lines.push(`Deleted agent files: ${deletedAgents.join(", ")}`);
+  const deletedRules = rulesToDelete.filter((rule) => {
+    const rulePath = join(workspaceRoot, ".agency", "rules", rule);
+    if (!existsSync(rulePath)) return false;
+    rmSync(rulePath);
+    return true;
+  });
+  if (deletedRules.length > 0) lines.push(`Deleted rule files: ${deletedRules.join(", ")}`);
   const hooksFile = pluginHooksFile(workspaceRoot, pluginName);
   if (existsSync(hooksFile)) {
     rmSync(hooksFile);

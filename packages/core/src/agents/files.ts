@@ -175,6 +175,20 @@ export function parseAgentFile(text: string, file: string, foreign = false): Fil
   return def;
 }
 
+/** An agent definition as the text of an agent file here: a plugin agent of another format is installed so. */
+export function renderAgentFile(def: FileAgentDef): string {
+  const fields: Array<[string, string | undefined]> = [
+    ["role", def.role],
+    ["description", def.description],
+    ["provider", def.provider],
+    ["model", def.model],
+    ["effort", def.effort],
+    ["tools", def.tools?.join(", ")],
+  ];
+  const lines = fields.filter(([, value]) => value !== undefined).map(([key, value]) => `${key}: ${value}`);
+  return `---\n${lines.join("\n")}\n---\n${def.systemPrompt}\n`;
+}
+
 export function agentFileName(handle: string): string {
   return `${handle}.md`;
 }

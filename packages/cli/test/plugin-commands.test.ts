@@ -228,6 +228,26 @@ describe("plugin install from git", () => {
     expect(outside.err).toContain("outside the marketplace");
   });
 
+  test("a Cursor marketplace installs a Cursor plugin with its rule, and remove deletes the rule", async () => {
+    const url = gitRepo({
+      ".cursor-plugin/marketplace.json": JSON.stringify({
+        name: "m",
+        plugins: [{ name: "kit", source: "./plugins/kit" }],
+      }),
+      "plugins/kit/.cursor-plugin/plugin.json": JSON.stringify({ name: "kit" }),
+      "plugins/kit/rules/style.mdc": "---\nalwaysApply: true\n---\nUse tabs.",
+    });
+    const ws = tempDir("agency-plugin-cursor-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", url], c.deps)).toBe(0);
+    expect(c.out.join("\n")).toContain("Rules installed");
+    const rule = join(ws, ".agency", "rules", "kit-style.md");
+    expect(existsSync(rule)).toBe(true);
+    expect(await runEntrypoint(["plugin", "remove", "kit"], c.deps)).toBe(0);
+    expect(existsSync(rule)).toBe(false);
+  });
+
   test("a clone that fails says why", async () => {
     const c = capture();
     c.deps.cwd = tempDir("agency-plugin-badurl-ws-");
