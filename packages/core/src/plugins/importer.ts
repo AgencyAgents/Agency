@@ -5,7 +5,7 @@ import { McpServerConfigSchema, normalizeMcpServers } from "@agency/tools";
 import { parseAgentFile, renderAgentFile } from "../agents/files.ts";
 import { geminiTemplate } from "../commands/loader.ts";
 import type { Logger } from "../logger.ts";
-import { cursorRuleText } from "../prompt/instructions.ts";
+import { scopedRuleText } from "../prompt/instructions.ts";
 import { COMMAND_HOOK_EVENTS, type CommandHooks, CommandHooksSchema } from "./command-hooks.ts";
 import { convertForeignHooks } from "./foreign-hooks.ts";
 import { SKILL_NAME_RE } from "./manifest.ts";
@@ -589,7 +589,7 @@ export function importClaudePlugin(
   for (const rulesDir of existingDirs(sourceDir, manifest.rules, logger)) {
     for (const entry of filesUnder(rulesDir)) {
       if (![".md", ".mdc", ".markdown"].includes(extname(entry))) continue;
-      const text = cursorRuleText(readFileSync(join(rulesDir, entry), "utf8"));
+      const text = scopedRuleText(readFileSync(join(rulesDir, entry), "utf8"));
       // A rule that Cursor adds only on `@name` has no place here.
       if (text === "") continue;
       const target = `${manifest.name}-${basename(entry, extname(entry))}.md`;

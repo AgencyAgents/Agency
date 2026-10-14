@@ -100,6 +100,13 @@ const xdg = (where: ClientHome, ...parts: string[]): string =>
   join(where.env.XDG_CONFIG_HOME ?? join(where.home, ".config"), ...parts);
 
 const CLIENTS = {
+  roo: { project: [".roo/mcp.json"], user: () => [], key: "mcpServers", normalize: base },
+  kiro: {
+    project: [".kiro/settings/mcp.json"],
+    user: (w) => [join(w.home, ".kiro", "settings", "mcp.json")],
+    key: "mcpServers",
+    normalize: base,
+  },
   vscode: {
     project: [".vscode/mcp.json"],
     user: (w) => [appConfig(w, "Code", "User", "mcp.json")],

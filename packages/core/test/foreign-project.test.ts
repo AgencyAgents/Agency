@@ -25,7 +25,7 @@ function folder(files: Record<string, string>): string {
 
 const skill = (name: string) => `---\nname: ${name}\ndescription: ${name} skill\n---\nbody of ${name}\n`;
 
-test("the rules of Cursor, Windsurf, Cline, Copilot and Gemini join the instructions, once each", () => {
+test("the rules of Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro and Augment join the instructions, once each", () => {
   const ws = folder({
     "AGENTS.md": "agents text",
     "CLAUDE.md": "agents text",
@@ -34,6 +34,13 @@ test("the rules of Cursor, Windsurf, Cline, Copilot and Gemini join the instruct
     ".windsurfrules": "windsurf rule",
     ".clinerules": "cline rule",
     ".github/copilot-instructions.md": "copilot rule",
+    ".roo/rules/style.md": "roo rule",
+    ".junie/guidelines.md": "junie rule",
+    ".kiro/steering/product.md": "kiro rule",
+    ".kiro/steering/tests.md":
+      '---\ninclusion: fileMatch\nfileMatchPattern: "**/*.test.ts"\n---\nkiro test rule',
+    ".kiro/steering/manual.md": "---\ninclusion: manual\n---\nkiro manual rule",
+    ".augment/rules/always.md": "---\ntype: always_apply\n---\naugment rule",
     ".cursor/rules/always.mdc": "---\nalwaysApply: true\n---\nalways rule",
     ".cursor/rules/api/ts.mdc": '---\nglobs: "src/api/**/*.ts"\nalwaysApply: false\n---\napi rule',
     ".cursor/rules/chosen.mdc": "---\ndescription: Database migrations\n---\nmigration rule",
@@ -52,6 +59,11 @@ test("the rules of Cursor, Windsurf, Cline, Copilot and Gemini join the instruct
     "cline rule",
     "copilot rule",
     "always rule",
+    "roo rule",
+    "junie rule",
+    "kiro rule",
+    "augment rule",
+    "Files that match **/*.test.ts:\nkiro test rule",
   ]) {
     expect(text).toContain(part);
   }

@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Rules and MCP files of Roo Code, Kiro, Junie, Augment and Continue**: their rule
+  files join the instructions of a trusted workspace, with the `inclusion` of Kiro and
+  the `type` of Augment mapped, and `.roo/mcp.json` and `.kiro/settings/mcp.json` give
+  MCP servers.
 - **User files of other agents**: the user skills, commands and agent files of Claude
   Code, Codex, Cursor, Pi, OpenCode, Gemini CLI and the shared `~/.agents` load in every
   workspace, below those of Agency. `AGENCY_AGENTS_HOME=off` turns this off.

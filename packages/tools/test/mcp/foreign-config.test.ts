@@ -65,10 +65,27 @@ command = "x"
 enabled = false
 `,
     ".pi/mcp.json": JSON.stringify({ mcpServers: { pi: { command: "pi-srv" } } }),
+    ".roo/mcp.json": JSON.stringify({
+      mcpServers: { roo: { command: "roo-srv" }, rooff: { command: "x", disabled: true } },
+    }),
+    ".kiro/settings/mcp.json": JSON.stringify({
+      mcpServers: { kiro: { command: "kiro-srv", autoApprove: [] } },
+    }),
     ".mcp.json": JSON.stringify({ mcpServers: { cx: { command: "claude-wins" } } }),
   });
   const servers = loadProjectMcpServers(ws, (w) => warnings.push(w), env);
-  expect(Object.keys(servers).sort()).toEqual(["cur", "cx", "figma", "gem", "oc", "ocr", "pi", "vs"]);
+  expect(Object.keys(servers).sort()).toEqual([
+    "cur",
+    "cx",
+    "figma",
+    "gem",
+    "kiro",
+    "oc",
+    "ocr",
+    "pi",
+    "roo",
+    "vs",
+  ]);
   expect(servers.vs).toEqual({ command: "node", args: [`${ws}/s.js`] });
   expect(servers.cur).toEqual({ url: "https://c.test/mcp", headers: { Authorization: "Bearer t-1" } });
   expect(servers.gem).toEqual({ url: "https://g.test/mcp", requestTimeoutMs: 5000 });

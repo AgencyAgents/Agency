@@ -59,25 +59,52 @@ function filesIn(dir: string, ext: string): string[] {
 
 /** The rule files of other agents (Cursor, Windsurf, Cline, Copilot), then `.agency/rules/*.md`. */
 export function collectRuleFiles(workspaceRoot: string): string[] {
-  const single = [".cursorrules", ".windsurfrules", ".clinerules", join(".github", "copilot-instructions.md")]
+  const single = [
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".roorules",
+    ".augment-guidelines",
+    join(".github", "copilot-instructions.md"),
+    join(".junie", "guidelines.md"),
+  ]
     .map((name) => join(workspaceRoot, name))
     .filter((file) => existsSync(file) && statSync(file).isFile());
   return [
     ...single,
     ...filesIn(join(workspaceRoot, ".clinerules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".roo", "rules"), ".md"),
+    ...scopedRuleFiles(workspaceRoot),
     ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
     ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
   ];
 }
 
-/** A Cursor rule as instruction text: its frontmatter says when it applies. A rule that only `@name` calls is left out. */
-export function cursorRuleText(text: string): string {
+/** The rules of Kiro, Augment and Continue, whose frontmatter says when each applies, as that of a Cursor rule does. */
+function scopedRuleFiles(workspaceRoot: string): string[] {
+  return [
+    [".kiro", "steering"],
+    [".augment", "rules"],
+    [".continue", "rules"],
+  ].flatMap((parts) => filesIn(join(workspaceRoot, ...parts), ".md"));
+}
+
+/**
+ * A rule as instruction text: its frontmatter says when it applies (`alwaysApply`, `globs` and `description` of Cursor
+ * and Continue, `inclusion` and `fileMatchPattern` of Kiro, `type` of Augment). A rule that only a mention calls is
+ * left out; a rule with none of these keys is too in Cursor, and applies always in the others.
+ */
+export function scopedRuleText(text: string, manualByDefault = true): string {
   const { fields, body } = splitFrontmatter(text);
   const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
-  if (field("alwaysApply") === "true") return body.trim();
-  if (field("globs")) return `Files that match ${field("globs")}:\n${body.trim()}`;
+  if (field("inclusion") === "manual" || field("type") === "manual") return "";
+  const always =
+    field("alwaysApply") === "true" || field("inclusion") === "always" || field("type") === "always_apply";
+  if (always) return body.trim();
+  const globs = field("globs") ?? field("fileMatchPattern");
+  if (globs) return `Files that match ${globs}:\n${body.trim()}`;
   if (field("description")) return `When the task is about: ${field("description")}\n${body.trim()}`;
-  return "";
+  return manualByDefault ? "" : body.trim();
 }
 
 /**
@@ -127,9 +154,11 @@ export function loadInstructions(
       }
     })();
   const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
+  const scoped = new Set(scopedRuleFiles(workspaceRoot));
   const texts = files.map((f) => {
     const text = readTextCapped(f, maxFileBytes);
-    return f.endsWith(".mdc") ? cursorRuleText(text) : text;
+    if (f.endsWith(".mdc")) return scopedRuleText(text);
+    return scoped.has(f) ? scopedRuleText(text, false) : text;
   });
   // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.
   return texts.filter((text, index) => text.trim() !== "" && texts.indexOf(text) === index);
