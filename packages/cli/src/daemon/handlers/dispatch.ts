@@ -30,7 +30,7 @@ import {
   worktreeBranchFor,
   worktreePathFor,
 } from "../team-context.ts";
-import { checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
+import { autoReviewerFor, checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { abortWorktreePeer, isOwnWorktree } from "./dispatch-worktrees.ts";
 import { routeAgent } from "./team-run.ts";
@@ -416,6 +416,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 identity: { type: "agent", name: a.handle },
                 capabilities: agentCaps,
                 toolPolicy: agentGate,
+                reviewApproval: autoReviewerFor(daemon, runMode),
                 ...modelRunOptions(childModelInfo),
                 turnId: childTurnId,
                 sessionId: childSessionId,

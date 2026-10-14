@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgentRegistry,
+  type AutoReviewer,
   type BoardStore,
   type Budget,
   buildEnvironmentBlock,
@@ -11,6 +12,7 @@ import {
   type Config,
   type ToolSpec as CoreToolSpec,
   composeSystemPrompt,
+  createAutoReviewer,
   type DispatchStateStore,
   type EventBus,
   environmentDate,
@@ -244,6 +246,16 @@ export interface SessionSendResult extends RunTurnRpcResult {
 export interface SessionMessageParams {
   sessionId: string;
   text: string;
+}
+
+/** The reviewer of auto mode for one turn, with its own block counts. Undefined in another mode. */
+export function autoReviewerFor(
+  ctx: Pick<DaemonContext, "config" | "hookRun">,
+  mode: PermissionMode | undefined,
+): AutoReviewer | undefined {
+  const askModel = ctx.hookRun.askModel;
+  if (mode !== "auto" || askModel === undefined) return undefined;
+  return createAutoReviewer(askModel, ctx.config.auto_review_model);
 }
 
 /**

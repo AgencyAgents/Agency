@@ -30,6 +30,7 @@ import {
 import { assertTaskPreflightCaps } from "../task-ledger.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
+  autoReviewerFor,
   classifyEffortWithSmallModel,
   type DaemonContext,
   HEARTBEAT_INTERVAL_MS,
@@ -424,6 +425,7 @@ export async function executeTurn(
               }
             : undefined;
         const requestApproval = createTurnApproval(ctx, params, sessionId, eventStream);
+        const reviewApproval = autoReviewerFor(ctx, params.permissionMode);
         const fallbackRef = (() => {
           const fm = (config as unknown as { fallback_model?: string }).fallback_model;
           if (!fm) return undefined;
@@ -589,6 +591,7 @@ export async function executeTurn(
               capabilities: effectiveCapabilities,
               toolPolicy: sessionGate,
               requestApproval,
+              ...(reviewApproval ? { reviewApproval } : {}),
               eventBus,
               redactToolResult: redactor.redactToolResult,
               drainMailbox: mailboxDrain,
@@ -701,6 +704,7 @@ export async function executeTurn(
                   capabilities: fallbackCapabilities,
                   toolPolicy: sessionGate,
                   requestApproval,
+                  ...(reviewApproval ? { reviewApproval } : {}),
                   eventBus,
                   redactToolResult: redactor.redactToolResult,
                   systemPrompt: fallbackPrompt.text,

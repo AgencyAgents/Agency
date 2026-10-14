@@ -15,10 +15,12 @@ export type Decision = "allow" | "ask" | "deny";
 export type RiskTier = "safe" | "moderate" | "dangerous";
 
 /** Non-interactive permission mode. `ask` is the default; the others are
- *  chosen only via the explicit `--permission-mode` flag, never silently. */
-export type PermissionMode = "ask" | "allow-edits" | "allow-all" | "deny";
+ *  chosen only via the explicit `--permission-mode` flag, never silently.
+ *  `auto` allows edits as `allow-edits` does, and a reviewer model answers the other asks of a default rule. */
+export const PERMISSION_MODES = ["ask", "allow-edits", "auto", "allow-all", "deny"] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/** Tools `allow-edits` auto-allows: file mutations, not command execution. */
+/** Tools `allow-edits` and `auto` auto-allow: file mutations, not command execution. */
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
 
 export interface PolicyRequest {
@@ -703,7 +705,8 @@ export class PermissionsGate implements ToolPolicy {
     if (decision === "deny") return "deny";
     // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
     if (this.options.permissionMode === "allow-all") return "allow";
-    if (this.options.permissionMode === "allow-edits" && EDIT_TOOLS.has(request.tool)) return "allow";
+    const mode = this.options.permissionMode;
+    if ((mode === "allow-edits" || mode === "auto") && EDIT_TOOLS.has(request.tool)) return "allow";
     if (!ask) return "deny"; // no approval surface: fail closed
 
     const source = this.askSource(request);

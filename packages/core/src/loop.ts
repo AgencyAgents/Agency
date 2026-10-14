@@ -28,6 +28,7 @@ import {
   type Message,
   type StopReason,
 } from "@agency/schema";
+import type { AutoReviewer } from "./auto-review.ts";
 import { CODE_TOOL } from "./codemode.ts";
 import { HookBlock, HookStop } from "./events.ts";
 import {
@@ -138,6 +139,8 @@ export interface RunTurnOptions {
    * means every ask fails closed (deny) — a headless run never self-approves.
    */
   requestApproval?: RequestApproval;
+  /** Auto mode: answers an ask of a default rule before the user does; an ask rule of the config goes to the user. */
+  reviewApproval?: AutoReviewer;
   /**
    * The permissions gate consulted before each tool handler runs: `deny`
    * produces a per-call error without invoking the handler, `ask` routes
@@ -228,6 +231,10 @@ export async function runTurn(
   options: RunTurnOptions,
 ): Promise<RunTurnResult> {
   const messages = [...options.session];
+  // The reviewer of auto mode reads the transcript of this turn as it grows.
+  const review = options.reviewApproval;
+  const toolOptions: RunTurnOptions =
+    review === undefined ? options : { ...options, reviewApproval: (request) => review(request, messages) };
   const append = async (message: Message): Promise<void> => {
     messages.push(message);
     await options.onMessage?.(message);
@@ -461,7 +468,7 @@ export async function runTurn(
               ? unrunResults(toolCalls, "cancelled")
               : {
                   role: "user",
-                  content: await runTools(toolCalls, options, turn.malformedCalls, options.signal),
+                  content: await runTools(toolCalls, toolOptions, turn.malformedCalls, options.signal),
                 },
           );
         }
@@ -533,7 +540,7 @@ export async function runTurn(
           }
         }
       }
-      const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
+      const results = await runTools(toolCalls, toolOptions, turn.malformedCalls, options.signal);
       if (options.eventBus?.emitCollect) {
         const { errors } = await options.eventBus.emitCollect("tool.batch.after", {
           calls: toolCalls.map((tc, i) => {
@@ -898,19 +905,31 @@ async function executeOne(
       // The user who is asked must see the script, not only the name of the tool.
       const title =
         resolved.name === CODE_TOOL && typeof call.input.code === "string" ? { title: call.input.code } : {};
-      // A PermissionRequest hook can answer an ask before the user gets it.
+      // In auto mode the reviewer answers first. A PermissionRequest hook can answer an ask before the user gets it.
       const askUser = options.requestApproval;
+      const review = options.reviewApproval;
+      let blocked: string | undefined;
       const ask: typeof askUser =
-        askUser === undefined || bus?.emitCollect === undefined
-          ? askUser
+        askUser === undefined && review === undefined
+          ? undefined
           : async (request) => {
+              if (review !== undefined && request.source?.startsWith("default:")) {
+                const verdict = await review(request);
+                if (verdict?.allow === true) return "once";
+                if (verdict !== undefined) {
+                  blocked = verdict.reason ?? "no reason given";
+                  return "reject";
+                }
+              }
+              if (askUser === undefined) return "reject";
+              if (bus?.emitCollect === undefined) return askUser(request);
               const asked: { decision?: "allow" | "deny" } & Record<string, unknown> = {
                 sessionId: options.sessionId,
                 tool: request.tool,
                 command: request.command,
                 path: request.path,
               };
-              await bus.emitCollect?.("permission.request", asked);
+              await bus.emitCollect("permission.request", asked);
               if (asked.decision === "allow") return "once";
               if (asked.decision === "deny") return "reject";
               return askUser(request);
@@ -932,6 +951,24 @@ async function executeOne(
             payload: { tool: resolved.name, command: subject.command, path: subject.path, decision: verdict },
           });
         } catch {}
+      }
+      if (verdict === "deny" && blocked !== undefined) {
+        const denied = {
+          sessionId: options.sessionId,
+          tool: resolved.name,
+          input: call.input,
+          toolUseId: call.id,
+          reason: blocked,
+          retry: false,
+        };
+        await bus?.emitCollect?.("permission.denied", denied);
+        const next = denied.retry
+          ? "A PermissionDenied hook says that you may retry this call."
+          : "Do not try to get the same result in another way. Continue without it, or tell the user that the task needs it.";
+        return {
+          content: `permission denied: the auto-mode reviewer blocked this ${resolved.name} call: ${blocked}. ${next}`,
+          isError: true,
+        };
       }
       if (verdict === "deny") {
         return {

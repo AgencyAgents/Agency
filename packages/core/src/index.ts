@@ -1,4 +1,5 @@
 export * from "./agents/files.ts";
+export * from "./auto-review.ts";
 export * from "./cassette.ts";
 export * from "./codemode.ts";
 export * from "./commands/loader.ts";

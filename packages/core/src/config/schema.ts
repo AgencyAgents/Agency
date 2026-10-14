@@ -117,6 +117,8 @@ export const ConfigSchema = z
     model: z.string().optional(),
     /** Cheap model for background work (titles, compaction). */
     small_model: z.string().optional(),
+    /** The reviewer of `--permission-mode auto` as "provider/model". Default: `small_model`, else `model`. */
+    auto_review_model: z.string().optional(),
     /**
      * TUI palette name (dark, light, high-contrast). Validated at render time:
      * an unknown name falls back to the default palette instead of erroring.

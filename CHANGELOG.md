@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Auto permission mode**: `--permission-mode auto` (and `permissionMode: "auto"`
+  of `run_turn`) lets a reviewer model answer the asks, as the auto mode of Claude
+  Code does. Edits run; another ask of a default rule goes to `auto_review_model`
+  (default `small_model`). It sees your messages and the agent's tool calls, never a
+  tool result. A block gives the model the reason; after 3 blocks in a row or 20 in a
+  turn, or with no verdict, you are asked (with `-p`, the call is refused). A new
+  `PermissionDenied` hook runs on a block, and `retry: true` lets the model try again.
 - **Use your ChatGPT plan**: `agency auth login chatgpt` signs in with ChatGPT as
   OpenAI documents it for open-source apps, and `chatgpt/<model>` then runs on the
   plan through a new Responses API adapter. `agency auth logout <provider>` removes

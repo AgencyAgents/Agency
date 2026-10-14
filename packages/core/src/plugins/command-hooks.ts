@@ -20,6 +20,7 @@ export const COMMAND_HOOK_EVENTS = [
   "PostCompact",
   "Notification",
   "PermissionRequest",
+  "PermissionDenied",
   "SessionStart",
   "SessionEnd",
 ] as const;
@@ -83,6 +84,8 @@ export interface HookOutcome {
   context?: string;
   /** A PermissionRequest hook answered the ask with allow. */
   allow?: true;
+  /** A PermissionDenied hook lets the model retry the call. */
+  retry?: true;
 }
 
 const DEFAULT_TIMEOUT_S = 60;
@@ -102,6 +105,7 @@ const TOOL_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
   "PostToolUse",
   "PostToolUseFailure",
   "PermissionRequest",
+  "PermissionDenied",
 ]);
 
 /**
@@ -327,6 +331,7 @@ export async function runCommandHooks(
   ].find((value): value is string => typeof value === "string");
   const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
   const context: string[] = [];
+  let retry = false;
   for (const group of hooks[event] ?? []) {
     if (!matches(group.matcher, subject)) continue;
     for (const entry of group.hooks) {
@@ -358,6 +363,16 @@ export async function runCommandHooks(
           : entry.type === "prompt"
             ? await runPrompt(entry, stdin, event, opts)
             : await runOne(entry.command, stdin, opts, timeoutS);
+      // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
+      if (event === "PermissionDenied") {
+        if (
+          out.code === 0 &&
+          (parseJson(out.stdout)?.hookSpecificOutput as { retry?: unknown })?.retry === true
+        ) {
+          retry = true;
+        }
+        continue;
+      }
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);
@@ -375,7 +390,10 @@ export async function runCommandHooks(
       }
     }
   }
-  return context.length > 0 ? { context: context.join("\n") } : {};
+  return {
+    ...(context.length > 0 ? { context: context.join("\n") } : {}),
+    ...(retry ? { retry: true as const } : {}),
+  };
 }
 
 /** Connects the tool and stop events of the bus to the command hooks. Returns the function that disconnects them. */
@@ -470,6 +488,22 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       // A deny of one hook set holds against an allow of another.
       if (out.block !== undefined) p.decision = "deny";
       else if (out.allow && p.decision === undefined) p.decision = "allow";
+    }),
+    bus.on("permission.denied", async (payload) => {
+      const p = payload as AgencyEvents["permission.denied"];
+      const out = await runCommandHooks(
+        hooks,
+        "PermissionDenied",
+        {
+          session_id: p.sessionId,
+          tool_name: p.tool,
+          tool_input: p.input,
+          tool_use_id: p.toolUseId,
+          reason: p.reason,
+        },
+        opts,
+      );
+      if (out.retry) p.retry = true;
     }),
     bus.on("session.compacting", async (payload) => {
       const p = payload as { sessionId: string; trigger: string };

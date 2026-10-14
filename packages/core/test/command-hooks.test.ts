@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FULL_CAPABILITIES } from "@agency/guard";
+import { FULL_CAPABILITIES, PermissionsGate } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer, Scheduler } from "@agency/providers";
@@ -693,6 +693,113 @@ describe("hooks in the loop", () => {
         tool_input: { command: "ls" },
       });
     }
+  });
+
+  test("auto mode: the reviewer answers a default ask, a block gives the reason and runs PermissionDenied", async () => {
+    const cases: Array<{
+      verdict: { allow: boolean; reason?: string } | undefined;
+      permissions?: Record<string, "ask">;
+      ran: string[];
+      reviewed: number;
+      asked: number;
+    }> = [
+      { verdict: { allow: true }, ran: ["bash"], reviewed: 1, asked: 0 },
+      { verdict: { allow: false, reason: "the user said no shell" }, ran: [], reviewed: 1, asked: 0 },
+      // No verdict: the user answers. An ask rule of the config also goes to the user, not to the reviewer.
+      { verdict: undefined, ran: ["bash"], reviewed: 1, asked: 1 },
+      { verdict: { allow: true }, permissions: { bash: "ask" }, ran: ["bash"], reviewed: 0, asked: 1 },
+    ];
+    for (const [index, c] of cases.entries()) {
+      const bus = new EventBus();
+      const denied = capture(`auto-denied-${index}`);
+      const retry = hook(
+        `auto-retry-${index}`,
+        'console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true } }));',
+      );
+      attachCommandHooks(
+        bus,
+        {
+          PermissionDenied: [
+            {
+              matcher: "Bash",
+              hooks: [
+                { type: "command", command: denied.cmd },
+                { type: "command", command: retry },
+              ],
+            },
+          ],
+        },
+        { cwd: dir },
+      );
+      const ran: string[] = [];
+      let reviewed = 0;
+      let asked = 0;
+      const result = await runTurn(scripted(1).adapter, new Scheduler(), noopHttp, {
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [{ ...bashTool(ran), riskTier: "dangerous" }],
+        model: "m",
+        apiKey: "k",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        eventBus: bus,
+        sessionId: "s1",
+        toolPolicy: new PermissionsGate({
+          workspaceRoot: dir,
+          permissionMode: "auto",
+          ...(c.permissions ? { permissions: c.permissions } : {}),
+        }),
+        reviewApproval: async (request, transcript) => {
+          reviewed += 1;
+          expect(request).toMatchObject({ tool: "bash", command: "ls" });
+          expect(transcript?.[0]).toMatchObject({ role: "user" });
+          return c.verdict;
+        },
+        requestApproval: async () => {
+          asked += 1;
+          return "once";
+        },
+      });
+      expect({ ran, reviewed, asked }).toEqual({ ran: c.ran, reviewed: c.reviewed, asked: c.asked });
+      if (c.verdict?.allow !== false) {
+        expect(existsSync(join(dir, `auto-denied-${index}.json`))).toBe(false);
+        continue;
+      }
+      const [text = ""] = resultText(result.messages);
+      expect(text).toContain("the user said no shell");
+      expect(text).toContain("may retry");
+      expect(await denied.read()).toMatchObject({
+        hook_event_name: "PermissionDenied",
+        session_id: "s1",
+        tool_name: "bash",
+        tool_input: { command: "ls" },
+        tool_use_id: "c1",
+        reason: "the user said no shell",
+      });
+    }
+  });
+
+  test("auto mode allows edits without the reviewer, and a run with no approval surface still gets the reviewer", async () => {
+    const gate = new PermissionsGate({ workspaceRoot: dir, permissionMode: "auto" });
+    let reviewed = 0;
+    const review = async () => {
+      reviewed += 1;
+      return { allow: true };
+    };
+    expect(await gate.check({ tool: "write", riskTier: "moderate", path: "a.txt" }, undefined)).toBe("allow");
+    const ran: string[] = [];
+    await runTurn(scripted(1).adapter, new Scheduler(), noopHttp, {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [{ ...bashTool(ran), riskTier: "dangerous" }],
+      model: "m",
+      apiKey: "k",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      toolPolicy: gate,
+      reviewApproval: review,
+    });
+    expect({ ran, reviewed }).toEqual({ ran: ["bash"], reviewed: 1 });
   });
 
   test("a SubagentStop hook gets the type of the agent, and its matcher tests it", async () => {

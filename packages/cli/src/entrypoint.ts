@@ -18,7 +18,7 @@ import {
   SessionStore,
   storagePaths,
 } from "@agency/core";
-import { runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
+import { PERMISSION_MODES, type PermissionMode, runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
@@ -108,7 +108,7 @@ Options:
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
-  --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
+  --permission-mode <mode> With -p: ask (default), allow-edits, auto, allow-all, or deny
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
@@ -156,7 +156,7 @@ export interface ParsedArgv {
   workflowArgs: string[];
   continueLast: boolean;
   session: string | undefined;
-  permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
+  permissionMode: PermissionMode;
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
@@ -318,10 +318,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
       }
       case "--permission-mode": {
         const mode = value();
-        if (mode !== "ask" && mode !== "allow-edits" && mode !== "allow-all" && mode !== "deny") {
+        if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
-        parsed.permissionMode = mode;
+        parsed.permissionMode = mode as PermissionMode;
         break;
       }
       case "--max-steps": {

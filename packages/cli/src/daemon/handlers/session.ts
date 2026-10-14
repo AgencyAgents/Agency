@@ -34,6 +34,7 @@ import {
 import { modelRunOptions } from "../costing.ts";
 import { handleForSession } from "../team-context.ts";
 import {
+  autoReviewerFor,
   type DaemonContext,
   keySourcesFor,
   projectInstructions,
@@ -593,6 +594,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           capabilities: childCaps,
           toolPolicy: workerGate,
           ...(ctx.requestApproval === undefined ? {} : { requestApproval: ctx.requestApproval }),
+          reviewApproval: autoReviewerFor(daemon, meta?.permissionMode),
           budget: meta?.budget,
           ...modelRunOptions(childModelInfo),
           turnId: childTurnId,

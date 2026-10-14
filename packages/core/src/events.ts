@@ -39,6 +39,15 @@ export interface AgencyEvents {
   "file.edited": { path: string };
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };
   "permission.replied": { tool: string; command?: string; path?: string; decision: string };
+  /** The reviewer of auto mode blocked a call. A PermissionDenied hook sets `retry` to let the model try again. */
+  "permission.denied": {
+    sessionId?: string;
+    tool: string;
+    input: Record<string, unknown>;
+    toolUseId: string;
+    reason: string;
+    retry: boolean;
+  };
   "tool.audit": {
     tool: string;
     target?: string;
