@@ -181,6 +181,8 @@ export const ConfigSchema = z
         capDrop: z.array(z.string().min(1)).optional(),
         /** Names of environment variables that a shell command of the model does not get (tokens, keys). */
         denyEnv: z.array(z.string().min(1)).optional(),
+        /** Names with KEY, SECRET or TOKEN that a shell command of the model still gets, such as `GH_TOKEN`. */
+        allowEnv: z.array(z.string().min(1)).optional(),
         /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
         forecastCostUsd: z.number().optional(),
       })

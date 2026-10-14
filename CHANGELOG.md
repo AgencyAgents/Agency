@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Secret variables stay out of model commands**: a `bash` command of the
+  model no longer gets a variable with `KEY`, `SECRET` or `TOKEN` in its
+  name, nor one that `provider.<id>.env` names, as in Codex. Before, only
+  `AGENCY_<ID>_API_KEY` was removed, so `<ID>_API_KEY`, a name that the
+  harness reads its key from, reached each command. The new
+  `sandbox.allowEnv` gives back names that a command needs, such as `GH_TOKEN`.
 - **Schema check at any depth**: the check of a tool input, and of a
   `--json-schema` answer, now reaches nested objects, arrays of
   objects, `enum` in array items and a list of types. Before, it

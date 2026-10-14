@@ -117,30 +117,35 @@ describe("resolveConfiguredShell", () => {
 });
 
 describe("modelCommandEnv", () => {
-  test("removes the provider keys of the harness and the variables of the deny list, and keeps the others", () => {
-    const env = { AGENCY_OPENROUTER_API_KEY: "k1", GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" };
-    expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" });
-    setDeniedCommandEnv(["GITHUB_TOKEN"]);
+  test("removes the provider keys of the harness and each name with KEY, SECRET or TOKEN, in any case", () => {
+    const env = {
+      AGENCY_OPENROUTER_API_KEY: "k1",
+      OPENROUTER_API_KEY: "k2",
+      GITHUB_TOKEN: "t1",
+      npm_token: "t2",
+      AWS_SECRET_ACCESS_KEY: "s",
+      PATH: "/bin",
+      HOME: "/home/u",
+    };
+    expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", HOME: "/home/u" });
+  });
+
+  test("allowEnv keeps a secret name; denyEnv wins over it, and the keys of the harness never pass", () => {
+    const env = { GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", AGENCY_X_API_KEY: "k", MY_PAT: "p", PATH: "/bin" };
+    setDeniedCommandEnv(["MY_PAT", "NPM_TOKEN"], ["github_token", "NPM_*", "AGENCY_*"]);
     try {
-      expect(modelCommandEnv(env)).toEqual({ NPM_TOKEN: "t2", PATH: "/bin" });
+      expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", PATH: "/bin" });
     } finally {
       setDeniedCommandEnv([]);
     }
-    expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", PATH: "/bin" });
+    expect(modelCommandEnv(env)).toEqual({ MY_PAT: "p", PATH: "/bin" });
   });
 
   test("a name of the deny list can be a pattern with *", () => {
-    const env = {
-      GITHUB_TOKEN: "t1",
-      npm_token: "t2",
-      MY_SECRET_VALUE: "s",
-      API_KEY: "k",
-      PATH: "/bin",
-      TOKENIZER: "x",
-    };
-    setDeniedCommandEnv(["*_TOKEN", "*SECRET*", "API_KEY"]);
+    const env = { MY_PAT: "p", MY_PASSWORD: "w", PATH: "/bin", PATHEXT: ".EXE" };
+    setDeniedCommandEnv(["MY_*", "PATHEXT"]);
     try {
-      expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", TOKENIZER: "x" });
+      expect(modelCommandEnv(env)).toEqual({ PATH: "/bin" });
     } finally {
       setDeniedCommandEnv([]);
     }

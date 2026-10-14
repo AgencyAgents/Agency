@@ -172,13 +172,14 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
 }
 
 let deniedEnv: RegExp[] = [];
+let allowedEnv: RegExp[] = [];
 
-/**
- * The `sandbox.denyEnv` list of the config: one daemon has one config, so the list is state of the module.
- * `*` in a name stands for any text. A pattern has no case: a token is a token in any spelling.
- */
-export function setDeniedCommandEnv(names: readonly string[]): void {
-  deniedEnv = names.map((name) => {
+/** The default of Codex: a name with KEY, SECRET or TOKEN in it, in any case, holds a credential. */
+const SECRET_NAME = /KEY|SECRET|TOKEN/i;
+
+/** `*` in a name stands for any text. A pattern has no case: a token is a token in any spelling. */
+function namePatterns(names: readonly string[]): RegExp[] {
+  return names.map((name) => {
     const source = name
       .split("*")
       .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
@@ -187,15 +188,23 @@ export function setDeniedCommandEnv(names: readonly string[]): void {
   });
 }
 
+/** `sandbox.denyEnv` and `sandbox.allowEnv` of the config: one daemon has one config, so the lists are state of the module. */
+export function setDeniedCommandEnv(denied: readonly string[], allowed: readonly string[] = []): void {
+  deniedEnv = namePatterns(denied);
+  allowedEnv = namePatterns(allowed);
+}
+
 /**
- * The environment of a command that the model wrote, with no provider key of the harness (`AGENCY_<ID>_API_KEY`)
- * and no variable of the deny list: a command could print such a value into the transcript or send it out.
+ * The environment of a command that the model wrote: no provider key of the harness (`AGENCY_<ID>_API_KEY`), no
+ * variable of the deny list, and no secret name unless the allow list has it. A command could print such a value
+ * into the transcript or send it out.
  */
 export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined || /^AGENCY_.+_API_KEY$/i.test(name)) continue;
     if (deniedEnv.some((pattern) => pattern.test(name))) continue;
+    if (SECRET_NAME.test(name) && !allowedEnv.some((pattern) => pattern.test(name))) continue;
     out[name] = value;
   }
   return out;

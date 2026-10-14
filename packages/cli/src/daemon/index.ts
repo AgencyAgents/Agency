@@ -200,7 +200,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
   const commandPolicy = commandPolicyFromPermissions(config.permissions);
-  setDeniedCommandEnv(config.sandbox?.denyEnv ?? []);
+  // A key in a variable that `provider.<id>.env` names is a key of the harness too, whatever its name.
+  const providerEnv = Object.values(providers ?? {}).flatMap((provider) => provider.env ?? []);
+  setDeniedCommandEnv([...(config.sandbox?.denyEnv ?? []), ...providerEnv], config.sandbox?.allowEnv);
   const shell = resolveConfiguredShell(process.platform, sandboxWindowsShell(config));
   const shellLabel = shell.label;
   const sandbox = createSandboxBackend(
