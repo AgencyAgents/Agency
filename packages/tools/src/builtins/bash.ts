@@ -182,7 +182,14 @@ export function createBashTool(
 
       if (input.background) {
         const argv = [shell.command, ...shell.buildArgs(input.command)];
-        const info = processManager.spawn(argv, { cwd: state.cwd });
+        const wrap = (deps.sandbox as { wrap?: (argv: string[], cwd?: string) => string[] }).wrap;
+        // A backend that runs commands elsewhere must hold this one too: on the host it has the user's rights.
+        if (wrap === undefined && asContainerExecBackend(deps.sandbox) !== undefined) {
+          return { content: t("tool.bash.background_refused"), isError: true as const };
+        }
+        const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd) : argv, {
+          cwd: state.cwd,
+        });
         return { content: t("tool.bash.background_started", { id: info.id, pid: info.pid }) };
       }
 

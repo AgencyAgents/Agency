@@ -99,6 +99,8 @@ export const en = {
   "tool.edit.bad_input": "edit rejected: pass either oldText+newText or a non-empty hunks array, not both",
   "tool.edit.empty_hunk": "edit rejected: hunk {index} has empty oldText",
   "tool.bash.background_started": "started background process {id} (pid {pid})",
+  "tool.bash.background_refused":
+    "background: true is not available with this sandbox backend: the command would run outside the sandbox. Run it in the foreground.",
   "tool.bash.truncated": "[truncated: output exceeded {bytes} bytes; full output saved to {path}]",
   "tool.bash.truncated_no_spill": "[truncated: output exceeded {bytes} bytes]",
   "tool.bash.cancelled": "[cancelled: command aborted before completion]",

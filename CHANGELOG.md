@@ -670,6 +670,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **A background command stays in the sandbox**: with the `os` backend it
+  runs in the sandbox, with `docker` it is refused. Before, `background: true`
+  ran the command on the host, outside every backend.
 - **A daemon that fails at its start gives its reason**: the command
   that started it shows the reason at once. Before, it waited 30 seconds
   and said only that the daemon did not become ready.

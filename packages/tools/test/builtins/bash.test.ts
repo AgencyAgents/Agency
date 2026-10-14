@@ -154,6 +154,40 @@ describe("createBashTool", () => {
     expect(result.content).toContain("started background process");
   });
 
+  test("a background command runs in the sandbox of the backend, and a backend that cannot hold one refuses it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agency-bash-test-"));
+    dirs.push(root);
+    const wrapped: string[][] = [];
+    const osLike = Object.assign(new SandboxBoundary(root), {
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      wrap: (argv: string[]) => {
+        wrapped.push(argv);
+        return [process.execPath, "-e", "setTimeout(() => {}, 100)"];
+      },
+    });
+    const manager = new ProcessManager();
+    managers.push(manager);
+    const deps = (sandbox: SandboxBoundary): ToolDeps => ({
+      identity: { type: "user" },
+      capabilities: { ...FULL_CAPABILITIES, pathScopes: [root] },
+      sandbox,
+    });
+    const shell = resolveShell(process.platform);
+    const tool = createBashTool(deps(osLike), shell, { cwd: root }, manager);
+    await tool.handler({ command: "echo outside", background: true }, { signal });
+    expect(wrapped).toHaveLength(1);
+    expect(wrapped[0]?.at(-1)).toContain("echo outside");
+    expect(manager.list()[0]?.command).toContain(process.execPath);
+
+    const containerLike = Object.assign(new SandboxBoundary(root), {
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    });
+    const refused = createBashTool(deps(containerLike), shell, { cwd: root }, manager);
+    const result = await refused.handler({ command: "echo outside", background: true }, { signal });
+    expect(result.isError).toBe(true);
+    expect(manager.list()).toHaveLength(1);
+  });
+
   test("aborting the signal kills the running process", async () => {
     const { tool } = setup();
     const controller = new AbortController();
