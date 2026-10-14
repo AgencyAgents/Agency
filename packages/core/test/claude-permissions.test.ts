@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergePermissions, PermissionsGate } from "@agency/guard";
-import { loadClaudePermissions, permissionsFromRules } from "../src/config/claude-permissions.ts";
+import {
+  loadClaudePermissions,
+  loadClaudeSettingsEnv,
+  permissionsFromRules,
+} from "../src/config/claude-permissions.ts";
 
 test("Claude Code permission rules become the permissions map here, and deny wins over allow", () => {
   const { permissions, skipped } = permissionsFromRules({
@@ -91,6 +95,22 @@ test("the settings of Claude Code give their rules: the user's always, the works
   } finally {
     process.env.AGENCY_AGENTS_HOME = before;
     rmSync(home, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("the env of the Claude Code settings of a workspace: settings.local.json wins, and other values are left out", () => {
+  const ws = mkdtempSync(join(tmpdir(), "agency-cc-env-"));
+  try {
+    mkdirSync(join(ws, ".claude"));
+    writeFileSync(
+      join(ws, ".claude", "settings.json"),
+      JSON.stringify({ env: { A: "1", B: "x", PORT: 3000, DEBUG: true, OBJ: { x: 1 } } }),
+    );
+    writeFileSync(join(ws, ".claude", "settings.local.json"), '{ "env": { "B": "local" }, }');
+    expect(loadClaudeSettingsEnv(ws)).toEqual({ A: "1", B: "local", PORT: "3000", DEBUG: "true" });
+    expect(loadClaudeSettingsEnv(join(ws, "none"))).toEqual({});
+  } finally {
     rmSync(ws, { recursive: true, force: true });
   }
 });

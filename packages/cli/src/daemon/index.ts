@@ -25,6 +25,7 @@ import {
   InboxStore,
   Logger,
   loadClaudePermissions,
+  loadClaudeSettingsEnv,
   loadCommands,
   loadConfig,
   loadForeignHooks,
@@ -430,6 +431,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   };
   attachCommandHooks(eventBus, commandHooks, hookRun);
+  // The `env` of the Claude Code settings of a trusted workspace reaches each shell command, before CLAUDE_ENV_FILE.
+  const claudeEnv = projectTrusted ? loadClaudeSettingsEnv(options.workspaceRoot) : {};
+  if (Object.keys(claudeEnv).length > 0) {
+    eventBus.on(
+      "shell.env",
+      (payload) => void Object.assign((payload as { env: Record<string, string> }).env, claudeEnv),
+    );
+  }
   // The variables that the SessionStart hooks of a session wrote to its CLAUDE_ENV_FILE reach each of its shell commands.
   eventBus.on("shell.env", (payload) => {
     const { env, sessionId } = payload as { env: Record<string, string>; sessionId?: string };

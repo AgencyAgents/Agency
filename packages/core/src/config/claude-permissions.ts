@@ -56,6 +56,21 @@ export function permissionsFromRules(lists: { allow?: unknown; ask?: unknown; de
   return { permissions, skipped };
 }
 
+/** The `env` of `.claude/settings.json` and `.claude/settings.local.json`: Claude Code sets it for each session. */
+export function loadClaudeSettingsEnv(workspaceRoot: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of ["settings.json", "settings.local.json"]) {
+    const file = join(workspaceRoot, ".claude", name);
+    if (!existsSync(file)) continue;
+    const raw = parseJsonc(readFileSync(file, "utf8"), [], { allowTrailingComma: true }) as { env?: unknown };
+    const values = typeof raw?.env === "object" && raw.env !== null ? Object.entries(raw.env) : [];
+    for (const [key, value] of values) {
+      if (["string", "number", "boolean"].includes(typeof value)) env[key] = String(value);
+    }
+  }
+  return env;
+}
+
 /**
  * The `permissions` of the settings files of Claude Code: `~/.claude/settings.json`, then `.claude/settings.json` and
  * `.claude/settings.local.json` of a trusted workspace. As in Claude Code, a deny rule of any file wins.

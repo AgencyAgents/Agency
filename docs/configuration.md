@@ -413,6 +413,8 @@ Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session
 - `Stop` hooks do not run for subagents: `SubagentStop` hooks do. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
 - Claude Code has 33 events, and the 17 in the table run here (`InstructionsLoaded`, `CwdChanged` and others do not). A hook on an event that is not in the table does not run, and `agency plugin install` names each such event.
 
+In a trusted workspace, the `env` of `.claude/settings.json` and `.claude/settings.local.json` (the local file wins on a name) reaches each shell command of the `bash` tool, as Claude Code sets it for each session. The variables of a `CLAUDE_ENV_FILE` come after it. Hook commands and MCP servers do not get it.
+
 A trusted workspace also runs the hooks that other agents keep in it, after those of the config and of `.agency/hooks/`. The daemon log names each hook that it skips.
 
 - `hooks` of `.claude/settings.json` and `.claude/settings.local.json` (Claude Code), and of `.codex/hooks.json` (Codex, which has the format of Claude Code).

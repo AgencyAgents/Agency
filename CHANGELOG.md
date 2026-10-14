@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`env` of `.claude/settings.json`**: in a trusted workspace its variables reach each
+  shell command, as Claude Code sets them for each session.
 - **`agency plugin update <plugin>`**: installs a plugin again from the source of its
   install; its data folder stays.
 - **Instructions of subfolders**: the `AGENTS.md` or `CLAUDE.md` of a subfolder reaches the
