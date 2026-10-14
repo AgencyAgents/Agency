@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
 import { logDir } from "@agency/core";
+import { bootErrorPath } from "@agency/rpc";
 import { createAgentDaemon } from "./daemon.ts";
 
 /**
@@ -27,19 +29,25 @@ function parseArgs(argv: string[]): { workspaceRoot: string; instanceFile: strin
 export async function runDaemonEntry(argv: string[]): Promise<never> {
   const { workspaceRoot, instanceFile, idleLingerMs } = parseArgs(argv);
 
-  const daemon = await createAgentDaemon({
-    workspaceRoot,
-    instanceFile,
-    idleLingerMs,
-    idleFromStart: true,
-    logsDir: logDir(),
-    // Idle shutdown must leave through stop() — a bare process.exit(0)
-    // orphans MCP servers and dev servers exactly like a missing signal
-    // handler does.
-    onIdleShutdown: () => {
-      void shutdown();
-    },
-  });
+  let daemon: Awaited<ReturnType<typeof createAgentDaemon>>;
+  try {
+    daemon = await createAgentDaemon({
+      workspaceRoot,
+      instanceFile,
+      idleLingerMs,
+      idleFromStart: true,
+      logsDir: logDir(),
+      // Idle shutdown must leave through stop() — a bare process.exit(0)
+      // orphans MCP servers and dev servers exactly like a missing signal
+      // handler does.
+      onIdleShutdown: () => {
+        void shutdown();
+      },
+    });
+  } catch (error) {
+    writeFileSync(bootErrorPath(instanceFile), error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 
   let stopping = false;
   async function shutdown() {

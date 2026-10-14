@@ -106,6 +106,19 @@ function spawnLockPath(instanceFile: string): string {
   return `${instanceFile}.lock`;
 }
 
+/** A daemon that fails at its start writes its reason here: its output goes nowhere, and the client waits for it. */
+export function bootErrorPath(instanceFile: string): string {
+  return `${instanceFile}.error`;
+}
+
+function readBootError(instanceFile: string): string | undefined {
+  try {
+    return readFileSync(bootErrorPath(instanceFile), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -255,6 +268,7 @@ async function ensureDaemonAlone(
       // file between our first read and acquiring the lock.
       const raced = await tryConnect();
       if (raced) return raced;
+      rmSync(bootErrorPath(instanceFile), { force: true });
       options.spawnDaemon(instanceFile);
     }
 
@@ -262,10 +276,15 @@ async function ensureDaemonAlone(
     while (Date.now() < deadline) {
       const found = await tryConnect();
       if (found) return found;
+      const bootError = readBootError(instanceFile);
+      if (bootError !== undefined) throw new Error(bootError);
       if (!locked) {
         // Someone else is (was) spawning: take over only if they died.
         locked = acquireSpawnLock(lockFile, lockStaleMs);
-        if (locked) options.spawnDaemon(instanceFile);
+        if (locked) {
+          rmSync(bootErrorPath(instanceFile), { force: true });
+          options.spawnDaemon(instanceFile);
+        }
       }
       await new Promise((r) => setTimeout(r, pollIntervalMs));
     }

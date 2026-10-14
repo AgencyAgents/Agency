@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DaemonClient } from "../src/client.ts";
-import { ensureDaemon, hashWorkspaceRoot, writeInstanceFile } from "../src/instance.ts";
+import { bootErrorPath, ensureDaemon, hashWorkspaceRoot, writeInstanceFile } from "../src/instance.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { type DaemonServer, startDaemonServer } from "../src/server.ts";
 
@@ -156,6 +156,30 @@ describe("ensureDaemon", () => {
     expect(a.port).not.toBe(b.port);
     expect(await a.client.call("ping", {})).toBe("pong");
     expect(await b.client.call("ping", {})).toBe("pong");
+  });
+
+  test("a daemon that fails at its start gives its reason at once, and an old reason does not stop a new start", async () => {
+    const instanceDir = tempDir();
+    const started = Date.now();
+    await expect(
+      ensureDaemon({
+        workspaceRoot: "/repo/boot-fails",
+        instanceDir,
+        spawnDaemon: (instanceFile) =>
+          writeFileSync(bootErrorPath(instanceFile), "the sandbox did not start"),
+        spawnTimeoutMs: 10_000,
+        pollIntervalMs: 20,
+      }),
+    ).rejects.toThrow("the sandbox did not start");
+    expect(Date.now() - started).toBeLessThan(2_000);
+
+    const { client } = await ensureDaemon({
+      workspaceRoot: "/repo/boot-fails",
+      instanceDir,
+      spawnDaemon: fakeSpawnDaemon,
+    });
+    clients.push(client);
+    expect(await client.call("ping", {})).toBe("pong");
   });
 
   test("throws if the daemon never becomes ready within the timeout", async () => {
