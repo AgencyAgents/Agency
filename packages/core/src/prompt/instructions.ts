@@ -1,7 +1,11 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
+import { splitFrontmatter } from "../plugins/skill.ts";
+
+/** The instruction files of a folder, in this order: those of Codex and Pi, Claude Code, and Gemini CLI. */
+const INSTRUCTION_NAMES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 
 /** Per-instruction-file read cap. AGENTS.md / CLAUDE.md is repo-controlled
  *  content, so a multi-gigabyte file (malicious or accidental) would otherwise
@@ -24,33 +28,56 @@ export function collectAgentsFiles(fromDir: string, workspaceRoot: string): stri
   const found: string[] = [];
   let dir = fromDir;
   for (;;) {
-    const agents = join(dir, "AGENTS.md");
-    if (existsSync(agents)) found.push(agents);
-    const claude = join(dir, "CLAUDE.md");
-    if (existsSync(claude)) found.push(claude);
+    for (const name of INSTRUCTION_NAMES) {
+      const file = join(dir, name);
+      if (existsSync(file)) found.push(file);
+    }
     if (dir === workspaceRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     if (dir.length < workspaceRoot.length && !workspaceRoot.startsWith(dir)) break;
     dir = parent;
     if (dir.length < workspaceRoot.length) {
-      const agents2 = join(workspaceRoot, "AGENTS.md");
-      if (existsSync(agents2) && !found.includes(agents2)) found.push(agents2);
-      const claude2 = join(workspaceRoot, "CLAUDE.md");
-      if (existsSync(claude2) && !found.includes(claude2)) found.push(claude2);
+      for (const name of INSTRUCTION_NAMES) {
+        const file = join(workspaceRoot, name);
+        if (existsSync(file) && !found.includes(file)) found.push(file);
+      }
       break;
     }
   }
   return found;
 }
 
-export function collectRuleFiles(workspaceRoot: string): string[] {
-  const rulesDir = join(workspaceRoot, ".agency", "rules");
-  if (!existsSync(rulesDir)) return [];
-  return readdirSync(rulesDir)
-    .filter((f) => f.endsWith(".md"))
+/** The files of `dir` and its subfolders that end with `ext`, sorted. */
+function filesIn(dir: string, ext: string): string[] {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(ext))
     .sort()
-    .map((f) => join(rulesDir, f));
+    .map((f) => join(dir, f));
+}
+
+/** The rule files of other agents (Cursor, Windsurf, Cline, Copilot), then `.agency/rules/*.md`. */
+export function collectRuleFiles(workspaceRoot: string): string[] {
+  const single = [".cursorrules", ".windsurfrules", ".clinerules", join(".github", "copilot-instructions.md")]
+    .map((name) => join(workspaceRoot, name))
+    .filter((file) => existsSync(file) && statSync(file).isFile());
+  return [
+    ...single,
+    ...filesIn(join(workspaceRoot, ".clinerules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
+    ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
+  ];
+}
+
+/** A Cursor rule as instruction text: its frontmatter says when it applies. A rule that only `@name` calls is left out. */
+function cursorRuleText(text: string): string {
+  const { fields, body } = splitFrontmatter(text);
+  const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
+  if (field("alwaysApply") === "true") return body.trim();
+  if (field("globs")) return `Files that match ${field("globs")}:\n${body.trim()}`;
+  if (field("description")) return `When the task is about: ${field("description")}\n${body.trim()}`;
+  return "";
 }
 
 /**
@@ -100,5 +127,10 @@ export function loadInstructions(
       }
     })();
   const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
-  return files.map((f) => readTextCapped(f, maxFileBytes));
+  const texts = files.map((f) => {
+    const text = readTextCapped(f, maxFileBytes);
+    return f.endsWith(".mdc") ? cursorRuleText(text) : text;
+  });
+  // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.
+  return texts.filter((text, index) => text.trim() !== "" && texts.indexOf(text) === index);
 }

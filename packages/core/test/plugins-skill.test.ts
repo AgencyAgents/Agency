@@ -237,13 +237,13 @@ describe("resolveSkillDirs", () => {
   test("returns dirs in priority order with correct tiers", () => {
     const ws = "/tmp/test";
     const dirs = resolveSkillDirs(ws, "/custom/config");
-    expect(dirs.length).toBe(3);
-    expect(dirs[0]!.dir).toBe(join(ws, ".agency", "skills"));
-    expect(dirs[0]!.tier).toBe("project");
-    expect(dirs[1]!.dir).toBe(join(ws, "skills"));
-    expect(dirs[1]!.tier).toBe("project");
-    expect(dirs[2]!.dir).toContain("skills");
-    expect(dirs[2]!.tier).toBe("user");
+    const agents = [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini"];
+    expect(dirs).toEqual([
+      { dir: join(ws, ".agency", "skills"), tier: "project" },
+      { dir: join(ws, "skills"), tier: "project" },
+      ...agents.map((agent) => ({ dir: join(ws, agent, "skills"), tier: "project" as const })),
+      { dir: join("/custom/config", "skills"), tier: "user" },
+    ]);
   });
 });
 

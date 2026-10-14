@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
 import { configDir } from "../paths.ts";
@@ -42,15 +42,64 @@ function parseCommandFiles(dir: string, source: "project" | "user"): CommandTemp
   return out;
 }
 
+/** The prompt of a Gemini CLI command in the syntax of a command here: `{{args}}`, `@{file}` and `!{shell}`. */
+function geminiTemplate(prompt: string): string {
+  const body = prompt.replace(/@\{([^}]+)\}/g, "@$1").replace(/!\{([^}]+)\}/g, "!`$1`");
+  // As in Gemini CLI: with no `{{args}}`, the words of the command go after the prompt.
+  return body.includes("{{args}}") ? body.replaceAll("{{args}}", "$ARGUMENTS") : `${body}\n\n$ARGUMENTS`;
+}
+
+/** The TOML commands of Gemini CLI: a file in a subfolder is `<folder>:<name>`. */
+function parseGeminiCommands(dir: string): CommandTemplate[] {
+  if (!existsSync(dir)) return [];
+  const out: CommandTemplate[] = [];
+  for (const entry of readdirSync(dir, { recursive: true, encoding: "utf8" })) {
+    if (!entry.endsWith(".toml")) continue;
+    const full = join(dir, entry);
+    try {
+      const raw = Bun.TOML.parse(readFileSync(full, "utf8")) as { prompt?: unknown; description?: unknown };
+      if (typeof raw.prompt !== "string") continue;
+      const name = relative(dir, full)
+        .replace(/\.toml$/, "")
+        .replace(/[\\/]/g, ":");
+      out.push({
+        name,
+        content: geminiTemplate(raw.prompt),
+        path: full,
+        source: "project",
+        ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      });
+    } catch {}
+  }
+  return out;
+}
+
+/** The command folders of other agents in the project, in Markdown with the syntax of Claude Code. */
+const FOREIGN_COMMAND_DIRS = [
+  [".claude", "commands"],
+  [".cursor", "commands"],
+  [".opencode", "commands"],
+  [".pi", "prompts"],
+];
+
 export function loadCommands(options: {
   workspaceRoot: string;
   configDirOverride?: string;
   /** False for a workspace that the user did not trust: a command file can hold shell blocks, so none loads. */
   projectTrusted?: boolean;
 }): CommandTemplate[] {
-  const projectDir = join(options.workspaceRoot, ".agency", "commands");
+  const root = options.workspaceRoot;
+  const projectDir = join(root, ".agency", "commands");
   const userDir = join(options.configDirOverride ?? configDir(), "commands");
-  const project = options.projectTrusted === false ? [] : parseCommandFiles(projectDir, "project");
+  const project =
+    options.projectTrusted === false
+      ? []
+      : [
+          ...parseGeminiCommands(join(root, ".gemini", "commands")),
+          ...FOREIGN_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(root, ...parts), "project")),
+          // Last: `.agency/commands` wins on a name.
+          ...parseCommandFiles(projectDir, "project"),
+        ];
   const user = parseCommandFiles(userDir, "user");
   // project wins on name collision
   const map = new Map<string, CommandTemplate>();

@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Projects of other agents work as they are**: a trusted workspace now gives the
+  instructions of `GEMINI.md`, `.cursorrules`, `.cursor/rules/*.mdc` (with
+  `alwaysApply`, `globs` and `description`), `.windsurfrules`, `.clinerules` and
+  `.github/copilot-instructions.md`; the skills of `.claude/`, `.agents/`, `.cursor/`,
+  `.codex/`, `.pi/`, `.opencode/` and `.gemini/`; the commands of `.claude/`,
+  `.cursor/`, `.opencode/`, `.pi/prompts` and the TOML commands of Gemini CLI; and
+  the agent files of `.claude/`, `.cursor/`, `.codex/` and `.opencode/`.
 - **MCP servers of other clients**: a trusted workspace now also gives the MCP servers
   of `.cursor/mcp.json`, `.vscode/mcp.json`, `.gemini/settings.json`, `opencode.json`,
   `.codex/config.toml`, `.pi/mcp.json` and `.zed/settings.json`, with their keys and

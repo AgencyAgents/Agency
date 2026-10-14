@@ -85,8 +85,11 @@ function parseStringList(raw: string, file: string, field: string): string[] {
   return [...new Set(out)].sort();
 }
 
-/** Parse one agent file: strict frontmatter, body is the role prompt. */
-export function parseAgentFile(text: string, file: string): FileAgentDef {
+/**
+ * Parse one agent file: strict frontmatter, body is the role prompt. `foreign` reads the file of another agent: its
+ * other keys are left out, `readonly` of Cursor gives the read tools, and a `provider/model` of OpenCode is split.
+ */
+export function parseAgentFile(text: string, file: string, foreign = false): FileAgentDef {
   const handle = basename(file, ".md");
   if (!HANDLE_RE.test(handle)) {
     throw new Error(`agent file ${file}: handle "${handle}" must match [a-z][a-z0-9-]*`);
@@ -96,6 +99,7 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     throw new Error(`agent file ${file}: missing frontmatter (role: is required)`);
   }
   for (const key of Object.keys(split.fields)) {
+    if (foreign) continue;
     if (!(AGENT_FILE_FIELDS as readonly string[]).includes(key)) {
       throw new Error(`agent file ${file}: unknown field "${key}"`);
     }
@@ -116,7 +120,12 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     if (provider.length === 0) fail(file, "provider", "must be non-empty");
     def.provider = provider;
   }
-  const model = split.fields.model;
+  let model = split.fields.model;
+  const slash = model?.indexOf("/") ?? -1;
+  if (foreign && model !== undefined && slash > 0 && split.fields.provider === undefined) {
+    def.provider = model.slice(0, slash);
+    model = model.slice(slash + 1);
+  }
   if (model !== undefined && !CLAUDE_MODEL_ALIASES.has(model)) {
     if (model.length === 0) fail(file, "model", "must be non-empty");
     def.model = model;
@@ -133,6 +142,8 @@ export function parseAgentFile(text: string, file: string): FileAgentDef {
     def.tools = parseStringList(split.fields.tools, file, "tools").map(
       (name) => CLAUDE_TOOL_NAMES[name] ?? name,
     );
+  } else if (foreign && split.fields.readonly === "true") {
+    def.tools = ["glob", "grep", "read"];
   }
   if (split.fields.permissions !== undefined) {
     let parsed: unknown;
@@ -193,11 +204,12 @@ function loadAgentDir(
   dir: string,
   source: AgentSource,
   warn: (message: string) => void,
+  foreign = false,
 ): Map<string, FileAgentDef> {
   const out = new Map<string, FileAgentDef>();
   for (const file of discoverAgentFiles(dir)) {
     try {
-      const def = parseAgentFile(readFileSync(file, "utf8"), file);
+      const def = parseAgentFile(readFileSync(file, "utf8"), file, foreign);
       out.set(def.handle, { ...def, source, file });
     } catch (error) {
       warn(`skipped: ${error instanceof Error ? error.message : String(error)}`);
@@ -278,6 +290,17 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const warn = opts.warn ?? (() => {});
   for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
   if (opts.projectTrusted === false) return { agents: merged, seeded };
+  // The agent folders of Claude Code, Cursor, Codex and OpenCode in the project; `.agency/agents` wins on a handle.
+  for (const agent of [".claude", ".cursor", ".codex", ".opencode"]) {
+    for (const [handle, def] of loadAgentDir(
+      join(opts.workspaceRoot, agent, "agents"),
+      "project",
+      warn,
+      true,
+    )) {
+      merged.set(handle, def);
+    }
+  }
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
   for (const [handle, def] of loadAgentDir(projectDir, "project", warn)) merged.set(handle, def);
   return { agents: merged, seeded };

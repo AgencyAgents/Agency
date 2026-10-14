@@ -72,7 +72,11 @@ export function hasTrustGatedContent(workspaceRoot: string): boolean {
       existsSync(join(workspaceRoot, ".agency", dir)),
     ) ||
     existsSync(join(workspaceRoot, ".mcp.json")) ||
-    clientProjectPaths(workspaceRoot).some((file) => existsSync(file))
+    clientProjectPaths(workspaceRoot).some((file) => existsSync(file)) ||
+    // The skills, commands and agents of other agents load from a trusted workspace too.
+    [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini"].some((agent) =>
+      ["skills", "commands", "agents", "prompts"].some((dir) => existsSync(join(workspaceRoot, agent, dir))),
+    )
   );
 }
 
