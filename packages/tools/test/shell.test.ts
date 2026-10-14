@@ -132,7 +132,7 @@ describe("modelCommandEnv", () => {
 
   test("allowEnv keeps a secret name; denyEnv wins over it, and the keys of the harness never pass", () => {
     const env = { GITHUB_TOKEN: "t1", NPM_TOKEN: "t2", AGENCY_X_API_KEY: "k", MY_PAT: "p", PATH: "/bin" };
-    setDeniedCommandEnv(["MY_PAT", "NPM_TOKEN"], ["github_token", "NPM_*", "AGENCY_*"]);
+    setDeniedCommandEnv(["MY_PAT", "NPM_TOKEN"], ["GITHUB_TOKEN", "NPM_*", "AGENCY_*"]);
     try {
       expect(modelCommandEnv(env)).toEqual({ GITHUB_TOKEN: "t1", PATH: "/bin" });
     } finally {
