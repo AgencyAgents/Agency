@@ -408,7 +408,11 @@ export async function executeTurn(
         }
         let turnScope: SessionScope | undefined;
         if (builtinsMode) {
-          turnScope = await getOrCreateScope(sessionId, mentioned.length === 1 ? mentioned[0] : undefined);
+          turnScope = await getOrCreateScope(
+            sessionId,
+            mentioned.length === 1 ? mentioned[0] : undefined,
+            params.mcp,
+          );
           await turnScope.todos.hydrate(sessionId);
           await applyMcpPrompt(turnScope.mcp, params.session);
         }

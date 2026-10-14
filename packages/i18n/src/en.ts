@@ -215,6 +215,7 @@ export const en = {
   "cli.auth.key_prompt": "API key for {provider}:",
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
+  "cli.error.invalid_mcp_config": "--mcp-config is not valid: {detail}",
   "cli.mcp.usage":
     "Usage: agency mcp add|add-json|list|get|remove|login|logout <server> | agency mcp import <client> | agency mcp serve",
   "cli.mcp.add_usage":

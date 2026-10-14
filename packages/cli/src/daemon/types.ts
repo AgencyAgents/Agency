@@ -168,6 +168,8 @@ export interface RunTurnParams {
   permissionMode?: PermissionMode;
   /** Permission rules of this turn (`--allowed-tools`, `--disallowed-tools`): they win over those of the config. */
   permissions?: Record<string, ToolPermissionValue>;
+  /** MCP servers of `--mcp-config`: beside those of the daemon, or in their place when `strict`. */
+  mcp?: { servers: Record<string, unknown>; strict: boolean };
   /** Headless turns have no approval surface: asks refuse at once with a
    *  typed reason instead of waiting on a responder that never comes. */
   nonInteractive?: boolean;
@@ -251,6 +253,7 @@ export interface SessionSendParams {
   budget?: Budget;
   permissionMode?: PermissionMode;
   permissions?: Record<string, ToolPermissionValue>;
+  mcp?: RunTurnParams["mcp"];
   maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;
@@ -656,7 +659,7 @@ export interface DaemonContext {
   warnPersistence: (action: string, error: unknown) => void;
   createTraceRecorder: (trace: ChildTraceSpec) => TraceRecorder | undefined;
   sessionScopes: Map<string, SessionScope>;
-  getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
+  getOrCreateScope: (sessionId: string, handle?: string, mcp?: RunTurnParams["mcp"]) => Promise<SessionScope>;
   teamRegistry: AgentRegistry;
   pluginAgents: Array<{ pluginId: string; agent: PluginAgentContribution }>;
   pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;

@@ -37,6 +37,7 @@ export interface RunHeadlessOptions {
   permissionMode?: PermissionMode;
   /** Permission rules of this turn: they win over those of the config. */
   permissions?: Record<string, ToolPermissionValue>;
+  mcp?: RunTurnParams["mcp"];
   maxToolIterations?: number;
   budget?: RunTurnParams["budget"];
   outputSchema?: Record<string, unknown>;
@@ -190,6 +191,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       session,
       permissionMode: options.permissionMode,
       ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
+      ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
       maxToolIterations: options.maxToolIterations,
       ...(options.budget === undefined ? {} : { budget: options.budget }),
       ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),

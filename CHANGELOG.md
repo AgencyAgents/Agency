@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`--mcp-config` and `--strict-mcp-config`**: `-p` takes the MCP servers of a JSON file
+  or of JSON text for one run, as Claude Code does in CI.
 - **MCP files of more clients**: the project files of Copilot CLI (`.github/mcp.json`),
   Amp, Crush, Qwen Code and Kilo Code give MCP servers, and `agency mcp import` reads the
   user files of Copilot CLI, Amp, Crush, Goose, Qwen Code, Cline, Roo Code and Kilo Code.

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import { clientProjectFiles } from "./foreign.ts";
 
@@ -108,6 +108,20 @@ export function loadProjectMcpServers(
     { ...pathVars(workspaceRoot), ...env },
     warn,
   );
+}
+
+/**
+ * The servers of a `--mcp-config` value, as Claude Code takes it: a JSON file or JSON text, with or without the
+ * `mcpServers` key. `${VAR}` takes the environment of the caller, not that of the daemon.
+ */
+export function loadMcpConfigArg(
+  value: string,
+  cwd: string,
+  env: Record<string, string | undefined> = process.env,
+): McpServersConfig {
+  const text = value.trimStart().startsWith("{") ? value : readFileSync(resolve(cwd, value), "utf8");
+  const raw = JSON.parse(text) as { mcpServers?: unknown };
+  return parseMcpServers(expandEnv(raw.mcpServers ?? raw, { ...pathVars(cwd), ...env }));
 }
 
 /** The servers that `agency mcp import` wrote to `mcp/` of the user config directory. */

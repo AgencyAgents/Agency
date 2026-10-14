@@ -49,6 +49,7 @@ import {
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
+import { loadMcpConfigArg } from "@agency/tools";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
@@ -133,6 +134,8 @@ Options:
   --permission-mode <mode> With -p: ask (default), allow-edits, auto, allow-all, or deny
   --allowed-tools <rules>  With -p: these tools run with no ask, as rules of Claude Code
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
+  --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
+                           (repeatable); --strict-mcp-config uses only these servers
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
@@ -192,6 +195,9 @@ export interface ParsedArgv {
   appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
   maxTotalCost: number | undefined;
+  /** `--mcp-config <file|json>` of `-p`: MCP servers of this run; `--strict-mcp-config` drops the others. */
+  mcpConfig: string[];
+  strictMcpConfig: boolean;
   /** The flags of `mcp add`: `--env KEY=value`, `--header "Name: value"`, `--transport`, `--scope`. */
   serverEnv: string[];
   headers: string[];
@@ -268,6 +274,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     device: false,
     images: [],
     workflowArgs: [],
+    mcpConfig: [],
+    strictMcpConfig: false,
     serverEnv: [],
     headers: [],
     transport: undefined,
@@ -417,6 +425,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--arg":
         parsed.workflowArgs.push(value());
+        break;
+      case "--mcp-config":
+        parsed.mcpConfig.push(value());
+        break;
+      case "--strict-mcp-config":
+        parsed.strictMcpConfig = true;
         break;
       // The flags of `mcp add`, as `claude mcp add` spells them.
       case "-e":
@@ -679,6 +693,22 @@ async function runPrintMode(
       throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
     permissions = rules.permissions;
   }
+  let mcp: { servers: Record<string, unknown>; strict: boolean } | undefined;
+  if (parsed.mcpConfig.length > 0 || parsed.strictMcpConfig) {
+    const servers: Record<string, unknown> = {};
+    for (const value of parsed.mcpConfig) {
+      try {
+        Object.assign(servers, loadMcpConfigArg(value, deps.cwd ?? process.cwd(), env));
+      } catch (error) {
+        throw new Error(
+          t("cli.error.invalid_mcp_config", {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    mcp = { servers, strict: parsed.strictMcpConfig };
+  }
   // OpenAI asks an app to show while the plan pays.
   if (provider === CHATGPT_PROVIDER && parsed.format !== "json" && !parsed.streamJson) {
     err(t("cli.progress.chatgpt_plan", { url: CHATGPT_USAGE_URL }));
@@ -767,6 +797,7 @@ async function runPrintMode(
         onEvent,
         permissionMode: parsed.permissionMode,
         ...(permissions === undefined ? {} : { permissions }),
+        ...(mcp === undefined ? {} : { mcp }),
         maxToolIterations: parsed.maxSteps,
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
@@ -791,6 +822,7 @@ async function runPrintMode(
     onEvent,
     permissionMode: parsed.permissionMode,
     ...(permissions === undefined ? {} : { permissions }),
+    ...(mcp === undefined ? {} : { mcp }),
     maxToolIterations: parsed.maxSteps,
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });

@@ -1032,6 +1032,55 @@ describe("-p headless mode", () => {
     expect(headless.calls).toHaveLength(1);
   });
 
+  test("--mcp-config gives the MCP servers of a file and of JSON text to the turn; a bad one fails", async () => {
+    const cwd = tempDir("agency-ep-mcp-");
+    writeFileSync(join(cwd, "servers.json"), JSON.stringify({ mcpServers: { fs: { command: "fs-srv" } } }));
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const json = JSON.stringify({
+      docs: { url: "https://d.test/mcp", headers: { "X-Key": `\${DOCS_KEY}` } },
+    });
+    const argv = [
+      "-p",
+      "hi",
+      "--model",
+      "openai/fake-1",
+      "--mcp-config",
+      "servers.json",
+      "--mcp-config",
+      json,
+    ];
+    const env = { ...baseDeps().env, DOCS_KEY: "k-1" };
+    expect(
+      await runEntrypoint([...argv, "--strict-mcp-config"], {
+        ...baseDeps({ cwd, env }),
+        ...deps,
+        ...headless,
+      }),
+    ).toBe(0);
+    expect(headless.calls[0]?.mcp).toEqual({
+      servers: {
+        fs: { command: "fs-srv" },
+        docs: { url: "https://d.test/mcp", headers: { "X-Key": "k-1" } },
+      },
+      strict: true,
+    });
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1"], { ...baseDeps(), ...deps, ...headless });
+    expect(headless.calls[1]?.mcp).toBeUndefined();
+    const bad = capture();
+    const code = await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--mcp-config", "missing.json"],
+      {
+        ...baseDeps({ cwd }),
+        ...bad.deps,
+        ...headless,
+      },
+    );
+    expect(code).toBe(1);
+    expect(bad.err.join("\n")).toContain("--mcp-config is not valid");
+    expect(headless.calls).toHaveLength(2);
+  });
+
   test("--max-steps parses, rejects a bad value, and reaches both kinds of turn", async () => {
     expect(parseArgv(["-p", "hi"]).maxSteps).toBeUndefined();
     expect(parseArgv(["-p", "hi", "--max-steps", "80"]).maxSteps).toBe(80);
