@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`agency mcp add`, `add-json`, `list`, `get` and `remove`**: add an MCP server with
+  the flags of `claude mcp add` (`--env`, `--header`, `--transport`, `--scope`), to a file
+  of the user config or to the `.mcp.json` of the workspace, and show where each server
+  comes from.
 - **Jupyter notebooks**: `read` shows a `.ipynb` as its cells and the text of their
   outputs, and a new `notebook_edit` tool replaces, inserts or deletes a cell, as the
   NotebookEdit tool of Claude Code does.

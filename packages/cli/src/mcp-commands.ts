@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { configDir, dataDir, loadConfig } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
-import { t } from "@agency/i18n";
+import { type MessageKey, t } from "@agency/i18n";
 import { createKeychain, type KeychainBackend, openInBrowser } from "@agency/providers";
 import {
   importMcpServers,
@@ -13,6 +13,8 @@ import {
   loadUserMcpServers,
   MCP_IMPORT_SOURCES,
   type McpImportSource,
+  type McpServerConfig,
+  McpServerConfigSchema,
   signInMcpServer,
 } from "@agency/tools";
 
@@ -61,38 +63,229 @@ function importCmd(options: {
   return 0;
 }
 
-/** `agency mcp login|logout <server>`: the sign-in of an MCP server over HTTP. */
-export async function mcpCmd(options: {
-  action: string | undefined;
-  name: string | undefined;
+const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The options of `agency mcp`, beside the action and the server name. */
+interface McpCmdOptions {
   workspaceRoot: string;
-  configDir?: string;
+  configDir: string;
   env: NodeJS.ProcessEnv;
-  keychain?: KeychainBackend;
-  openUrl?: (url: string) => Promise<void> | void;
+  /** The words after the server name: the command or url of `add`, the JSON of `add-json`. */
+  rest: string[];
+  serverEnv: string[];
+  headers: string[];
+  transport: string | undefined;
+  scope: string | undefined;
+  overwrite: boolean;
+  json: boolean;
   out: (line: string) => void;
   err: (line: string) => void;
-}): Promise<number> {
+}
+
+/** The servers that the daemon of the workspace starts, each with its origin; a later origin wins on a name. */
+function knownServers(o: Pick<McpCmdOptions, "workspaceRoot" | "configDir" | "env">) {
+  const config = loadConfig({ globalDir: o.configDir, env: o.env });
+  const trusted = createFileTrustStore(join(dataDir(o.env), "trust.json")).isTrusted(o.workspaceRoot);
+  const rows = new Map<string, { origin: string; started: boolean; server: McpServerConfig }>();
+  const add = (origin: string, started: boolean, servers: Record<string, unknown> | undefined) => {
+    for (const [name, server] of Object.entries(servers ?? {}))
+      rows.set(name, { origin, started, server: server as McpServerConfig });
+  };
+  add("project", trusted, loadProjectMcpServers(o.workspaceRoot));
+  add("user", true, loadUserMcpServers(o.configDir));
+  add("config", true, config.mcpServers);
+  return { rows, trusted };
+}
+
+/** The file that `add` writes: `mcp/added.json` of the user config, or the `.mcp.json` of the workspace. */
+const addedFile = (o: Pick<McpCmdOptions, "workspaceRoot" | "configDir">, scope: string | undefined) =>
+  scope === "project" ? join(o.workspaceRoot, ".mcp.json") : join(o.configDir, "mcp", "added.json");
+
+function readServerFile(file: string): { raw: Record<string, unknown>; servers: Record<string, unknown> } {
+  const raw = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>) : {};
+  return { raw, servers: { ...(raw.mcpServers as Record<string, unknown> | undefined) } };
+}
+
+function writeServerFile(file: string, raw: Record<string, unknown>, servers: Record<string, unknown>): void {
+  mkdirSync(dirname(file), { recursive: true });
+  // The user file can hold keys of the servers: only the user can read it.
+  writeFileSync(file, `${JSON.stringify({ ...raw, mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** `KEY=value` of `--env` or `Name: value` of `--header` as a record. */
+function pairs(list: string[], separator: string, message: MessageKey): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of list) {
+    const at = item.indexOf(separator);
+    if (at <= 0) throw new Error(t(message, { value: item }));
+    out[item.slice(0, at).trim()] = item.slice(at + 1).trim();
+  }
+  return out;
+}
+
+/** The server of `add`: a url with `--transport http` (or a lone url), else a command and its arguments. */
+function flagServer(o: McpCmdOptions): Record<string, unknown> {
+  const [target, ...args] = o.rest;
+  const transport =
+    o.transport ?? (args.length === 0 && /^https?:\/\//i.test(target ?? "") ? "http" : "stdio");
+  if (transport === "sse") throw new Error(t("cli.mcp.sse"));
+  if (transport !== "http" && transport !== "stdio") throw new Error(t("cli.mcp.transport", { transport }));
+  if (target === undefined || (transport === "http" && args.length > 0))
+    throw new Error(t("cli.mcp.add_usage"));
+  if (transport === "stdio") {
+    const env = pairs(o.serverEnv, "=", "cli.mcp.bad_env");
+    return { type: "stdio", command: target, args, ...(Object.keys(env).length > 0 ? { env } : {}) };
+  }
+  if (!URL.canParse(target)) throw new Error(t("cli.mcp.bad_url", { url: target }));
+  const headers = pairs(o.headers, ":", "cli.mcp.bad_header");
+  return { type: "http", url: target, ...(Object.keys(headers).length > 0 ? { headers } : {}) };
+}
+
+/** The server of `add-json`: the entry of an `mcpServers` map, as Claude Code writes it. */
+function jsonServer(rest: string[]): Record<string, unknown> {
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(rest.join(" ")) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      t("cli.mcp.bad_json", { reason: error instanceof Error ? error.message : String(error) }),
+    );
+  }
+  if (raw?.type === "sse") throw new Error(t("cli.mcp.sse"));
+  const parsed = McpServerConfigSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new Error(
+      t("cli.mcp.bad_json", {
+        reason: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "),
+      }),
+    );
+  if (raw.command === undefined && raw.url === undefined)
+    throw new Error(t("cli.mcp.bad_json", { reason: "it needs a command or a url" }));
+  return raw;
+}
+
+function addCmd(name: string | undefined, json: boolean, o: McpCmdOptions): number {
+  if (name === undefined || !SERVER_NAME.test(name)) {
+    o.err(t("cli.mcp.add_usage"));
+    return 1;
+  }
+  const file = addedFile(o, o.scope);
+  try {
+    const server = json ? jsonServer(o.rest) : flagServer(o);
+    const { raw, servers } = readServerFile(file);
+    if (servers[name] !== undefined && !o.overwrite) {
+      o.err(t("cli.mcp.exists", { name, file }));
+      return 1;
+    }
+    writeServerFile(file, raw, { ...servers, [name]: server });
+  } catch (error) {
+    o.err(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  o.out(t("cli.mcp.added", { name, file }));
+  if (o.scope === "project" && !knownServers(o).trusted) o.out(t("cli.mcp.untrusted"));
+  return 0;
+}
+
+/** A server as `list` and `get` print it: the values of its env and headers are hidden. */
+function shown(server: McpServerConfig): McpServerConfig {
+  const hide = (map: Record<string, string> | undefined) =>
+    map && Object.fromEntries(Object.keys(map).map((key) => [key, "***"]));
+  return {
+    ...server,
+    ...(server.env ? { env: hide(server.env) } : {}),
+    ...(server.headers ? { headers: hide(server.headers) } : {}),
+  };
+}
+
+function listCmd(o: McpCmdOptions): number {
+  const { rows } = knownServers(o);
+  if (o.json) {
+    const entries = [...rows].map(([name, row]) => [name, { ...row, server: shown(row.server) }]);
+    o.out(JSON.stringify(Object.fromEntries(entries)));
+    return 0;
+  }
+  if (rows.size === 0) o.out(t("cli.mcp.none"));
+  for (const [name, { origin, started, server }] of rows) {
+    const target = server.url ?? [server.command, ...(server.args ?? [])].join(" ");
+    o.out(`${name} (${started ? origin : t("cli.mcp.not_started", { origin })}): ${target}`);
+  }
+  return 0;
+}
+
+function getCmd(name: string | undefined, o: McpCmdOptions): number {
+  const { rows } = knownServers(o);
+  const row = name === undefined ? undefined : rows.get(name);
+  if (name === undefined || row === undefined) {
+    o.err(t("cli.mcp.unknown", { name: name ?? "", names: [...rows.keys()].join(", ") || "-" }));
+    return 1;
+  }
+  o.out(JSON.stringify({ name, ...row, server: shown(row.server) }, null, 2));
+  return 0;
+}
+
+function removeCmd(name: string | undefined, o: McpCmdOptions): number {
+  if (name === undefined) {
+    o.err(t("cli.mcp.usage"));
+    return 1;
+  }
+  for (const scope of o.scope === undefined ? ["user", "project"] : [o.scope]) {
+    const file = addedFile(o, scope);
+    const { raw, servers } = readServerFile(file);
+    if (servers[name] === undefined) continue;
+    delete servers[name];
+    writeServerFile(file, raw, servers);
+    o.out(t("cli.mcp.removed", { name, file }));
+    return 0;
+  }
+  const row = knownServers(o).rows.get(name);
+  o.err(
+    row ? t("cli.mcp.not_added", { name, origin: row.origin }) : t("cli.mcp.unknown", { name, names: "-" }),
+  );
+  return 1;
+}
+
+/** `agency mcp add|add-json|list|get|remove|login|logout|import`. */
+export async function mcpCmd(
+  options: Omit<McpCmdOptions, "configDir"> & {
+    action: string | undefined;
+    name: string | undefined;
+    configDir?: string;
+    keychain?: KeychainBackend;
+    openUrl?: (url: string) => Promise<void> | void;
+  },
+): Promise<number> {
   const { action, name, out, err } = options;
   const userDir = options.configDir ?? configDir(options.env);
-  if (action === "import") return importCmd({ source: name, configDir: userDir, env: options.env, out, err });
+  const o = { ...options, configDir: userDir };
+  if (o.scope !== undefined && o.scope !== "user" && o.scope !== "project") {
+    err(t("cli.mcp.scope", { scope: o.scope }));
+    return 1;
+  }
+  switch (action) {
+    case "import":
+      return importCmd({ source: name, configDir: userDir, env: options.env, out, err });
+    case "add":
+    case "add-json":
+      return addCmd(name, action === "add-json", o);
+    case "list":
+      return listCmd(o);
+    case "get":
+      return getCmd(name, o);
+    case "remove":
+      return removeCmd(name, o);
+  }
   if ((action !== "login" && action !== "logout") || !name) {
     err(t("cli.mcp.usage"));
     return 1;
   }
-  // The servers of the daemon: those of the user's config win, and the files of a workspace count once it is trusted.
-  const config = loadConfig({ globalDir: options.configDir, env: options.env });
-  const trusted = createFileTrustStore(join(dataDir(options.env), "trust.json")).isTrusted(
-    options.workspaceRoot,
-  );
-  const servers = {
-    ...(trusted ? loadProjectMcpServers(options.workspaceRoot) : {}),
-    ...loadUserMcpServers(userDir),
-    ...config.mcpServers,
-  } as Record<string, { url?: string } | undefined>;
-  const url = servers[name]?.url;
-  if (servers[name] === undefined) {
-    err(t("cli.mcp.unknown", { name, names: Object.keys(servers).join(", ") || "-" }));
+  // The servers of the daemon: a server of an untrusted workspace does not start.
+  const { rows } = knownServers(o);
+  const started = [...rows].filter(([, row]) => row.started);
+  const server = started.find(([key]) => key === name)?.[1].server;
+  const url = server?.url;
+  if (server === undefined) {
+    err(t("cli.mcp.unknown", { name, names: started.map(([key]) => key).join(", ") || "-" }));
     return 1;
   }
   if (url === undefined) {

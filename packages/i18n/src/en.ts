@@ -216,7 +216,25 @@ export const en = {
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
   "cli.mcp.usage":
-    "Usage: agency mcp login <server> | agency mcp logout <server> | agency mcp import <client> | agency mcp serve",
+    "Usage: agency mcp add|add-json|list|get|remove|login|logout <server> | agency mcp import <client> | agency mcp serve",
+  "cli.mcp.add_usage":
+    'Usage: agency mcp add [--scope user|project] [--env KEY=value] <name> -- <command> [args], or agency mcp add [--header "Name: value"] <name> <url>, or agency mcp add-json <name> <json>. A name has letters, digits, _ and -.',
+  "cli.mcp.scope": 'Scope "{scope}" is not known: use user or project.',
+  "cli.mcp.transport": 'Transport "{transport}" is not known: use stdio or http.',
+  "cli.mcp.sse":
+    "Agency does not use the SSE transport of MCP: give the Streamable HTTP url of the server (often /mcp in place of /sse).",
+  "cli.mcp.bad_env": "--env takes KEY=value: {value}",
+  "cli.mcp.bad_header": '--header takes "Name: value": {value}',
+  "cli.mcp.bad_url": 'The url "{url}" is not valid.',
+  "cli.mcp.bad_json": "The JSON of the server is not valid: {reason}",
+  "cli.mcp.exists": 'MCP server "{name}" is in {file}: --overwrite replaces it.',
+  "cli.mcp.added": 'Added MCP server "{name}" to {file}. A new session starts it.',
+  "cli.mcp.untrusted": "The workspace is not trusted: its .mcp.json loads after agency trust.",
+  "cli.mcp.none": "No MCP servers.",
+  "cli.mcp.not_started": "{origin}, not started: the workspace is not trusted",
+  "cli.mcp.removed": 'Removed MCP server "{name}" from {file}.',
+  "cli.mcp.not_added":
+    'MCP server "{name}" was not added with agency mcp add ({origin}): remove it from the file it comes from.',
   "cli.mcp.import_usage": "Usage: agency mcp import <client>. Clients: {sources}",
   "cli.mcp.import_none": "No MCP file of {source} was found.",
   "cli.mcp.import_empty": "The file of {source} ({file}) has no MCP servers. Nothing was written.",

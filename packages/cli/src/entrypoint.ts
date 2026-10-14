@@ -92,6 +92,14 @@ Commands:
                            RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
   auth logout <provider>   Remove the key or sign-in of a provider (a ChatGPT sign-in is revoked)
+  mcp add <name> -- <command> [args]
+                           Add an MCP server that runs as a command (--env KEY=value);
+                           --scope project writes the .mcp.json of the workspace
+  mcp add <name> <url>     Add an MCP server over HTTP (--header "Name: value")
+  mcp add-json <name> <json>  Add an MCP server from its entry of .mcp.json
+  mcp list                 Show the MCP servers and the origin of each
+  mcp get <name>           Show one MCP server, with the values of env and headers hidden
+  mcp remove <name>        Remove an MCP server that mcp add added
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
   mcp import <client>      Copy the MCP servers of Claude Code, Cursor, Codex, Gemini,
                            OpenCode, Pi, VS Code, Windsurf, Zed or Claude Desktop
@@ -183,6 +191,11 @@ export interface ParsedArgv {
   appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
   maxTotalCost: number | undefined;
+  /** The flags of `mcp add`: `--env KEY=value`, `--header "Name: value"`, `--transport`, `--scope`. */
+  serverEnv: string[];
+  headers: string[];
+  transport: string | undefined;
+  scope: string | undefined;
   /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
   streamJson: boolean;
   format: "text" | "json";
@@ -254,6 +267,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
     device: false,
     images: [],
     workflowArgs: [],
+    serverEnv: [],
+    headers: [],
+    transport: undefined,
+    scope: undefined,
     overwrite: false,
     rollback: false,
     continueLast: false,
@@ -399,6 +416,23 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--arg":
         parsed.workflowArgs.push(value());
+        break;
+      // The flags of `mcp add`, as `claude mcp add` spells them.
+      case "-e":
+      case "--env":
+        parsed.serverEnv.push(value());
+        break;
+      case "-H":
+      case "--header":
+        parsed.headers.push(value());
+        break;
+      case "-t":
+      case "--transport":
+        parsed.transport = value();
+        break;
+      case "-s":
+      case "--scope":
+        parsed.scope = value();
         break;
       case "--overwrite":
         parsed.overwrite = true;
@@ -1556,6 +1590,13 @@ Subcommands:
       return mcpCmd({
         action: parsed.subcommand,
         name: parsed.args[0],
+        rest: parsed.args.slice(1),
+        serverEnv: parsed.serverEnv,
+        headers: parsed.headers,
+        transport: parsed.transport,
+        scope: parsed.scope,
+        overwrite: parsed.overwrite,
+        json: parsed.format === "json",
         workspaceRoot: workspaceRootOf(parsed, deps),
         ...(deps.configDir ? { configDir: deps.configDir } : {}),
         env: envOf(deps),

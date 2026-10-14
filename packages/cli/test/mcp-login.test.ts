@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileFallbackBackend } from "@agency/providers";
@@ -133,4 +133,69 @@ test("mcp import copies the MCP servers of another client to the user config, an
   expect(err.at(-1)).toContain("cursor (found)");
   // The imported server is a server of the user: logout finds it.
   expect(await runEntrypoint(["mcp", "logout", "docs"], deps)).toBe(0);
+});
+
+test("mcp add, add-json, list, get and remove manage the servers of the user and of the workspace", async () => {
+  const configDir = tmp("cfg");
+  const ws = tmp("ws");
+  const out: string[] = [];
+  const err: string[] = [];
+  const deps: EntrypointDeps = {
+    configDir,
+    cwd: ws,
+    env: { AGENCY_HOME: tmp("home") },
+    out: (line) => void out.push(line),
+    err: (line) => void err.push(line),
+  };
+  const run = (...argv: string[]) => runEntrypoint(["mcp", ...argv], deps);
+  expect(await run("add", "-e", "KEY=secret", "fs", "--", "npx", "-y", "fs-server", "--root", ".")).toBe(0);
+  expect(
+    await run("add", "--transport", "http", "-H", "Authorization: Bearer t0", "docs", "https://d.test/mcp"),
+  ).toBe(0);
+  expect(await run("add-json", "notes", '{"type":"http","url":"https://n.test/mcp"}')).toBe(0);
+  expect(await run("add", "-s", "project", "lint", "--", "node", "lint.js")).toBe(0);
+  expect(out.at(-1)).toContain("not trusted");
+  const saved = JSON.parse(readFileSync(join(configDir, "mcp", "added.json"), "utf8"));
+  expect(saved.mcpServers.fs).toEqual({
+    type: "stdio",
+    command: "npx",
+    args: ["-y", "fs-server", "--root", "."],
+    env: { KEY: "secret" },
+  });
+  expect(saved.mcpServers.docs).toEqual({
+    type: "http",
+    url: "https://d.test/mcp",
+    headers: { Authorization: "Bearer t0" },
+  });
+
+  out.length = 0;
+  expect(await run("list")).toBe(0);
+  expect(out).toEqual([
+    "lint (project, not started: the workspace is not trusted): node lint.js",
+    "fs (user): npx -y fs-server --root .",
+    "docs (user): https://d.test/mcp",
+    "notes (user): https://n.test/mcp",
+  ]);
+  expect(await run("get", "fs")).toBe(0);
+  expect(out.at(-1)).toContain('"KEY": "***"');
+  expect(out.join("\n")).not.toContain("secret");
+
+  // A name in use, a bad name, SSE, a pair with no separator and a scope that is not known are refused.
+  expect(await run("add", "fs", "--", "node")).toBe(1);
+  expect(err.at(-1)).toContain("--overwrite");
+  expect(await run("add", "--overwrite", "fs", "--", "node")).toBe(0);
+  expect(await run("add", "a.b", "--", "node")).toBe(1);
+  expect(await run("add", "-t", "sse", "old", "https://o.test/sse")).toBe(1);
+  expect(err.at(-1)).toContain("SSE");
+  expect(await run("add", "-e", "NOVALUE", "x", "--", "node")).toBe(1);
+  expect(await run("add-json", "y", '{"args":["a"]}')).toBe(1);
+  expect(await run("list", "-s", "local")).toBe(1);
+
+  expect(await run("remove", "fs")).toBe(0);
+  expect(await run("remove", "lint")).toBe(0);
+  expect(JSON.parse(readFileSync(join(ws, ".mcp.json"), "utf8"))).toEqual({ mcpServers: {} });
+  expect(await run("remove", "fs")).toBe(1);
+  out.length = 0;
+  expect(await runEntrypoint(["mcp", "list", "--format", "json"], deps)).toBe(0);
+  expect(Object.keys(JSON.parse(out[0] ?? "{}"))).toEqual(["docs", "notes"]);
 });
