@@ -73,6 +73,14 @@ const GroupSchema = z.object({
         if: z.string().optional(),
       }),
       z.object({
+        type: z.literal("agent"),
+        /** A task for an agent with the read tools of the session: `$ARGUMENTS` becomes the event as JSON. */
+        prompt: z.string().min(1),
+        model: z.string().optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+      z.object({
         type: z.literal("mcp_tool"),
         /** A configured MCP server; `plugin:<plugin>:<server>` of Claude Code is the server of an installed plugin. */
         server: z.string().min(1),
@@ -87,7 +95,7 @@ const GroupSchema = z.object({
 });
 type HookEntry = z.infer<typeof GroupSchema>["hooks"][number];
 type HttpHook = Extract<HookEntry, { type: "http" }>;
-type PromptHook = Extract<HookEntry, { type: "prompt" }>;
+type PromptHook = Extract<HookEntry, { type: "prompt" | "agent" }>;
 type McpToolHook = Extract<HookEntry, { type: "mcp_tool" }>;
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
@@ -176,6 +184,13 @@ export interface HookRunOptions {
   onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
   /** The reply of a model to a prompt hook. Absent: a prompt hook fails, and does not block. */
   askModel?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<string>;
+  /** The last reply of an agent with read tools to an agent hook. Absent: an agent hook fails, and does not block. */
+  askAgent?: (
+    prompt: string,
+    model: string | undefined,
+    signal: AbortSignal,
+    sessionId: string | undefined,
+  ) => Promise<string>;
   /** Calls a tool of an MCP server of the session. Absent: an `mcp_tool` hook fails, and does not block. */
   callMcpTool?: (call: {
     sessionId: string | undefined;
@@ -285,34 +300,44 @@ const PROMPT_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
   "UserPromptExpansion",
 ]);
 const PROMPT_TIMEOUT_S = 30;
+const AGENT_TIMEOUT_S = 60;
 const PROMPT_RULE =
   'Answer with one JSON object and nothing else: {"ok": true} when the condition holds, or {"ok": false, "reason": "<what the agent must do>"} when it does not. Add "impossible": true when the condition can never hold.';
+const AGENT_RULE =
+  'Look at the files with your tools as you need. Then end with one JSON object and nothing else: {"ok": true} when the condition holds, or {"ok": false, "reason": "<what the agent must do>"} when it does not.';
 
 /**
- * A prompt hook in the form of a command result, as in Claude Code: `ok: false` blocks with the reason, except on a
- * PermissionRequest, and on a stop that the model calls impossible. Another answer, or a failed call, does not block.
+ * A prompt or agent hook in the form of a command result, as in Claude Code: `ok: false` blocks with the reason,
+ * except on a PermissionRequest, and on a stop that the model of a prompt hook calls impossible. Another answer, or a
+ * failed call, does not block.
  */
 async function runPrompt(
   entry: PromptHook,
   input: string,
   event: CommandHookEvent,
   opts: HookRunOptions,
+  sessionId: string | undefined,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  if (opts.askModel === undefined) return { code: null, stdout: "", stderr: "no model for a prompt hook" };
+  const agent = entry.type === "agent";
+  const { askModel, askAgent } = opts;
+  if (agent ? askAgent === undefined : askModel === undefined) {
+    return { code: null, stdout: "", stderr: `no model for a ${entry.type} hook` };
+  }
   const question = entry.prompt.includes("$ARGUMENTS")
     ? entry.prompt.replaceAll("$ARGUMENTS", input)
     : `${entry.prompt}\n\n${input}`;
   try {
-    const reply = await opts.askModel(
-      `${question}\n\n${PROMPT_RULE}`,
-      entry.model,
-      AbortSignal.timeout((entry.timeout ?? PROMPT_TIMEOUT_S) * 1000),
+    const signal = AbortSignal.timeout(
+      (entry.timeout ?? (agent ? AGENT_TIMEOUT_S : PROMPT_TIMEOUT_S)) * 1000,
     );
-    const answer = parseJson(/\{[\s\S]*\}/.exec(reply)?.[0] ?? "");
+    const reply = agent
+      ? await askAgent?.(`${question}\n\n${AGENT_RULE}`, entry.model, signal, sessionId)
+      : await askModel?.(`${question}\n\n${PROMPT_RULE}`, entry.model, signal);
+    const answer = parseJson(/\{[\s\S]*\}/.exec(reply ?? "")?.[0] ?? "");
     if (answer?.ok === true) return { code: 0, stdout: "", stderr: "" };
     if (answer?.ok !== false) return { code: 1, stdout: "", stderr: "the answer has no ok" };
     const stop = event === "Stop" || event === "SubagentStop";
-    if (event === "PermissionRequest" || (stop && answer.impossible === true)) {
+    if (event === "PermissionRequest" || (stop && !agent && answer.impossible === true)) {
       return { code: 0, stdout: "", stderr: "" };
     }
     const reason = typeof answer.reason === "string" && answer.reason ? answer.reason : undefined;
@@ -501,12 +526,19 @@ export async function runCommandHooks(
         continue;
       }
       if (entry.type === "prompt" && !PROMPT_EVENTS.has(event)) continue;
+      if (entry.type === "agent" && (!PROMPT_EVENTS.has(event) || event === "PermissionRequest")) continue;
       const timeoutS = entry.timeout ?? DEFAULT_TIMEOUT_S;
       const out =
         entry.type === "http"
           ? await runHttp(entry, stdin, timeoutS)
-          : entry.type === "prompt"
-            ? await runPrompt(entry, stdin, event, opts)
+          : entry.type === "prompt" || entry.type === "agent"
+            ? await runPrompt(
+                entry,
+                stdin,
+                event,
+                opts,
+                typeof input.session_id === "string" ? input.session_id : undefined,
+              )
             : entry.type === "mcp_tool"
               ? await runMcpTool(entry, { hook_event_name: event, cwd: opts.cwd, ...input }, opts, timeoutS)
               : entry.cursor !== undefined

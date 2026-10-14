@@ -28,6 +28,7 @@ import {
   type ProviderConfig,
   parseModelRef,
   resolveSmallModel,
+  runTurn,
   type SessionStore,
   type SystemReminder,
   type TraceRecorder,
@@ -40,6 +41,7 @@ import {
   type ApprovalManager,
   type CallerIdentity,
   type Capabilities,
+  FULL_CAPABILITIES,
   globToRegExpSource,
   type PermissionMode,
   type PermissionsGate,
@@ -439,25 +441,33 @@ export function checkTeamBudgets(params: {
   }
 }
 
-/** The model of a prompt hook: that of the hook, else `small_model`, else `model`, with the key of its provider. */
-export function promptHookModel(opts: {
+interface HookModelOptions {
   config: Config;
   providers: Record<string, ProviderConfig>;
   adapterFor: (provider: string) => ProviderAdapter;
   http: HttpClient;
   getKeychain: () => Promise<KeychainBackend>;
-}): NonNullable<HookRunOptions["askModel"]> {
+}
+
+/** The model of a prompt or agent hook: that of the hook, else `small_model`, else `model`, with the key of its provider. */
+async function hookModel(opts: HookModelOptions, model: string | undefined) {
+  const ref = parseModelRef(model ?? opts.config.small_model ?? opts.config.model ?? "");
+  if (!ref) throw new Error("a prompt hook needs small_model or model in the config");
+  const apiKey = await resolveApiKey({
+    provider: ref.provider,
+    env: process.env,
+    keychain: await opts.getKeychain().catch(() => undefined),
+    config: opts.providers[ref.provider]?.apiKey,
+    ...keySourcesFor(ref.provider, opts.providers),
+  });
+  if (!apiKey) throw new Error(`a prompt hook has no key for ${ref.provider}`);
+  return { ref, apiKey };
+}
+
+/** The reply of the model of a prompt hook, in one request. */
+export function promptHookModel(opts: HookModelOptions): NonNullable<HookRunOptions["askModel"]> {
   return async (prompt, model, signal) => {
-    const ref = parseModelRef(model ?? opts.config.small_model ?? opts.config.model ?? "");
-    if (!ref) throw new Error("a prompt hook needs small_model or model in the config");
-    const apiKey = await resolveApiKey({
-      provider: ref.provider,
-      env: process.env,
-      keychain: await opts.getKeychain().catch(() => undefined),
-      config: opts.providers[ref.provider]?.apiKey,
-      ...keySourcesFor(ref.provider, opts.providers),
-    });
-    if (!apiKey) throw new Error(`a prompt hook has no key for ${ref.provider}`);
+    const { ref, apiKey } = await hookModel(opts, model);
     let text = "";
     const messages: Message[] = [{ role: "user", content: [{ type: "text", text: prompt }] }];
     // Room for the thinking of a reasoning model before its short answer.
@@ -467,6 +477,32 @@ export function promptHookModel(opts: {
       if (event.type === "text_delta") text += event.text;
     }
     return text;
+  };
+}
+
+/** The last reply of an agent hook: a turn of at most 50 steps with the read tools of the session, and no hooks. */
+export function agentHookModel(
+  opts: HookModelOptions & {
+    schedulerFor: (provider: string) => Scheduler;
+    toolsFor: (sessionId: string | undefined) => Promise<CoreToolSpec[]>;
+  },
+): NonNullable<HookRunOptions["askAgent"]> {
+  return async (prompt, model, signal, sessionId) => {
+    const { ref, apiKey } = await hookModel(opts, model);
+    const result = await runTurn(opts.adapterFor(ref.provider), opts.schedulerFor(ref.provider), opts.http, {
+      identity: { type: "agent", name: "hook" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt:
+        "You check a condition for a hook of a coding agent. You can only read. Answer as the task asks.",
+      tools: await opts.toolsFor(sessionId),
+      model: ref.model,
+      apiKey,
+      session: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      maxToolIterations: 50,
+      signal,
+    });
+    const last = result.messages.findLast((message) => message.role === "assistant");
+    return (last?.content ?? []).flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
   };
 }
 

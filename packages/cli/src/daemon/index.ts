@@ -111,6 +111,7 @@ import {
   type ActiveTurnMeta,
   type AgentDaemon,
   type AgentDaemonOptions,
+  agentHookModel,
   commandPolicyFromPermissions,
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
@@ -372,6 +373,18 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     cwd: options.workspaceRoot,
     shell,
     askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
+    askAgent: agentHookModel({
+      config,
+      providers,
+      adapterFor,
+      http,
+      getKeychain,
+      schedulerFor: (provider) => schedulerFor(provider),
+      toolsFor: async (sessionId) => {
+        const scope = await getOrCreateScope(sessionId ?? "default");
+        return ["read", "grep", "glob"].flatMap((name) => scope.registry.get(name) ?? []) as ToolSpec[];
+      },
+    }),
     // The tool of an MCP server of the session, started if it waits for its first use.
     callMcpTool: async ({ sessionId, server, tool, input, signal }) => {
       const scope = await getOrCreateScope(sessionId ?? "default");

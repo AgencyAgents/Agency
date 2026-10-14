@@ -922,3 +922,58 @@ describe("mcp_tool hooks", () => {
     }
   });
 });
+
+describe("agent hooks", () => {
+  const stopHook = (type: "agent" | "prompt"): CommandHooks =>
+    CommandHooksSchema.parse({ Stop: [{ hooks: [{ type, prompt: "Do the tests pass? $ARGUMENTS" }] }] });
+
+  test("ok false blocks with the reason, also with impossible, and the agent gets the session", async () => {
+    const asked: unknown[] = [];
+    const outcome = await runCommandHooks(
+      stopHook("agent"),
+      "Stop",
+      { session_id: "s4" },
+      {
+        cwd: ".",
+        askAgent: async (prompt, _model, _signal, sessionId) => {
+          asked.push({ sessionId, event: prompt.includes('"hook_event_name":"Stop"') });
+          return 'I read the log.\n{"ok": false, "reason": "2 tests fail", "impossible": true}';
+        },
+      },
+    );
+    expect(outcome.block).toBe("2 tests fail");
+    expect(asked).toEqual([{ sessionId: "s4", event: true }]);
+    // A prompt hook has no tools: it never reaches the agent.
+    const prompt = await runCommandHooks(
+      stopHook("prompt"),
+      "Stop",
+      { session_id: "s4" },
+      {
+        cwd: ".",
+        askAgent: async () => '{"ok": false, "reason": "x"}',
+      },
+    );
+    expect(prompt.block).toBeUndefined();
+  });
+
+  test("an agent hook does not run on PermissionRequest, and with no agent it does not block", async () => {
+    let calls = 0;
+    const hooks = CommandHooksSchema.parse({
+      PermissionRequest: [{ hooks: [{ type: "agent", prompt: "ok?" }] }],
+    });
+    await runCommandHooks(
+      hooks,
+      "PermissionRequest",
+      { tool_name: "bash" },
+      {
+        cwd: ".",
+        askAgent: async () => {
+          calls += 1;
+          return '{"ok": false, "reason": "no"}';
+        },
+      },
+    );
+    expect(calls).toBe(0);
+    expect((await runCommandHooks(stopHook("agent"), "Stop", {}, { cwd: "." })).block).toBeUndefined();
+  });
+});

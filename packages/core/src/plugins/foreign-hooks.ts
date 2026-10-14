@@ -55,7 +55,9 @@ function claudeHooks(raw: unknown, file: string, warn: Warn): CommandHooks {
     }
     const parsed = CommandHooksSchema.safeParse({ [event]: groups });
     if (!parsed.success) {
-      warn(`the ${event} hooks of ${file} are skipped: they are not command, http, prompt or mcp_tool hooks`);
+      warn(
+        `the ${event} hooks of ${file} are skipped: they are not command, http, prompt, agent or mcp_tool hooks`,
+      );
       continue;
     }
     Object.assign(hooks, parsed.data);

@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`agent` hooks**: a hook can give its question to an agent with the read tools of the
+  session (`read`, `grep`, `glob`, at most 50 steps), which answers `{"ok", "reason"}`
+  as a prompt hook does.
 - **`mcp_tool` hooks**: a hook can call a tool of an MCP server of the session, as in
   Claude Code. `${path}` in its `input` takes values of the event, and the text of the
   tool answers as the stdout of a command.
