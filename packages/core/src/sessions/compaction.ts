@@ -39,14 +39,26 @@ export interface CompactionThreshold {
   targetRatio?: number;
   /** Stored summary cap in tokens. */
   summaryCapTokens?: number;
+  /** Tokens of each request that are not in the history: the system prompt and the tool list. */
+  overheadTokens?: number;
 }
+
+/** The same threshold for a history whose requests carry `overhead` more tokens: trigger and target leave that room. */
+export function withOverhead(threshold: CompactionThreshold, overhead: number): CompactionThreshold {
+  return overhead > 0 ? { ...threshold, overheadTokens: overhead } : threshold;
+}
+
+// A size after the overhead is taken out. It stays above zero: a trigger of zero would compact an empty history.
+const lessOverhead = (tokens: number, threshold: CompactionThreshold): number =>
+  Math.max(1, tokens - (threshold.overheadTokens ?? 0));
 
 /** Trigger level in tokens for a threshold. */
 export function triggerTokens(threshold: CompactionThreshold): number {
-  return Math.min(
+  const trigger = Math.min(
     threshold.contextWindow * (threshold.proactiveRatio ?? COMPACTION_TRIGGER_RATIO),
     threshold.limitTokens ?? COMPACTION_LIMIT_TOKENS,
   );
+  return lessOverhead(trigger, threshold);
 }
 
 /** Target level in tokens for a threshold. */
@@ -54,10 +66,11 @@ export function targetTokens(threshold: CompactionThreshold): number {
   // In proportion to the trigger: the two keep their distance when the token limit sets the trigger.
   const target = threshold.targetRatio ?? COMPACTION_TARGET_RATIO;
   const limit = threshold.limitTokens ?? COMPACTION_LIMIT_TOKENS;
-  return Math.min(
+  const size = Math.min(
     threshold.contextWindow * target,
     (limit * target) / (threshold.proactiveRatio ?? COMPACTION_TRIGGER_RATIO),
   );
+  return lessOverhead(size, threshold);
 }
 
 /** Summary cap in tokens for a threshold. */
@@ -634,15 +647,8 @@ async function elideToTarget(
   return (await countChainTokensAsync(elided.chain, tokenizer)) <= target ? elided : undefined;
 }
 
-/** compact() for a transcript with no store behind it. Undefined when there is nothing to fold. */
-export async function compactMessages(
-  messages: Message[],
-  tokenizer: Tokenizer | AsyncTokenizer,
-  threshold: CompactionThreshold,
-  summarize: Summarizer,
-  keepLastN = 4,
-): Promise<Message[] | undefined> {
-  const chain = messages.map(
+const asChain = (messages: Message[]): SessionEntry[] =>
+  messages.map(
     (message, i): SessionEntry => ({
       id: String(i),
       parentId: i === 0 ? null : String(i - 1),
@@ -652,6 +658,24 @@ export async function compactMessages(
       message,
     }),
   );
+
+/** The tokens of a transcript with no store behind it, counted as compact() counts a session. */
+export function countMessageTokens(
+  messages: Message[],
+  tokenizer: Tokenizer | AsyncTokenizer,
+): Promise<number> {
+  return countChainTokensAsync(asChain(messages), tokenizer);
+}
+
+/** compact() for a transcript with no store behind it. Undefined when there is nothing to fold. */
+export async function compactMessages(
+  messages: Message[],
+  tokenizer: Tokenizer | AsyncTokenizer,
+  threshold: CompactionThreshold,
+  summarize: Summarizer,
+  keepLastN = 4,
+): Promise<Message[] | undefined> {
+  const chain = asChain(messages);
   const elided = await elideToTarget(chain, tokenizer, threshold);
   if (elided !== undefined) return elided.chain.filter(isMessageEntry).map((entry) => entry.message);
   const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);

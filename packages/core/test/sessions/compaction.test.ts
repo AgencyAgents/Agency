@@ -28,6 +28,7 @@ import {
   targetTokens,
   triggerTokens,
   truncateSummaryToCap,
+  withOverhead,
 } from "../../src/sessions/compaction.ts";
 import { SessionStore } from "../../src/sessions/store.ts";
 import { summarizeTranscript } from "../../src/sessions/summarize.ts";
@@ -1160,5 +1161,64 @@ describe("removal of old tool output in the middle of a turn", () => {
     expect(texts[0]).toMatch(/^\[output removed/);
     expect(texts[1]).toMatch(/^\[output removed/);
     expect(texts[2]).toBe("c2 ".repeat(1000));
+  });
+});
+
+describe("the size of the system prompt and the tool list in a compaction of a turn", () => {
+  test("the owner of the history gets the tokens of a request that are not in the history", async () => {
+    const seen: Array<number | undefined> = [];
+    let request = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        request += 1;
+        if (request === 2) {
+          yield { type: "text_delta", text: "done" };
+          yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+          return;
+        }
+        yield { type: "tool_call_start", id: "c1", name: "noop" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 950, outputTokens: 0 } };
+      },
+    };
+    await runTurn(adapter, new Scheduler(), noopHttp, {
+      identity: overflowUser,
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [
+        {
+          name: "noop",
+          description: "does nothing",
+          inputSchema: { type: "object", properties: {} },
+          riskTier: "safe",
+          handler: async () => ({ content: "ok" }),
+        },
+      ],
+      model: "test-model",
+      apiKey: "key",
+      session: [userMsg("x".repeat(400))],
+      contextWindow: 1000,
+      toolPolicy: { check: async () => "allow" },
+      onContextOverflow: async (overheadTokens) => {
+        seen.push(overheadTokens);
+      },
+    });
+    // The request had 950 tokens; the history (the prompt of 400 characters, a call and a result) has about 100.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeGreaterThan(800);
+    expect(seen[0]).toBeLessThan(950);
+  });
+
+  test("a threshold with such tokens leaves that room: trigger and target go down by the same size", () => {
+    const base = { contextWindow: 100_000 };
+    const less = withOverhead(base, 8_000);
+    expect(triggerTokens(less)).toBeCloseTo(triggerTokens(base) - 8_000, 0);
+    expect(targetTokens(less)).toBeCloseTo(targetTokens(base) - 8_000, 0);
+    const large = withOverhead({ contextWindow: 1_000_000 }, 8_000);
+    expect(triggerTokens(large)).toBeCloseTo(212_000, 0);
+    // More tokens than the window: the numbers stay above zero.
+    expect(triggerTokens(withOverhead({ contextWindow: 1000 }, 5000))).toBeGreaterThan(0);
   });
 });

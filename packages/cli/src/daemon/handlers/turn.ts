@@ -123,7 +123,7 @@ export async function executeTurn(
   params: RunTurnParams,
   rpc: { clientId: string },
   hooks?: {
-    onContextOverflow?: () => Promise<import("@agency/schema").Message[] | undefined>;
+    onContextOverflow?: (overheadTokens?: number) => Promise<import("@agency/schema").Message[] | undefined>;
     onMessage?: (message: import("@agency/schema").Message) => Promise<void>;
   },
 ): Promise<RunTurnRpcResult> {

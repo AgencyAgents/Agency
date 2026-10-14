@@ -30,7 +30,13 @@ import {
 } from "@agency/schema";
 import { CODE_TOOL } from "./codemode.ts";
 import { HookBlock } from "./events.ts";
-import { compactMessages, isContextOverflowError, triggerTokens } from "./sessions/compaction.ts";
+import {
+  compactMessages,
+  countMessageTokens,
+  isContextOverflowError,
+  triggerTokens,
+  withOverhead,
+} from "./sessions/compaction.ts";
 import { modelSummarizer } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
@@ -154,7 +160,7 @@ export interface RunTurnOptions {
    *  request is retried exactly once. A returned message list replaces
    *  the history for the retry (reactive compact-and-retry). Absent means
    *  the loop folds its own transcript in memory. */
-  onContextOverflow?: () => Promise<Message[] | undefined>;
+  onContextOverflow?: (overheadTokens?: number) => Promise<Message[] | undefined>;
   /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
   contextWindow?: number;
   /** `compactionLimit` of the config: the history is compacted at this size also when the window is larger. */
@@ -334,11 +340,11 @@ export async function runTurn(
   // The size of the last request as the provider counted it. Zero after a compaction: the next request gives the new size.
   let requestTokens = 0;
   let proactiveFolds = true;
-  const foldInMemory = (): Promise<Message[] | undefined> =>
+  const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> =>
     compactMessages(
       messages,
       tokenizerFor(options.provider ?? ""),
-      compactionThreshold,
+      withOverhead(compactionThreshold, overheadTokens),
       modelSummarizer({
         adapter,
         http,
@@ -364,7 +370,10 @@ export async function runTurn(
     // Before the provider refuses: a request near the limit costs the most, and a refused one is a lost request.
     let folded = false;
     if (proactiveFolds && requestTokens >= triggerTokens(compactionThreshold)) {
-      const replacement = await (options.onContextOverflow ?? foldInMemory)();
+      // The request also holds the system prompt and the tool list: the history must leave room for them.
+      const inHistory = await countMessageTokens(messages, tokenizerFor(options.provider ?? ""));
+      const overhead = Math.max(0, requestTokens - inHistory);
+      const replacement = await (options.onContextOverflow ?? foldInMemory)(overhead);
       if (replacement !== undefined) {
         messages.length = 0;
         messages.push(...replacement);

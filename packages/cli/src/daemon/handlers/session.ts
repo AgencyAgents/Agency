@@ -17,6 +17,7 @@ import {
   summarizeTranscript,
   TOOL_SEARCH,
   type ToolSpec,
+  withOverhead,
 } from "@agency/core";
 import type { Capabilities, PermissionsGate } from "@agency/guard";
 import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
@@ -310,10 +311,11 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     // Reactive compaction forks the branch, so new appends rebase onto
     // the compacted tip instead of the orphaned pre-compaction entry.
     let tip: string | null = userEntry.id;
-    const onContextOverflow = async (): Promise<Message[]> => {
+    const onContextOverflow = async (overheadTokens = 0): Promise<Message[]> => {
       // From the current tip, not the prompt: the steps this turn has done stay in the model's view.
       const from = tip ?? userEntry.id;
-      const outcome = await compact(store, p.sessionId, from, tokenizer, threshold, summarize, 4, {
+      const room = withOverhead(threshold, overheadTokens);
+      const outcome = await compact(store, p.sessionId, from, tokenizer, room, summarize, 4, {
         force: true,
       });
       history = store.messagesFor(store.load(p.sessionId), outcome.tipId);
