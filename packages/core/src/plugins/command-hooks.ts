@@ -72,12 +72,23 @@ const GroupSchema = z.object({
         timeout: z.number().positive().optional(),
         if: z.string().optional(),
       }),
+      z.object({
+        type: z.literal("mcp_tool"),
+        /** A configured MCP server; `plugin:<plugin>:<server>` of Claude Code is the server of an installed plugin. */
+        server: z.string().min(1),
+        tool: z.string().min(1),
+        /** The arguments of the tool: `${path}` in a string is that value of the input of the event (`${tool_input.file_path}`). */
+        input: z.record(z.string(), z.unknown()).optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
     ]),
   ),
 });
 type HookEntry = z.infer<typeof GroupSchema>["hooks"][number];
 type HttpHook = Extract<HookEntry, { type: "http" }>;
 type PromptHook = Extract<HookEntry, { type: "prompt" }>;
+type McpToolHook = Extract<HookEntry, { type: "mcp_tool" }>;
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
 export const CommandHooksSchema = z.object(
@@ -165,6 +176,14 @@ export interface HookRunOptions {
   onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
   /** The reply of a model to a prompt hook. Absent: a prompt hook fails, and does not block. */
   askModel?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<string>;
+  /** Calls a tool of an MCP server of the session. Absent: an `mcp_tool` hook fails, and does not block. */
+  callMcpTool?: (call: {
+    sessionId: string | undefined;
+    server: string;
+    tool: string;
+    input: Record<string, unknown>;
+    signal: AbortSignal;
+  }) => Promise<{ text: string; isError: boolean }>;
 }
 
 function runOne(
@@ -307,6 +326,51 @@ async function runPrompt(
   }
 }
 
+/** Each `${path}` in a string of `value` becomes that value of `input`: an object or a number as JSON, nothing as "". */
+function withInputValues(value: unknown, input: Record<string, unknown>): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([\w.]+)\}/g, (_, path: string) => {
+      const found = path
+        .split(".")
+        .reduce<unknown>((at, key) => (at as Record<string, unknown> | undefined)?.[key], input);
+      return found === undefined ? "" : typeof found === "string" ? found : JSON.stringify(found);
+    });
+  }
+  if (Array.isArray(value)) return value.map((item) => withInputValues(item, input));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, withInputValues(item, input)]),
+    );
+  }
+  return value;
+}
+
+/** An `mcp_tool` hook: the text of the tool is read as the stdout of a command, and a tool error does not block. */
+async function runMcpTool(
+  entry: McpToolHook,
+  input: Record<string, unknown>,
+  opts: HookRunOptions,
+  timeoutS: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  if (opts.callMcpTool === undefined)
+    return { code: null, stdout: "", stderr: "no MCP servers for an mcp_tool hook" };
+  try {
+    const result = await opts.callMcpTool({
+      sessionId: typeof input.session_id === "string" ? input.session_id : undefined,
+      // An installed plugin keeps the bare names of its servers.
+      server: entry.server.replace(/^plugin:[^:]+:/, ""),
+      tool: entry.tool,
+      input: withInputValues(entry.input ?? {}, input) as Record<string, unknown>,
+      signal: AbortSignal.timeout(timeoutS * 1000),
+    });
+    return result.isError
+      ? { code: 1, stdout: "", stderr: result.text }
+      : { code: 0, stdout: result.text, stderr: "" };
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * A hook of Cursor in the form of a command result: it gets the input of its own event, and its answer
  * (`permission: "deny"`, `continue: false`, `followup_message`, `additional_context`) becomes that of Claude Code.
@@ -443,9 +507,11 @@ export async function runCommandHooks(
           ? await runHttp(entry, stdin, timeoutS)
           : entry.type === "prompt"
             ? await runPrompt(entry, stdin, event, opts)
-            : entry.cursor !== undefined
-              ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, entry.env)
-              : await runOne(entry.command, stdin, opts, timeoutS, entry.env);
+            : entry.type === "mcp_tool"
+              ? await runMcpTool(entry, { hook_event_name: event, cwd: opts.cwd, ...input }, opts, timeoutS)
+              : entry.cursor !== undefined
+                ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, entry.env)
+                : await runOne(entry.command, stdin, opts, timeoutS, entry.env);
       // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
       if (event === "PermissionDenied") {
         if (

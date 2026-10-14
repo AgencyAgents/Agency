@@ -372,6 +372,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     cwd: options.workspaceRoot,
     shell,
     askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
+    // The tool of an MCP server of the session, started if it waits for its first use.
+    callMcpTool: async ({ sessionId, server, tool, input, signal }) => {
+      const scope = await getOrCreateScope(sessionId ?? "default");
+      await scope.promoteMcp();
+      const spec = scope.registry.get(`${server}_${tool}`);
+      if (spec === undefined) throw new Error(`no tool ${tool} on the MCP server ${server}`);
+      const result = await spec.handler(input, { signal, ...(sessionId === undefined ? {} : { sessionId }) });
+      return { text: result.content, isError: result.isError === true };
+    },
     // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
     onBackgroundOutput: (sessionId, text) => {
       const id = sessionId ?? "default";

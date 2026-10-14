@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`mcp_tool` hooks**: a hook can call a tool of an MCP server of the session, as in
+  Claude Code. `${path}` in its `input` takes values of the event, and the text of the
+  tool answers as the stdout of a command.
 - **More of a Claude Code plugin**: `agency plugin install` puts the `bin/` folder of a
   plugin on the PATH of shell commands, gives `${CLAUDE_PLUGIN_DATA}` a data folder,
   gives a hook `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` in its environment, maps

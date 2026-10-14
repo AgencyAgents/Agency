@@ -327,7 +327,7 @@ function parseHooks(
     }
     const parsed = CommandHooksSchema.safeParse({ [event]: groups });
     if (!parsed.success) {
-      skipped.push({ event, reason: "its entries are not command, http or prompt hooks" });
+      skipped.push({ event, reason: "its entries are not command, http, prompt or mcp_tool hooks" });
       continue;
     }
     const converted = JSON.parse(withPluginRoot(JSON.stringify(parsed.data), root, data)) as CommandHooks;

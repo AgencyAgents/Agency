@@ -859,3 +859,66 @@ describe("the SessionEnd hook", () => {
     });
   });
 });
+
+describe("mcp_tool hooks", () => {
+  const scan = (input?: Record<string, unknown>): CommandHooks =>
+    CommandHooksSchema.parse({
+      PreToolUse: [
+        {
+          matcher: "write",
+          hooks: [
+            { type: "mcp_tool", server: "plugin:kit:scanner", tool: "scan", ...(input ? { input } : {}) },
+          ],
+        },
+      ],
+    });
+  const event = { session_id: "s1", tool_name: "write", tool_input: { file_path: "a.ts", content: "x" } };
+
+  test("the tool gets the values of the event, and its text answers as the stdout of a command", async () => {
+    const calls: unknown[] = [];
+    const outcome = await runCommandHooks(
+      scan({
+        file: "${tool_input.file_path}",
+        what: "${hook_event_name} of ${tool_input}",
+        none: "${nope.x}",
+        n: 3,
+      }),
+      "PreToolUse",
+      event,
+      {
+        cwd: ".",
+        callMcpTool: async (call) => {
+          calls.push({ ...call, signal: undefined });
+          return { text: JSON.stringify({ decision: "block", reason: "secret in a.ts" }), isError: false };
+        },
+      },
+    );
+    expect(outcome.block).toBe("secret in a.ts");
+    expect(calls).toEqual([
+      {
+        sessionId: "s1",
+        server: "scanner",
+        tool: "scan",
+        input: { file: "a.ts", what: 'PreToolUse of {"file_path":"a.ts","content":"x"}', none: "", n: 3 },
+        signal: undefined,
+      },
+    ]);
+  });
+
+  test("a tool error, a failed call or no MCP servers do not block", async () => {
+    const block = { text: JSON.stringify({ decision: "block", reason: "no" }) };
+    for (const callMcpTool of [
+      async () => ({ ...block, isError: true }),
+      async (): Promise<never> => {
+        throw new Error("server down");
+      },
+      undefined,
+    ]) {
+      const outcome = await runCommandHooks(scan(), "PreToolUse", event, {
+        cwd: ".",
+        ...(callMcpTool ? { callMcpTool } : {}),
+      });
+      expect(outcome.block).toBeUndefined();
+    }
+  });
+});
