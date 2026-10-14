@@ -5,6 +5,7 @@ import type { ImageBlock } from "@agency/schema";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ReadState } from "../read-state.ts";
 import { lineCount, str, summarize } from "../render.ts";
+import { renderNotebook } from "./notebook.ts";
 
 const MAX_READ_BYTES = 1_000_000; // ~1MB; bigger files should be grepped or read in slices
 
@@ -111,6 +112,14 @@ export function createReadTool(deps: ToolDeps, options?: ReadToolOptions): ToolS
       }
 
       const content = readFileSync(resolved, "utf8");
+      // A notebook reads as its cells and their outputs, as in Claude Code; a slice gives the raw JSON.
+      if (!slicing && resolved.toLowerCase().endsWith(".ipynb")) {
+        try {
+          return { content: renderNotebook(content) };
+        } catch {
+          return { content };
+        }
+      }
       if (!slicing) return { content };
       return { content: numberedSlice(content, offset, limit) };
     },

@@ -8,6 +8,7 @@ import { createFetchTool } from "./builtins/fetch.ts";
 import { createGlobTool } from "./builtins/glob.ts";
 import { createGrepTool } from "./builtins/grep.ts";
 import { createMemoryTool } from "./builtins/memory.ts";
+import { createNotebookEditTool } from "./builtins/notebook.ts";
 import { createExecutePlanTool } from "./builtins/plan.ts";
 import { createProcessTools } from "./builtins/process.ts";
 import { createQuestionTool } from "./builtins/question.ts";
@@ -183,6 +184,7 @@ export async function createSessionScope(scopeOptions: SessionScopeOptions): Pro
 
   const readSpec = createReadTool(options.deps, { readState });
   const writeSpec = createWriteTool(options.deps, snapshots, formatter, { readState });
+  const notebookSpec = createNotebookEditTool(options.deps, snapshots, readState);
   const editSpec = createEditTool(options.deps, snapshots, formatter, {
     diagnostics: combinedDiagnostics,
     readState,
@@ -190,6 +192,7 @@ export async function createSessionScope(scopeOptions: SessionScopeOptions): Pro
 
   registry.register(readSpec);
   registry.register(writeSpec);
+  registry.register(notebookSpec);
   registry.register(editSpec);
   registry.register(createBashTool(options.deps, shell, bashState, processManager));
   registry.register(createGrepTool(options.deps));

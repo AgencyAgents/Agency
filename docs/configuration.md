@@ -332,6 +332,10 @@ A session can hold a goal: a condition that must be true before a turn ends. Whe
 
 The team report that `/goal` showed before is now `/report [outcome]`.
 
+## Notebooks
+
+`read` shows a Jupyter notebook (`.ipynb`) as its cells, each with its number, type and id, its source and the text of its outputs (an image output is named only), as Claude Code does. A read with `offset` or `limit` gives the raw JSON. `notebook_edit` changes one cell: `replace` (the default) sets the source and clears the outputs of a code cell, `insert` adds a cell after the given cell (or at the start), `delete` removes it. A cell is named by its id or its number. `notebook_edit` is an edit tool for the permission modes and the rules (`NotebookEdit` of Claude Code names it), and the `undo` of the daemon takes its changes back, as for `write` and `edit`.
+
 ## Output styles
 
 `"outputStyle": "<name>"` adds an output style to the instructions of each turn, as the output styles of Claude Code do. A style is a Markdown file whose `name` (in its frontmatter, else the file name) is the name, and whose text says how to write the replies. Agency looks in `.agency/output-styles/` and `.claude/output-styles/` of a trusted workspace, then `output-styles/` of the config folder, then `~/.claude/output-styles/`. `agency plugin install` puts the styles of a plugin in `.agency/output-styles/`. The style joins the instructions and does not take the place of the base prompt, also with `keep-coding-instructions: false`. The value `default` adds nothing. A name that is not found is named in the daemon log.

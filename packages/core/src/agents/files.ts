@@ -35,6 +35,7 @@ const CLAUDE_TOOL_NAMES: Record<string, string> = {
   WebFetch: "fetch",
   WebSearch: "websearch",
   TodoWrite: "todo_write",
+  NotebookEdit: "notebook_edit",
 };
 /** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
 const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);

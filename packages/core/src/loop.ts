@@ -835,7 +835,7 @@ function resolveToolSpec(tools: ToolSpec[], name: string): ToolSpec | undefined 
   return tools.find((t) => t.name.toLowerCase() === name.toLowerCase());
 }
 
-const MUTATING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
+const MUTATING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "notebook_edit", "bash"]);
 
 async function executeOne(
   spec: ToolSpec | undefined,
@@ -1089,7 +1089,7 @@ async function executeOne(
     }
     if (
       !result.isError &&
-      (resolved.name === "write" || resolved.name === "edit") &&
+      (resolved.name === "write" || resolved.name === "edit" || resolved.name === "notebook_edit") &&
       typeof call.input.path === "string"
     ) {
       try {

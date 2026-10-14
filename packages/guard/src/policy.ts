@@ -21,7 +21,7 @@ export const PERMISSION_MODES = ["ask", "allow-edits", "auto", "allow-all", "den
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /** Tools `allow-edits` and `auto` auto-allow: file mutations, not command execution. */
-const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
+const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "notebook_edit"]);
 
 export interface PolicyRequest {
   tool: string;
@@ -94,7 +94,7 @@ export interface ApprovalRequestLike {
 }
 
 /** Tools whose pattern maps match path arguments (workspace-relative). */
-const PATH_PATTERN_TOOLS = new Set(["write", "edit", "read", "execute_plan"]);
+const PATH_PATTERN_TOOLS = new Set(["write", "edit", "notebook_edit", "read", "execute_plan"]);
 /** Tools whose pattern maps match command strings. */
 const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
 

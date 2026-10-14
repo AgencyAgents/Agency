@@ -132,6 +132,7 @@ const TOOL_ALIASES: Record<string, string[]> = {
   websearch: ["google_web_search", "web_search"],
   todo_write: ["TodoWrite", "write_todos"],
   spawn: ["Task", "Agent"],
+  notebook_edit: ["NotebookEdit"],
 };
 const namesOf = (subject: string): string[] => [subject, ...(TOOL_ALIASES[subject] ?? [])];
 

@@ -58,7 +58,7 @@ export interface TimelineFilter {
   where?: "errors" | "writes" | { glob: string };
 }
 
-const WRITE_TOOLS = new Set(["write", "edit", "bash", "apply_patch"]);
+const WRITE_TOOLS = new Set(["write", "edit", "notebook_edit", "bash", "apply_patch"]);
 
 function globMatch(glob: string, target: string): boolean {
   const pattern = glob

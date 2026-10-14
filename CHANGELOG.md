@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Jupyter notebooks**: `read` shows a `.ipynb` as its cells and the text of their
+  outputs, and a new `notebook_edit` tool replaces, inserts or deletes a cell, as the
+  NotebookEdit tool of Claude Code does.
 - **`CLAUDE_ENV_FILE`**: a `SessionStart` hook gets it, as in Claude Code, and the
   `export` lines that it writes there become variables of the later shell commands of
   the session.

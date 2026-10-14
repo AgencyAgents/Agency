@@ -46,7 +46,7 @@ function fakeTransport(responses: Record<string, unknown>): McpTransport {
 }
 
 describe("createBuiltinTools", () => {
-  test("without mcpServers the set is the fifteen built-ins with no failures", async () => {
+  test("without mcpServers the set is the sixteen built-ins with no failures", async () => {
     const root = mkdtempSync(join(tmpdir(), "agency-builtin-set-"));
     dirs.push(root);
 
@@ -65,6 +65,7 @@ describe("createBuiltinTools", () => {
       "fetch",
       "glob",
       "grep",
+      "notebook_edit",
       "process_kill",
       "process_list",
       "process_output",

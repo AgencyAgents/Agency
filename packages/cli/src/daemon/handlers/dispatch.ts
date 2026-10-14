@@ -270,7 +270,9 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           // The folder where this agent's shell and file tools work. A writable worktree replaces the workspace.
           let agentRoot = options.workspaceRoot;
           const caps = agent.capabilities;
-          const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
+          const writeCapable = caps
+            ? caps.some((c) => ["write", "edit", "notebook_edit", "bash"].includes(c))
+            : true;
           if (writeCapable) {
             const wtPath = worktreePathFor(options.workspaceRoot, parentSessionId, a.handle);
             const wtBranch = worktreeBranchFor(parentSessionId, a.handle, batchId);
