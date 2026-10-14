@@ -46,7 +46,7 @@ import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { mcpCmd } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
-import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
+import { pluginInstallSource, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
 import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
@@ -86,8 +86,9 @@ Commands:
   auth logout <provider>   Remove the key or sign-in of a provider (a ChatGPT sign-in is revoked)
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
   mcp logout <server>      Remove the sign-in of an MCP server
-  plugin install <dir> [--overwrite]
-                           Install a Claude Code / Codex plugin
+  plugin install <source> [plugin] [--overwrite]
+                           Install a Claude Code / Codex plugin from a folder, a git URL
+                           or owner/repo (#ref: a branch or tag)
   plugin list              Show installed skills and plugin modules
   plugin remove <name>     Remove an installed plugin
   review [<ref>]           Review the changes of the workspace and change no file:
@@ -1279,7 +1280,9 @@ async function pluginCmd(
     out(`Usage: agency plugin <subcommand> [args]
 
 Subcommands:
-  install <dir> [--overwrite]  Install a Claude Code / Codex plugin
+  install <source> [plugin] [--overwrite]
+                               Install a Claude Code / Codex plugin from a folder, a git URL or
+                               owner/repo (#ref for a branch or tag). [plugin] picks one of a marketplace
   list                         Show installed skills and plugin modules
   remove <name>                Remove an installed plugin`);
     return 0;
@@ -1292,7 +1295,7 @@ Subcommands:
       return 1;
     }
     try {
-      const report = pluginInstallCmd(sourceDir, workspaceRoot, parsed.overwrite, err);
+      const report = pluginInstallSource(sourceDir, parsed.args[1], workspaceRoot, parsed.overwrite, err);
       out(report);
       const { createFileTrustStore } = await import("@agency/guard");
       const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));

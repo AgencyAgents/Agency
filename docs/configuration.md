@@ -388,6 +388,8 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 - `agency plugin remove <plugin>` deletes the hook file and the copied folder with the rest of the plugin.
 - The MCP servers of the plugin (its `.mcp.json`, or the `mcpServers` key of its manifest) go to `.agency/mcp/<plugin>.json`, with `${CLAUDE_PLUGIN_ROOT}` as the copied folder. `agency plugin remove` deletes that file too.
 
+The source can also be a git repository: a URL (`https://`, `ssh://`, `git@host:path`, `file://`) or `owner/repo` of GitHub, with `#ref` for a branch or a tag. The install makes a shallow clone with `git`, installs from it, and deletes it. A repository with `.claude-plugin/marketplace.json` and no plugin manifest of its own is a marketplace, as in Claude Code: `agency plugin install owner/repo <plugin>` installs the plugin of that name, and the name is needed when the marketplace has more than one. A plugin source in the marketplace can be a folder in it (with `metadata.pluginRoot`), `{"source": "github", "repo": "owner/repo"}` or `{"source": "url", "url": "..."}`, each with an optional `ref`. A folder source that goes outside the marketplace is refused.
+
 ## MCP / LSP
 
 Configured under `mcpServers` / `lspServers`. The MCP layer accepts stdio (`command`+`args`) and HTTP (`url`) servers, optional `headers`, and per-request timeouts. LSP is a minimal client that decorates read/write/edit results with diagnostics. Failures surface via `providers_list` / `mcp_status` / `lsp_status` RPC and per-turn `mcp_server_down` system reminders.

@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Plugins from git and marketplaces**: `agency plugin install` takes a git URL or
+  `owner/repo` of GitHub (`#ref` for a branch or tag) as well as a folder. A repository
+  with `.claude-plugin/marketplace.json` is a Claude Code marketplace:
+  `agency plugin install owner/repo <plugin>` installs one of its plugins, also one
+  that the marketplace names by its own git source.
 - **Auto permission mode**: `--permission-mode auto` (and `permissionMode: "auto"`
   of `run_turn`) lets a reviewer model answer the asks, as the auto mode of Claude
   Code does. Edits run; another ask of a default rule goes to `auto_review_model`

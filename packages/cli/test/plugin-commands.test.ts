@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { dataDir } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { runEntrypoint } from "../src/entrypoint.ts";
-import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
+import { gitSource, pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +150,90 @@ describe("plugin install", () => {
       untrusted: { code: 0, note: true },
       trusted: { code: 0, note: false },
     });
+  });
+});
+
+/** A git repository with `files`, committed: the remote of an install. */
+function gitRepo(files: Record<string, string>, copyFixtureTo?: string): string {
+  const repo = tempDir("agency-plugin-repo-");
+  if (copyFixtureTo !== undefined) cpSync(FIXTURE_DIR, join(repo, copyFixtureTo), { recursive: true });
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo, stdio: "ignore" });
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "plugin");
+  return pathToFileURL(repo).href;
+}
+
+describe("plugin install from git", () => {
+  test("a git URL, owner/repo and #ref are sources; a folder that exists is not", () => {
+    const here = tempDir("agency-plugin-local-");
+    expect(gitSource(here)).toBeUndefined();
+    expect(gitSource("anthropics/claude-plugins")).toEqual({
+      url: "https://github.com/anthropics/claude-plugins.git",
+    });
+    expect(gitSource("https://gitlab.com/a/b.git#v2")).toEqual({
+      url: "https://gitlab.com/a/b.git",
+      ref: "v2",
+    });
+    expect(gitSource("git@github.com:a/b.git")).toEqual({ url: "git@github.com:a/b.git" });
+    expect(gitSource("/nonexistent/path")).toBeUndefined();
+  });
+
+  test("installs the plugin at the root of a repository, and its files stay without .git", async () => {
+    const url = gitRepo({}, ".");
+    const ws = tempDir("agency-plugin-git-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", url], c.deps)).toBe(0);
+    expect(c.out.join("\n")).toContain("Plugin: test-plugin v1.2.3");
+    expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin", ".git"))).toBe(false);
+  });
+
+  test("a marketplace installs the named plugin, needs a name for more than one, and keeps a source inside it", async () => {
+    const market = (plugins: unknown[]) =>
+      JSON.stringify({ name: "m", owner: { name: "o" }, metadata: { pluginRoot: "./plugins" }, plugins });
+    const url = gitRepo(
+      {
+        ".claude-plugin/marketplace.json": market([
+          { name: "test-plugin", source: "./test-plugin" },
+          { name: "other", source: "./other" },
+          { name: "escape", source: "../../outside" },
+        ]),
+      },
+      "plugins/test-plugin",
+    );
+    const install = async (...args: string[]) => {
+      const ws = tempDir("agency-plugin-market-ws-");
+      const c = capture();
+      c.deps.cwd = ws;
+      const code = await runEntrypoint(["plugin", "install", url, ...args], c.deps);
+      return { code, out: c.out.join("\n"), err: c.err.join("\n") };
+    };
+    const named = await install("test-plugin");
+    expect(named.code).toBe(0);
+    expect(named.out).toContain("Plugin: test-plugin v1.2.3");
+
+    const unnamed = await install();
+    expect(unnamed.code).toBe(1);
+    expect(unnamed.err).toContain("test-plugin, other, escape");
+
+    const outside = await install("escape");
+    expect(outside.code).toBe(1);
+    expect(outside.err).toContain("outside the marketplace");
+  });
+
+  test("a clone that fails says why", async () => {
+    const c = capture();
+    c.deps.cwd = tempDir("agency-plugin-badurl-ws-");
+    const missing = pathToFileURL(join(tempDir("agency-plugin-none-"), "missing")).href;
+    expect(await runEntrypoint(["plugin", "install", missing], c.deps)).toBe(1);
+    expect(c.err.join("\n")).toContain("git clone of");
   });
 });
 

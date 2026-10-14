@@ -1,5 +1,16 @@
-﻿import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+﻿import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { importClaudePlugin, Logger, pluginHooksFile, pluginMcpFile, pluginRootDir } from "@agency/core";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +105,117 @@ export function pluginInstallCmd(
   lines.push("");
   lines.push(`Install receipt written to: .agency/skills/${report.pluginName}/receipt.json`);
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// plugin install <git url | owner/repo>[#ref] [plugin]
+// ---------------------------------------------------------------------------
+
+export interface GitSource {
+  url: string;
+  ref?: string;
+}
+
+const GIT_URL = /^(?:(?:https?|ssh|git|file):\/\/|[\w.-]+@[\w.-]+:)/;
+const GITHUB_REPO = /^[\w.-]+\/[\w.-]+$/;
+
+/** A git URL, `git@host:path`, or `owner/repo` of GitHub, each with an optional `#ref`. A folder that exists is not one. */
+export function gitSource(source: string): GitSource | undefined {
+  if (existsSync(source)) return undefined;
+  const [base = "", ref] = source.split("#", 2);
+  const url = GIT_URL.test(base)
+    ? base
+    : GITHUB_REPO.test(base)
+      ? `https://github.com/${base}.git`
+      : undefined;
+  return url === undefined ? undefined : { url, ...(ref ? { ref } : {}) };
+}
+
+/** Runs `use` on a shallow clone, then deletes the clone: the importer keeps a copy of the plugin. */
+function withClone<T>(git: GitSource, use: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "agency-plugin-"));
+  try {
+    const ref = git.ref === undefined ? [] : ["--branch", git.ref];
+    const result = spawnSync("git", ["clone", "--quiet", "--depth", "1", ...ref, "--", git.url, dir], {
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `git clone of ${git.url} failed: ${(result.stderr || result.error?.message || "").trim()}`,
+      );
+    }
+    return use(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+type MarketplaceSource = string | { source?: string; repo?: string; url?: string; ref?: string };
+
+/**
+ * The plugin of `.claude-plugin/marketplace.json` that `name` names, or its only plugin. Undefined when the folder
+ * is a plugin itself, or no marketplace.
+ */
+function marketplacePlugin(
+  root: string,
+  name: string | undefined,
+): { dir: string } | { git: GitSource } | undefined {
+  const file = join(root, ".claude-plugin", "marketplace.json");
+  const manifest = ["claude", "codex"].some((kind) =>
+    existsSync(join(root, `.${kind}-plugin`, "plugin.json")),
+  );
+  if (manifest || !existsSync(file)) return undefined;
+  const market = JSON.parse(readFileSync(file, "utf8")) as {
+    plugins?: { name: string; source: MarketplaceSource }[];
+    metadata?: { pluginRoot?: string };
+  };
+  const plugins = market.plugins ?? [];
+  const names = plugins.map((p) => p.name).join(", ");
+  const entry =
+    name === undefined && plugins.length === 1 ? plugins[0] : plugins.find((p) => p.name === name);
+  if (entry === undefined) {
+    throw new Error(
+      name === undefined
+        ? `This marketplace has more than one plugin. Name one: ${names}`
+        : `The marketplace has no plugin "${name}". Its plugins: ${names}`,
+    );
+  }
+  const source = entry.source;
+  if (typeof source === "string") {
+    const dir = resolve(root, market.metadata?.pluginRoot ?? "", source);
+    const inside = relative(root, dir);
+    if (inside.startsWith("..") || isAbsolute(inside)) {
+      throw new Error(`The source of "${entry.name}" is outside the marketplace: ${source}`);
+    }
+    return { dir };
+  }
+  const ref = source.ref === undefined ? {} : { ref: source.ref };
+  if (source.source === "github" && GITHUB_REPO.test(source.repo ?? "")) {
+    return { git: { url: `https://github.com/${source.repo}.git`, ...ref } };
+  }
+  if (source.source === "url" && GIT_URL.test(source.url ?? ""))
+    return { git: { url: source.url ?? "", ...ref } };
+  throw new Error(`The source of "${entry.name}" has a form that Agency cannot install`);
+}
+
+/** `plugin install` of a folder or a git source; a marketplace in it gives the plugin that `name` names. */
+export function pluginInstallSource(
+  source: string,
+  name: string | undefined,
+  workspaceRoot: string,
+  overwrite: boolean,
+  errSink: (line: string) => void,
+): string {
+  const install = (root: string): string => {
+    const picked = marketplacePlugin(root, name);
+    if (picked === undefined) return pluginInstallCmd(root, workspaceRoot, overwrite, errSink);
+    if ("dir" in picked) return pluginInstallCmd(picked.dir, workspaceRoot, overwrite, errSink);
+    return withClone(picked.git, (dir) => pluginInstallCmd(dir, workspaceRoot, overwrite, errSink));
+  };
+  const git = gitSource(source);
+  return git === undefined ? install(source) : withClone(git, install);
 }
 
 // ---------------------------------------------------------------------------
