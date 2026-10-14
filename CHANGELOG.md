@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`PostToolBatch` hook**: runs once after all tool calls of one reply, with
+  each call and its result, before the next request. A block ends the turn
+  with the reason; `additionalContext` reaches the model once. For example, one
+  lint or test run after a batch of edits, in place of one for each edit.
 - **Web search with no setup for OpenRouter users**: with no `websearch.endpoint`,
   the `websearch` tool searches through OpenRouter's web plugin when the
   `openrouter` provider has a key, and gives 5 results with title, URL and

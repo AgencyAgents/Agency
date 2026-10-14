@@ -3,12 +3,13 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { globToRegExpSource, splitCommand, unwrapCommand } from "@agency/guard";
 import { z } from "zod";
-import { type EventBus, HookBlock } from "../events.ts";
+import { type AgencyEvents, type EventBus, HookBlock, HookStop } from "../events.ts";
 
 export const COMMAND_HOOK_EVENTS = [
   "PreToolUse",
   "PostToolUse",
   "PostToolUseFailure",
+  "PostToolBatch",
   "UserPromptSubmit",
   "UserPromptExpansion",
   "Stop",
@@ -280,6 +281,26 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
         : await runCommandHooks(hooks, "PostToolUse", { ...base, tool_response: p.result }, opts);
       const text = out.block ?? out.context;
       if (text !== undefined) throw new HookBlock(text);
+    }),
+    bus.on("tool.batch.after", async (payload) => {
+      const p = payload as AgencyEvents["tool.batch.after"];
+      const out = await runCommandHooks(
+        hooks,
+        "PostToolBatch",
+        {
+          session_id: p.sessionId,
+          tool_calls: p.calls.map((c) => ({
+            tool_name: c.tool,
+            tool_input: c.input,
+            tool_use_id: c.id,
+            tool_response: c.result,
+          })),
+        },
+        opts,
+      );
+      // As in Claude Code: a block of the batch ends the turn, where a PostToolUse block only adds its reason.
+      if (out.block !== undefined) throw new HookStop(`a PostToolBatch hook ended the turn: ${out.block}`);
+      if (out.context !== undefined) throw new HookBlock(out.context);
     }),
     bus.on("turn.stop", async (payload) => {
       const p = payload as { sessionId?: string; taskDepth: number; stopHookActive: boolean };

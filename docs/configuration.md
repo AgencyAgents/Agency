@@ -324,6 +324,7 @@ The summary ends with the messages that you wrote in the folded part, word for w
 | `PreToolUse` | Before each tool call | The tool does not run. The model gets the reason as the tool result. |
 | `PostToolUse` | After each tool call that succeeded | The reason is added to the tool result. |
 | `PostToolUseFailure` | After each tool call that failed | The reason is added to the tool result. |
+| `PostToolBatch` | Once after all tool calls of one reply, before the next request. The input has `tool_calls`: `tool_name`, `tool_input`, `tool_use_id` and `tool_response` of each call. There is no matcher | The turn ends with the reason, and the model gets no more requests. `additionalContext` is added once, to the last tool result. |
 | `UserPromptSubmit` | Before the model sees a prompt | The turn fails with the reason, and the prompt is removed from the session. |
 | `UserPromptExpansion` | When a typed command (`/name args` of a command file, or an MCP prompt) became the prompt. The input has `expansion_type`, `command_name`, `command_args`, `command_source` and the typed `prompt` | The turn fails with the reason, and the prompt is removed from the session. |
 | `SessionStart` | Before the first prompt of a session | None. |
@@ -337,7 +338,7 @@ The summary ends with the messages that you wrote in the folded part, word for w
 | `Notification` | When a turn waits for your answer to an approval | None. |
 | `PermissionRequest` | When a tool call needs an approval, before you are asked | The call is refused, and you are not asked. |
 
-Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `error`, `prompt`, `stop_hook_active`, `agent_type`, `trigger`, `notification_type`, `message`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace, in the shell of the `bash` tool: `sh` on Linux and macOS, and the shell of `windowsShell` on Windows (Git Bash when it is installed). A hook that is a shell script thus runs on Windows too.
+Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields of the event (`tool_name`, `tool_input`, `tool_response`, `tool_calls`, `error`, `prompt`, `stop_hook_active`, `agent_type`, `trigger`, `notification_type`, `message`). `CLAUDE_PROJECT_DIR` and `AGENCY_PROJECT_DIR` hold the workspace path. The command runs in the workspace, in the shell of the `bash` tool: `sh` on Linux and macOS, and the shell of `windowsShell` on Windows (Git Bash when it is installed). A hook that is a shell script thus runs on Windows too.
 
 - Exit code 2 is a block, and stderr is the reason. So is exit code 0 with `{"decision": "block", "reason": "..."}` on stdout, or with `hookSpecificOutput.permissionDecision` set to `deny`.
 - Any other exit code that is not 0 is a failed hook. It does not block.
@@ -348,7 +349,7 @@ Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session
 - `if` is one permission rule on the tool call, as in Claude Code: `"if": "Bash(git push *)"` runs the command only for a `bash` call with such a command in it (also behind `&&`, `sudo` or `sh -c`), and `"if": "Edit(*.ts)"` only for an edit of a TypeScript file. A path pattern with no slash matches a file name at any depth; one with a slash starts at the workspace. A command line with `$(...)` or a here-document runs the hook, because the rule cannot read it. `if` counts on the tool events only (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`). On another event, a hook with `if` never runs.
 - `async: true` or `asyncRewake: true` runs the command in the background: the event does not wait for it, and it cannot block. `async` has no time limit unless it sets `timeout`. When it ends, its `additionalContext` and `systemMessage` (JSON alone on stdout, or on a line of its own) reach the model before its next request, in this turn or the next one. On exit code 2, an `asyncRewake` hook gives the model its stderr (or stdout). Claude Code also wakes an idle session for it; here the text waits for the next turn.
 - `Stop` hooks do not run for subagents: `SubagentStop` hooks do. A `Stop` hook that always blocks keeps the turn going until the step limit, so let it pass when `stop_hook_active` is true or when its condition is met.
-- Claude Code has 33 events, and the 15 in the table run here (`InstructionsLoaded`, `PermissionDenied`, `PostToolBatch` and others do not). A hook on an event that is not in the table does not run, and `agency plugin install` names each such event.
+- Claude Code has 33 events, and the 16 in the table run here (`InstructionsLoaded`, `PermissionDenied`, `CwdChanged` and others do not). A hook on an event that is not in the table does not run, and `agency plugin install` names each such event.
 
 Hooks come from two places, and the daemon runs those of the user config first:
 

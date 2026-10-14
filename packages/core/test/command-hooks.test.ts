@@ -339,6 +339,78 @@ describe("hooks in the loop", () => {
     expect(result.messages[2]?.content).toEqual([{ type: "text", text: "check the result again" }]);
   });
 
+  /** One reply that calls bash twice, then text. */
+  const twoCalls = (): { adapter: ProviderAdapter; requests: () => number } => {
+    let n = 0;
+    return {
+      requests: () => n,
+      adapter: {
+        family: "fake",
+        async *stream(): AsyncIterable<StreamEvent> {
+          n += 1;
+          if (n === 1) {
+            for (const id of ["c1", "c2"]) {
+              yield { type: "tool_call_start", id, name: "bash" };
+              yield { type: "tool_call_delta", id, inputJsonDelta: `{"command":"ls ${id}"}` };
+              yield { type: "tool_call_end", id };
+            }
+            yield { type: "message_stop", stopReason: "tool_use", usage };
+          } else {
+            yield { type: "text_delta", text: "done" };
+            yield { type: "message_stop", stopReason: "end_turn", usage };
+          }
+        },
+      },
+    };
+  };
+
+  test("a PostToolBatch hook runs once for all calls of a reply, and its context goes once to the model", async () => {
+    const out = join(dir, "batch.json");
+    const cmd = hook(
+      "batch",
+      `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => { require("node:fs").writeFileSync(${JSON.stringify(out)}, s); console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "batch checked" } })); });`,
+    );
+    const bus = new EventBus();
+    attachCommandHooks(bus, on("PostToolBatch", cmd), { cwd: dir });
+    const script = twoCalls();
+    const result = await turn(script.adapter, bus, [bashTool([])]);
+    expect(script.requests()).toBe(2);
+    expect(resultText(result.messages)).toEqual(["listing", "listing\n\nbatch checked"]);
+    const input = JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown>;
+    expect(input).toMatchObject({
+      hook_event_name: "PostToolBatch",
+      session_id: "s1",
+      tool_calls: [
+        {
+          tool_name: "bash",
+          tool_input: { command: "ls c1" },
+          tool_use_id: "c1",
+          tool_response: { content: "listing", isError: false },
+        },
+        { tool_name: "bash", tool_input: { command: "ls c2" }, tool_use_id: "c2" },
+      ],
+    });
+  });
+
+  test("a PostToolBatch hook that blocks ends the turn with its reason", async () => {
+    const bus = new EventBus();
+    attachCommandHooks(
+      bus,
+      on("PostToolBatch", hook("batch-stop", 'console.error("tests fail"); process.exit(2);')),
+      {
+        cwd: dir,
+      },
+    );
+    const script = twoCalls();
+    const result = await turn(script.adapter, bus, [bashTool([])]);
+    expect(script.requests()).toBe(1);
+    expect(resultText(result.messages)).toEqual(["listing", "listing"]);
+    expect(result.error).toEqual({
+      code: "hook_stop",
+      message: "a PostToolBatch hook ended the turn: tests fail",
+    });
+  });
+
   test("a failed tool call runs PostToolUseFailure, and a call that succeeded runs PostToolUse", async () => {
     const hooks: CommandHooks = {
       ...on("PostToolUse", hook("post-ok", 'console.error("hook: it worked"); process.exit(2);')),

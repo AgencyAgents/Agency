@@ -29,7 +29,7 @@ import {
   type StopReason,
 } from "@agency/schema";
 import { CODE_TOOL } from "./codemode.ts";
-import { HookBlock } from "./events.ts";
+import { HookBlock, HookStop } from "./events.ts";
 import {
   compactMessages,
   countMessageTokens,
@@ -533,6 +533,36 @@ export async function runTurn(
         }
       }
       const results = await runTools(toolCalls, options, turn.malformedCalls, options.signal);
+      if (options.eventBus?.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.batch.after", {
+          calls: toolCalls.map((tc, i) => {
+            const r = results[i];
+            const result =
+              r?.type === "tool_result"
+                ? { content: r.content, isError: r.isError }
+                : { content: "", isError: false };
+            return { id: tc.id, tool: tc.name, input: tc.input, result };
+          }),
+          sessionId: options.sessionId,
+          turnId: options.turnId,
+        });
+        const stop = errors.find((e): e is HookStop => e instanceof HookStop);
+        if (stop) {
+          await append({ role: "user", content: results });
+          salvageError = { code: "hook_stop", message: stop.message };
+          stopReason = "end_turn";
+          break;
+        }
+        // The text of the hooks goes once into the last result, as the text of a PostToolUse hook into its own.
+        const added = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
+        const lastResult = results.at(-1);
+        if (added.length > 0 && lastResult?.type === "tool_result") {
+          results[results.length - 1] = {
+            ...lastResult,
+            content: [lastResult.content, ...added].join("\n\n"),
+          };
+        }
+      }
       // A model does not know the limits of its turn. The line goes into a result: the history stays append-only.
       const notes: string[] = [];
       const stepsLeft = maxToolIterations - iteration - 1;

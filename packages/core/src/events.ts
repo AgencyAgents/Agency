@@ -21,6 +21,17 @@ export interface AgencyEvents {
     sessionId?: string;
     turnId?: string;
   };
+  /** All calls of one reply, after the last one ended and before the next request. */
+  "tool.batch.after": {
+    calls: {
+      id: string;
+      tool: string;
+      input: Record<string, unknown>;
+      result: { content: string; isError: boolean };
+    }[];
+    sessionId?: string;
+    turnId?: string;
+  };
   "session.created": { sessionId: string };
   "session.compacting": { sessionId: string; trigger: "manual" | "auto" };
   "session.compacted": { sessionId: string; tipId: string; trigger?: "manual" | "auto" };
@@ -50,6 +61,9 @@ export interface AgencyEvents {
 
 /** A hook's refusal: its message goes to the model. A caller of emitCollect tells it apart from a broken hook. */
 export class HookBlock extends Error {}
+
+/** A hook's refusal that ends the turn: the model gets no more requests. */
+export class HookStop extends HookBlock {}
 
 type Listener<T = unknown> = (payload: T) => void | Promise<void>;
 
