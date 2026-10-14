@@ -7,6 +7,7 @@ import { createEditTool } from "./builtins/edit.ts";
 import { createFetchTool } from "./builtins/fetch.ts";
 import { createGlobTool } from "./builtins/glob.ts";
 import { createGrepTool } from "./builtins/grep.ts";
+import { createMemoryTool } from "./builtins/memory.ts";
 import { createExecutePlanTool } from "./builtins/plan.ts";
 import { createProcessTools } from "./builtins/process.ts";
 import { createQuestionTool } from "./builtins/question.ts";
@@ -120,6 +121,8 @@ export interface SessionScopeOptions {
   identityFor?: McpManagerOptions["identityFor"];
   /** The sign-ins of `agency mcp login`. */
   mcpTokens?: McpManagerOptions["tokens"];
+  /** The notes file of the `memory` tool. Absent: no memory tool. */
+  memoryFile?: string;
 }
 
 export async function createSessionScope(scopeOptions: SessionScopeOptions): Promise<SessionScope> {
@@ -201,6 +204,7 @@ export async function createSessionScope(scopeOptions: SessionScopeOptions): Pro
   });
   registry.register(createTodoReadTool(todos));
   registry.register(createTodoWriteTool(todos));
+  if (options.memoryFile !== undefined) registry.register(createMemoryTool(options.memoryFile));
   registry.register(createExecutePlanTool(options.deps, todos));
   for (const tool of createProcessTools(options.deps, processManager)) {
     registry.register(tool);

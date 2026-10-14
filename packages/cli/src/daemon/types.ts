@@ -69,7 +69,12 @@ import {
 import type { DaemonServer } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
 import type { Telemetry } from "@agency/telemetry";
-import type { SessionScope, ToolSpec as ToolsToolSpec } from "@agency/tools";
+import {
+  MAX_MEMORY_NOTES,
+  readMemoryNotes,
+  type SessionScope,
+  type ToolSpec as ToolsToolSpec,
+} from "@agency/tools";
 import type { TeamContext } from "./team-context.ts";
 
 export type { SystemReminder };
@@ -180,8 +185,22 @@ export interface ResolveSystemPromptOptions {
   trustStore?: import("@agency/guard").TrustStore;
   /** Texts of the loaded plugins and skills. They go after the project instructions. */
   pluginInstructions?: readonly string[];
+  /** The notes of the `memory` tool go last in the instructions. */
+  memoryFile?: string;
   /** Environment block per session id. A block that changes between turns ends the prompt cache of the full history. */
   environments?: EnvironmentStore;
+}
+
+/**
+ * The notes of the `memory` tool, as one instruction. ponytail: read on each turn, so a new note ends the prompt cache
+ * once; keep the notes of the session start when that costs.
+ */
+export function memoryInstructions(file: string | undefined): string[] {
+  const notes = file === undefined ? [] : readMemoryNotes(file).slice(0, MAX_MEMORY_NOTES);
+  if (notes.length === 0) return [];
+  return [
+    `Your notes from earlier sessions in this workspace, which the memory tool keeps. A note can be out of date: check a fact before you rely on it.\n${notes.join("\n")}`,
+  ];
 }
 
 /** Repo-provided text is an injection surface, so an untrusted workspace contributes none. */
@@ -639,6 +658,8 @@ export interface DaemonContext {
   pluginCommands: Array<{ pluginId: string; command: PluginCommandContribution }>;
   trustStore: import("@agency/guard").TrustStore;
   pluginInstructions: readonly string[];
+  /** The notes file of the `memory` tool; absent when `memory` of the config is false. */
+  memoryFile?: string;
   /** Shell hooks of the config: the turn handler runs the prompt and session events itself. */
   commandHooks: import("@agency/core").CommandHooks;
   hookRun: import("@agency/core").HookRunOptions;
@@ -764,7 +785,11 @@ export function resolvePrompt(
   const composed = composeSystemPrompt({
     base: composeFromParts ? (identity ?? DEFAULT_SYSTEM_PROMPT) : params.systemPrompt,
     familyPresetOverlay: composeFromParts ? role : undefined,
-    instructions: instructions ?? [...projectInstructions(options), ...(options.pluginInstructions ?? [])],
+    instructions: instructions ?? [
+      ...projectInstructions(options),
+      ...(options.pluginInstructions ?? []),
+      ...memoryInstructions(options.memoryFile),
+    ],
     toolDescriptions: [],
     context,
   });

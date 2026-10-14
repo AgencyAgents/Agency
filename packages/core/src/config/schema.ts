@@ -140,6 +140,8 @@ export const ConfigSchema = z
      */
     codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
     lspServers: z.record(z.string(), z.unknown()).optional(),
+    /** The `memory` tool and its notes in the prompt of each session. Default true. */
+    memory: z.boolean().optional(),
     /** Loads the code plugins of the user folders of OpenCode and Pi too. Off by default: they are code. */
     userAgentPlugins: z.boolean().optional(),
     /**

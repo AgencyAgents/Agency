@@ -37,6 +37,8 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `codeMode` | `true \| false \| "host"` | `false` | Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox with no network, no write access and, of your files, only those of the runner: bubblewrap on Linux, Seatbelt on macOS, an AppContainer with no capability on Windows (the container `agency.script` gets read access to the runner file at the start of the daemon; it writes only in its own temporary folder). `"host"` runs it with no isolation, with the authority of a shell command, and only with the `software` sandbox backend. On Windows the sandbox of `true` ran on this machine: a script read its input and called tools, and its read of a user file, its write and its network call were refused. On Linux and macOS it never ran: tests cover its arguments only |
 | `mcpDeferTools` | `"auto" \| "always" \| "never"` | `"auto"` | When the schemas of the MCP tools stay out of a request until the model loads them (see MCP / LSP) |
 | `lspServers` | `Record<string, unknown>` | — | Same; parsed by `parseLspServers` |
+| `memory` | boolean | `true` | The `memory` tool and its notes in the prompt (see Memory) |
+| `userAgentPlugins` | boolean | `false` | Also loads the code plugins of the user folders of OpenCode and Pi (see Plugins of other agents) |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |
 | `sandbox.backend` | `software\|docker\|os` | `software` | Sandbox backend: in-process boundary, container exec, or the sandbox of the operating system |
@@ -323,6 +325,12 @@ A session can hold a goal: a condition that must be true before a turn ends. Whe
 - A check that fails, or a reply that is not a verdict, does not hold the turn.
 
 The team report that `/goal` showed before is now `/report [outcome]`.
+
+## Memory
+
+The `memory` tool keeps notes for the later sessions of a workspace, as the auto memory of Claude Code does. The model adds a note (one line), removes the notes that contain a text, or shows them. The notes are in `memory/<workspace id>.md` of the data folder of Agency (outside the repository, readable only by you), and each turn has them at the end of its instructions, with the warning that a note can be out of date. The file holds at most 200 notes of at most 1,000 characters; you can edit it by hand. `"memory": false` in the config removes the tool and the notes from the prompt.
+
+The tool asks the model not to save a secret, the task in progress, or a note that a file or a web page asks it to save: a note is text that later sessions trust as their own.
 
 ## Compaction
 

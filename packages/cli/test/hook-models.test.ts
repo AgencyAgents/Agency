@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config, ToolSpec } from "@agency/core";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { Scheduler } from "@agency/providers";
-import { agentHookModel } from "../src/daemon/types.ts";
+import { agentHookModel, memoryInstructions } from "../src/daemon/types.ts";
 
 test("an agent hook runs a turn with the read tools of its session, and answers with its last reply", async () => {
   let requests = 0;
@@ -52,5 +55,20 @@ test("an agent hook runs a turn with the read tools of its session, and answers 
     expect(seen).toEqual(["tools of s9", "read test.log"]);
   } finally {
     delete process.env.AGENCY_FAKEPROV_API_KEY;
+  }
+});
+
+test("the notes of the memory file join the instructions, and no file gives none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agency-memory-prompt-"));
+  try {
+    const file = join(dir, "ws.md");
+    expect(memoryInstructions(file)).toEqual([]);
+    expect(memoryInstructions(undefined)).toEqual([]);
+    writeFileSync(file, "- Use bun\n\n- Tabs, not spaces\n");
+    const [text] = memoryInstructions(file);
+    expect(text).toContain("A note can be out of date");
+    expect(text?.endsWith("- Use bun\n- Tabs, not spaces")).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

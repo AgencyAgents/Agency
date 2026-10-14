@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Memory**: a `memory` tool keeps notes for the later sessions of a workspace, in a file
+  of the user's data folder, and each turn has them in its instructions, as the auto
+  memory of Claude Code. `"memory": false` turns it off.
 - **npm plugins of OpenCode**: a trusted workspace loads the plugins of the `plugin`
   key of `opencode.json` from where npm or OpenCode installed them (the workspace, or
   the cache of OpenCode). Agency installs no package. With `userAgentPlugins: true`,

@@ -4,6 +4,7 @@ import {
   type BoardStore,
   type Config,
   isTeamLive,
+  memoryFile,
   storagePaths,
   type ToolSpec,
 } from "@agency/core";
@@ -130,6 +131,7 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),
         lspServers: config.lspServers,
         mcpTokens,
+        ...(config.memory === false ? {} : { memoryFile: memoryFile(options.workspaceRoot) }),
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
       });
       await attachTeamMcpPool(teamMcpPools, mcpServers, scope, {
