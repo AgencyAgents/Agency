@@ -369,7 +369,7 @@ A plugin module can do the same from code: a handler of `tool.execute.before`, `
 
 `agency plugin install <folder>` installs the hooks of a Claude Code plugin with its skills, commands and agents:
 
-- The command hooks of the five events above go to `.agency/hooks/<plugin>.json`. The install prints each event that it installed, and each event that it skipped with the reason (an event that does not exist here, or an entry that is not a command).
+- The command, http and prompt hooks of the events in the table above go to `.agency/hooks/<plugin>.json`. The install prints each event that it installed, and each event that it skipped with the reason (an event that does not exist here, or an entry of another type, such as `agent`).
 - The files of the plugin are copied to `.agency/plugin-roots/<plugin>/`, and `${CLAUDE_PLUGIN_ROOT}` in a command becomes that folder. The source folder can thus go away.
 - A skill is copied with all the files of its folder, so a skill can name its own references and scripts.
 - A plugin name or a skill name must be one plain name (letters, digits, `.`, `_`, `-`). A name that is a path is refused.
