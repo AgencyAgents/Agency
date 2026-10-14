@@ -90,14 +90,24 @@ Worktree isolation: an agent that can write gets a git worktree at `.agency/work
 
 `name?`, `baseUrl?`, `headers?: Record<string,string>`, `family?: openai|anthropic|google|openai-compatible` (default: the native family for the ids `anthropic`, `openai` and `google`, otherwise `openai-compatible`; with a native family, `baseUrl` replaces the public endpoint up to the version segment, for example `https://gateway.example/v1` for Anthropic and OpenAI or `https://gateway.example/v1beta` for Google, and `headers` are sent with each request), `env?: string[]` (extra env var names for the key), `apiKey?: string` (lowest precedence, local dev), `requestsPerMinute?: number` (requests of the daemon to this provider in one minute; default: the rate of the API of a known provider, 60 for any other), `streamIdleMs?: number` (the longest silence on a response stream before the request is cut, in ms; default 300000; a slow local server that takes more than 5 minutes to read a long prompt needs a larger value), `models?: Record<id, ModelOverride>`, `whitelist?`, `blacklist?`, `oauth?: {clientId?, baseUrl?}`. `ModelOverride` may override `name`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities`, `status`, `releaseDate`.
 
+### ChatGPT plan (`chatgpt`)
+
+`agency auth login chatgpt` signs in with ChatGPT in the browser, and the models of your ChatGPT plan then run as `chatgpt/<model>`, for example `agency -p "..." --model chatgpt/gpt-5.5`. The login prints the models of your plan. Usage counts against the limits of the plan, and a turn costs nothing more; set a weekly limit for Agency at https://chatgpt.com/settings/usage. A run on the plan prints "Using ChatGPT plan".
+
+This is the flow that OpenAI documents for open-source, locally hosted apps (developers.openai.com/siwc): the first sign-in registers Agency for your account and this computer, and later sign-ins reuse that registration. Agency checks the signature of the ID token, keeps the tokens in the OS keychain, and refreshes them before they end. `agency auth logout chatgpt` revokes the sign-in. Requests go to the Responses API with `store: false`, so OpenAI keeps no conversation; the encrypted reasoning of the model goes back with each request, as in Codex. When the plan limit is reached, the turn stops with a link to the settings.
+
+Status: tested against a local server that follows the docs of OpenAI. No sign-in to a real ChatGPT account has run yet.
+
+A Claude Pro or Max plan cannot be used: Anthropic does not permit third-party apps to offer a Claude sign-in ([Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)). Use an Anthropic API key, and `agency auth login anthropic --oauth` says so.
+
 ### OAuth (`provider.<id>.oauth`)
 
-`agency auth login <provider> --oauth` runs the PKCE browser flow for `anthropic`, `openai`, `google`, or `github-copilot` and stores the token in the OS keychain under the single canonical `<provider>:oauth` slot. The shipped client ids are placeholders: register an OAuth app at the provider's developer console and provision it via config:
+`agency auth login <provider> --oauth` runs the PKCE browser flow for `google` or `github-copilot` and stores the token in the OS keychain under the single canonical `<provider>:oauth` slot. The shipped client ids are placeholders: register an OAuth app at the provider's developer console and provision it via config:
 
 ```jsonc
 {
   "provider": {
-    "anthropic": { "oauth": { "clientId": "your-client-id" } }
+    "google": { "oauth": { "clientId": "your-client-id" } }
   }
 }
 ```
@@ -106,8 +116,6 @@ Without a configured `clientId` the login and any token refresh fail with an exp
 
 Registration is a human step per provider; no shipped client id is functional and none is baked in:
 
-- Anthropic: create an OAuth client in the Anthropic console, allow the loopback redirect the login prints, then set `provider.anthropic.oauth.clientId`.
-- OpenAI: same shape in the OpenAI developer dashboard, then `provider.openai.oauth.clientId`.
 - Google: create an OAuth client ID of Desktop-app type in the Google Cloud console, then set `provider.google.oauth.clientId`. A human completes the consent screen once; agency stores the token and refreshes it.
 - GitHub Copilot: prefer the RFC 8628 device flow (`agency auth login github-copilot --device`), which needs no browser redirect: `requestDeviceAuthorization` returns the user code, `pollDeviceToken` polls until approval, and `runDeviceFlow` stores the token. `supportsDeviceFlow` reports `github-copilot` as the only opted-in provider today.
 

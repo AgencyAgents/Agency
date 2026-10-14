@@ -48,6 +48,7 @@ import type { HttpClient } from "@agency/net";
 import {
   anthropicAdapter,
   type CacheSegment,
+  chatgptAdapter,
   classifyEffortFromText,
   createOpenAiCompatibleAdapter,
   GATEWAY_BASE_URLS,
@@ -281,6 +282,7 @@ export function resolveAdapter(
 const NATIVE_ADAPTERS: Record<string, ProviderAdapter | undefined> = {
   anthropic: anthropicAdapter,
   openai: openaiAdapter,
+  chatgpt: chatgptAdapter,
   google: googleAdapter,
 };
 

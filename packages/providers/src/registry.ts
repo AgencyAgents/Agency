@@ -598,6 +598,7 @@ const PROVIDER_METADATA_TABLE: readonly ProviderMetadataRow[] = [
   ["groq", 128_000, "cheap", ["api-key"], 300],
   ["xai", 128_000, "standard", ["api-key"], 300],
   ["ollama", 128_000, "cheap", ["none"], undefined],
+  ["chatgpt", 400_000, "subscription", ["oauth"], 300],
 ];
 
 function toProviderMetadata(row: ProviderMetadataRow): ProviderMetadata {

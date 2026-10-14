@@ -196,6 +196,20 @@ export const en = {
   "cli.error.auth_oauth_unsupported":
     'OAuth is not supported for "{provider}". Supported: anthropic, openai, google, github-copilot.',
   "cli.auth.oauth_stored": "OAuth token for {provider} stored in the {backend}.",
+  "cli.error.auth_logout_usage": "usage: agency auth logout <provider>",
+  "cli.error.auth_anthropic_subscription":
+    "Anthropic does not permit a Claude Pro or Max sign-in in other apps (code.claude.com/docs/en/legal-and-compliance). Use an API key: `agency auth login anthropic`.",
+  "cli.error.auth_openai_oauth":
+    "To use your ChatGPT plan, run `agency auth login chatgpt`. For an OpenAI API key, run `agency auth login openai`.",
+  "cli.auth.removed": "The key and sign-in of {provider} are removed from the {backend}.",
+  "cli.auth.chatgpt_continue": "Continue with ChatGPT in the browser.",
+  "cli.auth.chatgpt_plan_notice":
+    "You're using your ChatGPT plan. Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT settings: {url}",
+  "cli.auth.chatgpt_signed_in": "Signed in with ChatGPT as {account}.",
+  "cli.auth.chatgpt_models": "Models of your plan: {models}",
+  "cli.auth.chatgpt_signed_out": "Signed out of ChatGPT, and the sign-in is revoked.",
+  "cli.auth.chatgpt_revoke_unconfirmed":
+    "Signed out of ChatGPT here, but the revocation was not confirmed. Disconnect Agency in your ChatGPT settings.",
   "cli.auth.key_prompt": "API key for {provider}:",
   "cli.auth.connected": "{provider}: connected",
   "cli.auth.disconnected": "{provider}: not connected",
@@ -242,6 +256,7 @@ export const en = {
   "cli.progress.heartbeat": ".",
   "cli.progress.retry": "Retry {attempt}: {message}",
   "cli.progress.turn_complete": "Turn complete ({reason}).",
+  "cli.progress.chatgpt_plan": "Using ChatGPT plan. Manage usage: {url}",
 
   "cli.trust.checking": "Checking trust for {path}...",
   "cli.trust.prompt": "Trust {path}? (y/N): ",

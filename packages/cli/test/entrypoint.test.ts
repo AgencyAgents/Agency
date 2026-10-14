@@ -400,6 +400,7 @@ describe("auth commands", () => {
     const states = JSON.parse(json.out.join(""));
     expect(states).toEqual({
       anthropic: true,
+      chatgpt: false,
       deepseek: false,
       google: false,
       groq: false,
@@ -425,9 +426,9 @@ describe("auth commands", () => {
       flowed = provider;
     };
 
-    expect(await runEntrypoint(["auth", "login", "anthropic", "--oauth"], deps)).toBe(0);
-    expect(flowed).toBe("anthropic");
-    expect(out.join("\n")).toContain("anthropic");
+    expect(await runEntrypoint(["auth", "login", "google", "--oauth"], deps)).toBe(0);
+    expect(flowed).toBe("google");
+    expect(out.join("\n")).toContain("google");
   });
 
   test("auth login --oauth rejects providers without an OAuth registry entry", async () => {
@@ -445,10 +446,10 @@ describe("auth commands", () => {
     deps.keychain = createFileFallbackBackend(tempDir("agency-ep-keys-"));
     deps.configDir = tempDir("agency-ep-config-");
     deps.oauthFlow = async () => {
-      throw new Error('OAuth not configured for provider "openai"');
+      throw new Error('OAuth not configured for provider "google"');
     };
 
-    expect(await runEntrypoint(["auth", "login", "openai", "--oauth"], deps)).toBe(1);
+    expect(await runEntrypoint(["auth", "login", "google", "--oauth"], deps)).toBe(1);
     expect(err.join("\n")).toContain("OAuth not configured");
   });
 });
@@ -1175,7 +1176,7 @@ describe("bare agency", () => {
 
     const list = capture();
     await runEntrypoint(["auth", "list", "--format", "json"], { ...shared, ...list.deps });
-    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(7).fill(false));
+    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(8).fill(false));
   });
 });
 

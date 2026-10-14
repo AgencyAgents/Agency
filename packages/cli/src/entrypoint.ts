@@ -22,14 +22,21 @@ import { runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
+  CHATGPT_PROVIDER,
+  CHATGPT_USAGE_URL,
   createKeychain,
   defaultModelIDs,
   GATEWAY_BASE_URLS,
+  getChatgptCredential,
   type KeychainBackend,
+  listChatgptModels,
   OAUTH_PROVIDERS,
+  oauthKey,
   resolveApiKey,
   runDeviceFlow,
   runOAuthFlow,
+  signInChatgpt,
+  signOutChatgpt,
   supportsDeviceFlow,
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
@@ -69,12 +76,14 @@ Commands:
   daemon status            Show daemon status for this workspace, with the turns that run
   daemon cancel <turn>     Stop a turn that runs
   auth login <provider>    Store an API key for a provider in the OS keychain
+  auth login chatgpt       Continue with ChatGPT: use the models of your ChatGPT plan
   auth login <provider> --oauth
-                           OAuth browser flow for anthropic, openai, google, github-copilot
+                           OAuth browser flow for google, github-copilot
                            (needs provider.<id>.oauth.clientId in config)
   auth login <provider> --device
                            RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
+  auth logout <provider>   Remove the key or sign-in of a provider (a ChatGPT sign-in is revoked)
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
   mcp logout <server>      Remove the sign-in of an MCP server
   plugin install <dir> [--overwrite]
@@ -186,6 +195,8 @@ export interface EntrypointDeps {
   ensureClient?: (options: { workspaceRoot: string; instanceDir?: string }) => Promise<DaemonClient>;
   /** Overrides the workspace the command runs in (tests). */
   cwd?: string;
+  /** The fetch of the ChatGPT sign-in, its model list and its sign-out (tests). */
+  chatgptFetch?: typeof fetch;
   /** Overrides the OAuth browser flow for `auth login --oauth` (tests). */
   oauthFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
   /** Overrides the device flow for `auth login --device` (tests). */
@@ -445,7 +456,7 @@ async function providerConnections(
   env: NodeJS.ProcessEnv,
   keychain: KeychainBackend,
 ): Promise<Array<{ provider: string; connected: boolean }>> {
-  const builtin = ["anthropic", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
+  const builtin = ["anthropic", "chatgpt", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
   const ids = [...new Set([...builtin, ...Object.keys(config.provider)])].sort();
   const rows: Array<{ provider: string; connected: boolean }> = [];
   for (const id of ids) {
@@ -458,7 +469,8 @@ async function providerConnections(
       config: providerConfig?.apiKey,
       oauthClientId: providerConfig?.oauth?.clientId,
       oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-    });
+      // A sign-in whose refresh fails is not connected: the list does not fail for it.
+    }).catch(() => undefined);
     rows.push({ provider: id, connected: key !== undefined });
   }
   return rows;
@@ -588,6 +600,10 @@ async function runPrintMode(
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
+  // OpenAI asks an app to show while the plan pays.
+  if (provider === CHATGPT_PROVIDER && parsed.format !== "json" && !parsed.streamJson) {
+    err(t("cli.progress.chatgpt_plan", { url: CHATGPT_USAGE_URL }));
+  }
 
   let outputSchema: Record<string, unknown> | undefined;
   if (parsed.jsonSchema !== undefined) {
@@ -1041,6 +1057,16 @@ async function authCmd(
       err(t("cli.error.auth_login_usage"));
       return 1;
     }
+    if (provider === CHATGPT_PROVIDER) return chatgptLogin(keychain, deps, out, err);
+    // Anthropic's terms do not permit a Claude sign-in in another app: there is no flow to offer.
+    if (parsed.oauth && provider === "anthropic") {
+      err(t("cli.error.auth_anthropic_subscription"));
+      return 1;
+    }
+    if (parsed.oauth && provider === "openai") {
+      err(t("cli.error.auth_openai_oauth"));
+      return 1;
+    }
     if (parsed.device) {
       if (!OAUTH_PROVIDERS[provider]) {
         err(t("cli.error.auth_oauth_unsupported", { provider }));
@@ -1094,6 +1120,23 @@ async function authCmd(
     return 0;
   }
 
+  if (parsed.subcommand === "logout") {
+    const provider = parsed.args[0];
+    if (provider === undefined) {
+      err(t("cli.error.auth_logout_usage"));
+      return 1;
+    }
+    if (provider === CHATGPT_PROVIDER) {
+      const revoked = await signOutChatgpt(keychain, deps.chatgptFetch);
+      out(t(revoked ? "cli.auth.chatgpt_signed_out" : "cli.auth.chatgpt_revoke_unconfirmed"));
+      return 0;
+    }
+    await keychain.delete(provider);
+    await keychain.delete(oauthKey(provider));
+    out(t("cli.auth.removed", { provider, backend: keychain.name }));
+    return 0;
+  }
+
   if (parsed.subcommand === "list") {
     const rows = await providerConnections(loadConfig({ globalDir: deps.configDir, env }), env, keychain);
     if (parsed.format === "json") {
@@ -1111,6 +1154,33 @@ async function authCmd(
   }
 
   throw subcommandError("auth", parsed.subcommand);
+}
+
+/** `auth login chatgpt`: Sign in with ChatGPT, in the words that OpenAI asks a CLI to use. */
+async function chatgptLogin(
+  keychain: KeychainBackend,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const first = (await getChatgptCredential(keychain)) === undefined;
+  out(t("cli.auth.chatgpt_continue"));
+  try {
+    const credential = await signInChatgpt(keychain, {
+      ...(deps.openUrl ? { openUrl: deps.openUrl } : {}),
+      ...(deps.chatgptFetch ? { fetchFn: deps.chatgptFetch } : {}),
+    });
+    if (first) out(t("cli.auth.chatgpt_plan_notice", { url: CHATGPT_USAGE_URL }));
+    out(t("cli.auth.chatgpt_signed_in", { account: credential.email ?? credential.subject }));
+    const models = await listChatgptModels(credential.accessToken, deps.chatgptFetch).catch(() => []);
+    if (models.length > 0) {
+      out(t("cli.auth.chatgpt_models", { models: models.map((m) => `chatgpt/${m.slug}`).join(", ") }));
+    }
+    return 0;
+  } catch (error) {
+    err(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
 }
 
 /** One row of `turns_list`: a turn that runs in the daemon. */
@@ -1332,7 +1402,9 @@ Options:
 
 Subcommands:
   login <provider>     Store an API key for a provider in the OS keychain
-  list                 Show which providers have a resolvable key`);
+  login chatgpt        Continue with ChatGPT: use the models of your ChatGPT plan
+  list                 Show which providers have a resolvable key
+  logout <provider>    Remove the key or sign-in of a provider`);
         return 0;
       }
       return authCmd(parsed, deps, out, err);

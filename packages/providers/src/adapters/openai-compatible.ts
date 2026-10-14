@@ -10,7 +10,7 @@ import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usag
  * seven-level scale. The extra levels compress onto the nearest tier rather
  * than erroring: losing precision here is better than refusing to run.
  */
-const REASONING_EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
+export const REASONING_EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
   minimal: "minimal",
   low: "low",
   medium: "medium",
@@ -121,7 +121,7 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   return body;
 }
 
-async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
+export async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
     | {
         error?: {

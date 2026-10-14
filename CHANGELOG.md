@@ -8,6 +8,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Use your ChatGPT plan**: `agency auth login chatgpt` signs in with ChatGPT as
+  OpenAI documents it for open-source apps, and `chatgpt/<model>` then runs on the
+  plan through a new Responses API adapter. `agency auth logout <provider>` removes
+  a key or revokes the ChatGPT sign-in. Tested against a local server only. A Claude
+  plan cannot be used: Anthropic's terms do not permit it in another app, and
+  `auth login anthropic --oauth` now says so.
 - **Prompt hooks**: a hook of `"type": "prompt"` asks a model (`small_model` by
   default) whether the event meets a condition, and `{"ok": false, "reason"}`
   blocks, as in Claude Code. Live: a `Stop` hook made DeepSeek V4 Flash add a word it
