@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **The OS sandbox protects more of the workspace**: a command can no longer
+  write `.git/config` or the hooks, MCP servers and plugins of `.agency`,
+  which the harness runs outside the sandbox later. `.agency/worktrees` stays
+  writable for teams. On Linux and macOS `.git` cannot be renamed and the
+  data and config folders of Agency cannot be read (tests of the arguments
+  only). On Windows a write is denied and `git commit` still works
+  (measured); the token there does not stop delete and rename.
 - **Data and config folders are private on Linux and macOS**: each start of
   `agency` sets them to `0700`. Before, they had the mode of the umask,
   often `0755`, so another user of the machine could read the sessions and

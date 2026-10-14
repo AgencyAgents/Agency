@@ -141,6 +141,8 @@ export function createSandboxBackend(
     return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
       allowNetwork: sandboxConfig.allowNetwork,
       ...(windowsShell ? { windowsShell } : {}),
+      // The keys, sessions and daemon tokens: a command that reads a token can drive the daemon.
+      hidden: [dataDir(), configDir()],
     });
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);

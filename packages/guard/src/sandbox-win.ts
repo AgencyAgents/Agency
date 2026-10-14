@@ -1,8 +1,9 @@
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROTECTED_PATHS } from "./sandbox.ts";
 
 /** The hidden command of the binary that runs one command under the restricted token. */
 export const SANDBOX_COMMAND = "__sandbox";
@@ -50,17 +51,23 @@ export function quoteWindowsArg(arg: string): string {
 const psQuote = (text: string): string => `'${text.replace(/'/g, "''")}'`;
 
 /**
- * Lets the SID write in the workspace and the temporary folder, and not in `.git/hooks`: a hook that a command
- * writes would run later outside the sandbox. The rules stay on the folders; a second call changes nothing.
+ * Lets the SID write in the workspace and the temporary folder, and not in `PROTECTED_PATHS`; `.agency` takes no new
+ * entry. The token does not restrict delete, so a deny of it adds nothing. The rules stay; a second call changes nothing.
  */
 export async function prepareWindowsSandbox(root: string, sid: string): Promise<boolean> {
   const temp = windowsSandboxTemp(sid);
   mkdirSync(temp, { recursive: true });
+  const at = (path: string): string => psQuote(join(root, path));
+  // ponytail: an entry that the daemon adds to .agency later gets its rule at the next daemon start.
+  const agency = readdirSync(join(root, ".agency"))
+    .map((name) => `.agency/${name}`)
+    .filter((path) => !(PROTECTED_PATHS.writable as readonly string[]).includes(path));
+  const readOnly = [...PROTECTED_PATHS.readOnly.filter((path) => path !== ".agency"), ...agency];
   return addAccessRules(sid, [
     `Add-Rule ${psQuote(root)} 'Modify' 'Allow'`,
     `Add-Rule ${psQuote(temp)} 'Modify' 'Allow'`,
-    `$hooks = Join-Path ${psQuote(root)} '.git\\hooks'`,
-    "if (Test-Path -LiteralPath $hooks) { Add-Rule $hooks 'Write, Delete, DeleteSubdirectoriesAndFiles' 'Deny' }",
+    `Add-Rule ${at(".agency")} 'CreateFiles, CreateDirectories' 'Deny' 'None'`,
+    ...readOnly.map((path) => `Add-Rule ${at(path)} 'Write' 'Deny'`),
   ]);
 }
 
@@ -74,17 +81,18 @@ export async function prepareScriptContainer(readPaths: string[]): Promise<boole
   );
 }
 
-/** Runs `Add-Rule <path> <rights> <type>` lines for one SID. A rule that is there already is not added again. */
+/** Runs `Add-Rule <path> <rights> <type> [<inheritance>]` lines for one SID. A rule there already, or no path, is skipped. */
 async function addAccessRules(sid: string, lines: string[]): Promise<boolean> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$sid = New-Object System.Security.Principal.SecurityIdentifier ${psQuote(sid)}`,
-    "function Add-Rule($path, $rights, $type) {",
+    "function Add-Rule($path, $rights, $type, $flags) {",
+    "  if (-not (Test-Path -LiteralPath $path)) { return }",
     "  $item = Get-Item -LiteralPath $path -Force",
     "  $acl = $item.GetAccessControl('Access')",
     "  $has = $acl.Access | Where-Object { $_.IdentityReference.Value -eq $sid.Value -and $_.AccessControlType -eq $type }",
     "  if ($has) { return }",
-    "  $inherit = if ($item.PSIsContainer) { 'ContainerInherit,ObjectInherit' } else { 'None' }",
+    "  $inherit = if ($flags) { $flags } elseif ($item.PSIsContainer) { 'ContainerInherit,ObjectInherit' } else { 'None' }",
     "  $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $rights, $inherit, 'None', $type)))",
     "  $item.SetAccessControl($acl)",
     "}",

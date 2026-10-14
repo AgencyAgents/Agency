@@ -37,6 +37,41 @@ describe("OS sandbox arguments", () => {
     expect(buildSeatbeltProfile("/Users/u/ws", true)).not.toContain("network");
   });
 
+  test("bubblewrap: .git is pinned, its hooks and config and .agency are read-only, the data of the harness is hidden", () => {
+    const ws = "/home/u/ws";
+    const args = buildBwrapArgs(ws, ws, false, "bwrap", ["/home/u/.local/share/agency"]);
+    const text = args.join(" ");
+    const at = (part: string): number => {
+      expect(text).toContain(part);
+      return text.indexOf(part);
+    };
+    const hide = at("--tmpfs /home/u/.local/share/agency");
+    const workspace = at(`--bind ${ws} ${ws}`);
+    const pin = at(`--bind-try ${ws}/.git ${ws}/.git`);
+    const config = at(`--ro-bind-try ${ws}/.git/config ${ws}/.git/config`);
+    const agency = at(`--ro-bind-try ${ws}/.agency ${ws}/.agency`);
+    const worktrees = at(`--bind-try ${ws}/.agency/worktrees ${ws}/.agency/worktrees`);
+    // A later mount wins: each rule must come after the one it narrows.
+    expect(hide).toBeLessThan(workspace);
+    expect(workspace).toBeLessThan(pin);
+    expect(pin).toBeLessThan(config);
+    expect(agency).toBeLessThan(worktrees);
+  });
+
+  test("Seatbelt: the same rules, and no read of the data of the harness", () => {
+    const lines = buildSeatbeltProfile("/Users/u/ws", false, "/private/tmp", [
+      "/Users/u/.config/agency",
+    ]).split("\n");
+    expect(lines).toContain('(deny file-read* (subpath "/Users/u/.config/agency"))');
+    const deny = lines.findIndex((l) => l.includes('(literal "/Users/u/ws/.git")'));
+    expect(lines[deny]).toContain('(subpath "/Users/u/ws/.git/config")');
+    expect(lines[deny]).toContain('(subpath "/Users/u/ws/.agency")');
+    expect(deny).toBeGreaterThan(lines.findIndex((l) => l.startsWith("(allow file-write*")));
+    expect(lines.indexOf('(allow file-write* (subpath "/Users/u/ws/.agency/worktrees"))')).toBeGreaterThan(
+      deny,
+    );
+  });
+
   test("the backend wraps a command for its platform and keeps the command policy", () => {
     const linux = new OsSandboxBackend("/home/u/ws", { deny: [/rm -rf/] }, undefined, {
       platform: "linux",

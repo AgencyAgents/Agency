@@ -65,6 +65,9 @@ describe.skipIf(process.platform !== "win32")("Windows sandbox: commands under t
     const ws = tmp("ws");
     const outside = tmp("outside");
     mkdirSync(join(ws, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(ws, ".git", "config"), "[core]\n");
+    mkdirSync(join(ws, ".agency", "hooks"), { recursive: true });
+    mkdirSync(join(ws, ".agency", "worktrees"), { recursive: true });
     const sandbox = new OsSandboxBackend(ws, {}, undefined, { allowNetwork: true });
     dirs.push(windowsSandboxTemp(windowsSandboxSid(ws)));
     expect(await sandbox.isAvailable()).toBe(true);
@@ -88,6 +91,34 @@ describe.skipIf(process.platform !== "win32")("Windows sandbox: commands under t
 
     const temp = await sandbox.exec(cmd("echo t> %TEMP%\\t.txt && type %TEMP%\\t.txt"), { cwd: ws });
     expect(temp.stdout.trim()).toBe("t");
+  }, 60_000);
+
+  test("a command cannot write .git/config or add to .agency; the worktrees of a team stay writable", async () => {
+    const { sandbox, ws } = await backend();
+    const run = async (line: string): Promise<number> =>
+      (await sandbox.exec(cmd(line), { cwd: ws })).exitCode;
+    expect(await run("echo x>> .git\\config")).not.toBe(0);
+    expect(readFileSync(join(ws, ".git", "config"), "utf8")).toBe("[core]\n");
+    expect(await run("echo {}> .agency\\hooks\\evil.json")).not.toBe(0);
+    expect(await run("ren .agency\\hooks old")).not.toBe(0);
+    expect(await run("mkdir .agency\\mcp")).not.toBe(0);
+    expect(await run("echo x> .agency\\new.txt")).not.toBe(0);
+    expect(existsSync(join(ws, ".agency", "mcp"))).toBe(false);
+    expect(existsSync(join(ws, ".agency", "new.txt"))).toBe(false);
+    expect(await run("echo ok> .agency\\worktrees\\w.txt")).toBe(0);
+  }, 60_000);
+
+  test("git works in the sandbox: a commit writes the objects, the index and the refs", async () => {
+    const ws = tmp("git");
+    expect(Bun.spawnSync(["git", "init", "-q", ws]).exitCode).toBe(0);
+    const sandbox = new OsSandboxBackend(ws, {}, undefined, { allowNetwork: true });
+    dirs.push(windowsSandboxTemp(windowsSandboxSid(ws)));
+    expect(await sandbox.isAvailable()).toBe(true);
+    const line =
+      "echo a> a.txt && git add a.txt && git -c user.name=t -c user.email=t@t commit -q -m one && git log --format=%s";
+    const result = await sandbox.exec(cmd(line), { cwd: ws });
+    expect(result.stdout.trim()).toBe("one");
+    expect(result.exitCode).toBe(0);
   }, 60_000);
 
   test("the command gets its arguments as given, and its exit code comes back", async () => {

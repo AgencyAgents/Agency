@@ -2,8 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "@agency/core";
-import { DockerSandboxBackend, OsSandboxBackend, SandboxBoundary } from "@agency/guard";
+import { configDir, dataDir, loadConfig } from "@agency/core";
+import {
+  DockerSandboxBackend,
+  OsSandboxBackend,
+  type OsSandboxOptions,
+  SandboxBoundary,
+} from "@agency/guard";
 import { sandboxWindowsShell } from "../src/daemon/session-scopes.ts";
 import { createSandboxBackend } from "../src/daemon.ts";
 
@@ -77,6 +82,11 @@ describe("daemon sandbox backend selection", () => {
     ) as OsSandboxBackend;
     expect(sandbox).toBeInstanceOf(OsSandboxBackend);
     if (process.platform === "win32") expect(sandbox.unavailableReason()).toContain("Git Bash (MSYS)");
+    // The keys, sessions and daemon tokens of the harness stay out of the view of a command.
+    expect((sandbox as unknown as { options: OsSandboxOptions }).options.hidden).toEqual([
+      dataDir(),
+      configDir(),
+    ]);
   });
 
   test("docker flag boots the container backend with config options", () => {

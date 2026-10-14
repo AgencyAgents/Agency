@@ -12,6 +12,16 @@ export interface CommandPolicy {
 }
 
 /**
+ * Workspace paths that a sandboxed command must not change: git, and the hooks, MCP servers and plugins of `.agency`,
+ * run later outside the sandbox. `.git` is pinned against a swap; the worktrees of a team stay writable.
+ */
+export const PROTECTED_PATHS = {
+  pinned: [".git"],
+  readOnly: [".git/hooks", ".git/config", ".agency"],
+  writable: [".agency/worktrees"],
+} as const;
+
+/**
  * Decides the verdict for a path that resolves OUTSIDE the sandbox root:
  * "deny" refuses (the historical default), "allow" admits it, "ask" routes
  * through the approval callback. Wired from the `external_directory`

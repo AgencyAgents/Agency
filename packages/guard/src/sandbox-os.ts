@@ -1,9 +1,11 @@
-import { realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RequestApproval } from "./approval.ts";
 import {
   type CommandPolicy,
   type ExternalDirectoryDecision,
+  PROTECTED_PATHS,
   type SandboxBackend,
   SandboxBoundary,
 } from "./sandbox.ts";
@@ -24,13 +26,26 @@ export interface OsSandboxOptions {
   seatbeltBin?: string;
   /** The `windowsShell` of the config: Git Bash does not start under the restricted token of Windows. */
   windowsShell?: "powershell" | "gitbash" | "cmd";
+  /**
+   * Folders that a command must not read: the keys, sessions and daemon tokens of the harness. Linux and macOS only:
+   * the token of Windows restricts writes, not reads.
+   */
+  hidden?: string[];
 }
 
 /**
- * bubblewrap argv: the whole disk read-only, the workspace and a private /tmp writable, no network.
- * `.git/hooks` stays read-only: a hook that a command writes would run later outside the sandbox.
+ * bubblewrap argv: the whole disk read-only, the workspace and a private /tmp writable, no network, and the
+ * `hidden` folders empty. A mount point cannot be renamed: that pins `.git`. See `PROTECTED_PATHS`.
  */
-export function buildBwrapArgs(root: string, cwd: string, allowNetwork: boolean, bin = "bwrap"): string[] {
+export function buildBwrapArgs(
+  root: string,
+  cwd: string,
+  allowNetwork: boolean,
+  bin = "bwrap",
+  hidden: string[] = [],
+): string[] {
+  const bind = (flag: string, paths: readonly string[]): string[] =>
+    paths.flatMap((path) => [flag, `${root}/${path}`, `${root}/${path}`]);
   return [
     bin,
     "--ro-bind",
@@ -42,12 +57,13 @@ export function buildBwrapArgs(root: string, cwd: string, allowNetwork: boolean,
     "/proc",
     "--tmpfs",
     "/tmp",
+    ...hidden.flatMap((path) => ["--tmpfs", path]),
     "--bind",
     root,
     root,
-    "--ro-bind-try",
-    `${root}/.git/hooks`,
-    `${root}/.git/hooks`,
+    ...bind("--bind-try", PROTECTED_PATHS.pinned),
+    ...bind("--ro-bind-try", PROTECTED_PATHS.readOnly),
+    ...bind("--bind-try", PROTECTED_PATHS.writable),
     "--unshare-pid",
     "--unshare-ipc",
     "--unshare-uts",
@@ -63,13 +79,22 @@ export function buildBwrapArgs(root: string, cwd: string, allowNetwork: boolean,
 const quote = (path: string): string => `"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /** Seatbelt profile with the same rules as the bubblewrap argv. The last rule that matches wins. */
-export function buildSeatbeltProfile(root: string, allowNetwork: boolean, tmpDir = "/private/tmp"): string {
+export function buildSeatbeltProfile(
+  root: string,
+  allowNetwork: boolean,
+  tmpDir = "/private/tmp",
+  hidden: string[] = [],
+): string {
+  const rules = (kind: string, paths: readonly string[]): string =>
+    paths.map((path) => `(${kind} ${quote(`${root}/${path}`)})`).join(" ");
   return [
     "(version 1)",
     "(allow default)",
+    ...hidden.map((path) => `(deny file-read* (subpath ${quote(path)}))`),
     "(deny file-write*)",
     `(allow file-write* (subpath ${quote(root)}) (subpath ${quote(tmpDir)}) (subpath "/private/tmp") (subpath "/private/var/folders") (literal "/dev/null") (regex #"^/dev/tty"))`,
-    `(deny file-write* (subpath ${quote(`${root}/.git/hooks`)}))`,
+    `(deny file-write* ${rules("literal", PROTECTED_PATHS.pinned)} ${rules("subpath", PROTECTED_PATHS.readOnly)})`,
+    `(allow file-write* ${rules("subpath", PROTECTED_PATHS.writable)})`,
     ...(allowNetwork ? [] : ["(deny network*)"]),
   ].join("\n");
 }
@@ -196,13 +221,17 @@ export class OsSandboxBackend implements SandboxBackend {
   /** The argv that runs `argv` in the sandbox. */
   wrap(argv: string[], cwd: string = this.root): string[] {
     if (this.platform === "linux") {
-      return [...buildBwrapArgs(this.root, cwd, this.allowNetwork, this.options.bwrapBin), ...argv];
+      return [
+        ...buildBwrapArgs(this.root, cwd, this.allowNetwork, this.options.bwrapBin, this.hidden()),
+        ...argv,
+      ];
     }
     if (this.platform === "darwin") {
       const profile = buildSeatbeltProfile(
         this.root,
         this.allowNetwork,
         process.env.TMPDIR ?? "/private/tmp",
+        this.hidden(),
       );
       return [this.options.seatbeltBin ?? "/usr/bin/sandbox-exec", "-p", profile, ...argv];
     }
@@ -212,8 +241,17 @@ export class OsSandboxBackend implements SandboxBackend {
     });
   }
 
+  /** The hidden folders that exist and do not hold the workspace: bubblewrap mounts only on a folder that exists. */
+  private hidden(): string[] {
+    return (this.options.hidden ?? []).filter(
+      (path) => existsSync(path) && !`${this.root}/`.startsWith(`${path.replace(/\/+$/, "")}/`),
+    );
+  }
+
   /** True when the sandbox program of this platform starts a command. */
   async isAvailable(): Promise<boolean> {
+    // A `.agency` that a command makes would not be read-only: the rules apply to the paths that exist.
+    mkdirSync(join(this.root, ".agency"), { recursive: true });
     if (this.platform === "win32") {
       // Here the folders get the rules of the SID, one time for each daemon start.
       if (this.windowsRefusal() !== undefined || !(await prepareWindowsSandbox(this.root, this.sid)))
