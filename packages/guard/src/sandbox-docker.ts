@@ -130,10 +130,13 @@ export function normalizeContainerRoot(root: string): string {
   return out;
 }
 
-/** realpathSync with try/catch fallback to the unresolved path (missing paths must not crash). */
+/**
+ * The native realpath, which also expands an 8.3 short name (C:\Users\RUNNER~1) that the JS one keeps; the shell
+ * prints the long name. A missing path is kept as it is.
+ */
 function tryRealpath(p: string): string {
   try {
-    return realpathSync(p);
+    return realpathSync.native(p);
   } catch {
     return p;
   }

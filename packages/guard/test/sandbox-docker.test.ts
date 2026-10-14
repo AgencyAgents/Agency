@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -76,6 +77,26 @@ describe("sandbox-docker pure translation (no daemon)", () => {
       cleanup(dir);
     }
   });
+
+  // The temp folder of a CI runner is C:\Users\RUNNER~1\..., and the shell prints the long name of the same folder.
+  test.skipIf(process.platform !== "win32")(
+    "a root in its 8.3 short form holds the long form of a path",
+    () => {
+      const { dir } = setup();
+      try {
+        const root = join(dir, "a long folder name");
+        mkdirSync(join(root, "sub"), { recursive: true });
+        const short = spawnSync("cmd", ["/d", "/s", "/c", `for %I in ("${root}") do @echo %~sI`], {
+          encoding: "utf8",
+          windowsVerbatimArguments: true,
+        }).stdout.trim();
+        if (short.toLowerCase() === root.toLowerCase()) return; // no 8.3 names on this volume
+        expect(translateHostToMount(join(root, "sub"), short, "/workspace")).toBe("/workspace/sub");
+      } finally {
+        cleanup(dir);
+      }
+    },
+  );
 
   test("untranslatable host paths throw PERMISSION_DENIED", () => {
     const { dir, root, outside } = setup();
