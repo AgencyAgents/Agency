@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **npm plugins of OpenCode**: a trusted workspace loads the plugins of the `plugin`
+  key of `opencode.json` from where npm or OpenCode installed them (the workspace, or
+  the cache of OpenCode). Agency installs no package.
 - **`agent` hooks**: a hook can give its question to an agent with the read tools of the
   session (`read`, `grep`, `glob`, at most 50 steps), which answers `{"ok", "reason"}`
   as a prompt hook does.

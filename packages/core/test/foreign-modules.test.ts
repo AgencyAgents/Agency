@@ -219,3 +219,49 @@ test("the variables that an async shell.env hook of an OpenCode plugin sets reac
   expect(await shellEnvOf(bus)).toEqual({ FROM_PLUGIN: "yes string" });
   expect(await shellEnvOf(new EventBus())).toBeUndefined();
 });
+
+test("the npm plugins of opencode.json load from the workspace, .opencode and the cache of OpenCode", async () => {
+  const plugin = (tool: string) => `import { tool } from "@opencode-ai/plugin";
+export const P = async () => ({ tool: { ${tool}: tool({ description: "d", args: {}, async execute() { return "${tool} ok"; } }) } });
+`;
+  const pkg = (name: string) => JSON.stringify({ name, type: "module", main: "index.js" });
+  const ws = folder({
+    "opencode.jsonc":
+      '{\n  // the plugins\n  "plugin": ["oc-a@1.2.0", "@me/oc-b", "oc-cached", "oc-missing"],\n}',
+    "node_modules/oc-a/package.json": pkg("oc-a"),
+    "node_modules/oc-a/index.js": plugin("alpha"),
+    ".opencode/node_modules/@me/oc-b/package.json": pkg("@me/oc-b"),
+    ".opencode/node_modules/@me/oc-b/index.js": plugin("beta"),
+  });
+  const home = folder({
+    ".cache/opencode/node_modules/oc-cached/package.json": pkg("oc-cached"),
+    ".cache/opencode/node_modules/oc-cached/index.js": plugin("gamma"),
+  });
+  const before = process.env.AGENCY_AGENTS_HOME;
+  process.env.AGENCY_AGENTS_HOME = home;
+  try {
+    const registry = new Registry();
+    const result = await loadPlugins({
+      workspaceRoot: ws,
+      bus: new EventBus(),
+      registry,
+      configDirOverride: folder({}),
+    });
+    expect([...registry.tools.keys()].sort()).toEqual(["me_oc_b_beta", "oc_a_alpha", "oc_cached_gamma"]);
+    expect(await registry.tools.get("oc_a_alpha")?.handler({}, {} as never)).toEqual({ content: "alpha ok" });
+    expect(result.errors.map((e) => e.error)).toEqual([
+      'the OpenCode plugin "oc-missing" is not installed: run OpenCode once, or npm install oc-missing',
+    ]);
+    const untrusted = new Registry();
+    await loadPlugins({
+      workspaceRoot: ws,
+      bus: new EventBus(),
+      registry: untrusted,
+      configDirOverride: folder({}),
+      projectTrusted: false,
+    });
+    expect(untrusted.tools.size).toBe(0);
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
+});

@@ -1,11 +1,12 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CallerIdentity, Capabilities } from "@agency/guard";
+import { parse as parseJsonc } from "jsonc-parser";
 import type { EventBus } from "../events.ts";
 import type { Logger } from "../logger.ts";
 import type { ToolSpec } from "../loop.ts";
-import { configDir } from "../paths.ts";
+import { configDir, foreignHome } from "../paths.ts";
 import type { PluginTier } from "./context.ts";
 import {
   collectPluginAgentsTexts,
@@ -177,6 +178,35 @@ const moduleId = (file: string): string =>
     ? basename(dirname(file))
     : basename(file).replace(/\.(m?js|cjs|ts|mts)$/, "");
 
+/**
+ * The npm plugins of the `plugin` key of `opencode.json`, where npm or OpenCode installed them: `.opencode/`, the
+ * workspace, then the cache of OpenCode. A package that is in none of them has no `path`: nothing is installed here.
+ */
+function openCodeNpmPlugins(workspaceRoot: string): Array<{ name: string; path?: string }> {
+  const file = ["opencode.json", "opencode.jsonc"].map((name) => join(workspaceRoot, name)).find(existsSync);
+  if (file === undefined) return [];
+  const raw = parseJsonc(readFileSync(file, "utf8"), [], { allowTrailingComma: true }) as {
+    plugin?: unknown;
+  };
+  const specs = Array.isArray(raw?.plugin) ? raw.plugin.filter((spec) => typeof spec === "string") : [];
+  const home = foreignHome();
+  const bases = [
+    join(workspaceRoot, ".opencode"),
+    workspaceRoot,
+    ...(home ? [join(home, ".cache", "opencode")] : []),
+  ];
+  return specs.map((spec: string) => {
+    // The version of `name@1.2.0` is for npm: the copy on disk counts.
+    const name = spec.replace(/(.)@[^/]*$/, "$1");
+    for (const base of bases) {
+      try {
+        return { name, path: Bun.resolveSync(name, base) };
+      } catch {}
+    }
+    return { name };
+  });
+}
+
 /** The `bin/` folders of the plugins that `agency plugin install` keeps in the workspace. */
 function pluginBinDirs(workspaceRoot: string): string[] {
   const roots = join(workspaceRoot, ".agency", "plugin-roots");
@@ -268,6 +298,15 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
     }
     for (const f of discoverPiExtensions(join(root, ".pi", "extensions"))) {
       sources.push({ id: moduleId(f), path: f, kind: "pi", tier: "project" });
+    }
+    for (const { name, path } of openCodeNpmPlugins(root)) {
+      const id = name.replace(/^@/, "").replace(/[^a-zA-Z0-9]/g, "_");
+      if (path !== undefined) sources.push({ id, path, kind: "opencode", tier: "project" });
+      else
+        errors.push({
+          id,
+          error: `the OpenCode plugin "${name}" is not installed: run OpenCode once, or npm install ${name}`,
+        });
     }
     // The `bin/` folder of an installed plugin is on the PATH of a shell command, as in Claude Code.
     const bins = pluginBinDirs(root);
