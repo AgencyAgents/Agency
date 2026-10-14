@@ -116,6 +116,8 @@ async function runPromptHooks(
   });
 }
 
+let codeModeWarned = false;
+
 /** Shared turn assembly behind run_turn and session_send: one definition,
  *  so daemon-owned and caller-owned turns never drift apart. */
 export async function executeTurn(
@@ -428,6 +430,12 @@ export async function executeTurn(
           config.codeMode === true && (await scriptSandboxAvailable())
             ? buildScriptSandboxArgv(codeRunner(), codeRunnerReadPaths())
             : undefined;
+        if (config.codeMode === true && !isolatedRunner && !codeModeWarned) {
+          codeModeWarned = true;
+          logger.warn(
+            "codeMode is true, but this machine has no sandbox for scripts: the code tool is not offered",
+          );
+        }
         const hostCode = config.codeMode === "host" && (config.sandbox?.backend ?? "software") === "software";
         const codeTools = (gate: {
           toolOffered(tool: string, riskTier?: "dangerous"): boolean;

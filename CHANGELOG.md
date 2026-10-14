@@ -683,6 +683,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **A compaction in a turn leaves room for the system prompt and the
   tool list**: their size is taken out of the limit and of the size
   after compaction.
+- **A warning for `codeMode: true` with no script sandbox**: the log
+  says one time that the `code` tool is not offered.
 - **Compaction at a token limit, and inside a turn**: a session is now
   compacted at 220000 tokens when the window of the model is larger
   (`compactionLimit` in the config). Before, a model with a window of
