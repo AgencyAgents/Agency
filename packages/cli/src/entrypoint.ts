@@ -55,7 +55,7 @@ import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
 import { mcpCmd, mcpServe } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
-import { pluginInstallSource, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
+import { pluginInstallSource, pluginListCmd, pluginRemoveCmd, pluginUpdateCmd } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
 import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
 import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
@@ -112,6 +112,7 @@ Commands:
                            Install a Claude Code / Codex plugin from a folder, a git URL
                            or owner/repo (#ref: a branch or tag)
   plugin list              Show installed skills and plugin modules
+  plugin update <name>     Install a plugin again from the source of its install
   plugin remove <name>     Remove an installed plugin
   review [<ref>]           Review the changes of the workspace and change no file:
                            the uncommitted changes, or the changes since <ref>
@@ -1438,6 +1439,7 @@ Subcommands:
                                Install a Claude Code / Codex plugin from a folder, a git URL or
                                owner/repo (#ref for a branch or tag). [plugin] picks one of a marketplace
   list                         Show installed skills and plugin modules
+  update <name>                Install a plugin again from the source of its install
   remove <name>                Remove an installed plugin`);
     return 0;
   }
@@ -1464,6 +1466,21 @@ Subcommands:
   if (parsed.subcommand === "list") {
     out(pluginListCmd(workspaceRoot));
     return 0;
+  }
+
+  if (parsed.subcommand === "update") {
+    const name = parsed.args[0];
+    if (name === undefined) {
+      err("Usage: agency plugin update <name>");
+      return 1;
+    }
+    try {
+      out(pluginUpdateCmd(name, workspaceRoot, err));
+      return 0;
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
   }
 
   if (parsed.subcommand === "remove") {

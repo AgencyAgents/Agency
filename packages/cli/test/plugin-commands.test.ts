@@ -326,6 +326,29 @@ describe("plugin remove", () => {
     expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin"))).toBe(false);
   });
 
+  test("update installs the plugin again from its source, drops the files it lost, and keeps its data", async () => {
+    const source = tempDir("agency-plugin-src-");
+    cpSync(FIXTURE_DIR, source, { recursive: true });
+    const ws = tempDir("agency-plugin-update-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", source], c.deps)).toBe(0);
+    const data = join(ws, ".agency", "plugin-data", "test-plugin");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, "state.json"), "{}");
+    rmSync(join(source, "commands", "help.md"));
+    writeFileSync(join(source, "commands", "fresh.md"), "Fresh command");
+    expect(await runEntrypoint(["plugin", "update", "test-plugin"], c.deps)).toBe(0);
+    expect(c.out.at(-1)).toContain(`Updated "test-plugin" from ${source}`);
+    expect(existsSync(join(ws, ".agency", "commands", "fresh.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(false);
+    expect(existsSync(join(data, "state.json"))).toBe(true);
+    // A receipt from before sources were kept names the way out.
+    pluginInstallCmd(FIXTURE_DIR, ws, true, () => {});
+    expect(await runEntrypoint(["plugin", "update", "test-plugin"], c.deps)).toBe(1);
+    expect(c.err.at(-1)).toContain("--overwrite");
+  });
+
   test("refuses to remove one skill of a plugin, and names the plugin", () => {
     const ws = tempDir("agency-plugin-remove-skill-");
     pluginInstallCmd(FIXTURE_DIR, ws, false, () => {});

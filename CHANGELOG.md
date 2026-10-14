@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`agency plugin update <plugin>`**: installs a plugin again from the source of its
+  install; its data folder stays.
 - **Instructions of subfolders**: the `AGENTS.md` or `CLAUDE.md` of a subfolder reaches the
   model with the result of the first file tool call in that folder, once in a session.
 - **Rules of Claude Code**: `.claude/rules/**/*.md` join the instructions of a trusted

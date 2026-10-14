@@ -40,6 +40,9 @@ export interface InstallReceipt {
   modulesInstalled?: string[];
   /** The output styles in .agency/output-styles/. */
   outputStylesInstalled?: string[];
+  /** What `plugin install` was given, for `plugin update`: a folder, a git URL or owner/repo, and the marketplace entry. */
+  source?: string;
+  plugin?: string;
   installedAt: string;
 }
 
@@ -52,6 +55,7 @@ export function pluginInstallCmd(
   workspaceRoot: string,
   overwrite: boolean,
   errSink: (line: string) => void,
+  origin?: { source: string; plugin?: string },
 ): string {
   // The importer logs JSON lines for a daemon. A person at the CLI gets the text and the CLI flag.
   const logger = new Logger({
@@ -71,6 +75,7 @@ export function pluginInstallCmd(
     rulesInstalled: report.rulesInstalled,
     modulesInstalled: report.modulesInstalled,
     outputStylesInstalled: report.outputStylesInstalled,
+    ...origin,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -263,22 +268,56 @@ function marketplacePlugin(
   throw new Error(`The source of "${entry.name}" has a form that Agency cannot install`);
 }
 
-/** `plugin install` of a folder or a git source; a marketplace in it gives the plugin that `name` names. */
+/**
+ * `plugin install` of a folder or a git source; a marketplace in it gives the plugin that `name` names.
+ * `beforeInstall` runs once the plugin is at hand, after a clone that can fail.
+ */
 export function pluginInstallSource(
   source: string,
   name: string | undefined,
   workspaceRoot: string,
   overwrite: boolean,
   errSink: (line: string) => void,
+  beforeInstall?: () => void,
 ): string {
+  const git = gitSource(source);
+  const origin = {
+    source: git === undefined ? resolve(source) : source,
+    ...(name === undefined ? {} : { plugin: name }),
+  };
+  const run = (dir: string): string => {
+    beforeInstall?.();
+    return pluginInstallCmd(dir, workspaceRoot, overwrite, errSink, origin);
+  };
   const install = (root: string): string => {
     const picked = marketplacePlugin(root, name);
-    if (picked === undefined) return pluginInstallCmd(root, workspaceRoot, overwrite, errSink);
-    if ("dir" in picked) return pluginInstallCmd(picked.dir, workspaceRoot, overwrite, errSink);
-    return withClone(picked.git, (dir) => pluginInstallCmd(dir, workspaceRoot, overwrite, errSink));
+    if (picked === undefined) return run(root);
+    if ("dir" in picked) return run(picked.dir);
+    return withClone(picked.git, run);
   };
-  const git = gitSource(source);
   return git === undefined ? install(source) : withClone(git, install);
+}
+
+/** `plugin update <name>`: the plugin again from the source of its install. Its data folder stays. */
+export function pluginUpdateCmd(
+  name: string,
+  workspaceRoot: string,
+  errSink: (line: string) => void,
+): string {
+  if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
+  const receiptPath = join(workspaceRoot, ".agency", "skills", name, "receipt.json");
+  if (!existsSync(receiptPath)) throw new Error(`Plugin "${name}" is not installed`);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as InstallReceipt;
+  if (receipt.source === undefined) {
+    throw new Error(
+      `Plugin "${name}" has no source in its receipt: run agency plugin install <source> --overwrite`,
+    );
+  }
+  // ponytail: the old files go before the new ones come, so a new version that fails to install leaves none.
+  const report = pluginInstallSource(receipt.source, receipt.plugin, workspaceRoot, true, errSink, () =>
+    pluginRemoveCmd(name, workspaceRoot, { keepData: true }),
+  );
+  return `Updated "${name}" from ${receipt.source}.\n${report}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +381,11 @@ function owningPlugin(workspaceRoot: string, skill: string): string | undefined 
 /** A name from the command line or from a receipt is one path part: a path would delete outside `.agency`. */
 const isFileName = (name: string): boolean => !/^\.*$|[\\/:]/.test(name);
 
-export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
+export function pluginRemoveCmd(
+  name: string,
+  workspaceRoot: string,
+  opts: { keepData?: boolean } = {},
+): string {
   if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
   const skillDir = join(workspaceRoot, ".agency", "skills", name);
   if (!existsSync(skillDir)) {
@@ -451,7 +494,7 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     lines.push("Deleted its LSP servers.");
   }
   rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
-  rmSync(pluginDataDir(workspaceRoot, pluginName), { recursive: true, force: true });
+  if (!opts.keepData) rmSync(pluginDataDir(workspaceRoot, pluginName), { recursive: true, force: true });
 
   return lines.join("\n");
 }
