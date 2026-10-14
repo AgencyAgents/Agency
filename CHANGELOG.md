@@ -8,6 +8,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **More rule files**: `.windsurf/rules/` (by `trigger`), `.kilocode/rules/`, Zed's `.rules`,
+  `.trae/rules/project_rules.md`, and the `AGENTS.override.md` of Codex in place of `AGENTS.md`.
 - **`opencode.json` of a workspace**: its `instructions` files, its `command` map and its
   `agent` map (subagents, with the `tools` it turns off) load in a trusted workspace.
 - **`.claude/CLAUDE.md` and `CLAUDE.local.md`**: the other project instruction files of

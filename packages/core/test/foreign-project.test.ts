@@ -31,7 +31,7 @@ function folder(files: Record<string, string>): string {
 
 const skill = (name: string) => `---\nname: ${name}\ndescription: ${name} skill\n---\nbody of ${name}\n`;
 
-test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Junie, Kiro and Augment join the instructions, once each", () => {
+test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, Kilo, Junie, Kiro, Augment, Zed and Trae join the instructions, once each", () => {
   const ws = folder({
     "AGENTS.md": "agents text",
     "CLAUDE.md": "agents text",
@@ -54,6 +54,12 @@ test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, J
     ".cursor/rules/chosen.mdc": "---\ndescription: Database migrations\n---\nmigration rule",
     ".cursor/rules/manual.mdc": "---\nalwaysApply: false\n---\nmanual rule",
     ".cursor/rules/plain.md": "not a cursor rule",
+    ".windsurf/rules/a.md": "---\ntrigger: always_on\n---\nwindsurf always rule",
+    ".windsurf/rules/b.md": '---\ntrigger: glob\nglobs: "*.py"\n---\nwindsurf py rule',
+    ".windsurf/rules/c.md": "---\ntrigger: manual\n---\nwindsurf manual rule",
+    ".kilocode/rules/k.md": "kilo rule",
+    ".rules": "zed rule",
+    ".trae/rules/project_rules.md": "trae rule",
     ".github/instructions/ts.instructions.md": '---\napplyTo: "**/*.ts"\n---\ncopilot ts rule',
     ".github/instructions/team/all.instructions.md": '---\napplyTo: "**"\n---\ncopilot all rule',
     ".github/instructions/manual.instructions.md": "copilot manual rule",
@@ -73,6 +79,11 @@ test("the rules of Claude Code, Cursor, Windsurf, Cline, Copilot, Gemini, Roo, J
     "gemini text",
     "dot claude text",
     "local claude text",
+    "windsurf always rule",
+    "Files that match *.py:\nwindsurf py rule",
+    "kilo rule",
+    "zed rule",
+    "trae rule",
     "legacy cursor rule",
     "windsurf rule",
     "cline rule",
@@ -401,4 +412,16 @@ test("the instructions, commands and agents of opencode.json load, inside the wo
   expect(agents.has("build")).toBe(false);
   expect(agents.has("quiet")).toBe(false);
   expect(agents.get("leak")?.systemPrompt).toBe("{file:../outside.md}");
+});
+
+test("an AGENTS.override.md takes the place of AGENTS.md in its folder, as Codex reads it", () => {
+  const ws = folder({
+    "AGENTS.md": "plain agents",
+    "AGENTS.override.md": "override agents",
+    "pkg/AGENTS.md": "pkg agents",
+  });
+  const trust = createFileTrustStore(join(folder({}), "trust.json"));
+  trust.trust(ws);
+  expect(loadInstructions(trust, ws, ws)).toEqual(["override agents"]);
+  expect(nestedInstructions(ws, "pkg/a.ts", new Set())).toContain("pkg agents");
 });

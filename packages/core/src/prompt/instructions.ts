@@ -19,6 +19,14 @@ const INSTRUCTION_NAMES = [
   "GEMINI.md",
 ];
 
+/** The instruction files of a folder that exist; Codex reads an `AGENTS.override.md` in place of AGENTS.md. */
+function instructionFilesIn(dir: string): string[] {
+  const override = existsSync(join(dir, "AGENTS.override.md"));
+  return INSTRUCTION_NAMES.map((name) =>
+    join(dir, override && name === "AGENTS.md" ? "AGENTS.override.md" : name),
+  ).filter((file) => existsSync(file) && statSync(file).isFile());
+}
+
 /** Per-instruction-file read cap. AGENTS.md / CLAUDE.md is repo-controlled
  *  content, so a multi-gigabyte file (malicious or accidental) would otherwise
  *  blow the prompt — and the daemon's memory — through an unbounded read. */
@@ -40,20 +48,14 @@ export function collectAgentsFiles(fromDir: string, workspaceRoot: string): stri
   const found: string[] = [];
   let dir = fromDir;
   for (;;) {
-    for (const name of INSTRUCTION_NAMES) {
-      const file = join(dir, name);
-      if (existsSync(file)) found.push(file);
-    }
+    found.push(...instructionFilesIn(dir));
     if (dir === workspaceRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     if (dir.length < workspaceRoot.length && !workspaceRoot.startsWith(dir)) break;
     dir = parent;
     if (dir.length < workspaceRoot.length) {
-      for (const name of INSTRUCTION_NAMES) {
-        const file = join(workspaceRoot, name);
-        if (existsSync(file) && !found.includes(file)) found.push(file);
-      }
+      found.push(...instructionFilesIn(workspaceRoot).filter((file) => !found.includes(file)));
       break;
     }
   }
@@ -77,6 +79,9 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
     ".clinerules",
     ".roorules",
     ".augment-guidelines",
+    // Zed and Trae.
+    ".rules",
+    join(".trae", "rules", "project_rules.md"),
     join(".github", "copilot-instructions.md"),
     join(".junie", "guidelines.md"),
   ]
@@ -86,6 +91,7 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
     ...single,
     ...filesIn(join(workspaceRoot, ".clinerules"), ".md"),
     ...filesIn(join(workspaceRoot, ".roo", "rules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".kilocode", "rules"), ".md"),
     ...scopedRuleFiles(workspaceRoot),
     ...filesIn(join(workspaceRoot, ".claude", "rules"), ".md"),
     ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
@@ -95,12 +101,13 @@ export function collectRuleFiles(workspaceRoot: string): string[] {
   ];
 }
 
-/** The rules of Kiro, Augment and Continue, whose frontmatter says when each applies, as that of a Cursor rule does. */
+/** The rules of Kiro, Augment, Continue and Windsurf, whose frontmatter says when each applies, as that of a Cursor rule does. */
 function scopedRuleFiles(workspaceRoot: string): string[] {
   return [
     [".kiro", "steering"],
     [".augment", "rules"],
     [".continue", "rules"],
+    [".windsurf", "rules"],
   ].flatMap((parts) => filesIn(join(workspaceRoot, ...parts), ".md"));
 }
 
@@ -112,12 +119,14 @@ function scopedRuleFiles(workspaceRoot: string): string[] {
 export function scopedRuleText(text: string, manualByDefault = true): string {
   const { fields, body } = splitFrontmatter(text);
   const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
-  if (field("inclusion") === "manual" || field("type") === "manual") return "";
+  if (field("inclusion") === "manual" || field("type") === "manual" || field("trigger") === "manual")
+    return "";
   const globs = field("globs") ?? field("fileMatchPattern") ?? field("applyTo");
   const always =
     field("alwaysApply") === "true" ||
     field("inclusion") === "always" ||
     field("type") === "always_apply" ||
+    field("trigger") === "always_on" ||
     globs === "**" ||
     globs === "**/*";
   if (always) return body.trim();
@@ -240,12 +249,11 @@ export function nestedInstructions(
     if (seen.has(dir)) continue;
     seen.add(dir);
     const texts: string[] = [];
-    for (const name of INSTRUCTION_NAMES) {
-      const path = join(dir, name);
-      if (!existsSync(path) || !statSync(path).isFile()) continue;
+    for (const path of instructionFilesIn(dir)) {
       const raw = readTextCapped(path, maxFileBytes);
-      const text =
-        name === "AGENTS.md" ? raw : expandImports(raw, dirname(path), workspaceRoot, maxFileBytes);
+      const text = basename(path).startsWith("AGENTS")
+        ? raw
+        : expandImports(raw, dirname(path), workspaceRoot, maxFileBytes);
       // A CLAUDE.md that repeats AGENTS.md (a copy, a link or an import) counts once.
       if (text.trim() === "" || texts.some((t) => t.trim() === text.trim())) continue;
       texts.push(text);
