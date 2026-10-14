@@ -34,11 +34,11 @@ function appendBounded(log: string, chunk: string): string {
 export class ProcessManager {
   private readonly entries = new Map<string, Entry>();
 
-  spawn(command: string[], options: { cwd?: string } = {}): ManagedProcessInfo {
+  spawn(command: string[], options: { cwd?: string; env?: Record<string, string> } = {}): ManagedProcessInfo {
     const id = randomUUID();
     const proc = Bun.spawn(command, {
       cwd: options.cwd,
-      env: modelCommandEnv(),
+      env: { ...modelCommandEnv(), ...options.env },
       stdout: "pipe",
       stderr: "pipe",
     });

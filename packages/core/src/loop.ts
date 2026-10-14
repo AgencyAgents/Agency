@@ -55,6 +55,8 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
       toolCallId?: string;
       requestApproval?: RequestApproval;
       onProgress?: (message: string) => void;
+      /** Variables that plugins add to the environment of a shell command (the `shell.env` event). */
+      env?: Record<string, string>;
       /** Runs another tool of this turn through the same checks as a call of the model. */
       callTool?: (
         name: string,
@@ -867,11 +869,15 @@ async function executeOne(
     return { content: validationError, isError: true };
   }
 
+  let shellEnv: Record<string, string> | undefined;
   if (options.eventBus && resolved.name === "bash") {
     try {
       const envPayload = { env: {} as Record<string, string> };
-      options.eventBus.emit("shell.env", envPayload);
+      // A listener can be async (an OpenCode plugin): its variables count only once it has run.
+      if (options.eventBus.emitAsync) await options.eventBus.emitAsync("shell.env", envPayload);
+      else options.eventBus.emit("shell.env", envPayload);
       options.eventBus.emit("event", { event: "shell.env", payload: envPayload });
+      if (Object.keys(envPayload.env).length > 0) shellEnv = envPayload.env;
     } catch {}
   }
 
@@ -1022,6 +1028,7 @@ async function executeOne(
     toolCallId: call.id,
     requestApproval: options.requestApproval,
     taskDepth: options.taskDepth,
+    env: shellEnv,
     onProgress: onEvent
       ? (message: string) => {
           onEvent({ type: "tool_progress", id: call.id, name: resolved.name, message });

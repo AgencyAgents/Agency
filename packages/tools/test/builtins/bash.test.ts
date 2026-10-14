@@ -63,6 +63,22 @@ describe("createBashTool", () => {
     }
   }, 30_000);
 
+  test("the variables of the call context (shell.env of plugins) reach a command and a background command", async () => {
+    const { tool } = setup();
+    const env = { ENVTEST_PLUGIN: "from-plugin-8d2e" };
+    const read =
+      process.platform === "win32" ? `Write-Output "[$env:ENVTEST_PLUGIN]"` : `echo "[$ENVTEST_PLUGIN]"`;
+    expect((await tool.handler({ command: read }, { signal, env })).content).toContain("[from-plugin-8d2e]");
+    const manager = managers.at(-1) as ProcessManager;
+    await tool.handler({ command: read, background: true }, { signal, env });
+    const [info] = manager.list();
+    const logs = () => manager.getLogs(info?.id ?? "") ?? "";
+    for (let waited = 0; waited < 20_000 && !logs().includes("[from-plugin"); waited += 100) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(logs()).toContain("[from-plugin-8d2e]");
+  }, 30_000);
+
   // Two sequential real shell spawns; PowerShell's cold start in this
   // sandbox is slow and variable enough that the 5s default is too tight.
   test("working directory persists across calls within a session", async () => {

@@ -105,7 +105,7 @@ async function runContainerExec(
         cwd,
         timeoutMs: timeout,
         signal: ctx.signal,
-        env: modelCommandEnv(),
+        env: { ...modelCommandEnv(), ...ctx.env },
       });
     } catch (e) {
       if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
@@ -189,6 +189,7 @@ export function createBashTool(
         }
         const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd) : argv, {
           cwd: state.cwd,
+          ...(ctx.env === undefined ? {} : { env: ctx.env }),
         });
         return { content: t("tool.bash.background_started", { id: info.id, pid: info.pid }) };
       }
@@ -257,7 +258,7 @@ export function createBashTool(
 
       const proc = Bun.spawn(argv, {
         cwd: state.cwd,
-        env: modelCommandEnv(),
+        env: { ...modelCommandEnv(), ...ctx.env },
         stdout: "pipe",
         stderr: "pipe",
       });

@@ -37,6 +37,8 @@ export interface ToolContext {
    * tool_progress events. Absent when the caller has no event surface.
    */
   onProgress?: (message: string) => void;
+  /** Variables that plugins add to the environment of a shell command (the `shell.env` event). */
+  env?: Record<string, string>;
 }
 
 export interface ToolResult {

@@ -256,6 +256,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **`shell.env` hooks**: the variables that a `shell.env` hook of a plugin set did not
+  reach the shell command, and an async hook ran after the command started. The loop
+  now waits for the hooks and gives their variables to the command, also to a command
+  in the background.
 - **MCP lists in pages**: the client read only the first page of the
   tools, resources and prompts of a server, so a server that gives
   its lists in pages lost the rest with no error. It now reads all

@@ -2,8 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { FULL_CAPABILITIES } from "@agency/guard";
+import type { ProviderAdapter, StreamEvent } from "@agency/providers";
+import { Scheduler } from "@agency/providers";
 import { EventBus, HookBlock } from "../src/events.ts";
-import type { ToolSpec } from "../src/loop.ts";
+import { runTurn, type ToolSpec } from "../src/loop.ts";
 import { importClaudePlugin } from "../src/plugins/importer.ts";
 import { loadPlugins } from "../src/plugins/loader.ts";
 
@@ -153,4 +156,66 @@ test("a Pi package installs its extensions, and they load from the copy of the p
   });
   expect(result.errors).toEqual([]);
   expect(registry.has("pi-tools_greet")).toBe(true);
+});
+
+/** The environment that the `shell.env` listeners of `bus` give to one bash call of a turn. */
+async function shellEnvOf(bus: EventBus): Promise<Record<string, string> | undefined> {
+  let calls = 0;
+  const adapter: ProviderAdapter = {
+    family: "fake",
+    async *stream(): AsyncIterable<StreamEvent> {
+      calls += 1;
+      if (calls === 1) {
+        yield { type: "tool_call_start", id: "c1", name: "bash" };
+        yield { type: "tool_call_delta", id: "c1", inputJsonDelta: JSON.stringify({ command: "env" }) };
+        yield { type: "tool_call_end", id: "c1" };
+        yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } };
+      } else {
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      }
+    },
+  };
+  let seen: Record<string, string> | undefined;
+  const bash: ToolSpec = {
+    name: "bash",
+    description: "runs a command",
+    inputSchema: { type: "object", properties: { command: { type: "string" } } },
+    handler: async (_input, ctx) => {
+      seen = ctx.env;
+      return { content: "ok" };
+    },
+  };
+  await runTurn(
+    adapter,
+    new Scheduler(),
+    { fetch: async () => new Response() },
+    {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [bash],
+      model: "m",
+      apiKey: "k",
+      session: [],
+      eventBus: bus,
+    },
+  );
+  return seen;
+}
+
+test("the variables that an async shell.env hook of an OpenCode plugin sets reach the bash call", async () => {
+  const ws = folder({
+    ".opencode/plugins/env.ts": `export const Env = async () => ({
+  "shell.env": async (input, output) => {
+    await new Promise((r) => setTimeout(r, 5));
+    output.env.FROM_PLUGIN = "yes " + typeof input.cwd;
+  },
+});
+`,
+  });
+  const bus = new EventBus();
+  const result = await loadPlugins({ workspaceRoot: ws, bus, configDirOverride: folder({}) });
+  expect(result.errors).toEqual([]);
+  expect(await shellEnvOf(bus)).toEqual({ FROM_PLUGIN: "yes string" });
+  expect(await shellEnvOf(new EventBus())).toBeUndefined();
 });
