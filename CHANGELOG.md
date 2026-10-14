@@ -8,6 +8,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **`@path` imports of `CLAUDE.md` and `GEMINI.md`**: the imported file takes the place of
+  the import, five levels deep, from inside the workspace only. A `CLAUDE.md` that only
+  imports `AGENTS.md` counts once.
 - **User instructions of other agents**: with `"userAgentInstructions": true`, the
   `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, OpenCode and Pi user
   instruction files join the instructions of every workspace.

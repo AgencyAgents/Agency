@@ -1,5 +1,6 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
 import { foreignHome } from "../paths.ts";
@@ -134,6 +135,49 @@ function readTextCapped(file: string, maxBytes: number): string {
   }
 }
 
+/**
+ * The `@path` imports of a CLAUDE.md or GEMINI.md: the text of the file in place of the import, as Claude Code and
+ * Gemini CLI take it, five levels deep. A path that is not a file inside `root` stays as it is: a workspace must not
+ * put `@~/.ssh/id_rsa` into the prompt. Code blocks and code spans are left alone.
+ */
+export function expandImports(
+  text: string,
+  dir: string,
+  root: string,
+  maxFileBytes: number,
+  depth = 0,
+): string {
+  if (depth >= 5) return text;
+  const inside = (file: string): boolean => {
+    try {
+      const rel = relative(realpathSync(root), realpathSync(file));
+      return statSync(file).isFile() && rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  };
+  const load = (match: string, lead: string, ref: string): string => {
+    // A sentence can end on the path: its stop is not part of it.
+    const [, path = ref, stop = ""] = /^(.*?)([.,;:!?)]*)$/.exec(ref) ?? [];
+    const file = path.startsWith("~/") ? join(homedir(), path.slice(2)) : resolve(dir, path);
+    if (!inside(file)) return match;
+    return `${lead}${expandImports(readTextCapped(file, maxFileBytes), dirname(file), root, maxFileBytes, depth + 1)}${stop}`;
+  };
+  let fenced = false;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+      if (fenced) return line;
+      // The odd parts of a split on backticks are code spans.
+      return line
+        .split("`")
+        .map((part, index) => (index % 2 === 1 ? part : part.replace(/(^|\s)@(\S+)/g, load)))
+        .join("`");
+    })
+    .join("\n");
+}
+
 /** The instruction files that other agents load in every project. Codex reads its override in place of AGENTS.md. */
 const FOREIGN_USER_INSTRUCTIONS = [
   [".claude", "CLAUDE.md"],
@@ -156,8 +200,14 @@ export function loadUserAgentInstructions(
   const override = join(home, ".codex", "AGENTS.override.md");
   const texts = files
     .filter((file) => !(files.includes(override) && file === join(home, ".codex", "AGENTS.md")))
-    .map((file) => readTextCapped(file, maxFileBytes));
-  return texts.filter((text, index) => text.trim() !== "" && texts.indexOf(text) === index);
+    .map((file) =>
+      /(CLAUDE|GEMINI)\.md$/.test(file)
+        ? expandImports(readTextCapped(file, maxFileBytes), dirname(file), home, maxFileBytes)
+        : readTextCapped(file, maxFileBytes),
+    );
+  return texts.filter(
+    (text, index) => text.trim() !== "" && texts.findIndex((t) => t.trim() === text.trim()) === index,
+  );
 }
 
 /**
@@ -188,10 +238,15 @@ export function loadInstructions(
   const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
   const scoped = new Set(scopedRuleFiles(workspaceRoot));
   const texts = files.map((f) => {
-    const text = readTextCapped(f, maxFileBytes);
+    const raw = readTextCapped(f, maxFileBytes);
+    const text = /(CLAUDE|GEMINI)\.md$/.test(f)
+      ? expandImports(raw, dirname(f), workspaceRoot, maxFileBytes)
+      : raw;
     if (f.endsWith(".mdc") || f.endsWith(".instructions.md")) return scopedRuleText(text);
     return scoped.has(f) ? scopedRuleText(text, false) : text;
   });
   // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.
-  return texts.filter((text, index) => text.trim() !== "" && texts.indexOf(text) === index);
+  return texts.filter(
+    (text, index) => text.trim() !== "" && texts.findIndex((t) => t.trim() === text.trim()) === index,
+  );
 }

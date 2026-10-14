@@ -6,7 +6,7 @@ import { createFileTrustStore } from "@agency/guard";
 import { resolveFileRoster } from "../src/agents/files.ts";
 import { expandCommand, loadCommands } from "../src/commands/loader.ts";
 import { discoverSkills, resolveSkillDirs } from "../src/plugins/skill.ts";
-import { loadInstructions, loadUserAgentInstructions } from "../src/prompt/instructions.ts";
+import { expandImports, loadInstructions, loadUserAgentInstructions } from "../src/prompt/instructions.ts";
 import { outputStyleInstructions } from "../src/prompt/output-style.ts";
 
 const dirs: string[] = [];
@@ -258,4 +258,44 @@ test("the user instructions of Claude Code, Codex, Gemini, OpenCode and Pi load;
     ".pi/agent/AGENTS.md": "pi user rule",
   });
   expect(loadUserAgentInstructions(home)).toEqual(["claude user rule", "codex override", "pi user rule"]);
+});
+
+test("the @path imports of CLAUDE.md load, inside the workspace only, and not in code", () => {
+  const parent = folder({ "outside.md": "SECRET OUTSIDE" });
+  const ws = join(parent, "ws");
+  const files: Record<string, string> = {
+    "AGENTS.md": "agents text",
+    "CLAUDE.md": [
+      "@AGENTS.md",
+      "Read @docs/style.md.",
+      "`@docs/style.md` stays",
+      "```",
+      "@docs/style.md",
+      "```",
+      "@../outside.md @missing.md me@docs.md @loop.md",
+    ].join("\n"),
+    "docs/style.md": "style rule @nested.md",
+    "docs/nested.md": "nested rule",
+    "loop.md": "x @loop.md",
+  };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(ws, path)), { recursive: true });
+    writeFileSync(join(ws, path), text);
+  }
+  const text = expandImports(files["CLAUDE.md"] ?? "", ws, ws, 1000);
+  expect(text.split("\n").slice(0, 6)).toEqual([
+    "agents text",
+    "Read style rule nested rule.",
+    "`@docs/style.md` stays",
+    "```",
+    "@docs/style.md",
+    "```",
+  ]);
+  expect(text).toContain("@../outside.md @missing.md me@docs.md x x x x x @loop.md");
+  expect(text).not.toContain("SECRET");
+  // A CLAUDE.md that only imports AGENTS.md counts once.
+  const plain = folder({ "AGENTS.md": "agents text", "CLAUDE.md": "@AGENTS.md\n" });
+  const trust = createFileTrustStore(join(folder({}), "trust.json"));
+  trust.trust(plain);
+  expect(loadInstructions(trust, plain, plain)).toEqual(["agents text"]);
 });
