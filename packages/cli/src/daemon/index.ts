@@ -71,6 +71,7 @@ import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemet
 import {
   clientProjectPaths,
   keychainTokenStore,
+  loadProjectLspServers,
   loadProjectMcpServers,
   loadUserMcpServers,
   resolveConfiguredShell,
@@ -286,6 +287,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
 
   const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
   const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
+  const lspDir = join(options.workspaceRoot, ".agency", "lsp");
   const userMcpDir = join(options.configDir ?? configDir(), "mcp");
   const filesOf = (dir: string): string[] =>
     existsSync(dir) ? readdirSync(dir).map((file) => join(dir, file)) : [];
@@ -299,6 +301,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...filesOf(hooksDir),
     mcpDir,
     ...filesOf(mcpDir),
+    lspDir,
+    ...filesOf(lspDir),
     join(options.workspaceRoot, ".mcp.json"),
     ...clientProjectPaths(options.workspaceRoot),
     ...foreignHookPaths(options.workspaceRoot),
@@ -500,9 +504,16 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ),
     ...config.mcpServers,
   };
+  // The LSP servers that `plugin install` put into a trusted workspace; those of the user's config win on a name.
+  const lspServers = {
+    ...(projectTrusted
+      ? loadProjectLspServers(options.workspaceRoot, (message) => logger.warn(message))
+      : {}),
+    ...(config.lspServers as Record<string, unknown> | undefined),
+  };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({
     options,
-    config,
+    config: Object.keys(lspServers).length > 0 ? { ...config, lspServers } : config,
     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     http,
     identity,

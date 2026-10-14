@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { loadProjectLspServers } from "@agency/tools";
 import { parseAgentFile } from "../src/agents/files.ts";
 import { EventBus } from "../src/events.ts";
 import { loadHookFiles, runCommandHooks } from "../src/plugins/command-hooks.ts";
@@ -245,4 +246,39 @@ test("a plugin with SKILL.md at its root and no skills folder is one skill", () 
   const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
   expect(report.skillsInstalled).toEqual(["solo"]);
   expect(read(ws, "skills", "solo", "ref.md")).toBe("a reference");
+});
+
+test("the LSP servers of a Claude Code plugin install in the form here, and the daemon loader reads them", () => {
+  const src = folder({
+    ".claude-plugin/plugin.json": JSON.stringify({ name: "lsp-kit", lspServers: "./more-lsp.json" }),
+    ".lsp.json": JSON.stringify({
+      gopls: { command: "gopls", args: ["serve"], extensionToLanguage: { ".go": "go" } },
+      ts: { command: "old-ts", extensionToLanguage: { ".ts": "typescript" } },
+      broken: { args: ["x"] },
+    }),
+    "more-lsp.json": JSON.stringify({
+      ts: {
+        command: "${CLAUDE_PLUGIN_ROOT}/bin/ts-ls",
+        args: ["--stdio"],
+        extensionToLanguage: { ".ts": "typescript", ".tsx": "typescriptreact" },
+      },
+    }),
+  });
+  const ws = folder({});
+  const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
+  expect(report.lspServers).toEqual(["gopls", "ts"]);
+  const root = join(ws, ".agency", "plugin-roots", "lsp-kit").replaceAll("\\", "/");
+  expect(loadProjectLspServers(ws)).toEqual({
+    gopls: { command: "gopls", args: ["serve"], extensions: [".go"], languageId: "go" },
+    ts: {
+      command: `${root}/bin/ts-ls`,
+      args: ["--stdio"],
+      extensions: [".ts", ".tsx"],
+      languageId: "typescript",
+    },
+  });
+  writeFileSync(join(ws, ".agency", "lsp", "bad.json"), "{");
+  const warnings: string[] = [];
+  expect(Object.keys(loadProjectLspServers(ws, (w) => warnings.push(w)))).toEqual(["gopls", "ts"]);
+  expect(warnings.join("\n")).toContain("bad.json");
 });

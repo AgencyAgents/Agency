@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { McpServerConfigSchema, normalizeMcpServers } from "@agency/tools";
+import { LspServerConfigSchema, McpServerConfigSchema, normalizeMcpServers } from "@agency/tools";
 import { parseAgentFile, renderAgentFile } from "../agents/files.ts";
 import { geminiTemplate } from "../commands/loader.ts";
 import type { Logger } from "../logger.ts";
@@ -53,6 +53,8 @@ export interface ImportClaudePluginReport {
   partsSkipped: string[];
   /** Module files written into .agency/plugins/: the Pi extensions of a Pi package. */
   modulesInstalled: string[];
+  /** The LSP servers that are now in .agency/lsp/<plugin>.json, where the daemon loads them. */
+  lspServers: string[];
   /** The `bin/` folder of the plugin, on the PATH of shell commands; absent when it has none. */
   binDir?: string;
   /** The variables that give the values of the `userConfig` of a Claude Code plugin. */
@@ -96,6 +98,7 @@ interface Manifest {
   description?: string;
   hooks?: unknown;
   mcpServers?: unknown;
+  lspServers?: unknown;
   /** Folders of each part, relative to the plugin root. */
   skills: string[];
   commands: string[];
@@ -157,6 +160,7 @@ function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined 
       ...(typeof raw.description === "string" ? { description: raw.description } : {}),
       hooks: raw.hooks,
       mcpServers: raw.mcpServers,
+      lspServers: raw.lspServers,
       partsSkipped: [] as string[],
       extensions: [] as string[],
       userConfig: isRecord(raw.userConfig) ? Object.keys(raw.userConfig) : [],
@@ -265,6 +269,39 @@ export function pluginRootDir(workspaceRoot: string, pluginName: string): string
 /** The MCP file that `plugin install` writes for one plugin. */
 export function pluginMcpFile(workspaceRoot: string, pluginName: string): string {
   return join(workspaceRoot, ".agency", "mcp", `${pluginName}.json`);
+}
+
+/** The LSP file that `plugin install` writes for one plugin. */
+export function pluginLspFile(workspaceRoot: string, pluginName: string): string {
+  return join(workspaceRoot, ".agency", "lsp", `${pluginName}.json`);
+}
+
+/**
+ * The LSP servers of a Claude Code plugin (`.lsp.json`, then the `lspServers` key, which wins on a name) in the form
+ * of `lspServers` here. ponytail: one language id per server, the first of `extensionToLanguage`.
+ */
+function resolveLspServers(sourceDir: string, manifest: Manifest, logger?: Logger): Record<string, unknown> {
+  const maps = [readJsonFile(join(sourceDir, ".lsp.json"))];
+  for (const item of [manifest.lspServers].flat()) {
+    maps.push(
+      typeof item === "string" ? existingFiles(sourceDir, [item], logger).map(readJsonFile)[0] : item,
+    );
+  }
+  const servers: Record<string, unknown> = {};
+  for (const map of maps) {
+    if (!isRecord(map)) continue;
+    for (const [name, spec] of Object.entries(map)) {
+      const languages = isRecord(spec) && isRecord(spec.extensionToLanguage) ? spec.extensionToLanguage : {};
+      const server = LspServerConfigSchema.safeParse({
+        ...(isRecord(spec) ? { command: spec.command, args: spec.args, env: spec.env } : {}),
+        extensions: Object.keys(languages),
+        languageId: Object.values(languages)[0],
+      });
+      if (server.success && server.data.extensions.length > 0) servers[name] = server.data;
+      else logger?.warn(`[importer] skipping LSP server "${name}": it needs command and extensionToLanguage`);
+    }
+  }
+  return servers;
 }
 
 /** The hook file that `plugin install` writes for one plugin. */
@@ -483,6 +520,7 @@ export function importClaudePlugin(
     rulesInstalled: [],
     partsSkipped: manifest.partsSkipped,
     modulesInstalled: [],
+    lspServers: [],
     optionVariables: manifest.userConfig.map(optionVariable),
   };
   const write = { overwrite, logger };
@@ -587,6 +625,16 @@ export function importClaudePlugin(
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ mcpServers: report.mcpServers }, null, 2)}\n`, "utf8");
     }
+  }
+
+  const lsp = resolveLspServers(sourceDir, manifest, logger);
+  report.lspServers = Object.keys(lsp);
+  if (report.lspServers.length > 0) {
+    keepPluginFiles();
+    const file = pluginLspFile(workspaceRoot, manifest.name);
+    mkdirSync(dirname(file), { recursive: true });
+    const servers = JSON.parse(withPluginRoot(JSON.stringify(lsp), root, data));
+    writeFileSync(file, `${JSON.stringify({ lspServers: servers }, null, 2)}\n`, "utf8");
   }
 
   // The commands of `bin/` are on the PATH of a shell command while the plugin is installed, as in Claude Code.

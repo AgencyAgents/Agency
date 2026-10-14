@@ -17,6 +17,7 @@ import {
   Logger,
   pluginDataDir,
   pluginHooksFile,
+  pluginLspFile,
   pluginMcpFile,
   pluginRootDir,
 } from "@agency/core";
@@ -95,6 +96,12 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Pi extensions installed (.agency/plugins/, they run code in the daemon):");
     for (const module of report.modulesInstalled) lines.push(`  - ${module}`);
+  }
+
+  if (report.lspServers.length > 0) {
+    lines.push("");
+    lines.push(`LSP servers installed (.agency/lsp/${report.pluginName}.json, each starts a program):`);
+    for (const name of report.lspServers) lines.push(`  - ${name}`);
   }
 
   if (report.binDir !== undefined) {
@@ -420,6 +427,11 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   if (existsSync(mcpFile)) {
     rmSync(mcpFile);
     lines.push("Deleted its MCP servers.");
+  }
+  const lspFile = pluginLspFile(workspaceRoot, pluginName);
+  if (existsSync(lspFile)) {
+    rmSync(lspFile);
+    lines.push("Deleted its LSP servers.");
   }
   rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
   rmSync(pluginDataDir(workspaceRoot, pluginName), { recursive: true, force: true });

@@ -14,6 +14,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   `${user_config.KEY}` to the variable `${CLAUDE_PLUGIN_OPTION_KEY}`, installs a root
   `SKILL.md` and commands that the manifest maps by name, and names the parts that do
   not install (output styles, themes, monitors, workflows, `settings.json`).
+- **LSP servers of plugins**: the `.lsp.json` and `lspServers` of a Claude Code plugin
+  install to `.agency/lsp/<plugin>.json`, and a trusted workspace starts them as the
+  `lspServers` of the config.
 - **`agency mcp serve`**: Agency is an MCP server on stdio with one tool, `agency`, that
   runs a turn of a session, so that Claude Code, Codex or Cursor can give it a task. The
   permission mode comes from the flags of the server, never from a call.

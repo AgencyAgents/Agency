@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 
 export const LspServerConfigSchema = z.object({
@@ -63,4 +65,27 @@ export function normalizeLspServers(raw: LspServersConfig): NormalizedLspServerC
     });
   }
   return out;
+}
+
+/** The LSP servers of `.agency/lsp/*.json`, which `plugin install` writes for a plugin. A file that is not valid is skipped. */
+export function loadProjectLspServers(
+  workspaceRoot: string,
+  warn: (message: string) => void = () => {},
+): LspServersConfig {
+  const dir = join(workspaceRoot, ".agency", "lsp");
+  const servers: LspServersConfig = {};
+  if (!existsSync(dir)) return servers;
+  for (const entry of readdirSync(dir).sort()) {
+    if (!entry.endsWith(".json")) continue;
+    const file = join(dir, entry);
+    try {
+      Object.assign(
+        servers,
+        parseLspServers((JSON.parse(readFileSync(file, "utf8")) as { lspServers?: unknown }).lspServers),
+      );
+    } catch (error) {
+      warn(`LSP file ${file} is not valid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return servers;
 }
