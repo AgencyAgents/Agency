@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import type { RequestApproval } from "./approval.ts";
+import { startDomainProxy } from "./domain-proxy.ts";
 import {
   type CommandPolicy,
   type ExternalDirectoryDecision,
@@ -20,6 +22,8 @@ import {
 export interface OsSandboxOptions {
   /** Commands get the network. Default: no network. */
   allowNetwork?: boolean;
+  /** Commands reach only these hosts, through a proxy of the daemon. `allowNetwork` wins. Linux and macOS only. */
+  allowedDomains?: string[];
   /** For tests: the platform, and the programs. */
   platform?: NodeJS.Platform;
   bwrapBin?: string;
@@ -33,9 +37,24 @@ export interface OsSandboxOptions {
   hidden?: string[];
 }
 
+const PROXY_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+
+/** The environment that sends the programs of a command to the proxy: an inherited NO_PROXY would skip it. */
+function proxyEnv(url: string): Array<[string, string]> {
+  return [...PROXY_VARS.map((name): [string, string] => [name, url]), ["NO_PROXY", ""], ["no_proxy", ""]];
+}
+
+const RELAY_PORT = 3128;
+const RELAY_SOCKET = "/tmp/agency-proxy.sock";
+/** In the network namespace of the sandbox: socat serves the Unix socket of the proxy on a port; the command waits for it. */
+const RELAY_SCRIPT = `socat TCP-LISTEN:${RELAY_PORT},bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:${RELAY_SOCKET} </dev/null >/dev/null 2>&1 &
+i=0; while [ $i -lt 300 ] && ! grep -q ':${RELAY_PORT.toString(16).toUpperCase().padStart(4, "0")} 00000000:0000 0A' /proc/net/tcp; do sleep 0.01; i=$((i+1)); done
+exec "$@"`;
+
 /**
  * bubblewrap argv: the whole disk read-only, the workspace and a private /tmp writable, no network, and the
- * `hidden` folders empty. A mount point cannot be renamed: that pins `.git`. See `PROTECTED_PATHS`.
+ * `hidden` folders empty. A mount point cannot be renamed: that pins `.git`. See `PROTECTED_PATHS`. With
+ * `proxySocket` the command reaches only that proxy.
  */
 export function buildBwrapArgs(
   root: string,
@@ -43,6 +62,7 @@ export function buildBwrapArgs(
   allowNetwork: boolean,
   bin = "bwrap",
   hidden: string[] = [],
+  proxySocket?: string,
 ): string[] {
   const bind = (flag: string, paths: readonly string[]): string[] =>
     paths.flatMap((path) => [flag, `${root}/${path}`, `${root}/${path}`]);
@@ -64,6 +84,14 @@ export function buildBwrapArgs(
     ...bind("--bind-try", PROTECTED_PATHS.pinned),
     ...bind("--ro-bind-try", PROTECTED_PATHS.readOnly),
     ...bind("--bind-try", PROTECTED_PATHS.writable),
+    ...(proxySocket === undefined
+      ? []
+      : [
+          "--bind",
+          proxySocket,
+          RELAY_SOCKET,
+          ...proxyEnv(`http://127.0.0.1:${RELAY_PORT}`).flatMap(([name, value]) => ["--setenv", name, value]),
+        ]),
     "--unshare-pid",
     "--unshare-ipc",
     "--unshare-uts",
@@ -73,17 +101,22 @@ export function buildBwrapArgs(
     "--chdir",
     cwd,
     "--",
+    ...(proxySocket === undefined ? [] : ["/bin/sh", "-c", RELAY_SCRIPT, "sh"]),
   ];
 }
 
 const quote = (path: string): string => `"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
-/** Seatbelt profile with the same rules as the bubblewrap argv. The last rule that matches wins. */
+/**
+ * Seatbelt profile with the same rules as the bubblewrap argv. The last rule that matches wins. With `proxyPort`
+ * the command reaches only the proxy on that port.
+ */
 export function buildSeatbeltProfile(
   root: string,
   allowNetwork: boolean,
   tmpDir = "/private/tmp",
   hidden: string[] = [],
+  proxyPort?: number,
 ): string {
   const rules = (kind: string, paths: readonly string[]): string =>
     paths.map((path) => `(${kind} ${quote(`${root}/${path}`)})`).join(" ");
@@ -96,6 +129,9 @@ export function buildSeatbeltProfile(
     `(deny file-write* ${rules("literal", PROTECTED_PATHS.pinned)} ${rules("subpath", PROTECTED_PATHS.readOnly)})`,
     `(allow file-write* ${rules("subpath", PROTECTED_PATHS.writable)})`,
     ...(allowNetwork ? [] : ["(deny network*)"]),
+    ...(allowNetwork || proxyPort === undefined
+      ? []
+      : [`(allow network-outbound (remote ip "localhost:${proxyPort}"))`]),
   ].join("\n");
 }
 
@@ -187,6 +223,8 @@ export class OsSandboxBackend implements SandboxBackend {
   private readonly platform: NodeJS.Platform;
   private readonly allowNetwork: boolean;
   private readonly sid: string;
+  /** The proxy of `allowedDomains` once it runs: a Unix socket on Linux, a port on macOS. */
+  private proxy?: { socket?: string; port?: number };
 
   constructor(
     root: string,
@@ -218,22 +256,58 @@ export class OsSandboxBackend implements SandboxBackend {
     this.local.checkCommand(command);
   }
 
+  /** The hosts of `allowedDomains` when they limit the network: `allowNetwork` gives all of it. */
+  private domains(): string[] | undefined {
+    return this.allowNetwork ? undefined : this.options.allowedDomains;
+  }
+
+  /** Starts the proxy of `allowedDomains`, one time. Before it runs, a command has no network at all. */
+  async startNetworkProxy(): Promise<void> {
+    const domains = this.domains();
+    if (domains === undefined || this.proxy !== undefined) return;
+    if (this.platform === "linux") {
+      // bubblewrap binds the socket into the sandbox: its own network has no route to a port of the host.
+      const socket = join(mkdtempSync(join(tmpdir(), "agency-net-")), "proxy.sock");
+      await startDomainProxy(domains, { path: socket });
+      this.proxy = { socket };
+    } else {
+      const { port } = await startDomainProxy(domains, { host: "127.0.0.1", port: 0 });
+      this.proxy = { port };
+    }
+  }
+
   /** The argv that runs `argv` in the sandbox. */
   wrap(argv: string[], cwd: string = this.root): string[] {
     if (this.platform === "linux") {
       return [
-        ...buildBwrapArgs(this.root, cwd, this.allowNetwork, this.options.bwrapBin, this.hidden()),
+        ...buildBwrapArgs(
+          this.root,
+          cwd,
+          this.allowNetwork,
+          this.options.bwrapBin,
+          this.hidden(),
+          this.proxy?.socket,
+        ),
         ...argv,
       ];
     }
     if (this.platform === "darwin") {
+      const port = this.proxy?.port;
       const profile = buildSeatbeltProfile(
         this.root,
         this.allowNetwork,
         process.env.TMPDIR ?? "/private/tmp",
         this.hidden(),
+        port,
       );
-      return [this.options.seatbeltBin ?? "/usr/bin/sandbox-exec", "-p", profile, ...argv];
+      const env =
+        port === undefined
+          ? []
+          : [
+              "/usr/bin/env",
+              ...proxyEnv(`http://127.0.0.1:${port}`).map(([name, value]) => `${name}=${value}`),
+            ];
+      return [this.options.seatbeltBin ?? "/usr/bin/sandbox-exec", "-p", profile, ...env, ...argv];
     }
     if (this.platform === "win32") return [...windowsSandboxHelper(), this.sid, "--", ...argv];
     throw new AgencyError(ErrorCode.INTERNAL, `sandbox.backend "os" has no backend for ${this.platform}`, {
@@ -252,9 +326,12 @@ export class OsSandboxBackend implements SandboxBackend {
   async isAvailable(): Promise<boolean> {
     if (!["linux", "darwin", "win32"].includes(this.platform)) return false;
     if (this.platform === "win32" && this.windowsRefusal() !== undefined) return false;
+    if (this.platform === "linux" && this.domains() !== undefined && !Bun.which("socat")) return false;
     try {
       // A `.agency` that a command makes would not be read-only: the rules apply to the paths that exist.
       mkdirSync(join(this.root, ".agency"), { recursive: true });
+      // The probe below then also starts socat in the sandbox.
+      if (this.platform !== "win32") await this.startNetworkProxy();
       // Here the folders get the rules of the SID, one time for each daemon start.
       if (this.platform === "win32" && !(await prepareWindowsSandbox(this.root, this.sid))) return false;
       const probe = this.platform === "win32" ? ["cmd.exe", "/d", "/c", "exit 0"] : ["true"];
@@ -270,6 +347,9 @@ export class OsSandboxBackend implements SandboxBackend {
     if (this.options.windowsShell === "gitbash") {
       return 'sandbox.backend is "os", but Git Bash (MSYS) does not start under the restricted token of Windows. Remove windowsShell or set it to "powershell" or "cmd".';
     }
+    if (this.domains() !== undefined) {
+      return 'sandbox.backend is "os", but on Windows a command cannot be limited to sandbox.allowedDomains without administrator rights. Remove sandbox.allowedDomains and set sandbox.allowNetwork to true to accept that, or set sandbox.backend to "software".';
+    }
     if (!this.allowNetwork) {
       return 'sandbox.backend is "os", but on Windows a command cannot be kept off the network without administrator rights. Set sandbox.allowNetwork to true to accept that, or set sandbox.backend to "software".';
     }
@@ -277,6 +357,9 @@ export class OsSandboxBackend implements SandboxBackend {
   }
 
   unavailableReason(): string {
+    if (this.platform === "linux" && this.domains() !== undefined && !Bun.which("socat")) {
+      return "sandbox.allowedDomains needs socat, which relays the proxy into the sandbox. Install it (`apt install socat`), or remove sandbox.allowedDomains.";
+    }
     if (this.platform === "linux") {
       return 'sandbox.backend is "os" but bubblewrap did not start a command. Install it (`apt install bubblewrap`) and allow user namespaces, or set sandbox.backend to "software".';
     }

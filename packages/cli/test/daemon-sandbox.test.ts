@@ -87,6 +87,16 @@ describe("daemon sandbox backend selection", () => {
       dataDir(),
       configDir(),
     ]);
+    const limited = createSandboxBackend(
+      tempDir("agency-sandbox-root-"),
+      { deny: [] },
+      undefined,
+      load({ sandbox: { backend: "os", allowedDomains: ["github.com", "*.npmjs.org"] } }).sandbox,
+    );
+    expect((limited as unknown as { options: OsSandboxOptions }).options.allowedDomains).toEqual([
+      "github.com",
+      "*.npmjs.org",
+    ]);
   });
 
   test("docker flag boots the container backend with config options", () => {

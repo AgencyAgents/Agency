@@ -57,6 +57,11 @@ describe("Windows sandbox: pure parts", () => {
     await expect(ensureSandboxAvailable(bash)).rejects.toThrow("Git Bash (MSYS)");
     const offline = new OsSandboxBackend(root, {}, undefined, { platform: "win32" });
     await expect(ensureSandboxAvailable(offline)).rejects.toThrow("sandbox.allowNetwork");
+    const domains = new OsSandboxBackend(root, {}, undefined, {
+      platform: "win32",
+      allowedDomains: ["github.com"],
+    });
+    await expect(ensureSandboxAvailable(domains)).rejects.toThrow("sandbox.allowedDomains");
     expect(existsSync(root)).toBe(false);
   });
 });

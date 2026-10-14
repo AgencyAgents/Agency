@@ -1,5 +1,6 @@
 export * from "./approval.ts";
 export * from "./capabilities.ts";
+export * from "./domain-proxy.ts";
 export * from "./forecast.ts";
 export * from "./git-write.ts";
 export * from "./policy.ts";

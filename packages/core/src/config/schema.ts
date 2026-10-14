@@ -153,6 +153,8 @@ export const ConfigSchema = z
         backend: z.enum(["software", "docker", "os"]).default("software"),
         /** With the `os` backend: shell commands get the network. Default: no network. */
         allowNetwork: z.boolean().optional(),
+        /** With the `os` backend on Linux and macOS: shell commands reach only these hosts, through a proxy. */
+        allowedDomains: z.array(z.string().min(1)).optional(),
         /** Image for one-shot `docker run` exec. */
         image: z.string().optional(),
         /** Existing container for `docker exec`; unset means `docker run --rm`. */

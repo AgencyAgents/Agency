@@ -8,6 +8,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Shell commands can reach a list of hosts**: `sandbox.allowedDomains` with the `os`
+  backend gives a command only the hosts in the list (`github.com`, `*.npmjs.org`),
+  through a proxy of the daemon, as in Claude Code. Before, a command had all of the
+  network or none of it. Linux needs `socat`; Windows refuses the list.
+- **The OS sandbox ran on Linux**: real commands under bubblewrap (WSL 2, Ubuntu):
+  a write outside the workspace and a direct connection are denied. Before, only
+  the arguments had tests. The same test runs on macOS in CI.
 - **`PostToolBatch` hook**: runs once after all tool calls of one reply, with
   each call and its result, before the next request. A block ends the turn
   with the reason; `additionalContext` reaches the model once. For example, one

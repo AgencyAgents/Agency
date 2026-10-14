@@ -10,7 +10,7 @@ import {
   OsSandboxBackend,
 } from "../src/sandbox-os.ts";
 
-// No Linux or macOS machine ran these backends: the tests cover the arguments and the profile text only.
+// The arguments and the profile text. sandbox-os-run.test.ts runs real commands on Linux and macOS.
 describe("OS sandbox arguments", () => {
   test("bubblewrap: read-only disk, writable workspace, read-only git hooks, no network by default", () => {
     const args = buildBwrapArgs("/home/u/ws", "/home/u/ws/src", false);
@@ -73,6 +73,50 @@ describe("OS sandbox arguments", () => {
     expect(lines.indexOf('(allow file-write* (subpath "/Users/u/ws/.agency/worktrees"))')).toBeGreaterThan(
       deny,
     );
+  });
+
+  test("bubblewrap with allowed domains: no network but the proxy socket, which socat serves on a port inside", () => {
+    const args = buildBwrapArgs(
+      "/home/u/ws",
+      "/home/u/ws",
+      false,
+      "bwrap",
+      [],
+      "/tmp/agency-net-x/proxy.sock",
+    );
+    const text = args.join(" ");
+    expect(args).toContain("--unshare-net");
+    // The bind comes after the private /tmp, or the tmpfs hides it.
+    expect(text.indexOf("--tmpfs /tmp")).toBeLessThan(
+      text.indexOf("--bind /tmp/agency-net-x/proxy.sock /tmp/agency-proxy.sock"),
+    );
+    expect(text).toContain("--setenv HTTPS_PROXY http://127.0.0.1:3128");
+    expect(text).toContain("--setenv NO_PROXY ");
+    const [dash, shell, flag, script, name] = args.slice(-5);
+    expect([dash, shell, flag, name]).toEqual(["--", "/bin/sh", "-c", "sh"]);
+    expect(script).toContain("UNIX-CONNECT:/tmp/agency-proxy.sock");
+    expect(script).toContain(":0C38 00000000:0000 0A");
+    expect(script).toEndWith('exec "$@"');
+  });
+
+  test("Seatbelt with allowed domains: the network is denied but the port of the proxy, and the command gets it", async () => {
+    const lines = buildSeatbeltProfile("/Users/u/ws", false, "/private/tmp", [], 4567).split("\n");
+    const deny = lines.indexOf("(deny network*)");
+    expect(deny).toBeGreaterThan(-1);
+    expect(lines.indexOf('(allow network-outbound (remote ip "localhost:4567"))')).toBeGreaterThan(deny);
+
+    const mac = new OsSandboxBackend("/Users/u/ws", {}, undefined, {
+      platform: "darwin",
+      allowedDomains: ["github.com"],
+    });
+    expect(mac.wrap(["sh"]).join(" ")).not.toContain("_PROXY");
+    await mac.startNetworkProxy();
+    const wrapped = mac.wrap(["sh", "-c", "ls"]);
+    const port = /localhost:(\d+)/.exec(wrapped[2] ?? "")?.[1];
+    expect(Number(port)).toBeGreaterThan(0);
+    expect(wrapped.slice(3, 5)).toEqual(["/usr/bin/env", `HTTP_PROXY=http://127.0.0.1:${port}`]);
+    expect(wrapped).toContain("NO_PROXY=");
+    expect(wrapped.slice(-3)).toEqual(["sh", "-c", "ls"]);
   });
 
   test("the backend wraps a command for its platform and keeps the command policy", () => {

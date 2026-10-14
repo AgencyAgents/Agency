@@ -141,6 +141,7 @@ export function createSandboxBackend(
   if (sandboxConfig?.backend === "os") {
     return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
       allowNetwork: sandboxConfig.allowNetwork,
+      ...(sandboxConfig.allowedDomains ? { allowedDomains: sandboxConfig.allowedDomains } : {}),
       ...(windowsShell ? { windowsShell } : {}),
       // The keys, sessions and daemon tokens: a command that reads a token can drive the daemon.
       hidden: [dataDir(), configDir()],
