@@ -47,15 +47,17 @@ describe("Windows sandbox: pure parts", () => {
     expect(quoteWindowsArg('a\\"b c')).toBe('"a\\\\\\"b c"');
   });
 
-  test("Git Bash, or no network permission, stops the daemon with the reason", async () => {
-    const bash = new OsSandboxBackend("C:/ws", {}, undefined, {
+  test("Git Bash, or no network permission, stops the daemon with the reason, and nothing is made", async () => {
+    const root = join(tmpdir(), `agency-no-ws-${Date.now()}`);
+    const bash = new OsSandboxBackend(root, {}, undefined, {
       platform: "win32",
       allowNetwork: true,
       windowsShell: "gitbash",
     });
     await expect(ensureSandboxAvailable(bash)).rejects.toThrow("Git Bash (MSYS)");
-    const offline = new OsSandboxBackend("C:/ws", {}, undefined, { platform: "win32" });
+    const offline = new OsSandboxBackend(root, {}, undefined, { platform: "win32" });
     await expect(ensureSandboxAvailable(offline)).rejects.toThrow("sandbox.allowNetwork");
+    expect(existsSync(root)).toBe(false);
   });
 });
 

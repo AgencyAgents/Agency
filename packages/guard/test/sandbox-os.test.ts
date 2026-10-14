@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ensureSandboxAvailable } from "../src/sandbox-docker.ts";
 import {
   buildBwrapArgs,
@@ -106,9 +109,11 @@ describe("OS sandbox arguments", () => {
     expect(buildScriptSandboxArgv(["x"], [], "freebsd")).toBeUndefined();
   });
 
-  test("on another platform the backend is not available, and the daemon start fails with the reason", async () => {
-    const other = new OsSandboxBackend("/ws", {}, undefined, { platform: "freebsd" });
+  test("on another platform the backend is not available, the daemon start fails with the reason, and nothing is made", async () => {
+    const root = join(tmpdir(), `agency-no-ws-${Date.now()}`);
+    const other = new OsSandboxBackend(root, {}, undefined, { platform: "freebsd" });
     expect(await other.isAvailable()).toBe(false);
     await expect(ensureSandboxAvailable(other)).rejects.toThrow("Linux, macOS and Windows only");
+    expect(existsSync(root)).toBe(false);
   });
 });

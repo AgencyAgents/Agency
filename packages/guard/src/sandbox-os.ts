@@ -250,15 +250,14 @@ export class OsSandboxBackend implements SandboxBackend {
 
   /** True when the sandbox program of this platform starts a command. */
   async isAvailable(): Promise<boolean> {
-    // A `.agency` that a command makes would not be read-only: the rules apply to the paths that exist.
-    mkdirSync(join(this.root, ".agency"), { recursive: true });
-    if (this.platform === "win32") {
-      // Here the folders get the rules of the SID, one time for each daemon start.
-      if (this.windowsRefusal() !== undefined || !(await prepareWindowsSandbox(this.root, this.sid)))
-        return false;
-    } else if (this.platform !== "linux" && this.platform !== "darwin") return false;
-    const probe = this.platform === "win32" ? ["cmd.exe", "/d", "/c", "exit 0"] : ["true"];
+    if (!["linux", "darwin", "win32"].includes(this.platform)) return false;
+    if (this.platform === "win32" && this.windowsRefusal() !== undefined) return false;
     try {
+      // A `.agency` that a command makes would not be read-only: the rules apply to the paths that exist.
+      mkdirSync(join(this.root, ".agency"), { recursive: true });
+      // Here the folders get the rules of the SID, one time for each daemon start.
+      if (this.platform === "win32" && !(await prepareWindowsSandbox(this.root, this.sid))) return false;
+      const probe = this.platform === "win32" ? ["cmd.exe", "/d", "/c", "exit 0"] : ["true"];
       const child = Bun.spawn(this.wrap(probe), { stdout: "ignore", stderr: "ignore" });
       return (await child.exited) === 0;
     } catch {
