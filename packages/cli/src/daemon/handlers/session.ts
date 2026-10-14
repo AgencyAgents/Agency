@@ -165,6 +165,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       sessionScopes.delete(sessionId);
     }
     approvalManagers.delete(sessionId);
+    // A session has one end here: its removal. Only a session that exists has an end.
+    if (todoStore.list().includes(sessionId)) {
+      try {
+        ctx.eventBus.emit("session.end", { sessionId, reason: "other" });
+      } catch {}
+    }
     try {
       todoStore.delete(sessionId);
     } catch {}

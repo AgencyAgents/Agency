@@ -318,6 +318,7 @@ The summary ends with the messages that you wrote in the folded part, word for w
 | `SubagentStop` | When a worker ends its turn | The worker goes on. It gets the reason as a message. |
 | `PreCompact` | Before a compaction of a session | The session is not compacted. |
 | `PostCompact` | After a compaction of a session | None. |
+| `SessionEnd` | When a session is deleted. The input has `reason`, always `other` | None. |
 | `Notification` | When a turn waits for your answer to an approval | None. |
 | `PermissionRequest` | When a tool call needs an approval, before you are asked | The call is refused, and you are not asked. |
 

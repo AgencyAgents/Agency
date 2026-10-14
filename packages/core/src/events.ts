@@ -38,6 +38,7 @@ export interface AgencyEvents {
   };
   "shell.env": { env: Record<string, string> };
   "session.start": { sessionId: string; workspaceRoot: string };
+  "session.end": { sessionId: string; reason: string };
   "prompt.submit": { sessionId: string; prompt: string };
   "subagent.start": { sessionId: string; handle: string; parentSessionId: string };
   "board.item.complete": { itemId: string; status: string };

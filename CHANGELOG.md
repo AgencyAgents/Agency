@@ -670,6 +670,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the call, refuse it, or give no answer. It also runs in a run with
   no person to ask, so a script can decide there. `SubagentStop`
   hooks now get the agent type, and their matcher tests it.
+- **`SessionEnd` hook**: runs when a session is deleted. 13 of the 33
+  hook events of Claude Code now run.
 - **Compaction at a token limit, and inside a turn**: a session is now
   compacted at 220000 tokens when the window of the model is larger
   (`compactionLimit` in the config). Before, a model with a window of

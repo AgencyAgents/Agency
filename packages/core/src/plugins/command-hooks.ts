@@ -17,6 +17,7 @@ export const COMMAND_HOOK_EVENTS = [
   "Notification",
   "PermissionRequest",
   "SessionStart",
+  "SessionEnd",
 ] as const;
 export type CommandHookEvent = (typeof COMMAND_HOOK_EVENTS)[number];
 
@@ -253,6 +254,10 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
     bus.on("session.compacted", async (payload) => {
       const p = payload as { sessionId: string; trigger?: string };
       await runCommandHooks(hooks, "PostCompact", { session_id: p.sessionId, trigger: p.trigger }, opts);
+    }),
+    bus.on("session.end", async (payload) => {
+      const p = payload as { sessionId: string; reason: string };
+      await runCommandHooks(hooks, "SessionEnd", { session_id: p.sessionId, reason: p.reason }, opts);
     }),
   ];
   return () => {

@@ -425,3 +425,17 @@ describe("hooks in the loop", () => {
     expect(resultText(result.messages)).toEqual(["plugin says no"]);
   });
 });
+
+describe("the SessionEnd hook", () => {
+  test("runs when a session ends, with the reason", async () => {
+    const bus = new EventBus();
+    const ended = capture("sessionend");
+    attachCommandHooks(bus, on("SessionEnd", ended.cmd), { cwd: dir });
+    bus.emit("session.end", { sessionId: "s9", reason: "other" });
+    expect(await ended.read()).toMatchObject({
+      hook_event_name: "SessionEnd",
+      session_id: "s9",
+      reason: "other",
+    });
+  });
+});

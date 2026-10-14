@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
@@ -40,7 +40,7 @@ const usage = { inputTokens: 5, outputTokens: 5 };
  */
 async function setup(
   where: "config" | "trusted workspace" | "untrusted workspace" = "config",
-): Promise<{ client: DaemonClient; requests: string[]; ran: string[] }> {
+): Promise<{ client: DaemonClient; requests: string[]; ran: string[]; ended: string }> {
   const scripts = tmp("scripts");
   const command = (name: string, body: string): { type: "command"; command: string } => {
     const file = join(scripts, `${name}.js`);
@@ -48,6 +48,7 @@ async function setup(
     return { type: "command", command: `"${process.execPath}" "${file}"` };
   };
   const marker = JSON.stringify(join(scripts, "stopped-once"));
+  const ended = join(scripts, "ended.jsonl");
   const hooks = {
     SessionStart: [{ hooks: [command("start", 'console.log("START-CONTEXT");')] }],
     UserPromptSubmit: [
@@ -62,6 +63,16 @@ async function setup(
     ],
     PreToolUse: [
       { matcher: "Note", hooks: [command("pre", 'console.error("note is off"); process.exit(2);')] },
+    ],
+    SessionEnd: [
+      {
+        hooks: [
+          command(
+            "end",
+            `let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => require("node:fs").appendFileSync(${JSON.stringify(ended)}, s + "\\n"));`,
+          ),
+        ],
+      },
     ],
     Stop: [
       {
@@ -125,7 +136,7 @@ async function setup(
   daemons.push(daemon);
   const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
   clients.push(client);
-  return { client, requests, ran };
+  return { client, requests, ran, ended };
 }
 
 const send = (client: DaemonClient, userText: string) =>
@@ -176,5 +187,18 @@ describe("command hooks of the config in a session", () => {
     expect(trusted.ran).toEqual([]);
     expect(trusted.requests[0]).toContain("START-CONTEXT");
     expect(trusted.requests[1]).toContain("note is off");
+  }, 30000);
+
+  test("deleting a session runs SessionEnd with its id; an unknown session runs nothing", async () => {
+    const { client, ended } = await setup();
+    await send(client, "take a note");
+    await client.call("session_delete", { sessionId: "no-such-session" });
+    await client.call("session_delete", { sessionId: "hook-s1" });
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ended) && Date.now() < deadline) await Bun.sleep(50);
+    await Bun.sleep(300);
+    const lines = readFileSync(ended, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({ session_id: "hook-s1", reason: "other" });
   }, 30000);
 });

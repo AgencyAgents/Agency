@@ -48,7 +48,7 @@ function makePonytailFixture(sourceDir: string): void {
           hooks: [{ type: "command", command: "node hooks/activate.js", timeout: 5 }],
         },
       ],
-      SessionEnd: [
+      Setup: [
         {
           hooks: [{ type: "command", command: "node hooks/subagent.js", timeout: 5 }],
         },
@@ -159,7 +159,7 @@ function makeUnknownHooksFixture(sourceDir: string): void {
       SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }],
       UnknownEvent: [{ hooks: [{ type: "command", command: "echo unknown" }] }],
       PreToolUse: [{ hooks: [{ type: "command", command: "echo pretool" }] }],
-      SessionEnd: [{ hooks: [{ type: "command", command: "echo sub" }] }],
+      Setup: [{ hooks: [{ type: "command", command: "echo sub" }] }],
     },
   });
 }
@@ -359,9 +359,7 @@ describe("importClaudePlugin", () => {
 
       // Hooks
       expect(report.hooksInstalled).toEqual(["SessionStart", "UserPromptSubmit"]);
-      expect(report.hooksSkipped).toEqual([
-        { event: "SessionEnd", reason: 'unsupported event "SessionEnd"' },
-      ]);
+      expect(report.hooksSkipped).toEqual([{ event: "Setup", reason: 'unsupported event "Setup"' }]);
 
       // MCP
       expect(report.mcpServers).toHaveProperty("filesystem");
@@ -470,8 +468,8 @@ describe("importClaudePlugin", () => {
         reason: 'unsupported event "UnknownEvent"',
       });
       expect(report.hooksSkipped).toContainEqual({
-        event: "SessionEnd",
-        reason: 'unsupported event "SessionEnd"',
+        event: "Setup",
+        reason: 'unsupported event "Setup"',
       });
     } finally {
       rmSync(src, { recursive: true, force: true });
