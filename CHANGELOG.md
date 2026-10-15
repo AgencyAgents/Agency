@@ -63,6 +63,14 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Verify before done, built in (`verifyGate`)**: a turn that changed code and ran no passing test, type
+  check, lint or build after is sent back once, as the verification skills and Stop hooks of plugins
+  (superpowers, Gauntlet, hookify rules) do. A/B on DeepSeek V4 Flash, a change that breaks a test: with
+  the gate off, 0 of 8 runs ran the tests and all 8 ended with a failing test; with it on, 8 of 8 ran them
+  and ended green, at $0.0026 a run instead of $0.0010. `"verifyGate": false` turns it off.
+- **A syntax check on each edit**: `edit` and `write` parse a TypeScript, JavaScript, JSON or Python file
+  that they change, and when the change broke a file that parsed before, the result names the error (as
+  the linter on edit of SWE-agent, measured there at +3 points of SWE-bench Lite).
 - **Hook scripts of Claude Code read tool calls as there**: a hook gets `tool_name` `Bash`, `Edit`, `Write`
   (not `bash`, `edit`) and `tool_input.file_path`, `old_string`, `new_string`; its `updatedInput` comes back
   in the fields here. Before, a file rule of hookify (official marketplace) never matched: an edit of

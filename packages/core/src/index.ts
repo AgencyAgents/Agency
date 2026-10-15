@@ -60,3 +60,4 @@ export * from "./team/windows.ts";
 export * from "./tool-search.ts";
 export * from "./trace/index.ts";
 export * from "./truncate.ts";
+export * from "./verify-gate.ts";

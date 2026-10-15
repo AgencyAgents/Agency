@@ -234,6 +234,8 @@ export const ConfigSchema = z
     compactionLimit: z.number().int().positive().optional(),
     /** True: old results of re-runnable tools stay whole in each request, where by default they become a short note. */
     keepToolResults: z.boolean().optional(),
+    /** False: a turn that changed code and ran no passing check after may end. By default it is sent back once. */
+    verifyGate: z.boolean().optional(),
     trace: z
       .object({
         export: z
