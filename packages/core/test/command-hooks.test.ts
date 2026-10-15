@@ -83,7 +83,7 @@ describe("runCommandHooks", () => {
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({
       hook_event_name: "PreToolUse",
       cwd: dir,
-      tool_name: "bash",
+      tool_name: "Bash",
       tool_input: { command: "ls" },
     });
   });
@@ -241,7 +241,7 @@ describe("runCommandHooks", () => {
             hook_event_name: "PreToolUse",
             cwd: dir,
             session_id: "default",
-            tool_name: "bash",
+            tool_name: "Bash",
             tool_input: { command: "deploy" },
           },
         },
@@ -536,12 +536,12 @@ describe("hooks in the loop", () => {
       session_id: "s1",
       tool_calls: [
         {
-          tool_name: "bash",
+          tool_name: "Bash",
           tool_input: { command: "ls c1" },
           tool_use_id: "c1",
           tool_response: { content: "listing", isError: false },
         },
-        { tool_name: "bash", tool_input: { command: "ls c2" }, tool_use_id: "c2" },
+        { tool_name: "Bash", tool_input: { command: "ls c2" }, tool_use_id: "c2" },
       ],
     });
   });
@@ -694,7 +694,7 @@ describe("hooks in the loop", () => {
       expect(await seen.read()).toMatchObject({
         hook_event_name: "PermissionRequest",
         session_id: "s1",
-        tool_name: "bash",
+        tool_name: "Bash",
         tool_input: { command: "ls" },
       });
     }
@@ -776,7 +776,7 @@ describe("hooks in the loop", () => {
       expect(await denied.read()).toMatchObject({
         hook_event_name: "PermissionDenied",
         session_id: "s1",
-        tool_name: "bash",
+        tool_name: "Bash",
         tool_input: { command: "npm test" },
         tool_use_id: "c1",
         reason: "the user said no shell",
@@ -1066,6 +1066,22 @@ describe("agent hooks", () => {
     expect(calls).toBe(0);
     expect((await runCommandHooks(stopHook("agent"), "Stop", {}, { cwd: "." })).block).toBeUndefined();
   });
+});
+
+test("a hook gets the tool and fields of Claude Code, and its updatedInput comes back in the fields here", async () => {
+  // As hookify reads it: `tool_name == "Edit"` and `tool_input.file_path`; it answers with the same fields.
+  const body = [
+    'const i = JSON.parse(require("fs").readFileSync(0, "utf8"));',
+    'if (i.tool_name !== "Edit" || i.tool_input.file_path !== "a.txt" || i.tool_input.old_string !== "x") process.exit(0);',
+    'console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...i.tool_input, file_path: "b.txt" } } }));',
+  ].join("\n");
+  const out = await runCommandHooks(
+    on("PreToolUse", hook("cc-shape", body)),
+    "PreToolUse",
+    { tool_name: "edit", tool_input: { path: "a.txt", oldText: "x", newText: "y" } },
+    { cwd: dir },
+  );
+  expect(out.input).toEqual({ path: "b.txt", oldText: "x", newText: "y" });
 });
 
 test("a hook gets the transcript_path of its session, and session_id default for a turn with none", async () => {

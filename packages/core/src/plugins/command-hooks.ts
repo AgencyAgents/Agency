@@ -142,6 +142,58 @@ const TOOL_ALIASES: Record<string, string[]> = {
 };
 const namesOf = (subject: string): string[] => [subject, ...(TOOL_ALIASES[subject] ?? [])];
 
+/** Each tool here as Claude Code names it, and the input fields that have another name there. */
+const CLAUDE_TOOLS: Record<string, [string, Record<string, string>]> = {
+  bash: ["Bash", { background: "run_in_background" }],
+  read: ["Read", { path: "file_path" }],
+  write: ["Write", { path: "file_path" }],
+  edit: [
+    "Edit",
+    { path: "file_path", oldText: "old_string", newText: "new_string", replaceAll: "replace_all" },
+  ],
+  grep: ["Grep", { caseInsensitive: "-i", context: "-C" }],
+  glob: ["Glob", {}],
+  fetch: ["WebFetch", {}],
+  websearch: ["WebSearch", {}],
+  todo_write: ["TodoWrite", {}],
+  notebook_edit: ["NotebookEdit", { path: "notebook_path", source: "new_source", mode: "edit_mode" }],
+  spawn: ["Task", {}],
+};
+
+const renamed = (value: unknown, names: Record<string, string>): unknown =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).map(([key, item]) => [names[key] ?? key, item]))
+    : value;
+
+/**
+ * A tool event in the form of Claude Code: its hooks test `tool_name == "Bash"` and read `tool_input.file_path`
+ * (hookify does). ponytail: an MCP tool keeps its name here, not `mcp__<server>__<tool>`; the event does not say which
+ * tools are MCP tools.
+ */
+function claudeShaped(input: Record<string, unknown>): Record<string, unknown> {
+  const tool = typeof input.tool_name === "string" ? CLAUDE_TOOLS[input.tool_name] : undefined;
+  const out =
+    tool === undefined
+      ? input
+      : { ...input, tool_name: tool[0], tool_input: renamed(input.tool_input, tool[1]) };
+  return Array.isArray(input.tool_calls)
+    ? {
+        ...out,
+        tool_calls: input.tool_calls.map((call) =>
+          typeof call === "object" && call !== null ? claudeShaped(call as Record<string, unknown>) : call,
+        ),
+      }
+    : out;
+}
+
+/** The `updatedInput` of a hook, which has the field names of Claude Code, as the input of the tool here. */
+function agencyInput(tool: unknown, updated: Record<string, unknown>): Record<string, unknown> {
+  const names = typeof tool === "string" ? CLAUDE_TOOLS[tool]?.[1] : undefined;
+  if (names === undefined) return updated;
+  const back = Object.fromEntries(Object.entries(names).map(([ours, theirs]) => [theirs, ours]));
+  return renamed(updated, back) as Record<string, unknown>;
+}
+
 /** The tool here that a tool name of another agent names: `Bash` is `bash`, `mcp__github__create_issue` is `github_create_issue`. */
 export function agencyToolName(name: string): string | undefined {
   // `mcp__<server>` alone is every tool of a server: no one tool here.
@@ -533,7 +585,7 @@ export async function runCommandHooks(
       cwd: opts.cwd,
       session_id: sessionId,
       ...(transcript === undefined ? {} : { transcript_path: transcript }),
-      ...value,
+      ...claudeShaped(value),
     });
   let stdin = stdinOf(input);
   const context: string[] = [];
@@ -629,7 +681,7 @@ export async function runCommandHooks(
         else if (specific.permissionDecision === "allow" && permission === undefined) permission = "allow";
         const updated = specific.updatedInput;
         if (typeof updated === "object" && updated !== null && !Array.isArray(updated)) {
-          input = { ...input, tool_input: updated };
+          input = { ...input, tool_input: agencyInput(input.tool_name, updated as Record<string, unknown>) };
           stdin = stdinOf(input);
         }
       }
