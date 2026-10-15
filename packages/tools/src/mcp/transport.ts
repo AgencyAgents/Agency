@@ -371,8 +371,8 @@ function createStdioTransportFromChild(
               break;
             }
             buf += new TextDecoder().decode(value);
-            let idx = buf.indexOf("\n");
-            while (idx !== -1) {
+            // A `for` loop: `continue` on a blank line must still move to the next line, or the daemon spins.
+            for (let idx = buf.indexOf("\n"); idx !== -1; idx = buf.indexOf("\n")) {
               const line = buf.slice(0, idx).trim();
               buf = buf.slice(idx + 1);
               if (line.length === 0) continue;
@@ -380,7 +380,6 @@ function createStdioTransportFromChild(
                 const msg = JSON.parse(line) as Record<string, unknown>;
                 handler?.(msg);
               } catch {}
-              idx = buf.indexOf("\n");
             }
           }
         };
