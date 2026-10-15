@@ -344,6 +344,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A blank line on the stdout of a stdio MCP server**: the reader of its messages
+  looped on it for ever, and the daemon stopped answering every run of the workspace.
+  Seen with a server that printed a help text and exited.
 - **A deny rule on one command**: the refusal said that the whole tool was not
   permitted and not to call it again, so a model gave up on the other commands of the
   task. A refusal of a command or a path now names that call and says that another call
