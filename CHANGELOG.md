@@ -32,6 +32,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **User instructions of other agents**: with `"userAgentInstructions": true`, the
   `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, OpenCode and Pi user
   instruction files join the instructions of every workspace.
+- **`--fallback-model <provider/model>`**: `-p` goes on with this model when its model stays
+  overloaded, as in Claude Code. A fallback can now be another model of the same provider.
 - **`-p --worktree <name>`**: the turn runs in the git worktree `.agency/worktrees/<name>`
   on the branch `agency/<name>`, made when missing, as `claude --worktree` does.
 - **`--mcp-config` and `--strict-mcp-config`**: `-p` takes the MCP servers of a JSON file

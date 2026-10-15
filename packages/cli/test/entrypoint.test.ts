@@ -1081,6 +1081,14 @@ describe("-p headless mode", () => {
     expect(headless.calls).toHaveLength(2);
   });
 
+  test("--fallback-model reaches the turn", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "--fallback-model", "openai/fake-2"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.fallbackModel).toBe("openai/fake-2");
+  });
+
   test("--worktree runs the turn in a git worktree, uses it again, and refuses a bad name", async () => {
     const repo = tempDir("agency-ep-wt-");
     const git = (...args: string[]) =>

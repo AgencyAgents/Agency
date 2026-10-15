@@ -22,6 +22,7 @@ export interface RunSessionTurnOptions {
   /** Permission rules of this turn: they win over those of the config. */
   permissions?: Record<string, ToolPermissionValue>;
   mcp?: RunTurnParams["mcp"];
+  fallbackModel?: string;
   maxToolIterations?: number;
   /** Sets the goal of the session before this turn. */
   goal?: string;
@@ -66,6 +67,7 @@ export async function runSessionTurn(
       permissionMode: options.permissionMode,
       ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
       ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
+      ...(options.fallbackModel === undefined ? {} : { fallbackModel: options.fallbackModel }),
       maxToolIterations: options.maxToolIterations,
       nonInteractive: options.nonInteractive,
       ...(options.goal === undefined ? {} : { goal: options.goal }),

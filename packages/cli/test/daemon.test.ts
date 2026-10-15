@@ -617,6 +617,44 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("the fallback model of a turn wins over the config, and can be another model of the same provider", async () => {
+    const seen: string[] = [];
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(`${provider}/${request.model}`);
+        if (request.model === "test-model")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "served" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_ANTHROPIC_API_KEY;
+    process.env.AGENCY_ANTHROPIC_API_KEY = "same-provider-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      const result = (await client.call("run_turn", {
+        turnId: "t-fallback-flag",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        fallbackModel: "anthropic/small-model",
+      })) as RunTurnRpcResult;
+
+      expect(result.stopReason).toBe("end_turn");
+      // The primary retries before the fallback, and the model of the config is never asked.
+      expect([...new Set(seen)]).toEqual(["anthropic/test-model", "anthropic/small-model"]);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+      else process.env.AGENCY_ANTHROPIC_API_KEY = saved;
+    }
+  }, 60_000);
+
   test("a key that a tool result holds does not reach the model or the result of the turn", async () => {
     const envKey = "env-key-value-9d2c";
     const turnKey = "turn-key-value-41aa";

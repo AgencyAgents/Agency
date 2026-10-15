@@ -146,6 +146,8 @@ Options:
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
                            (repeatable); --strict-mcp-config uses only these servers
+  --fallback-model <provider/model>
+                           With -p: the model of the turn when its model is overloaded
   -w, --worktree <name>    With -p: run in the git worktree .agency/worktrees/<name>
                            on branch agency/<name> (made when missing)
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
@@ -210,6 +212,8 @@ export interface ParsedArgv {
   /** `--mcp-config <file|json>` of `-p`: MCP servers of this run; `--strict-mcp-config` drops the others. */
   mcpConfig: string[];
   strictMcpConfig: boolean;
+  /** `--fallback-model <provider/model>` of `-p`: the model of the turn when the model is overloaded. */
+  fallbackModel: string | undefined;
   /** `-w, --worktree <name>` of `-p`: the turn runs in a git worktree of this name. */
   worktree: string | undefined;
   /** The flags of `mcp add`: `--env KEY=value`, `--header "Name: value"`, `--transport`, `--scope`. */
@@ -291,6 +295,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     mcpConfig: [],
     strictMcpConfig: false,
     worktree: undefined,
+    fallbackModel: undefined,
     serverEnv: [],
     headers: [],
     transport: undefined,
@@ -446,6 +451,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--strict-mcp-config":
         parsed.strictMcpConfig = true;
+        break;
+      case "--fallback-model":
+        parsed.fallbackModel = value();
         break;
       case "-w":
       case "--worktree":
@@ -820,6 +828,7 @@ async function runPrintMode(
         permissionMode: parsed.permissionMode,
         ...(permissions === undefined ? {} : { permissions }),
         ...(mcp === undefined ? {} : { mcp }),
+        ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
         maxToolIterations: parsed.maxSteps,
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
@@ -845,6 +854,7 @@ async function runPrintMode(
     permissionMode: parsed.permissionMode,
     ...(permissions === undefined ? {} : { permissions }),
     ...(mcp === undefined ? {} : { mcp }),
+    ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
     maxToolIterations: parsed.maxSteps,
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });

@@ -171,6 +171,8 @@ export interface RunTurnParams {
   permissions?: Record<string, ToolPermissionValue>;
   /** MCP servers of `--mcp-config`: beside those of the daemon, or in their place when `strict`. */
   mcp?: { servers: Record<string, unknown>; strict: boolean };
+  /** `provider/model` of `--fallback-model`: wins over `fallback_model` of the config. */
+  fallbackModel?: string;
   /** Headless turns have no approval surface: asks refuse at once with a
    *  typed reason instead of waiting on a responder that never comes. */
   nonInteractive?: boolean;
@@ -257,6 +259,7 @@ export interface SessionSendParams {
   permissionMode?: PermissionMode;
   permissions?: Record<string, ToolPermissionValue>;
   mcp?: RunTurnParams["mcp"];
+  fallbackModel?: string;
   maxToolIterations?: number;
   /** Headless turns refuse asks at once instead of waiting on a responder. */
   nonInteractive?: boolean;

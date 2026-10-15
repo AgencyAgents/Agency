@@ -431,7 +431,8 @@ export async function executeTurn(
         const requestApproval = createTurnApproval(ctx, params, sessionId, eventStream);
         const reviewApproval = autoReviewerFor(ctx, params.permissionMode);
         const fallbackRef = (() => {
-          const fm = (config as unknown as { fallback_model?: string }).fallback_model;
+          const fm =
+            params.fallbackModel ?? (config as unknown as { fallback_model?: string }).fallback_model;
           if (!fm) return undefined;
           const slash = fm.indexOf("/");
           if (slash <= 0) return undefined;
@@ -641,7 +642,11 @@ export async function executeTurn(
             (error.code === ErrorCode.OVERLOAD ||
               error.code === ErrorCode.TRANSIENT ||
               error.code === ErrorCode.RATE_LIMIT);
-          if (isRetryable && fallbackRef && fallbackRef.provider !== params.provider) {
+          if (
+            isRetryable &&
+            fallbackRef &&
+            (fallbackRef.provider !== params.provider || fallbackRef.model !== params.model)
+          ) {
             let fbApiKey: string | undefined;
             try {
               fbApiKey = await resolveApiKey({
