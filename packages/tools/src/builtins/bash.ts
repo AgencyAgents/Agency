@@ -5,7 +5,7 @@ import type { ToolContext, ToolDeps, ToolResult, ToolSpec } from "../contract.ts
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { CWD_MARKER, EXIT_MARKER, modelCommandEnv, parseShellOutput, type ShellConfig } from "../shell.ts";
-import { truncateWithSpill } from "../truncate.ts";
+import { compactOutput, truncateWithSpill } from "../truncate.ts";
 import { trackJob } from "../win-job.ts";
 
 /**
@@ -232,7 +232,9 @@ export function createBashTool(
           }
         }
 
-        let combined = outcome.stderr ? `${output}\n[stderr]\n${outcome.stderr}` : output;
+        let combined = outcome.stderr
+          ? `${compactOutput(output)}\n[stderr]\n${compactOutput(outcome.stderr)}`
+          : compactOutput(output);
         if (cwdNotice) combined += cwdNotice;
         if (outcome.aborted) {
           // Cancellation must not read as a silent success with exit code 0.

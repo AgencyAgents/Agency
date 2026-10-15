@@ -66,6 +66,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **MCP servers over SSE**, the older HTTP transport that many servers still use: `type: "sse"`,
   a url that ends in `/sse`, the `url` of Gemini CLI and `agency mcp add --transport sse` connect,
   where before they were refused or failed. The endpoint that the stream names must have its origin.
+- **Shorter shell output with nothing lost**: colour codes go, a line that a progress bar redrew
+  keeps its last text, and a run of the same line is one line and its count.
 - **`agency usage [--by day|month|model] [--since YYYY-MM-DD] [--json]`**: the calls, tokens
   and cost of the model calls of all workspaces, from the traces of the sessions, as ccusage
   reports them for Claude Code.

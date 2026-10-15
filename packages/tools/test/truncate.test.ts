@@ -1,6 +1,41 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { sliceAtCharBoundary, truncateWithSpill } from "../src/truncate.ts";
+import { compactOutput, sliceAtCharBoundary, truncateWithSpill } from "../src/truncate.ts";
+
+test("shell output loses its colour codes, its progress redraws and its runs of one line, and keeps what it says", () => {
+  const raw = [
+    "\x1b[32m✓ pass\x1b[0m a.test.ts",
+    "\x1b]8;;https://x.dev\x07link\x1b]8;;\x07",
+    "progress 10%\rprogress 50%\rprogress 100%",
+    "warn: deprecated",
+    "warn: deprecated",
+    "warn: deprecated",
+    "warn: deprecated",
+    "",
+    "",
+    "",
+    "same",
+    "same",
+    "done\r\n",
+  ].join("\n");
+  expect(compactOutput(raw)).toBe(
+    [
+      "✓ pass a.test.ts",
+      "link",
+      "progress 100%",
+      "warn: deprecated",
+      "[the line above 3 more times]",
+      "",
+      "",
+      "",
+      "same",
+      "same",
+      "done",
+      "",
+    ].join("\n"),
+  );
+  expect(compactOutput("plain\ntext")).toBe("plain\ntext");
+});
 
 describe("sliceAtCharBoundary", () => {
   test("returns full string when within byte limit", () => {

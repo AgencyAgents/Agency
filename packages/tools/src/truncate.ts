@@ -20,6 +20,34 @@ export function sliceAtCharBoundary(buf: Buffer, maxBytes: number): string {
   return buf.subarray(0, end).toString("utf8");
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences of a terminal
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/**
+ * Shell output as the model needs it, with nothing it could read taken away: no colour codes, a line that a progress
+ * bar redrew with `\r` as its last text, and a run of the same line as one line and its count.
+ */
+export function compactOutput(text: string): string {
+  const lines = text
+    .replace(ANSI, "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const parts = line.split("\r").filter((part) => part !== "");
+      return parts[parts.length - 1] ?? "";
+    });
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; ) {
+    let j = i + 1;
+    while (j < lines.length && lines[j] === lines[i]) j += 1;
+    out.push(lines[i] as string);
+    if (j - i > 2 && lines[i] !== "") out.push(`[the line above ${j - i - 1} more times]`);
+    else for (let k = i + 1; k < j; k++) out.push(lines[k] as string);
+    i = j;
+  }
+  return out.join("\n");
+}
+
 /**
  * Spills oversized tool output to a temp file so nothing is silently dropped:
  * the caller returns a truncated head plus the spill path, and the full text
