@@ -35,7 +35,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **Flags of other agents**: a script for `claude -p`, `codex exec` or `pi -p` runs with `agency`:
   `-p` with the prompt after the flags, `--output-format`, `--max-turns`, `-c`, `-r`, the
   permission modes of Claude Code, `--fork-session`, `--system-prompt-file`, `--max-budget-usd`, `--effort`, `-C`,
-  `--output-schema`, `--no-tools` and others.
+  `--output-schema`, `--no-tools` and others; `agency exec [resume|fork] <prompt>` as `codex exec`.
 - **The JSON result of `-p` has the fields of Claude Code**: `result`, `is_error`, `subtype`,
   `num_turns`, `session_id` and `total_cost_usd`, so `jq -r .result` works.
 - **`--thinking <level>`**: the reasoning effort of a `-p` run, as in Pi.

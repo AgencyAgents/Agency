@@ -823,9 +823,26 @@ describe("-p headless mode", () => {
 
     expect(code).toBe(1);
     expect(JSON.parse(out.join(""))).toEqual({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      result: "Internal Server Error",
       error: { code: "transient", message: "Internal Server Error" },
     });
     expect(err).toEqual(["Internal Server Error"]);
+
+    const stream = capture();
+    const failing = async () => {
+      throw new Error("down");
+    };
+    const argv = ["-p", "--output-format", "stream-json", "--model", "openai/fake-1", "hello"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...stream.deps, runHeadless: failing })).toBe(1);
+    expect(stream.out).toHaveLength(1);
+    expect(JSON.parse(stream.out[0] as string)).toMatchObject({
+      type: "result",
+      is_error: true,
+      result: "down",
+    });
   });
 
   test("-p - takes the prompt from stdin, and an empty stdin is an error", async () => {
@@ -1231,6 +1248,55 @@ describe("-p headless mode", () => {
     const payload = JSON.parse(out.join("\n"));
     expect(payload).toMatchObject({ type: "result", subtype: "success", is_error: false, num_turns: 1 });
     expect([payload.result, payload.stopReason]).toEqual(["hi from the fake daemon", "end_turn"]);
+  });
+
+  test("codex exec and the flags of codex and pi run as -p", async () => {
+    const exec = parseArgv(["exec", "--skip-git-repo-check", "-m", "openai/fake-1", "fix it"]);
+    expect([exec.print, exec.command, exec.model]).toEqual(["fix it", undefined, "openai/fake-1"]);
+    const last = parseArgv(["exec", "resume", "--last", "go on"]);
+    expect([last.print, last.continueLast, last.session]).toEqual(["go on", true, undefined]);
+    const byId = parseArgv(["exec", "resume", "s-1", "go on"]);
+    expect([byId.print, byId.session, byId.forkSession]).toEqual(["go on", "s-1", false]);
+    const fork = parseArgv(["exec", "fork", "s-1", "try"]);
+    expect([fork.print, fork.session, fork.forkSession]).toEqual(["try", "s-1", true]);
+    expect(() => parseArgv(["exec", "resume"])).toThrow("needs a session id");
+    expect(parseArgv(["exec"]).print).toBe("-");
+    const codex = parseArgv([
+      "-p",
+      "x",
+      "--json",
+      "-i",
+      "a.png",
+      "--yolo",
+      "--ephemeral",
+      "--exclude-tools",
+      "bash, grep",
+    ]);
+    expect([codex.streamJson, codex.images, codex.permissionMode, codex.disallowedTools]).toEqual([
+      true,
+      ["a.png"],
+      "allow-all",
+      ["bash", "grep"],
+    ]);
+    const pi = parseArgv(["-p", "x", "--mode", "json", "--no-session", "--fork", "s-2", "-nt"]);
+    expect([pi.streamJson, pi.session, pi.forkSession, pi.tools, pi.strictMcpConfig]).toEqual([
+      true,
+      "s-2",
+      true,
+      "",
+      true,
+    ]);
+
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    expect(
+      await runEntrypoint(["exec", "--model", "openai/fake-1", "say hi"], {
+        ...baseDeps(),
+        ...deps,
+        ...headless,
+      }),
+    ).toBe(0);
+    expect(headless.calls[0]?.prompt).toBe("say hi");
   });
 
   test("--fallback-model reaches the turn", async () => {

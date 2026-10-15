@@ -181,9 +181,11 @@ Options:
 
 Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
 --output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
---fork-session, --system-prompt-file, --append-system-prompt-file, --max-budget-usd, --effort, the permission
+--fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
+--json, -m, -i, --yolo (the sandbox stays), --mode json, --fork, --exclude-tools, --max-budget-usd, --effort, the permission
 modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
---include-partial-messages, --no-session-persistence and --skip-git-repo-check change nothing.
+--include-partial-messages, --no-session-persistence, --ephemeral, --no-session and
+--skip-git-repo-check change nothing.
 
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
@@ -402,6 +404,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.workspace = value();
         break;
       case "--model":
+      case "-m":
         parsed.model = value();
         break;
       case "--provider":
@@ -426,6 +429,43 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--include-partial-messages":
       case "--skip-git-repo-check":
       case "--no-session-persistence":
+      case "--ephemeral":
+      case "--no-session":
+        break;
+      // `codex exec resume --last`.
+      case "--last":
+        parsed.continueLast = true;
+        break;
+      // The JSON lines of `codex exec --json` and `pi --mode json` are the events of the turn: here, those of Agency.
+      case "--json":
+        parsed.streamJson = true;
+        parsed.format = "json";
+        break;
+      case "--mode": {
+        const mode = value();
+        if (mode !== "text" && mode !== "json") throw new Error(t("cli.error.invalid_format"));
+        parsed.streamJson = mode === "json";
+        parsed.format = mode;
+        break;
+      }
+      // The sandbox stays: Agency runs no command outside it.
+      case "--yolo":
+      case "--dangerously-bypass-approvals-and-sandbox":
+        parsed.permissionMode = "allow-all";
+        break;
+      // `pi --fork <id>`.
+      case "--fork":
+        parsed.session = value();
+        parsed.forkSession = true;
+        break;
+      case "--exclude-tools":
+      case "-xt":
+        parsed.disallowedTools.push(
+          ...value()
+            .split(",")
+            .map((rule) => rule.trim())
+            .filter(Boolean),
+        );
         break;
       case "--input-format":
         if (value() !== "text") throw new Error(t("cli.error.input_format"));
@@ -436,8 +476,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--fork-session":
         parsed.forkSession = true;
         break;
+      // Pi's `--no-tools` turns off the MCP tools too.
       case "--no-tools":
+      case "-nt":
         parsed.tools = "";
+        parsed.strictMcpConfig = true;
         break;
       case "--format":
       case "--output-format": {
@@ -516,6 +559,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.retention.maxTotalBytes = numberValue(name, value()) * 1024 * 1024;
         break;
       case "--image":
+      case "-i":
         parsed.images.push(value());
         break;
       case "--arg":
@@ -580,6 +624,18 @@ export function parseArgv(argv: string[]): ParsedArgv {
     }
   }
 
+  // `codex exec [resume <id> | resume --last | fork <id>] <prompt>` runs as `-p`.
+  if (positionals[0] === "exec" && parsed.print === undefined && !promptLater) {
+    const next = positionals[1];
+    const verb = next === "resume" || next === "fork" ? next : undefined;
+    positionals.splice(0, verb === undefined ? 1 : 2);
+    if (verb === "fork" || (verb === "resume" && !parsed.continueLast)) {
+      parsed.session = positionals.shift();
+      if (parsed.session === undefined) throw new Error(t("cli.error.exec_session", { verb }));
+      parsed.forkSession ||= verb === "fork";
+    }
+    promptLater = true;
+  }
   if (promptLater) parsed.print = positionals.shift() ?? "-";
   // Claude Code puts the file before the text of `--append-system-prompt`, whatever the order of the flags.
   if (appendFileText !== undefined)
@@ -1902,12 +1958,24 @@ export async function runEntrypoint(
     const message = error instanceof Error ? error.message : String(error);
     err(message);
     // A script that parses stdout gets the failure there too, in the `error` shape of a turn result.
-    const flag = argv.indexOf("--format");
-    if (flag >= 0 && argv[flag + 1] === "json") {
+    const format = argv.flatMap((arg, i) =>
+      arg === "--format" || arg === "--output-format"
+        ? [argv[i + 1]]
+        : /^--(output-)?format=/.test(arg)
+          ? [arg.slice(arg.indexOf("=") + 1)]
+          : [],
+    );
+    const stream = format.includes("stream-json") || argv.includes("--json");
+    if (stream || format.includes("json")) {
       const code = (error as { code?: unknown } | null)?.code;
-      out(
-        JSON.stringify({ error: { code: typeof code === "string" ? code : "internal", message } }, null, 2),
-      );
+      const failure = {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        result: message,
+        error: { code: typeof code === "string" ? code : "internal", message },
+      };
+      out(stream ? JSON.stringify(failure) : JSON.stringify(failure, null, 2));
     }
     return 1;
   }
