@@ -172,6 +172,8 @@ export const en = {
   "cli.error.schema_session": "--json-schema works for a one-shot run only: remove --session or --continue.",
   "cli.error.invalid_schema": "--json-schema needs a JSON Schema, as a file or as text: {detail}",
   "cli.error.review_git": "git could not give the changes: {detail}",
+  "cli.error.worktree_name": "--worktree name is not valid: {name}. Use letters, digits, _, . and -",
+  "cli.error.worktree_git": "git could not make the worktree: {detail}",
   "cli.review.no_changes": "no changes to review",
   "cli.workflow.agent_start": "[agent {n}] start: {prompt}",
   "cli.workflow.agent_end": "[agent {n}] end: {reason}",
@@ -283,6 +285,7 @@ export const en = {
   "cli.progress.heartbeat": ".",
   "cli.progress.retry": "Retry {attempt}: {message}",
   "cli.progress.turn_complete": "Turn complete ({reason}).",
+  "cli.progress.worktree": "[worktree] {path} on branch {branch}",
   "cli.progress.chatgpt_plan": "Using ChatGPT plan. Manage usage: {url}",
 
   "cli.trust.checking": "Checking trust for {path}...",

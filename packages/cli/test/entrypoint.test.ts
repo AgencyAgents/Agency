@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
@@ -1078,6 +1078,37 @@ describe("-p headless mode", () => {
     );
     expect(code).toBe(1);
     expect(bad.err.join("\n")).toContain("--mcp-config is not valid");
+    expect(headless.calls).toHaveLength(2);
+  });
+
+  test("--worktree runs the turn in a git worktree, uses it again, and refuses a bad name", async () => {
+    const repo = tempDir("agency-ep-wt-");
+    const git = (...args: string[]) =>
+      Bun.spawnSync(["git", ...args], { cwd: repo })
+        .stdout.toString()
+        .trim();
+    git("init", "-q");
+    git("-c", "user.name=t", "-c", "user.email=t@t.test", "commit", "-q", "--allow-empty", "-m", "init");
+    const headless = fakeRunHeadless();
+    const { deps, err } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "-w", "fix-1"];
+    expect(await runEntrypoint(argv, { ...baseDeps({ cwd: repo }), ...deps, ...headless })).toBe(0);
+    const dir = join(realpathSync(repo), ".agency", "worktrees", "fix-1");
+    expect(headless.calls[0]?.workspaceRoot).toBe(dir);
+    expect(git("-C", dir, "branch", "--show-current")).toBe("agency/fix-1");
+    expect(err.join("\n")).toContain("agency/fix-1");
+    expect(await runEntrypoint(argv, { ...baseDeps({ cwd: repo }), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[1]?.workspaceRoot).toBe(dir);
+    expect(git("status", "--porcelain")).toBe("");
+
+    const bad = capture();
+    const code = await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--worktree", "../x"], {
+      ...baseDeps({ cwd: repo }),
+      ...bad.deps,
+      ...headless,
+    });
+    expect(code).toBe(1);
+    expect(bad.err.join("\n")).toContain("--worktree name is not valid");
     expect(headless.calls).toHaveLength(2);
   });
 

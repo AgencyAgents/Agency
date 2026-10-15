@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
   CODE_COMMAND,
@@ -146,6 +146,8 @@ Options:
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
                            (repeatable); --strict-mcp-config uses only these servers
+  -w, --worktree <name>    With -p: run in the git worktree .agency/worktrees/<name>
+                           on branch agency/<name> (made when missing)
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
@@ -208,6 +210,8 @@ export interface ParsedArgv {
   /** `--mcp-config <file|json>` of `-p`: MCP servers of this run; `--strict-mcp-config` drops the others. */
   mcpConfig: string[];
   strictMcpConfig: boolean;
+  /** `-w, --worktree <name>` of `-p`: the turn runs in a git worktree of this name. */
+  worktree: string | undefined;
   /** The flags of `mcp add`: `--env KEY=value`, `--header "Name: value"`, `--transport`, `--scope`. */
   serverEnv: string[];
   headers: string[];
@@ -286,6 +290,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     workflowArgs: [],
     mcpConfig: [],
     strictMcpConfig: false,
+    worktree: undefined,
     serverEnv: [],
     headers: [],
     transport: undefined,
@@ -441,6 +446,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--strict-mcp-config":
         parsed.strictMcpConfig = true;
+        break;
+      case "-w":
+      case "--worktree":
+        parsed.worktree = value();
         break;
       // The flags of `mcp add`, as `claude mcp add` spells them.
       case "-e":
@@ -690,7 +699,10 @@ async function runPrintMode(
     throw new Error(t("cli.error.session_conflict"));
   }
 
-  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const workspaceRoot =
+    parsed.worktree === undefined
+      ? workspaceRootOf(parsed, deps)
+      : worktreeRoot(parsed.worktree, workspaceRootOf(parsed, deps), err);
   const env = envOf(deps);
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
@@ -850,6 +862,28 @@ async function runPrintMode(
     return reportTurn(() => {}, err, parsed, result);
   }
   return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
+}
+
+/** `-p --worktree <name>`: the turn runs in `.agency/worktrees/<name>` of the repository, on the branch `agency/<name>`,
+ *  as `claude --worktree` does. A later run with the same name uses the same worktree. */
+function worktreeRoot(name: string, workspaceRoot: string, err: LineSink): string {
+  if (!/^\w[\w.-]*$/.test(name)) throw new Error(t("cli.error.worktree_name", { name }));
+  const git = (...args: string[]): Bun.SyncSubprocess<"pipe", "pipe"> =>
+    Bun.spawnSync(["git", ...args], { cwd: workspaceRoot });
+  const top = git("rev-parse", "--show-toplevel");
+  if (top.exitCode !== 0)
+    throw new Error(t("cli.error.worktree_git", { detail: top.stderr.toString().trim() }));
+  const dir = join(top.stdout.toString().trim(), ".agency", "worktrees", name);
+  if (existsSync(dir)) return dir;
+  mkdirSync(dirname(dir), { recursive: true });
+  writeFileSync(join(dirname(dir), ".gitignore"), "*\n");
+  const branch = `agency/${name}`;
+  const known = git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0;
+  const add = known ? git("worktree", "add", dir, branch) : git("worktree", "add", "-b", branch, dir, "HEAD");
+  if (add.exitCode !== 0)
+    throw new Error(t("cli.error.worktree_git", { detail: add.stderr.toString().trim() }));
+  err(t("cli.progress.worktree", { path: dir, branch }));
+  return dir;
 }
 
 /** `mcp serve`: each call of the `agency` tool is a `-p --session` turn. The permission mode comes from the flags of

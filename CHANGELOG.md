@@ -32,6 +32,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **User instructions of other agents**: with `"userAgentInstructions": true`, the
   `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, OpenCode and Pi user
   instruction files join the instructions of every workspace.
+- **`-p --worktree <name>`**: the turn runs in the git worktree `.agency/worktrees/<name>`
+  on the branch `agency/<name>`, made when missing, as `claude --worktree` does.
 - **`--mcp-config` and `--strict-mcp-config`**: `-p` takes the MCP servers of a JSON file
   or of JSON text for one run, as Claude Code does in CI.
 - **MCP files of more clients**: the project files of Copilot CLI (`.github/mcp.json`),

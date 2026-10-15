@@ -245,6 +245,10 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 
 `agency review` reviews the uncommitted changes of the workspace, new files included. `agency review <ref>` reviews the changes since a branch, a tag or a commit (`git diff <ref>...HEAD`). The model gets the diff, can read the files around it, and reports problems with file, line and a case that fails. The turn has the `ask` mode with no person to ask, so an edit or a shell command is refused and no file changes. `--model`, `--format json` and `--max-cost` work as with `-p`. A diff above 200000 characters is cut.
 
+## Worktree
+
+`-p --worktree <name>` (or `-w <name>`) runs the turn in the git worktree `.agency/worktrees/<name>` of the repository, on the branch `agency/<name>`, as `claude --worktree` does. Agency makes the worktree from `HEAD` when it is missing, or from the branch when only the branch is there; a later run with the same name uses it again. The name has letters, digits, `_`, `.` and `-` only. `.agency/worktrees/.gitignore` keeps the worktrees out of `git status`. Sessions are those of the worktree, and the trust of the repository covers it. Agency does not remove a worktree: `git worktree remove` does.
+
 ## Structured answer
 
 `--json-schema <file>` with `-p` makes the answer JSON that matches a JSON Schema. The value can also be the schema text. Stdout is the JSON only, and `--format json` has it as `structuredOutput`. The model gives the answer through a `structured_output` tool, and an answer that breaks the schema goes back to the model with the reason. The run exits with code 1 when the model gives no such answer. The check covers `type` (also a list of types), `enum`, `required`, `properties` and `items` at any depth. Other keywords (`pattern`, `minimum`, "oneOf", "$ref") are not checked. It is for a one-shot run, not for `--session`.
