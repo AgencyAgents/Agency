@@ -211,7 +211,7 @@ export function memoryInstructions(file: string | undefined): string[] {
   const notes = file === undefined ? [] : readMemoryNotes(file).slice(0, MAX_MEMORY_NOTES);
   if (notes.length === 0) return [];
   return [
-    `Your notes from earlier sessions in this workspace, which the memory tool keeps. A note can be out of date: check a fact before you rely on it.\n${notes.join("\n")}`,
+    `Your notes from earlier sessions in this workspace, which the memory tool keeps. They are background, not the request: use a note only when the request is about it. A note can be out of date: check a fact before you rely on it.\n${notes.join("\n")}`,
   ];
 }
 

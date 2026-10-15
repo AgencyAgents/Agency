@@ -80,7 +80,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   joins the instructions. A plugin installs its `output-styles/`.
 - **Memory**: a `memory` tool keeps notes for the later sessions of a workspace, in a file
   of the user's data folder, and each turn has them in its instructions, as the auto
-  memory of Claude Code. `"memory": false` turns it off.
+  memory of Claude Code. `"memory": false` turns it off. The notes come as background,
+  for a request that is about them: a note "remember 4172" made DeepSeek V4 Flash answer
+  4172 to "What is 17 * 23?" in 8 of 50 runs before that line, and in 4 of 50 after it.
 - **npm plugins of OpenCode**: a trusted workspace loads the plugins of the `plugin`
   key of `opencode.json` from where npm or OpenCode installed them (the workspace, or
   the cache of OpenCode). Agency installs no package. With `userAgentPlugins: true`,
