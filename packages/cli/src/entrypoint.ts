@@ -181,8 +181,9 @@ Options:
 
 Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
 --output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
-the permission modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose,
---include-partial-messages and --skip-git-repo-check change nothing.
+--system-prompt-file, --append-system-prompt-file, --max-budget-usd, --effort, the permission
+modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
+--include-partial-messages, --no-session-persistence and --skip-git-repo-check change nothing.
 
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
@@ -345,6 +346,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
   const positionals: string[] = [];
   // `claude -p --output-format json "query"`: the `-p` of Claude Code takes no value, and the prompt comes later.
   let promptLater = false;
+  let appendFileText: string | undefined;
+  const fileText = (flag: string, path: string): string => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch (error) {
+      throw new Error(t("cli.error.read_file", { flag, path, detail: (error as Error).message }));
+    }
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -413,6 +422,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--verbose":
       case "--include-partial-messages":
       case "--skip-git-repo-check":
+      case "--no-session-persistence":
+        break;
+      case "--input-format":
+        if (value() !== "text") throw new Error(t("cli.error.input_format"));
         break;
       case "--dangerously-skip-permissions":
         parsed.permissionMode = "allow-all";
@@ -470,14 +483,21 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--system-prompt":
         parsed.systemPrompt = value();
         break;
+      case "--system-prompt-file":
+        parsed.systemPrompt = fileText(name, value());
+        break;
       case "--append-system-prompt":
         parsed.appendSystemPrompt = value();
         break;
+      case "--append-system-prompt-file":
+        appendFileText = fileText(name, value());
+        break;
       case "--max-cost":
+      case "--max-budget-usd":
       case "--max-total-cost": {
         const cost = Number(value());
         if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
-        if (name === "--max-cost") parsed.maxCost = cost;
+        if (name !== "--max-total-cost") parsed.maxCost = cost;
         else parsed.maxTotalCost = cost;
         break;
       }
@@ -505,8 +525,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--output-last-message":
         parsed.outputLastMessage = value();
         break;
-      case "--thinking": {
-        const level = value();
+      case "--thinking":
+      case "--effort": {
+        const raw = value();
+        // `ultracode` of Claude Code is `xhigh` with its workflows on: here, `xhigh`.
+        const level = raw === "ultracode" ? "xhigh" : raw;
         if (!(ThinkingLevel as readonly string[]).includes(level))
           throw new Error(t("cli.error.invalid_thinking", { levels: ThinkingLevel.join(", ") }));
         parsed.thinking = level as ThinkingLevel;
@@ -515,8 +538,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--tools":
         parsed.tools = value();
         break;
+      // ponytail: Claude Code tries a comma list in order; here the first model only, as `fallback_model` has one.
       case "--fallback-model":
-        parsed.fallbackModel = value();
+        parsed.fallbackModel = value().split(",")[0]?.trim();
         break;
       case "-w":
       case "--worktree":
@@ -551,6 +575,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
   }
 
   if (promptLater) parsed.print = positionals.shift() ?? "-";
+  // Claude Code puts the file before the text of `--append-system-prompt`, whatever the order of the flags.
+  if (appendFileText !== undefined)
+    parsed.appendSystemPrompt = [appendFileText, parsed.appendSystemPrompt]
+      .filter((part) => part !== undefined)
+      .join("\n\n");
   parsed.command = positionals[0];
   parsed.subcommand = positionals[1];
   parsed.args = positionals.slice(2);
@@ -562,6 +591,7 @@ type LineSink = (line: string) => void;
 /** The modes of `claude --permission-mode`; `plan` changes no file, as `deny` refuses each tool above `safe`. */
 const CLAUDE_PERMISSION_MODES: Record<string, PermissionMode> = {
   default: "ask",
+  manual: "ask",
   dontAsk: "ask",
   acceptEdits: "allow-edits",
   plan: "deny",

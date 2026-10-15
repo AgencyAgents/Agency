@@ -1150,6 +1150,32 @@ describe("-p headless mode", () => {
     const codex = parseArgv(["-p", "x", "-C", "repo", "--output-schema", "s.json", "--skip-git-repo-check"]);
     expect([codex.workspace, codex.jsonSchema]).toEqual(["repo", "s.json"]);
     expect(parseArgv(["-p", "x", "--no-tools"]).tools).toBe("");
+    const file = join(tempDir("agency-ep-prompt-"), "extra.md");
+    writeFileSync(file, "From the file.");
+    const prompts = parseArgv([
+      "-p",
+      "x",
+      "--append-system-prompt",
+      "Text.",
+      "--append-system-prompt-file",
+      file,
+    ]);
+    expect(prompts.appendSystemPrompt).toBe("From the file.\n\nText.");
+    expect(parseArgv(["-p", "x", "--system-prompt-file", file]).systemPrompt).toBe("From the file.");
+    expect(() => parseArgv(["-p", "x", "--system-prompt-file", `${file}.none`])).toThrow("cannot read");
+    const more = parseArgv([
+      "-p",
+      "x",
+      "--max-budget-usd",
+      "2.5",
+      "--effort",
+      "ultracode",
+      "--input-format",
+      "text",
+    ]);
+    expect([more.maxCost, more.thinking]).toEqual([2.5, "xhigh"]);
+    expect(parseArgv(["-p", "x", "--permission-mode", "manual"]).permissionMode).toBe("ask");
+    expect(() => parseArgv(["-p", "x", "--input-format", "stream-json"])).toThrow("--input-format");
 
     const headless = fakeRunHeadless();
     const { deps, out } = capture();
@@ -1167,6 +1193,7 @@ describe("-p headless mode", () => {
     const argv = ["-p", "hi", "--model", "openai/fake-1", "--fallback-model", "openai/fake-2"];
     expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
     expect(headless.calls[0]?.fallbackModel).toBe("openai/fake-2");
+    expect(parseArgv(["-p", "x", "--fallback-model", "openai/a, openai/b"]).fallbackModel).toBe("openai/a");
   });
 
   test("--worktree runs the turn in a git worktree, uses it again, and refuses a bad name", async () => {

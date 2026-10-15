@@ -182,6 +182,8 @@ export const en = {
   "cli.error.invalid_permission_mode":
     '--permission-mode must be "ask", "allow-edits", "auto", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
+  "cli.error.read_file": "{flag}: cannot read {path}: {detail}",
+  "cli.error.input_format": "--input-format takes text only: give the prompt with -p or on stdin.",
   "cli.error.invalid_thinking": "--thinking must be one of: {levels}.",
   "cli.error.invalid_max_steps": "--max-steps must be a whole number of 1 or more.",
   "cli.error.goal_needs_session": "--goal needs --session <id> or --continue: a goal belongs to a session.",
