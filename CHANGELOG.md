@@ -67,10 +67,6 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   (not `bash`, `edit`) and `tool_input.file_path`, `old_string`, `new_string`; its `updatedInput` comes back
   in the fields here. Before, a file rule of hookify (official marketplace) never matched: an edit of
   `secrets.txt` passed a rule on `file_path`; now it is refused (live, with the real plugin).
-- **Hook scripts of Claude Code read tool calls as there**: a hook gets `tool_name` `Bash`, `Edit`, `Write`
-  (not `bash`, `edit`) and `tool_input.file_path`, `old_string`, `new_string`; its `updatedInput` comes back
-  in the fields here. Before, a file rule of hookify (official marketplace) never matched: an edit of
-  `secrets.txt` passed a rule on `file_path`; now it is refused (live, with the real plugin).
 - **`-p` keeps a session, as `claude -p`, `codex exec` and `pi -p` do**: the JSON result names it in
   `session_id`, and `-r <id>` goes on from it; `-n` names it. Before, the `session_id` of a run was null, and
   `-r` with it began an empty session (seen live). `--no-session-persistence`, `--ephemeral` and
