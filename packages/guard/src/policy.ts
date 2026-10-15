@@ -270,6 +270,8 @@ const WRAPPERS: ReadonlySet<string> = new Set([
   "exec",
   "nice",
   "xargs",
+  "builtin",
+  "noglob",
 ]);
 /** Options of a wrapper that take a value in the next word. */
 const VALUE_OPTIONS: ReadonlySet<string> = new Set([
@@ -315,6 +317,13 @@ export function unwrapCommand(command: string, depth = 0): string[] {
     let i = 0;
     while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
       i += VALUE_OPTIONS.has(rest[i] ?? "") ? 2 : 1;
+    forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
+  } else if (program === "timeout" || program === "stdbuf") {
+    // `timeout -k 2 30 cmd`, `stdbuf -o L cmd`: the command comes after the options, and after the duration of timeout.
+    const valued = program === "timeout" ? ["-s", "-k", "--signal", "--kill-after"] : ["-i", "-o", "-e"];
+    let i = 0;
+    while (i < rest.length && rest[i]?.startsWith("-")) i += valued.includes(rest[i] ?? "") ? 2 : 1;
+    if (program === "timeout") i += 1;
     forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
   } else if (program === "find") {
     // `-exec cmd {} ;`: the words after the option are a command.

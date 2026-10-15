@@ -352,6 +352,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A deny rule behind `timeout`, `stdbuf`, `builtin` or `noglob`**: a deny of `rm *` let
+  `timeout 5 rm -rf build` run. These wrappers are now taken away before the rules, as Claude
+  Code does.
 - **A Read or Edit deny rule and the shell**: with a deny of `Read(secret.txt)`, the model
   printed the file with `cat secret.txt` (seen live). The rule now holds for the files that a
   shell command names (`cat`, `head`, `grep`, `sed`, `< file`; `tee`, `sed -i`, `> file`), as
