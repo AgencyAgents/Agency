@@ -60,6 +60,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the flags of `claude mcp add` (`--env`, `--header`, `--transport`, `--scope`), to a file
   of the user config or to the `.mcp.json` of the workspace, and show where each server
   comes from.
+- **PDFs**: `read` attaches a PDF, as Claude Code reads one: a document for Anthropic, a file
+  for the Responses API, and a file for OpenRouter, parsed to text with its free engine for
+  any model.
 - **Jupyter notebooks**: `read` shows a `.ipynb` as its cells and the text of their
   outputs, and a new `notebook_edit` tool replaces, inserts or deletes a cell, as the
   NotebookEdit tool of Claude Code does.

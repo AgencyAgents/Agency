@@ -354,6 +354,10 @@ A session can hold a goal: a condition that must be true before a turn ends. Whe
 
 The team report that `/goal` showed before is now `/report [outcome]`.
 
+## PDFs
+
+`read` attaches a PDF (up to 1 MB) to the tool result, as Claude Code reads one, and each provider gets it in its own form: a `document` for Anthropic, an `input_file` for the Responses API of OpenAI, and a `file` part for OpenRouter, which turns it into text for any model with its free `cloudflare-ai` engine, so a model with no vision reads it too. Another provider with the OpenAI format takes no PDF: the model is told that the PDF was left out. An image still goes only to a model that sees images.
+
 ## Notebooks
 
 `read` shows a Jupyter notebook (`.ipynb`) as its cells, each with its number, type and id, its source and the text of its outputs (an image output is named only), as Claude Code does. A read with `offset` or `limit` gives the raw JSON. `notebook_edit` changes one cell: `replace` (the default) sets the source and clears the outputs of a code cell, `insert` adds a cell after the given cell (or at the start), `delete` removes it. A cell is named by its id or its number. `notebook_edit` is an edit tool for the permission modes and the rules (`NotebookEdit` of Claude Code names it), and the `undo` of the daemon takes its changes back, as for `write` and `edit`.

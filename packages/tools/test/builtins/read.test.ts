@@ -67,6 +67,12 @@ describe("createReadTool", () => {
 
     const webp = await tool.handler({ path: "pic.webp" }, { signal });
     expect(webp.images?.[0]?.mimeType).toBe("image/webp");
+
+    // A PDF rides the same block: each adapter sends it as the document of its provider.
+    writeFileSync(join(root, "report.PDF"), Buffer.from("%PDF-1.4"));
+    const pdf = await tool.handler({ path: "report.PDF" }, { signal });
+    expect(pdf.content).toBe("Attached report.PDF (application/pdf, 8 bytes).");
+    expect(pdf.images?.[0]?.mimeType).toBe("application/pdf");
   });
 
   test("uppercase extensions and .jpeg map too; unknown extensions stay text", async () => {

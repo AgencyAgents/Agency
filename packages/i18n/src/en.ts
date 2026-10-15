@@ -77,7 +77,7 @@ export const en = {
   "lsp.diagnostics.warning": "Language server reports {count} error(s) in {path}: {summary}",
   "lsp.request.timeout": "Language server request {method} timed out after {ms}ms.",
 
-  "image.read.attached": "Attached image {path} ({mime}, {bytes} bytes).",
+  "image.read.attached": "Attached {path} ({mime}, {bytes} bytes).",
   "image.unsupported": "{path} is not a readable image (supported: {formats}).",
 
   // A6: tool RESULT strings route through t(); model-facing descriptions stay English.

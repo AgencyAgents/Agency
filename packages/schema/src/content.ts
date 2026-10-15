@@ -32,6 +32,9 @@ export const ToolCallBlock = z.object({
   input: z.record(z.string(), z.unknown()),
 });
 
+/** An image block of this type is a PDF: each adapter sends it as the document of its provider. */
+export const PDF_MIME = "application/pdf";
+
 export const ImageBlock = z.object({
   type: z.literal("image"),
   mimeType: z.string(),

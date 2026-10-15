@@ -1,5 +1,12 @@
 import type { HttpClient } from "@agency/net";
-import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import {
+  AgencyError,
+  type ContentBlock,
+  ErrorCode,
+  type Message,
+  PDF_MIME,
+  type StopReason,
+} from "@agency/schema";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, Usage } from "../types.ts";
 import { REASONING_EFFORT, toAgencyError } from "./openai-compatible.ts";
@@ -10,6 +17,12 @@ export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
 
 function dataUrl(block: Extract<ContentBlock, { type: "image" }>): string {
   return `data:${block.mimeType};base64,${block.data}`;
+}
+
+function attachment(block: Extract<ContentBlock, { type: "image" }>): Record<string, unknown> {
+  return block.mimeType === PDF_MIME
+    ? { type: "input_file", filename: "document.pdf", file_data: dataUrl(block) }
+    : { type: "input_image", image_url: dataUrl(block) };
 }
 
 /** Messages as Responses input items. The model's encrypted reasoning goes back before the calls it led to. */
@@ -29,7 +42,7 @@ export function toResponsesInput(
       if (block.type === "text") {
         parts.push({ type: m.role === "assistant" ? "output_text" : "input_text", text: block.text });
       } else if (block.type === "image" && m.role !== "assistant") {
-        parts.push({ type: "input_image", image_url: dataUrl(block) });
+        parts.push(attachment(block));
       } else if (block.type === "thinking" && block.signature !== undefined && block.family === family) {
         flush();
         items.push({
@@ -49,10 +62,10 @@ export function toResponsesInput(
       } else if (block.type === "tool_result") {
         flush();
         items.push({ type: "function_call_output", call_id: block.toolCallId, output: block.content });
-        if (vision)
-          images.push(
-            ...(block.images ?? []).map((image) => ({ type: "input_image", image_url: dataUrl(image) })),
-          );
+        // A PDF goes to every model; an image only to one that sees images.
+        images.push(
+          ...(block.images ?? []).filter((image) => vision || image.mimeType === PDF_MIME).map(attachment),
+        );
       }
     }
     flush();
@@ -60,7 +73,7 @@ export function toResponsesInput(
       items.push({
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "Images from the tool results above." }, ...images],
+        content: [{ type: "input_text", text: "Attachments of the tool results above." }, ...images],
       });
     }
   }

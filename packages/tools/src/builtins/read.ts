@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { requirePathScope } from "@agency/guard";
 import { t } from "@agency/i18n";
-import type { ImageBlock } from "@agency/schema";
+import { type ImageBlock, PDF_MIME } from "@agency/schema";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ReadState } from "../read-state.ts";
 import { lineCount, str, summarize } from "../render.ts";
@@ -9,8 +9,9 @@ import { renderNotebook } from "./notebook.ts";
 
 const MAX_READ_BYTES = 1_000_000; // ~1MB; bigger files should be grepped or read in slices
 
-/** Image formats every vision-capable provider we ship accepts (P7 image input). */
+/** Image formats every vision-capable provider we ship accepts (P7 image input), and PDF: the adapters send it. */
 export const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".pdf": PDF_MIME,
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
