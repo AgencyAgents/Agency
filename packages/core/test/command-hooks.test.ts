@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,9 @@ import { parseEnvFile } from "../src/plugins/env-file.ts";
 import { loadPlugins, unloadPlugins } from "../src/plugins/loader.ts";
 import { compact } from "../src/sessions/compaction.ts";
 import { SessionStore } from "../src/sessions/store.ts";
+
+// Each test starts node processes in turn: under the load of the full CI run, two passed 5 s.
+setDefaultTimeout(20_000);
 
 const dir = mkdtempSync(join(tmpdir(), "agency-cmdhooks-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
