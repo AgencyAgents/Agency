@@ -47,6 +47,7 @@ import {
   signInChatgpt,
   signOutChatgpt,
   supportsDeviceFlow,
+  ThinkingLevel,
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
@@ -147,6 +148,8 @@ Options:
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
                            (repeatable); --strict-mcp-config uses only these servers
+  --thinking <level>       With -p: the reasoning effort of the model: off, minimal, low,
+                           medium, high, xhigh or max
   --tools <names>          With -p: only these built-in tools (Bash,Read,Edit); "" is none,
                            default is all. MCP tools stay
   --fallback-model <provider/model>
@@ -219,6 +222,8 @@ export interface ParsedArgv {
   strictMcpConfig: boolean;
   /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
   outputLastMessage: string | undefined;
+  /** `--thinking <level>` of `-p`, as in Pi: the reasoning effort of the model. */
+  thinking: ThinkingLevel | undefined;
   /** `--tools <names>` of `-p`: the built-in tools of the run, as Claude Code names them; `default` is all. */
   tools: string | undefined;
   /** `--fallback-model <provider/model>` of `-p`: the model of the turn when the model is overloaded. */
@@ -306,6 +311,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     worktree: undefined,
     fallbackModel: undefined,
     tools: undefined,
+    thinking: undefined,
     outputLastMessage: undefined,
     serverEnv: [],
     headers: [],
@@ -467,6 +473,13 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--output-last-message":
         parsed.outputLastMessage = value();
         break;
+      case "--thinking": {
+        const level = value();
+        if (!(ThinkingLevel as readonly string[]).includes(level))
+          throw new Error(t("cli.error.invalid_thinking", { levels: ThinkingLevel.join(", ") }));
+        parsed.thinking = level as ThinkingLevel;
+        break;
+      }
       case "--tools":
         parsed.tools = value();
         break;
@@ -861,6 +874,7 @@ async function runPrintMode(
         ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
         ...(tools === undefined ? {} : { tools }),
         maxToolIterations: parsed.maxSteps,
+        ...(parsed.thinking === undefined ? {} : { thinkingLevel: parsed.thinking }),
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
         nonInteractive: true,
@@ -888,6 +902,7 @@ async function runPrintMode(
     ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
     ...(tools === undefined ? {} : { tools }),
     maxToolIterations: parsed.maxSteps,
+    ...(parsed.thinking === undefined ? {} : { thinkingLevel: parsed.thinking }),
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
   if (outputSchema === undefined) return reportTurn(out, err, parsed, result);

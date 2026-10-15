@@ -258,6 +258,10 @@ Capability drops: `sandbox.capDrop` entries map to `--cap-drop` flags on one-sho
 
 The system prompt of a turn is a base text, then the environment block, the project instructions and the list of skills. With `-p`, `--system-prompt <text>` replaces the base text for that run, and `--append-system-prompt <text>` adds text after it. Both are flags of Claude Code. The other parts stay.
 
+## Reasoning effort
+
+`--thinking <level>` with `-p` sets the reasoning effort of the model for that run, on the scale of Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Each provider maps it to its own setting. It wins over the `auto` effort of an agent of the config.
+
 ## Sandbox of the operating system
 
 `sandbox.backend: "os"` runs each shell command of the model in a sandbox of the operating system: bubblewrap (`bwrap`) on Linux and Seatbelt (`sandbox-exec`) on macOS, the programs that Claude Code uses. A command can read the disk, can write only in the workspace and in a temporary folder, and has no network. In the workspace it cannot write `.git/hooks`, `.git/config` or `.agency` (but `.agency/worktrees`, where the agents of a team work), and cannot rename `.git`: the harness runs git and the hooks, MCP servers and plugins of `.agency` outside the sandbox later. It cannot read the data and config folders of Agency (keys, sessions, daemon tokens). `sandbox.allowNetwork: true` gives it the network. The daemon does not start when the sandbox program does not work, and it never falls back to no sandbox. A command in the background (`background: true`) runs in the same sandbox.

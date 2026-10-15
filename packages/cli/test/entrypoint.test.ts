@@ -1122,6 +1122,15 @@ describe("-p headless mode", () => {
     expect(headless.calls.map((call) => call.tools)).toEqual([["bash", "read", "todo_write"], undefined, []]);
   });
 
+  test("--thinking reaches the turn, and a level that is not one fails", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "--thinking", "high"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.thinkingLevel).toBe("high");
+    expect(() => parseArgv(["-p", "hi", "--thinking", "huge"])).toThrow("--thinking must be one of");
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();
