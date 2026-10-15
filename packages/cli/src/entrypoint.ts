@@ -181,7 +181,7 @@ Options:
 
 Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
 --output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
---fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
+--settings (its permissions, model, fallbackModel and effortLevel), --fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
 --json, -m, -i, --yolo (the sandbox stays), --mode json, --fork, --exclude-tools, --max-budget-usd, --effort, the permission
 modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
 --include-partial-messages, --no-session-persistence, --ephemeral, --no-session and
@@ -217,6 +217,10 @@ export interface ParsedArgv {
   /** Permission rules of Claude Code for this run: `--allowed-tools` allows, `--disallowed-tools` denies. */
   allowedTools: string[];
   disallowedTools: string[];
+  /** The `ask` rules of `--settings`: in a run with no person to ask, such a call is refused. */
+  askTools: string[];
+  /** The keys of `--settings` that a run here does not use: a warning names them. */
+  ignoredSettings: string[];
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
@@ -335,6 +339,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     permissionMode: "ask",
     allowedTools: [],
     disallowedTools: [],
+    askTools: [],
+    ignoredSettings: [],
     maxSteps: undefined,
     goal: undefined,
     systemPrompt: undefined,
@@ -351,6 +357,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
   const positionals: string[] = [];
   // `claude -p --output-format json "query"`: the `-p` of Claude Code takes no value, and the prompt comes later.
   let promptLater = false;
+  let settingsArg: string | undefined;
+  let modeSet = false;
   let appendFileText: string | undefined;
   const fileText = (flag: string, path: string): string => {
     try {
@@ -471,6 +479,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         if (value() !== "text") throw new Error(t("cli.error.input_format"));
         break;
       case "--dangerously-skip-permissions":
+        modeSet = true;
         parsed.permissionMode = "allow-all";
         break;
       case "--fork-session":
@@ -491,7 +500,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.format = format === "text" ? "text" : "json";
         break;
       }
+      case "--settings":
+        settingsArg = value();
+        break;
       case "--permission-mode": {
+        modeSet = true;
         const raw = value();
         const mode = CLAUDE_PERMISSION_MODES[raw] ?? raw;
         if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
@@ -636,6 +649,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     promptLater = true;
   }
   if (promptLater) parsed.print = positionals.shift() ?? "-";
+  if (settingsArg !== undefined) applyClaudeSettings(parsed, settingsArg, modeSet);
   // Claude Code puts the file before the text of `--append-system-prompt`, whatever the order of the flags.
   if (appendFileText !== undefined)
     parsed.appendSystemPrompt = [appendFileText, parsed.appendSystemPrompt]
@@ -648,6 +662,41 @@ export function parseArgv(argv: string[]): ParsedArgv {
 }
 
 type LineSink = (line: string) => void;
+
+/** `--settings <file|json>` of Claude Code: the keys that a run here has a flag for. A flag of the command wins. */
+function applyClaudeSettings(parsed: ParsedArgv, raw: string, modeSet: boolean): void {
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(raw.trimStart().startsWith("{") ? raw : readFileSync(raw, "utf8"));
+  } catch (error) {
+    throw new Error(t("cli.error.invalid_settings", { detail: (error as Error).message }));
+  }
+  const strings = (list: unknown): string[] =>
+    Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : [];
+  const permissions = (typeof settings.permissions === "object" ? settings.permissions : {}) as Record<
+    string,
+    unknown
+  >;
+  parsed.allowedTools.push(...strings(permissions.allow));
+  parsed.disallowedTools.push(...strings(permissions.deny));
+  parsed.askTools.push(...strings(permissions.ask));
+  const mode = String(permissions.defaultMode);
+  const agencyMode = Object.hasOwn(CLAUDE_PERMISSION_MODES, mode) ? CLAUDE_PERMISSION_MODES[mode] : mode;
+  if (!modeSet && PERMISSION_MODES.includes(agencyMode as PermissionMode))
+    parsed.permissionMode = agencyMode as PermissionMode;
+  if (typeof settings.model === "string") parsed.model ??= settings.model;
+  const fallback = Array.isArray(settings.fallbackModel) ? settings.fallbackModel[0] : settings.fallbackModel;
+  if (typeof fallback === "string") parsed.fallbackModel ??= fallback;
+  const effort = settings.effortLevel === "ultracode" ? "xhigh" : String(settings.effortLevel);
+  if ((ThinkingLevel as readonly string[]).includes(effort)) parsed.thinking ??= effort as ThinkingLevel;
+  const used = ["$schema", "permissions", "model", "fallbackModel", "effortLevel"];
+  parsed.ignoredSettings = [
+    ...Object.keys(settings).filter((key) => !used.includes(key)),
+    ...Object.keys(permissions)
+      .filter((key) => !["allow", "deny", "ask", "defaultMode"].includes(key))
+      .map((key) => `permissions.${key}`),
+  ];
+}
 
 /** The modes of `claude --permission-mode`; `plan` changes no file, as `deny` refuses each tool above `safe`. */
 const CLAUDE_PERMISSION_MODES: Record<string, PermissionMode> = {
@@ -915,8 +964,10 @@ async function runPrintMode(
   const denyAll = parsed.disallowedTools.includes("*");
   const denyMcp = denyAll || parsed.disallowedTools.includes("mcp__*");
   const denyRules = parsed.disallowedTools.filter((rule) => rule !== "*" && rule !== "mcp__*");
-  if (parsed.allowedTools.length > 0 || denyRules.length > 0) {
-    const rules = permissionsFromRules({ allow: parsed.allowedTools, deny: denyRules });
+  if (parsed.ignoredSettings.length > 0)
+    err(t("cli.progress.settings_ignored", { keys: parsed.ignoredSettings.join(", ") }));
+  if (parsed.allowedTools.length > 0 || parsed.askTools.length > 0 || denyRules.length > 0) {
+    const rules = permissionsFromRules({ allow: parsed.allowedTools, ask: parsed.askTools, deny: denyRules });
     if (rules.skipped.length > 0)
       throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
     permissions = rules.permissions;

@@ -184,6 +184,7 @@ export const en = {
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
   "cli.error.exec_session": "exec {verb} needs a session id (or --last).",
   "cli.error.fork_needs_session": "--fork-session needs --continue, --resume or --session.",
+  "cli.error.invalid_settings": "--settings is not valid JSON or a readable file: {detail}",
   "cli.error.read_file": "{flag}: cannot read {path}: {detail}",
   "cli.error.input_format": "--input-format takes text only: give the prompt with -p or on stdin.",
   "cli.error.invalid_thinking": "--thinking must be one of: {levels}.",
@@ -290,6 +291,7 @@ export const en = {
   "cli.progress.heartbeat": ".",
   "cli.progress.retry": "Retry {attempt}: {message}",
   "cli.progress.turn_complete": "Turn complete ({reason}).",
+  "cli.progress.settings_ignored": "[settings] not used by a run here: {keys}",
   "cli.progress.worktree": "[worktree] {path} on branch {branch}",
   "cli.progress.chatgpt_plan": "Using ChatGPT plan. Manage usage: {url}",
 

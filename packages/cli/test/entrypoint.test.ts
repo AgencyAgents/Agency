@@ -1318,6 +1318,57 @@ describe("-p headless mode", () => {
     ]);
   });
 
+  test("--settings of Claude Code gives its permissions, model, fallback and effort; a flag wins", async () => {
+    const file = join(tempDir("agency-ep-settings-"), "settings.json");
+    const settings = {
+      permissions: { allow: ["Read"], deny: ["Bash(rm *)"], ask: ["Edit"], defaultMode: "acceptEdits" },
+      model: "openai/fake-1",
+      fallbackModel: ["openai/fake-2", "openai/fake-3"],
+      effortLevel: "high",
+      hooks: {},
+      env: { A: "1" },
+    };
+    writeFileSync(file, JSON.stringify(settings));
+    const parsed = parseArgv(["-p", "x", "--settings", file]);
+    expect([parsed.allowedTools, parsed.disallowedTools, parsed.askTools]).toEqual([
+      ["Read"],
+      ["Bash(rm *)"],
+      ["Edit"],
+    ]);
+    expect([parsed.permissionMode, parsed.model, parsed.fallbackModel, parsed.thinking]).toEqual([
+      "allow-edits",
+      "openai/fake-1",
+      "openai/fake-2",
+      "high",
+    ]);
+    expect(parsed.ignoredSettings).toEqual(["hooks", "env"]);
+    const flags = parseArgv([
+      "-p",
+      "x",
+      "--permission-mode",
+      "deny",
+      "--settings",
+      file,
+      "--model",
+      "openai/fake-9",
+    ]);
+    expect([flags.permissionMode, flags.model]).toEqual(["deny", "openai/fake-9"]);
+    expect(parseArgv(["-p", "x", "--settings", '{"model":"openai/inline"}']).model).toBe("openai/inline");
+    expect(() => parseArgv(["-p", "x", "--settings", "{not json"])).toThrow("--settings is not valid");
+
+    const headless = fakeRunHeadless();
+    const { deps, err } = capture();
+    expect(
+      await runEntrypoint(["-p", "x", "--settings", file], { ...baseDeps(), ...deps, ...headless }),
+    ).toBe(0);
+    expect(headless.calls[0]?.permissions).toEqual({
+      read: "allow",
+      edit: "ask",
+      bash: { "rm *": "deny" },
+    });
+    expect(err.join("\n")).toContain("not used by a run here: hooks, env");
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();
