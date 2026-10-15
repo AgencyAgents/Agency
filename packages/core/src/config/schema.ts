@@ -232,6 +232,8 @@ export const ConfigSchema = z
     compactionInstructions: z.string().optional(),
     /** Tokens of history at which a session is compacted when the window of the model is larger. Absent means 220000. */
     compactionLimit: z.number().int().positive().optional(),
+    /** True: old results of re-runnable tools stay whole in each request, where by default they become a short note. */
+    keepToolResults: z.boolean().optional(),
     trace: z
       .object({
         export: z

@@ -638,6 +638,7 @@ export async function executeTurn(
                 ? { compactionInstructions: config.compactionInstructions }
                 : {}),
               ...(config.compactionLimit ? { compactionLimit: config.compactionLimit } : {}),
+              ...(config.keepToolResults ? { keepToolResults: true } : {}),
               signal: controller.signal,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
@@ -753,6 +754,7 @@ export async function executeTurn(
                     ? { compactionInstructions: config.compactionInstructions }
                     : {}),
                   ...(config.compactionLimit ? { compactionLimit: config.compactionLimit } : {}),
+                  ...(config.keepToolResults ? { keepToolResults: true } : {}),
                   signal: controller.signal,
                   taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
                   provider: fallbackRef.provider,

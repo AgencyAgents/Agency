@@ -63,6 +63,12 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Old tool results leave the requests**: a result over 2,000 characters of a tool that can run
+  again (`read`, `bash`, `grep`, `glob`, `fetch`, `websearch`, `lsp_*`) that is over 10 model
+  calls old becomes a one-line note, in batches of 20,000 tokens decided by a replay of the
+  history, so the prompt cache holds between two batches. Replayed on a long recorded session
+  (6,354 requests): 25% fewer input tokens and 19% lower cost with cache prices. The session keeps
+  the whole results; `keepToolResults: true` turns it off.
 - **MCP servers over SSE**, the older HTTP transport that many servers still use: `type: "sse"`,
   a url that ends in `/sse`, the `url` of Gemini CLI and `agency mcp add --transport sse` connect,
   where before they were refused or failed. The endpoint that the stream names must have its origin.

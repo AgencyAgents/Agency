@@ -31,6 +31,7 @@ import {
 import type { AutoReviewer } from "./auto-review.ts";
 import { CODE_TOOL } from "./codemode.ts";
 import { type AgencyEvents, HookBlock, HookStop } from "./events.ts";
+import { pruneStaleResults } from "./prune.ts";
 import {
   compactMessages,
   countMessageTokens,
@@ -174,6 +175,8 @@ export interface RunTurnOptions {
   contextWindow?: number;
   /** `compactionLimit` of the config: the history is compacted at this size also when the window is larger. */
   compactionLimit?: number;
+  /** `keepToolResults` of the config: old results of re-runnable tools stay whole in each request. */
+  keepToolResults?: boolean;
   /** The model takes image input: images that a tool returned go to it. Absent means no. */
   vision?: boolean;
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
@@ -320,7 +323,7 @@ export async function runTurn(
               apiKey: options.apiKey,
               system: options.systemPrompt,
               ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
-              messages,
+              messages: options.keepToolResults ? messages : pruneStaleResults(messages),
               tools: toolDefs(),
               maxTokens: options.maxTokensPerRequest ?? 8192,
               thinkingLevel: options.thinkingLevel,

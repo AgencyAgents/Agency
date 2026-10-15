@@ -62,6 +62,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `plugins` | `string[]` | — | npm packages to load as plugins |
 | `compactionInstructions` | string | — | Text for the model that writes the summary of a compaction: what the summary must keep. It goes after the built-in rules and comes first where the two disagree. It has no effect on the offline summary |
 | `compactionLimit` | number | `220000` | Tokens of history at which a session is compacted when the window of the model is larger. A smaller window is compacted at 90 percent of its size |
+| `keepToolResults` | boolean | `false` | `true` sends old tool results whole in each request. By default a result over 2,000 characters of `read`, `bash`, `grep`, `glob`, `fetch`, `websearch` or an `lsp_` tool that is over 10 model calls old becomes a one-line note that names the tool, in batches of 20,000 tokens so that the prompt cache holds between two batches. On a long recorded session this sent 25 percent fewer input tokens at 19 percent lower cost with the cache. The session keeps the whole results |
 | `maxSteps` | number | — | Tool steps that one turn may take when the caller sets no limit. With no value: 100 |
 | `hooks` | `Record<event, {matcher?, hooks: {type: "command", command, timeout?}[]}[]>` | — | Shell commands that run on agent events (see Hooks) |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
