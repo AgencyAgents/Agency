@@ -63,6 +63,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **`agency usage [--by day|month|model] [--since YYYY-MM-DD] [--json]`**: the calls, tokens
+  and cost of the model calls of all workspaces, from the traces of the sessions, as ccusage
+  reports them for Claude Code.
 - **Skills as Claude Code reads them**: a skill is also the command `/<name> [arguments]`;
   `disable-model-invocation`, `user-invocable`, `when_to_use`, `${CLAUDE_SKILL_DIR}`,
   `$ARGUMENTS` and `$ARGUMENTS[N]` work; frontmatter takes quotes, `>` and `|` blocks and lists.

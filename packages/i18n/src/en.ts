@@ -202,6 +202,8 @@ export const en = {
     "No sessions to continue. A run with -p keeps a session only when it has --session <name>.",
   "cli.error.unknown_session": 'Unknown session "{id}".',
   "cli.error.session_delete_usage": "usage: agency session delete <id>",
+  "cli.error.invalid_usage_by": "--by takes day, month or model",
+  "cli.error.invalid_since": "--since takes a date as YYYY-MM-DD or YYYY-MM",
   "cli.error.auth_login_usage": "usage: agency auth login <provider>",
   "cli.error.auth_oauth_unsupported":
     'OAuth is not supported for "{provider}". Supported: anthropic, openai, google, github-copilot.',

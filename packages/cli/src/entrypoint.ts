@@ -66,7 +66,15 @@ import {
   pluginUpdateCmd,
 } from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
-import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
+import {
+  pruneCommand,
+  storageCommand,
+  type UsageGroup,
+  usageCommand,
+  usageReport,
+  whereCommand,
+  wherePaths,
+} from "./storage-commands.ts";
 import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
 
 /**
@@ -84,6 +92,8 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
+  usage [--by day|month|model] [--since YYYY-MM-DD] [--json]
+                           Tokens and cost of the model calls of all workspaces
   session list [query]     List sessions for this workspace (id, title, created, entries);
                            optional query filters by title (id fallback), case-insensitive
   session show <id>        Show session details (show, export and fork take a session's
@@ -258,6 +268,10 @@ export interface ParsedArgv {
   streamJson: boolean;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
+  /** `agency usage --by`: day, month or model. */
+  usageBy: UsageGroup | undefined;
+  /** `agency usage --since YYYY-MM-DD`. */
+  since: string | undefined;
   help: boolean;
   version: boolean;
 }
@@ -357,6 +371,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     streamJson: false,
     format: "text",
     retention: undefined,
+    usageBy: undefined,
+    since: undefined,
     help: false,
     version: false,
   };
@@ -570,6 +586,19 @@ export function parseArgv(argv: string[]): ParsedArgv {
         if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
         if (name !== "--max-total-cost") parsed.maxCost = cost;
         else parsed.maxTotalCost = cost;
+        break;
+      }
+      case "--by": {
+        const by = value();
+        if (by !== "day" && by !== "month" && by !== "model")
+          throw new Error(t("cli.error.invalid_usage_by"));
+        parsed.usageBy = by;
+        break;
+      }
+      case "--since": {
+        const since = value();
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(since)) throw new Error(t("cli.error.invalid_since"));
+        parsed.since = since;
         break;
       }
       case "--max-age-days":
@@ -1959,6 +1988,12 @@ async function dispatch(
     }
     case "where":
       return whereCmd(parsed, deps, out);
+    case "usage": {
+      const by = parsed.usageBy ?? "day";
+      const report = usageReport(envOf(deps), by, parsed.since);
+      out(parsed.format === "json" ? JSON.stringify(report, null, 2) : usageCommand(report, by));
+      return 0;
+    }
     case "storage":
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency storage [subcommand]
