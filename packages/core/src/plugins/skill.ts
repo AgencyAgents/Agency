@@ -104,6 +104,7 @@ export function parseSkillFrontmatter(text: string): {
   modelInvocable: boolean;
   userInvocable: boolean;
   allowedTools?: string[];
+  fork?: { agent?: string; model?: string };
 } {
   const split = splitFrontmatter(text);
   const { fields } = split;
@@ -122,6 +123,12 @@ export function parseSkillFrontmatter(text: string): {
   // `Read, Bash(git *)`, `Read Grep` or a YAML list: each rule is a tool name with its optional pattern.
   const rules = fields["allowed-tools"]?.match(/[A-Za-z_][\w.:-]*(?:\([^)]*\))?/g);
   if (rules) result.allowedTools = rules;
+  if (fields.context === "fork") {
+    result.fork = {
+      ...(fields.agent ? { agent: fields.agent } : {}),
+      ...(fields.model && fields.model !== "inherit" ? { model: fields.model } : {}),
+    };
+  }
   if (described !== "") {
     result.description =
       described.length > MAX_SKILL_DESCRIPTION
@@ -155,6 +162,8 @@ export interface SkillDescriptor {
   userInvocable: boolean;
   /** `allowed-tools`: rules of Claude Code that the turn which loads the skill runs with no prompt. */
   allowedTools?: string[];
+  /** `context: fork`: the skill runs in a subagent, of the type `agent` and on `model` when they are given. */
+  fork?: { agent?: string; model?: string };
 }
 
 /**
@@ -225,6 +234,7 @@ export function discoverSkills(dirs: SkillDirEntry[], logger?: Logger): SkillDes
         tier,
         modelInvocable: parsed.modelInvocable,
         userInvocable: parsed.userInvocable,
+        ...(parsed.fork ? { fork: parsed.fork } : {}),
         ...(parsed.allowedTools
           ? { allowedTools: parsed.allowedTools.map((rule) => rule.replaceAll(SKILL_DIR, skillDir)) }
           : {}),
@@ -289,6 +299,10 @@ export function skillText(skill: SkillDescriptor, args: string): string {
 
 /** A skill as the template of its `/name` command: `$ARGUMENTS[N]` becomes `$N+1` of a command. */
 export function skillCommandTemplate(skill: SkillDescriptor): string {
+  // A skill that runs in a subagent goes through the skill tool, which starts it.
+  if (skill.fork && skill.modelInvocable) {
+    return `Run the skill "${skill.name}" now with the skill tool, with the arguments: $ARGUMENTS`;
+  }
   const dir = dirname(skill.path);
   const body = skill.body
     .replaceAll(SKILL_DIR, () => dir)
@@ -319,7 +333,15 @@ export function createSkillTool(skills: SkillDescriptor[]): ToolSpec {
         return { content: `unknown skill: ${String(input.name)}. The skills are: ${names}`, isError: true };
       }
       if (skill.allowedTools) ctx.grantTools?.(skill.allowedTools);
-      return { content: skillText(skill, typeof input.arguments === "string" ? input.arguments : "") };
+      const text = skillText(skill, typeof input.arguments === "string" ? input.arguments : "");
+      // `context: fork`, as in Claude Code: a subagent runs the skill, and only its answer comes back.
+      if (skill.fork && ctx.callTool) {
+        const result = await ctx.callTool("spawn", { prompt: text, ...skill.fork });
+        if (!(result.isError && result.content.startsWith("no such tool"))) {
+          return { content: `The skill ${skill.name} ran in a subagent. Its answer:\n\n${result.content}`, isError: result.isError };
+        }
+      }
+      return { content: text };
     },
   };
 }

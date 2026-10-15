@@ -108,3 +108,54 @@ test("a skill that the model loads pre-approves its allowed-tools for the rest o
   await turn([{ name: "bash", input: { command: "npm run build" } }], ["Bash(npm *)"]);
   expect(ran).toEqual(["npm run build"]);
 });
+
+test("context: fork runs the skill in a subagent of its agent type, and the model gets only the answer", async () => {
+  const parsed = parseSkillFrontmatter(
+    "---\ncontext: fork\nagent: Explore\nmodel: inherit\n---\nFind the bug.",
+  );
+  expect(parsed.fork).toEqual({ agent: "Explore" });
+  const spawned: Array<Record<string, unknown>> = [];
+  const spawn: ToolSpec = {
+    name: "spawn",
+    description: "starts a worker",
+    inputSchema: {},
+    riskTier: "safe",
+    handler: async (input) => {
+      spawned.push(input);
+      return { content: "the bug is in parse()" };
+    },
+  };
+  const skill = createSkillTool([
+    {
+      name: "hunt",
+      path: join(tmpdir(), "hunt", "SKILL.md"),
+      description: "Hunts a bug",
+      body: "Find the bug in $ARGUMENTS.",
+      tier: "user",
+      modelInvocable: true,
+      userInvocable: true,
+      fork: { agent: "Explore" },
+    },
+  ]);
+  const result = await runTurn(
+    calls([{ name: "skill", input: { name: "hunt", arguments: "src/a.ts" } }]),
+    new Scheduler(),
+    noopHttp,
+    {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [skill, spawn],
+      model: "m",
+      apiKey: "k",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+    },
+  );
+  expect(spawned).toHaveLength(1);
+  expect(spawned[0]).toMatchObject({ agent: "Explore" });
+  expect(String(spawned[0]?.prompt)).toContain("Find the bug in src/a.ts.");
+  const answer = result.messages.flatMap((m) =>
+    m.content.flatMap((b) => (b.type === "tool_result" ? [b.content] : [])),
+  );
+  expect(answer).toEqual(["The skill hunt ran in a subagent. Its answer:\n\nthe bug is in parse()"]);
+});
