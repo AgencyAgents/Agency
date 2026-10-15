@@ -181,7 +181,7 @@ Options:
 
 Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
 --output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
---settings (its permissions, model, fallbackModel and effortLevel), --fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
+--settings (its permissions, model, fallbackModel and effortLevel), -n/--name, --resume <name>, --fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
 --json, -m, -i, --yolo (the sandbox stays), --mode json, --fork, --exclude-tools, --max-budget-usd, --effort, the permission
 modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
 --include-partial-messages, --no-session-persistence, --ephemeral, --no-session and
@@ -234,6 +234,8 @@ export interface ParsedArgv {
   strictMcpConfig: boolean;
   /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
   outputLastMessage: string | undefined;
+  /** `-n, --name <name>` of `-p` with a session: the title of that session, as Claude Code and Pi name one. */
+  name: string | undefined;
   /** `--fork-session` of `-p` with `--continue` or `--session`: the turn runs in a copy of the session. */
   forkSession: boolean;
   /** `--thinking <level>` of `-p`, as in Pi: the reasoning effort of the model. */
@@ -327,6 +329,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     tools: undefined,
     thinking: undefined,
     forkSession: false,
+    name: undefined,
     outputLastMessage: undefined,
     serverEnv: [],
     headers: [],
@@ -481,6 +484,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--dangerously-skip-permissions":
         modeSet = true;
         parsed.permissionMode = "allow-all";
+        break;
+      case "-n":
+      case "--name":
+        parsed.name = value();
         break;
       case "--fork-session":
         parsed.forkSession = true;
@@ -1064,10 +1071,19 @@ async function runPrintMode(
       sessionId = latestSessionId(store);
       if (sessionId === undefined) throw new Error(t("cli.error.no_sessions"));
     }
+    // `--resume <name>`, as in Claude Code: a value that is no session id is the title of one.
+    const ids = store.list();
+    if (!ids.includes(sessionId)) {
+      const name = sessionId;
+      sessionId = ids.find((id) => getSessionTitle(store.load(id)) === name) ?? name;
+    }
     if (parsed.forkSession) {
-      if (!store.list().includes(sessionId))
-        throw new Error(t("cli.error.unknown_session", { id: sessionId }));
+      if (!ids.includes(sessionId)) throw new Error(t("cli.error.unknown_session", { id: sessionId }));
       sessionId = await forkSession(store, sessionId);
+    }
+    if (parsed.name !== undefined && parsed.name.trim() !== "") {
+      const tip = store.latestTip(store.load(sessionId)) ?? null;
+      await store.append(sessionId, { type: "session_title", parentId: tip, title: parsed.name.trim() });
     }
 
     const client = deps.ensureClient

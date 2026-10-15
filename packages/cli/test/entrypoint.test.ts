@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, getSessionTitle, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
@@ -986,6 +986,23 @@ describe("-p headless mode", () => {
     expect((send!.params as { sessionId: string }).sessionId).toBe("target-session");
     expect((send!.params as { userText: string }).userText).toBe("new question");
     expect((send!.params as { nonInteractive: boolean }).nonInteractive).toBe(true);
+  });
+
+  test("-n names the session of the run, and --resume finds a session by its name", async () => {
+    const fake = fakeClient();
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    const deps = { ...baseDeps(), ...capture().deps, sessionsDir, ensureClient: async () => fake.client };
+    expect(
+      await runEntrypoint(
+        ["-p", "--session", "s-1", "-n", "auth work", "--model", "openai/fake-1", "a"],
+        deps,
+      ),
+    ).toBe(0);
+    expect(getSessionTitle(store.load("s-1"))).toBe("auth work");
+    expect(await runEntrypoint(["-p", "-r", "auth work", "--model", "openai/fake-1", "b"], deps)).toBe(0);
+    const sends = fake.calls.filter((c) => c.method === "session_send");
+    expect(sends.map((c) => (c.params as { sessionId: string }).sessionId)).toEqual(["s-1", "s-1"]);
   });
 
   test("--fork-session runs the turn in a copy of the session, and needs a session", async () => {
