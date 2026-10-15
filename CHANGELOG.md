@@ -350,6 +350,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A Read or Edit deny rule and the shell**: with a deny of `Read(secret.txt)`, the model
+  printed the file with `cat secret.txt` (seen live). The rule now holds for the files that a
+  shell command names (`cat`, `head`, `grep`, `sed`, `< file`; `tee`, `sed -i`, `> file`), as
+  in Claude Code.
 - **An `Edit` rule of Claude Code** held for `edit` only: a deny of `Edit(secrets/**)` let `write`
   and `notebook_edit` change those files. It now holds for each tool that edits files, and a bare
   `Read` rule for `grep` and `glob` too, as in Claude Code.

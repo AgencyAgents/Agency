@@ -341,6 +341,128 @@ export function unwrapCommand(command: string, depth = 0): string[] {
   return forms.filter((form) => form.trim() !== "");
 }
 
+/** Programs that read the files that their words name. */
+const READ_COMMANDS: ReadonlySet<string> = new Set([
+  "cat",
+  "tac",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "nl",
+  "wc",
+  "sort",
+  "uniq",
+  "cut",
+  "diff",
+  "strings",
+  "xxd",
+  "od",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "sed",
+  "awk",
+  "type",
+  "get-content",
+  "gc",
+]);
+/** Of these, the first word that is no option is a pattern or a script, unless an option gave it. */
+const PATTERN_FIRST: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "rg", "sed", "awk"]);
+const PATTERN_OPTIONS: ReadonlySet<string> = new Set(["-e", "-f", "--regexp", "--expression", "--file"]);
+/** Options of a read program that take a value in the next word: the value is no file. */
+const VALUE_OPTIONS_OF: Record<string, readonly string[]> = {
+  head: ["-n", "-c"],
+  tail: ["-n", "-c"],
+  grep: ["-e", "-f", "-m", "-A", "-B", "-C", "--regexp", "--file"],
+  egrep: ["-e", "-f", "-m", "-A", "-B", "-C"],
+  fgrep: ["-e", "-f", "-m", "-A", "-B", "-C"],
+  rg: ["-e", "-f", "-m", "-A", "-B", "-C", "-g", "-t", "--regexp", "--file"],
+  sed: ["-e", "-f", "--expression", "--file"],
+  awk: ["-f", "-v"],
+  cut: ["-d", "-f", "-c", "-b"],
+  sort: ["-k", "-t", "-o"],
+};
+
+/** The words of one simple command, with its quotes taken away. */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (ch === "\\" && i + 1 < command.length) {
+      current += command[i + 1];
+      started = true;
+      i += 1;
+    } else if (/\s/.test(ch)) {
+      if (started) words.push(current);
+      current = "";
+      started = false;
+    } else {
+      current += ch;
+      started = true;
+    }
+  }
+  if (started) words.push(current);
+  return words;
+}
+
+/**
+ * The files that a shell command line names to read or to write, best effort, so that Read and Edit deny rules hold
+ * for them as in Claude Code: the files of `cat`, `head`, `grep`... and of `< file`; of `tee`, `sed -i`, `> file`.
+ * A path is taken as the command wrote it: a `cd` earlier in the line is not followed.
+ */
+export function shellFileTargets(command: string): { reads: string[]; writes: string[] } {
+  const reads: string[] = [];
+  const writes: string[] = [];
+  for (const part of splitCommand(command).parts) {
+    for (const form of unwrapCommand(part)) {
+      const words = shellWords(form);
+      const argv: string[] = [];
+      for (let i = 0; i < words.length; i++) {
+        const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(words[i] as string);
+        if (redirect === null) {
+          argv.push(words[i] as string);
+          continue;
+        }
+        const target = redirect[3] || words[++i] || "";
+        if (target === "" || target.startsWith("&") || /^(\/dev\/null|nul)$/i.test(target)) continue;
+        (redirect[2] === "<" ? reads : writes).push(target);
+      }
+      const program = (argv[0] ?? "")
+        .replace(/^.*[\\/]/, "")
+        .replace(/\.exe$/i, "")
+        .toLowerCase();
+      const files: string[] = [];
+      let patternGiven = !PATTERN_FIRST.has(program);
+      for (let i = 1; i < argv.length; i++) {
+        const word = argv[i] as string;
+        if (PATTERN_OPTIONS.has(word)) patternGiven = true;
+        if (VALUE_OPTIONS_OF[program]?.includes(word)) i += 1;
+        else if (word.startsWith("-")) continue;
+        else if (!patternGiven) patternGiven = true;
+        else files.push(word);
+      }
+      if (program === "tee") writes.push(...files);
+      else if (READ_COMMANDS.has(program)) {
+        reads.push(...files);
+        if (program === "sed" && argv.some((word) => /^-i/.test(word) || word === "--in-place"))
+          writes.push(...files);
+      }
+    }
+  }
+  return { reads: [...new Set(reads)], writes: [...new Set(writes)] };
+}
+
 /**
  * Compiles a glob into an anchored regex source. Path mode treats `*` as
  * within-segment (a slash-crossing wildcard is the double-star form), a
@@ -638,6 +760,12 @@ export class PermissionsGate implements ToolPolicy {
 
   private ownDecisionFor(request: ToolCallPolicyRequest): Decision {
     if (this.outsideItemScope(request)) return "deny";
+    if (
+      request.command !== undefined &&
+      isCommandPatternTool(request.tool) &&
+      this.deniesShellFiles(request.command)
+    )
+      return "deny";
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
       if (this.options.absentToolsDenied) return "deny";
@@ -759,6 +887,18 @@ export class PermissionsGate implements ToolPolicy {
    * auto-deny policy: `.env` files are never readable by default, even when
    * the tool's riskTier is `safe` and no explicit permission is configured.
    */
+  /** A read or edit deny rule that holds for a file that a shell command names. */
+  private deniesShellFiles(command: string): boolean {
+    const denied = (tool: string, path: string): boolean =>
+      this.engine.evaluate({ tool, path: relativeWorkspacePath(this.options.workspaceRoot, path) }) ===
+      "deny";
+    const { reads, writes } = shellFileTargets(command);
+    return (
+      reads.some((path) => denied("read", path)) ||
+      writes.some((path) => denied("edit", path) || denied("write", path))
+    );
+  }
+
   private isEnvRead(request: ToolCallPolicyRequest): boolean {
     if (!request.path) return false;
     if (!isPathPatternTool(request.tool)) return false;
