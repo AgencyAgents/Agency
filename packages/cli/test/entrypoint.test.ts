@@ -1080,6 +1080,8 @@ describe("-p headless mode", () => {
     expect(headless.calls[0]?.permissions).toEqual({
       bash: { "git *": "allow", "rm *": "deny" },
       read: "allow",
+      grep: "allow",
+      glob: "allow",
     });
     const session = fakeClient();
     await runEntrypoint(
@@ -1363,7 +1365,11 @@ describe("-p headless mode", () => {
     ).toBe(0);
     expect(headless.calls[0]?.permissions).toEqual({
       read: "allow",
+      grep: "allow",
+      glob: "allow",
       edit: "ask",
+      write: "ask",
+      notebook_edit: "ask",
       bash: { "rm *": "deny" },
     });
     expect(err.join("\n")).toContain("not used by a run here: hooks, env");

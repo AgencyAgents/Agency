@@ -40,11 +40,21 @@ export function permissionsFromRules(lists: { allow?: unknown; ask?: unknown; de
         skipped.push(rule);
         continue;
       }
-      const map = maps[tool] ?? {};
-      maps[tool] = map;
-      // A rule that comes again moves to the end, so the later list still wins.
-      delete map[key];
-      map[key] = decision;
+      // As in Claude Code, an Edit rule holds for each tool that edits files, and a bare Read rule for grep and glob.
+      const targets =
+        tool === "edit"
+          ? ["edit", "write", "notebook_edit"]
+          : tool === "read" && key === "**"
+            ? ["read", "grep", "glob"]
+            : [tool];
+      for (const target of targets) {
+        const targetKey = target === tool || isPathPatternTool(target) ? key : "*";
+        const map = maps[target] ?? {};
+        maps[target] = map;
+        // A rule that comes again moves to the end, so the later list still wins.
+        delete map[targetKey];
+        map[targetKey] = decision;
+      }
     }
   }
   const permissions: Record<string, ToolPermissionValue> = {};

@@ -26,7 +26,11 @@ test("Claude Code permission rules become the permissions map here, and deny win
   expect(permissions).toEqual({
     bash: { "git status": "allow", "npm run test *": "allow", "git push *": "ask", "rm *": "deny" },
     read: { "**": "allow", ".env": "deny" },
+    grep: "allow",
+    glob: "allow",
     edit: { "src/**": "allow" },
+    write: { "src/**": "allow" },
+    notebook_edit: { "src/**": "allow" },
     fetch: "allow",
     gh_create_issue: "allow",
   });
@@ -43,6 +47,22 @@ test("Claude Code permission rules become the permissions map here, and deny win
   expect(decide("read", { path: "src/deep/a.ts" })).toBe("allow");
   expect(decide("edit", { path: "src/a.ts" })).toBe("allow");
   expect(decide("edit", { path: "README.md" })).toBe("ask");
+});
+
+test("an Edit rule holds for every tool that edits files, and a bare Read rule for grep and glob, as in Claude Code", () => {
+  const { permissions } = permissionsFromRules({ deny: ["Edit(secrets/**)", "Read"] });
+  const gate = new PermissionsGate({ permissions, workspaceRoot: process.cwd() });
+  for (const tool of ["edit", "write", "notebook_edit"]) {
+    expect(gate.decisionFor({ tool, riskTier: "dangerous", path: "secrets/key.txt" })).toBe("deny");
+    expect(gate.decisionFor({ tool, riskTier: "dangerous", path: "src/a.ts" })).not.toBe("deny");
+  }
+  expect(["read", "grep", "glob"].map((tool) => gate.toolOffered(tool, "safe"))).toEqual([
+    false,
+    false,
+    false,
+  ]);
+  // A path of Read cannot hold for grep and glob here: they take a folder, and the gate matches no path for them.
+  expect(permissionsFromRules({ deny: ["Read(.env)"] }).permissions).toEqual({ read: { ".env": "deny" } });
 });
 
 test("rules merged on top of a map come after its rules, so they win", () => {
@@ -90,9 +110,18 @@ test("the settings of Claude Code give their rules: the user's always, the works
     expect(loadClaudePermissions(ws, true)).toEqual({
       bash: { "npm *": "allow", "npm publish *": "deny" },
       read: "allow",
+      grep: "allow",
+      glob: "allow",
       edit: "ask",
+      write: "ask",
+      notebook_edit: "ask",
     });
-    expect(loadClaudePermissions(ws, false)).toEqual({ bash: { "npm *": "allow" }, read: "allow" });
+    expect(loadClaudePermissions(ws, false)).toEqual({
+      bash: { "npm *": "allow" },
+      read: "allow",
+      grep: "allow",
+      glob: "allow",
+    });
   } finally {
     process.env.AGENCY_AGENTS_HOME = before;
     rmSync(home, { recursive: true, force: true });

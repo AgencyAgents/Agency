@@ -344,6 +344,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **An `Edit` rule of Claude Code** held for `edit` only: a deny of `Edit(secrets/**)` let `write`
+  and `notebook_edit` change those files. It now holds for each tool that edits files, and a bare
+  `Read` rule for `grep` and `glob` too, as in Claude Code.
 - **A blank line on the stdout of a stdio MCP server**: the reader of its messages
   looped on it for ever, and the daemon stopped answering every run of the workspace.
   Seen with a server that printed a help text and exited.
