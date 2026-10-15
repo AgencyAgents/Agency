@@ -250,7 +250,7 @@ describe("PermissionsGate", () => {
     const verdicts = async (run: PermissionsGate) => {
       const capped = agent.withCeiling(run);
       return {
-        bash: await capped.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+        bash: await capped.check({ tool: "bash", command: "npm test", riskTier: "dangerous" }, undefined),
         write: await capped.check({ tool: "write", path: "a.txt", riskTier: "moderate" }, undefined),
         read: await capped.check({ tool: "read", path: "a.txt", riskTier: "safe" }, undefined),
         edit: await capped.check({ tool: "edit", path: "a.txt", riskTier: "moderate" }, undefined),
@@ -260,7 +260,7 @@ describe("PermissionsGate", () => {
       new PermissionsGate({ permissions, workspaceRoot: root });
 
     expect({
-      uncapped: await agent.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+      uncapped: await agent.check({ tool: "bash", command: "npm test", riskTier: "dangerous" }, undefined),
       defaultMode: await verdicts(run()),
       allowEdits: await verdicts(run().withMode("allow-edits")),
       allowAll: await verdicts(run().withMode("allow-all")),

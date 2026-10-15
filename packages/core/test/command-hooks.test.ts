@@ -351,7 +351,7 @@ const noopHttp: HttpClient = { fetch: async () => new Response() };
 const usage = { inputTokens: 1, outputTokens: 1 };
 
 /** Calls the tool `calls` times, then answers with text for each later request. */
-function scripted(calls: number): { adapter: ProviderAdapter; requests: () => number } {
+function scripted(calls: number, command = "ls"): { adapter: ProviderAdapter; requests: () => number } {
   let n = 0;
   return {
     requests: () => n,
@@ -361,7 +361,7 @@ function scripted(calls: number): { adapter: ProviderAdapter; requests: () => nu
         n += 1;
         if (n <= calls) {
           yield { type: "tool_call_start", id: `c${n}`, name: "bash" };
-          yield { type: "tool_call_delta", id: `c${n}`, inputJsonDelta: '{"command":"ls"}' };
+          yield { type: "tool_call_delta", id: `c${n}`, inputJsonDelta: JSON.stringify({ command }) };
           yield { type: "tool_call_end", id: `c${n}` };
           yield { type: "message_stop", stopReason: "tool_use", usage };
         } else {
@@ -735,7 +735,7 @@ describe("hooks in the loop", () => {
       const ran: string[] = [];
       let reviewed = 0;
       let asked = 0;
-      const result = await runTurn(scripted(1).adapter, new Scheduler(), noopHttp, {
+      const result = await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
         identity: { type: "user" },
         capabilities: FULL_CAPABILITIES,
         systemPrompt: "sys",
@@ -752,7 +752,7 @@ describe("hooks in the loop", () => {
         }),
         reviewApproval: async (request, transcript) => {
           reviewed += 1;
-          expect(request).toMatchObject({ tool: "bash", command: "ls" });
+          expect(request).toMatchObject({ tool: "bash", command: "npm test" });
           expect(transcript?.[0]).toMatchObject({ role: "user" });
           return c.verdict;
         },
@@ -773,7 +773,7 @@ describe("hooks in the loop", () => {
         hook_event_name: "PermissionDenied",
         session_id: "s1",
         tool_name: "bash",
-        tool_input: { command: "ls" },
+        tool_input: { command: "npm test" },
         tool_use_id: "c1",
         reason: "the user said no shell",
       });
@@ -789,7 +789,7 @@ describe("hooks in the loop", () => {
     };
     expect(await gate.check({ tool: "write", riskTier: "moderate", path: "a.txt" }, undefined)).toBe("allow");
     const ran: string[] = [];
-    await runTurn(scripted(1).adapter, new Scheduler(), noopHttp, {
+    await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
       identity: { type: "user" },
       capabilities: FULL_CAPABILITIES,
       systemPrompt: "sys",

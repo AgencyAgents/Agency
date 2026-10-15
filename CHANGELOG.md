@@ -63,6 +63,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Read-only shell commands run without a prompt**, as in Claude Code: `ls`, `cat`, `head`,
+  `grep`, `find`, `wc`, `diff`, `cd`, `git status`, `git diff`, `git log` and similar, on
+  files of the workspace. Before, `-p` in `ask` mode refused even `ls`. An absolute path, `..`,
+  `~`, `$`, an unquoted glob, a `.env` file, a redirect to a file, recursive `grep`, `git` after
+  `cd`, or an `ask` or `deny` pattern for the command still asks.
 - **PDFs**: `read` attaches a PDF, as Claude Code reads one: a document for Anthropic, a file
   for the Responses API, and a file for OpenRouter, parsed to text with its free engine for
   any model. `-p --image <file>.pdf` sends one with the prompt.

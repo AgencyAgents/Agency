@@ -472,6 +472,74 @@ export function shellFileTargets(command: string): { reads: string[]; writes: st
   return { reads: [...new Set(reads)], writes: [...new Set(writes)] };
 }
 
+/** Programs that only read and print, after the read-only set of Claude Code; `sed`, `awk`, `uniq` and `xxd` can write. */
+const READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  ..."ls dir cat echo pwd head tail grep egrep fgrep rg find wc which diff stat du cd file tree sort cut".split(
+    " ",
+  ),
+  ..."nl tac basename dirname realpath strings od true git".split(" "),
+]);
+/** Options with which a program of the set writes a file, runs a command, or reads hidden files such as `.env`. */
+const UNSAFE_OPTIONS: Record<string, RegExp> = {
+  find: /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/,
+  sort: /^(-[a-zA-Z]*o|--output|--compress-program)/,
+  rg: /^(--pre|--hidden|--no-ignore|-[a-zA-Z]*[u.])/,
+  grep: /^(-[a-zA-Z]*[rRd]|--recursive|--dereference-recursive|--directories)/,
+  egrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
+  fgrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
+  diff: /^(-[a-zA-Z]*r|--recursive)/,
+  file: /^(-[a-zA-Z]*[mf]|--magic-file|--files-from)/,
+  tree: /^-[a-zA-Z]*o/,
+  git: /^(--output|--ext-diff|--open-files-in-pager|-[a-zA-Z]*O)/,
+};
+const READ_ONLY_GIT: ReadonlySet<string> = new Set(
+  "status diff log show rev-parse ls-files blame describe shortlog grep branch".split(" "),
+);
+const GIT_BRANCH_LIST = /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current)$/;
+
+/**
+ * True for a command line that only reads files of the workspace, so it can run without a prompt as in Claude Code.
+ * Text this check cannot read for sure asks: `$`, quotes of PowerShell, an absolute path, `~`, `..`, a `.env` file.
+ */
+export function isReadOnlyCommand(command: string): boolean {
+  // ponytail: an allowlist of characters, not a parser; `\` and `$` ask even where the shell would read them as text.
+  if (command.length > 10_000 || /[$`(){}~\\!#@]/.test(command)) return false;
+  const { parts, dynamic } = splitCommand(command);
+  if (dynamic || parts.length === 0) return false;
+  const programs = new Set<string>();
+  for (const part of parts) {
+    const argv: string[] = [];
+    const words = shellWords(part);
+    for (let i = 0; i < words.length; i++) {
+      const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(words[i] as string);
+      if (redirect === null) argv.push(words[i] as string);
+      else {
+        const target = redirect[3] || words[++i] || "";
+        if (redirect[2] === "<") argv.push(target);
+        else if (!/^(&\d|\/dev\/null|nul)$/i.test(target)) return false;
+      }
+    }
+    const program = (argv[0] ?? "").toLowerCase();
+    if (!READ_ONLY_PROGRAMS.has(program)) return false;
+    programs.add(program);
+    const args = argv.slice(1);
+    if (args.some((arg) => UNSAFE_OPTIONS[program]?.test(arg))) return false;
+    // A path out of the workspace, or a `.env` file, which the read tool does not give by default either.
+    const outside = (word: string): boolean =>
+      /^([/~]|[A-Za-z]:)/.test(word) || /(^|\/)\.\.(\/|$)/.test(word) || /(^|\/)\.env/.test(word);
+    if (args.some((arg) => outside(arg) || outside(arg.slice(arg.indexOf("=") + 1)))) return false;
+    // An unquoted glob can expand to `-delete` or, in PowerShell, `*env` to `.env`.
+    if (/[*?[]/.test(part.replace(/'[^']*'|"[^"]*"/g, ""))) return false;
+    if (program === "git") {
+      const sub = args[0] ?? "";
+      if (!READ_ONLY_GIT.has(sub)) return false;
+      if (sub === "branch" && !args.slice(1).every((arg) => GIT_BRANCH_LIST.test(arg))) return false;
+    }
+  }
+  // git in another folder can run the hooks of that folder.
+  return !(programs.has("cd") && programs.has("git"));
+}
+
 /**
  * Compiles a glob into an anchored regex source. Path mode treats `*` as
  * within-segment (a slash-crossing wildcard is the double-star form), a
@@ -781,6 +849,7 @@ export class PermissionsGate implements ToolPolicy {
       if (ORCHESTRATION_TOOLS.has(request.tool) && this.workspaceAllowsOrchestration()) return "allow";
       const decision = this.defaultFor(request.riskTier);
       if (decision === "allow" && this.isEnvRead(request)) return "deny";
+      if (decision === "ask" && this.readOnlyShell(request)) return "allow";
       return decision;
     }
     if (typeof entry === "string") {
@@ -798,7 +867,18 @@ export class PermissionsGate implements ToolPolicy {
     }
     const decision = this.engine.evaluate(subject);
     if (decision === "allow" && this.isEnvRead(request)) return "deny";
+    if (decision === "ask" && this.readOnlyShell(request)) return "allow";
     return decision;
+  }
+
+  /** A read-only command (`isReadOnlyCommand`) with no part that an ask or deny pattern names, as in Claude Code. */
+  private readOnlyShell(request: ToolCallPolicyRequest): boolean {
+    if (request.command === undefined || !isCommandPatternTool(request.tool)) return false;
+    if (!isReadOnlyCommand(request.command)) return false;
+    return splitCommand(request.command).parts.every((part) => {
+      const verdict = this.engine.evaluateWithMatch({ tool: request.tool, command: part });
+      return verdict.decision === "allow" || verdict.matched?.commandPattern === undefined;
+    });
   }
 
   private outsideItemScope(request: ToolCallPolicyRequest): boolean {
@@ -890,12 +970,6 @@ export class PermissionsGate implements ToolPolicy {
     return response === "reject" ? "deny" : "allow";
   }
 
-  /**
-   * Returns true when the request is a path-scoped read of a `.env` file that
-   * has no explicit allow in the permissions config. This implements the
-   * auto-deny policy: `.env` files are never readable by default, even when
-   * the tool's riskTier is `safe` and no explicit permission is configured.
-   */
   /** A read or edit deny rule that holds for a file that a shell command names. */
   private deniesShellFiles(command: string): boolean {
     const denied = (tool: string, path: string): boolean =>
@@ -908,6 +982,12 @@ export class PermissionsGate implements ToolPolicy {
     );
   }
 
+  /**
+   * Returns true when the request is a path-scoped read of a `.env` file that
+   * has no explicit allow in the permissions config. This implements the
+   * auto-deny policy: `.env` files are never readable by default, even when
+   * the tool's riskTier is `safe` and no explicit permission is configured.
+   */
   private isEnvRead(request: ToolCallPolicyRequest): boolean {
     if (!request.path) return false;
     if (!isPathPatternTool(request.tool)) return false;

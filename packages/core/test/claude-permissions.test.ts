@@ -43,7 +43,8 @@ test("Claude Code permission rules become the permissions map here, and deny win
   expect(decide("bash", { command: "npm run test -- --watch" })).toBe("allow");
   expect(decide("bash", { command: "git push origin dev" })).toBe("ask");
   expect(decide("bash", { command: "rm -rf build" })).toBe("deny");
-  expect(decide("bash", { command: "ls" })).toBe("ask");
+  expect(decide("bash", { command: "npm install" })).toBe("ask");
+  expect(decide("bash", { command: "ls" })).toBe("allow");
   expect(decide("read", { path: "src/deep/a.ts" })).toBe("allow");
   expect(decide("edit", { path: "src/a.ts" })).toBe("allow");
   expect(decide("edit", { path: "README.md" })).toBe("ask");
