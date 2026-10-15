@@ -338,7 +338,10 @@ export function createSkillTool(skills: SkillDescriptor[]): ToolSpec {
       if (skill.fork && ctx.callTool) {
         const result = await ctx.callTool("spawn", { prompt: text, ...skill.fork });
         if (!(result.isError && result.content.startsWith("no such tool"))) {
-          return { content: `The skill ${skill.name} ran in a subagent. Its answer:\n\n${result.content}`, isError: result.isError };
+          return {
+            content: `The skill ${skill.name} ran in a subagent. Its answer:\n\n${result.content}`,
+            isError: result.isError,
+          };
         }
       }
       return { content: text };
