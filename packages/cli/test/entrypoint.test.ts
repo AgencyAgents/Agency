@@ -971,6 +971,52 @@ describe("-p headless mode", () => {
     expect((send!.params as { nonInteractive: boolean }).nonInteractive).toBe(true);
   });
 
+  test("--fork-session runs the turn in a copy of the session, and needs a session", async () => {
+    const fake = fakeClient();
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    await store.append("base", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [{ type: "text", text: "first" }] },
+    });
+    const { out, deps } = capture();
+    const argv = [
+      "-p",
+      "-r",
+      "base",
+      "--fork-session",
+      "--model",
+      "openai/fake-1",
+      "--output-format",
+      "json",
+      "next",
+    ];
+    expect(
+      await runEntrypoint(argv, {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir,
+        ensureClient: async () => fake.client,
+      }),
+    ).toBe(0);
+    const forkId = JSON.parse(out.join("")).session_id as string;
+    expect(forkId).toStartWith("base-fork-");
+    const send = fake.calls.find((c) => c.method === "session_send");
+    expect((send?.params as { sessionId?: string } | undefined)?.sessionId).toBe(forkId);
+    expect(store.load(forkId)).toHaveLength(1);
+    expect(store.load("base")).toHaveLength(1);
+    expect(() => parseArgv(["-p", "x", "--fork-session"])).not.toThrow();
+    const bad = capture();
+    expect(
+      await runEntrypoint(["-p", "x", "--model", "openai/fake-1", "--fork-session"], {
+        ...baseDeps(),
+        ...bad.deps,
+      }),
+    ).toBe(1);
+    expect(bad.err.join("\n")).toContain("--fork-session needs");
+  });
+
   test("--permission-mode parses, defaults to ask, and reaches the headless call", async () => {
     expect(parseArgv(["-p", "hi"]).permissionMode).toBe("ask");
     expect(parseArgv(["-p", "hi", "--permission-mode", "allow-edits"]).permissionMode).toBe("allow-edits");

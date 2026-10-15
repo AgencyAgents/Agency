@@ -181,7 +181,7 @@ Options:
 
 Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
 --output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
---system-prompt-file, --append-system-prompt-file, --max-budget-usd, --effort, the permission
+--fork-session, --system-prompt-file, --append-system-prompt-file, --max-budget-usd, --effort, the permission
 modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
 --include-partial-messages, --no-session-persistence and --skip-git-repo-check change nothing.
 
@@ -228,6 +228,8 @@ export interface ParsedArgv {
   strictMcpConfig: boolean;
   /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
   outputLastMessage: string | undefined;
+  /** `--fork-session` of `-p` with `--continue` or `--session`: the turn runs in a copy of the session. */
+  forkSession: boolean;
   /** `--thinking <level>` of `-p`, as in Pi: the reasoning effort of the model. */
   thinking: ThinkingLevel | undefined;
   /** `--tools <names>` of `-p`: the built-in tools of the run, as Claude Code names them; `default` is all. */
@@ -318,6 +320,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     fallbackModel: undefined,
     tools: undefined,
     thinking: undefined,
+    forkSession: false,
     outputLastMessage: undefined,
     serverEnv: [],
     headers: [],
@@ -429,6 +432,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--dangerously-skip-permissions":
         parsed.permissionMode = "allow-all";
+        break;
+      case "--fork-session":
+        parsed.forkSession = true;
         break;
       case "--no-tools":
         parsed.tools = "";
@@ -781,6 +787,14 @@ function reportTurn<T extends RunTurnRpcResult>(
   return failed ? 1 : 0;
 }
 
+/** Copies a session to a new id and returns the id: `session fork`, and `-p --fork-session`. */
+async function forkSession(store: SessionStore, id: string): Promise<string> {
+  const forkId = `${id}-fork-${Date.now()}`;
+  store.create(forkId);
+  for (const entry of store.load(id)) await store.append(forkId, entry);
+  return forkId;
+}
+
 /** Most recently appended session: the one `--continue` resumes. Ties break
  *  by readdir order; an empty session file sorts oldest. */
 function latestSessionId(store: SessionStore): string | undefined {
@@ -934,6 +948,9 @@ async function runPrintMode(
   if (parsed.goal !== undefined && !parsed.continueLast && parsed.session === undefined) {
     throw new Error(t("cli.error.goal_needs_session"));
   }
+  if (parsed.forkSession && !parsed.continueLast && parsed.session === undefined) {
+    throw new Error(t("cli.error.fork_needs_session"));
+  }
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
       bus: deps.bus ?? new EventBus(),
@@ -942,6 +959,11 @@ async function runPrintMode(
     if (sessionId === undefined) {
       sessionId = latestSessionId(store);
       if (sessionId === undefined) throw new Error(t("cli.error.no_sessions"));
+    }
+    if (parsed.forkSession) {
+      if (!store.list().includes(sessionId))
+        throw new Error(t("cli.error.unknown_session", { id: sessionId }));
+      sessionId = await forkSession(store, sessionId);
     }
 
     const client = deps.ensureClient
@@ -1310,12 +1332,7 @@ async function runSessionCmd(
       err(t("cli.error.unknown_session", { id }));
       return 1;
     }
-    const forkId = `${id}-fork-${Date.now()}`;
-    const entries = store.load(id);
-    store.create(forkId);
-    for (const entry of entries) {
-      await store.append(forkId, entry);
-    }
+    const forkId = await forkSession(store, id);
     out(
       parsed.format === "json"
         ? JSON.stringify({ forkId, sourceId: id }, null, 2)
