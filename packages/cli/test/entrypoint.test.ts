@@ -1156,7 +1156,9 @@ describe("-p headless mode", () => {
     const argv = ["-p", "--model", "openai/fake-1", "--output-format", "json", "say hi"];
     expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
     expect(headless.calls[0]?.prompt).toBe("say hi");
-    expect(JSON.parse(out.join("\n")).stopReason).toBe("end_turn");
+    const payload = JSON.parse(out.join("\n"));
+    expect(payload).toMatchObject({ type: "result", subtype: "success", is_error: false, num_turns: 1 });
+    expect([payload.result, payload.stopReason]).toEqual(["hi from the fake daemon", "end_turn"]);
   });
 
   test("--fallback-model reaches the turn", async () => {

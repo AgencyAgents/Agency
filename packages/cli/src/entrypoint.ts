@@ -725,13 +725,30 @@ function reportTurn<T extends RunTurnRpcResult>(
       "structuredOutput" in result ? JSON.stringify(result.structuredOutput) : assistantText(result.messages);
     writeFileSync(resolve(parsed.outputLastMessage), `${answer}\n`);
   }
-  // The last line of a stream: one line, like each event before it.
-  if (parsed.streamJson) out(JSON.stringify({ type: "result", ...result }));
-  else printJsonOrText(out, parsed.format, result, assistantText(result.messages));
-  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
   // A run that the cost limit cut is not finished: a script must not read it as success.
+  const failed = result.stopReason === "error" || result.error !== undefined || result.budgetExceeded;
+  const text = assistantText(result.messages);
+  // The fields of `claude -p --output-format json` come first: a script for Claude Code reads `.result`.
+  const payload = {
+    type: "result",
+    subtype: !failed
+      ? "success"
+      : result.error?.code === "iteration_limit"
+        ? "error_max_turns"
+        : "error_during_execution",
+    is_error: failed,
+    result: text,
+    num_turns: result.messages.filter((message) => message.role === "assistant").length,
+    ...("sessionId" in result ? { session_id: result.sessionId } : {}),
+    ...(result.usage?.costUsd === undefined ? {} : { total_cost_usd: result.usage.costUsd }),
+    ...result,
+  };
+  // The last line of a stream: one line, like each event before it.
+  if (parsed.streamJson) out(JSON.stringify(payload));
+  else printJsonOrText(out, parsed.format, payload, text);
+  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
   if (result.budgetExceeded && parsed.format === "text") err(t("cli.error.budget_exceeded"));
-  return result.stopReason === "error" || result.error || result.budgetExceeded ? 1 : 0;
+  return failed ? 1 : 0;
 }
 
 /** Most recently appended session: the one `--continue` resumes. Ties break
