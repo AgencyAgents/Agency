@@ -164,11 +164,14 @@ export function foreignHookPaths(workspaceRoot: string): string[] {
   return SOURCES.map(([parts]) => join(workspaceRoot, ...parts));
 }
 
-/** The hooks that other agents keep in a workspace: Claude Code, Codex, Cursor and Gemini CLI, in that order. */
-export function loadForeignHooks(workspaceRoot: string, warn: Warn = () => {}): CommandHooks {
-  const sets: CommandHooks[] = [];
+/** The hooks of each hook file of another agent under `root` (a workspace, or the home folder for those of the user). */
+export function foreignHookFiles(
+  root: string,
+  warn: Warn = () => {},
+): Array<{ file: string; hooks: CommandHooks }> {
+  const out: Array<{ file: string; hooks: CommandHooks }> = [];
   for (const [parts, read] of SOURCES) {
-    const file = join(workspaceRoot, ...parts);
+    const file = join(root, ...parts);
     if (!existsSync(file)) continue;
     const errors: unknown[] = [];
     const raw = parseJsonc(readFileSync(file, "utf8"), errors as never, { allowTrailingComma: true });
@@ -176,7 +179,12 @@ export function loadForeignHooks(workspaceRoot: string, warn: Warn = () => {}): 
       warn(`hook file ${file} is not valid JSON: skipped`);
       continue;
     }
-    sets.push(read(record(raw), file, warn));
+    out.push({ file, hooks: read(record(raw), file, warn) });
   }
-  return mergeCommandHooks(...sets);
+  return out;
+}
+
+/** The hooks that other agents keep in a workspace: Claude Code, Codex, Cursor and Gemini CLI, in that order. */
+export function loadForeignHooks(workspaceRoot: string, warn: Warn = () => {}): CommandHooks {
+  return mergeCommandHooks(...foreignHookFiles(workspaceRoot, warn).map(({ hooks }) => hooks));
 }

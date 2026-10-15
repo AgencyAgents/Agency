@@ -63,6 +63,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **`agency import`: what you set up in other agents, with one question per set**. It finds
+  the MCP servers of the user files of 19 clients, the user hooks of Claude Code, Codex, Cursor
+  and Gemini CLI (with the `env` of the Claude Code settings, which those hooks get), the plugins
+  that Claude Code installed, and the user instructions and code plugins of other agents, and
+  shows each set (each hook with its command) before it asks. `--yes` imports all, `--dry-run`
+  only shows; a set that is imported already is not asked again. `agency onboard` asks the same
+  questions, and bare `agency` names the command when it finds something. Before, the user hooks
+  of `~/.claude/settings.json` did not load at all. Settings with no counterpart here (`model`,
+  `permissions.defaultMode`) are named.
 - **The plugins of a Claude Code user come over in one command**: `agency plugin sync` installs
   each plugin that `enabledPlugins` of `~/.claude/settings.json` turns on, from the copy that
   Claude Code installed, with no download, and `--scope user` installs any plugin for the user.

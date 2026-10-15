@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { dataDir, loadConfig, updateGlobalConfig } from "@agency/core";
+import { configDir, dataDir, loadConfig, updateGlobalConfig } from "@agency/core";
 import type { TrustStore } from "@agency/guard";
 import { createFileTrustStore } from "@agency/guard";
 import { t } from "@agency/i18n";
 import type { HttpClient } from "@agency/net";
 import { createKeychain, type KeychainBackend, type ModelInfo } from "@agency/providers";
 import { ConnectError, createHttpValidator, runConnectFlow } from "./connect.ts";
+import { harnessImportCmd, scanHarnesses } from "./import-commands.ts";
 import { listProviders } from "./providers-list.ts";
 
 /**
@@ -110,6 +111,17 @@ export async function runOnboarding(options: OnboardingOptions): Promise<Onboard
       out(t("onboarding.trust_denied"));
     }
   }
+
+  // What the user set up in other agents: each set is imported only on a yes.
+  if (scanHarnesses(options.configDir ?? configDir(env), env).length > 0)
+    await harnessImportCmd({
+      configDir: options.configDir ?? configDir(env),
+      env,
+      yes: false,
+      dryRun: false,
+      confirm: (question) => options.prompter.confirm(question),
+      out,
+    });
 
   out(t("onboarding.ready"));
   return { completed: true, connectedProvider, model, trusted };

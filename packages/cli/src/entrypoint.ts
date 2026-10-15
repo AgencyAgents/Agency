@@ -7,6 +7,7 @@ import {
   CODE_COMMAND,
   type Config,
   cacheDir,
+  configDir,
   dataDir,
   EventBus,
   getSessionTitle,
@@ -56,6 +57,7 @@ import { imageMimeFor, loadMcpConfigArg } from "@agency/tools";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
+import { harnessImportCmd, scanHarnesses } from "./import-commands.ts";
 import { mcpCmd, mcpServe } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
 import {
@@ -93,6 +95,8 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
+  import [--yes|--dry-run]  Find the MCP servers, hooks and plugins of other agents
+                           (Claude Code, Codex, Cursor, Gemini CLI, ...) and import them
   usage [--by day|month|model] [--since YYYY-MM-DD] [--json]
                            Tokens and cost of the model calls of all workspaces
   session list [query]     List sessions for this workspace (id, title, created, entries);
@@ -222,6 +226,9 @@ export interface ParsedArgv {
   device: boolean;
   overwrite: boolean;
   rollback: boolean;
+  /** `agency import --yes` imports all; `--dry-run` only shows. */
+  yes: boolean;
+  dryRun: boolean;
   images: string[];
   /** The `--arg key=value` pairs of `workflow run`, as written. */
   workflowArgs: string[];
@@ -355,6 +362,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     scope: undefined,
     overwrite: false,
     rollback: false,
+    yes: false,
+    dryRun: false,
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
@@ -670,6 +679,13 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--rollback":
         parsed.rollback = true;
+        break;
+      case "--yes":
+      case "-y":
+        parsed.yes = true;
+        break;
+      case "--dry-run":
+        parsed.dryRun = true;
         break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
@@ -1999,10 +2015,23 @@ async function dispatch(
       out(t("cli.health.providers", { connected: String(connectedCount), total: String(providerCount) }));
       out(t("cli.health.sessions", { count: String(sessionCount) }));
       out(t("cli.health.hint"));
+      if (scanHarnesses(deps.configDir ?? configDir(env), env).length > 0)
+        out("Other agents have MCP servers, hooks or plugins that Agency can use: run agency import.");
       return 0;
     }
     case "where":
       return whereCmd(parsed, deps, out);
+    case "import": {
+      const prompter = process.stdin.isTTY ? createTerminalOnboardingPrompter() : undefined;
+      return harnessImportCmd({
+        configDir: deps.configDir ?? configDir(envOf(deps)),
+        env: envOf(deps),
+        yes: parsed.yes,
+        dryRun: parsed.dryRun,
+        confirm: prompter?.confirm,
+        out,
+      });
+    }
     case "usage": {
       const by = parsed.usageBy ?? "day";
       const report = usageReport(envOf(deps), by, parsed.since);

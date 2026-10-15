@@ -54,13 +54,19 @@ function importCmd(options: {
     out(t("cli.mcp.import_empty", { source, file: imported.file }));
     return 0;
   }
-  // The file can hold keys of the servers: only the user can read it.
-  const dir = join(options.configDir, "mcp");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const text = `${JSON.stringify({ mcpServers: imported.servers }, null, 2)}\n`;
-  writeFileSync(join(dir, `${source}.json`), text, { mode: 0o600 });
+  writeMcpImport(options.configDir, source, imported.servers);
   out(t("cli.mcp.imported", { source, file: imported.file, names: names.join(", ") }));
   return 0;
+}
+
+/** Writes the imported servers of a client to `mcp/<client>.json` of the config folder. */
+export function writeMcpImport(configDir: string, source: string, servers: Record<string, unknown>): string {
+  // The file can hold keys of the servers: only the user can read it.
+  const dir = join(configDir, "mcp");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${source}.json`);
+  writeFileSync(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
+  return `${Object.keys(servers).join(", ")} to ${file}`;
 }
 
 const SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
