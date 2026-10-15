@@ -14,6 +14,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   claudeEnabledPlugins,
   claudeMarketplaceSource,
+  claudeUserPlugins,
   hasPluginManifest,
   importClaudePlugin,
   Logger,
@@ -58,13 +59,20 @@ export function pluginInstallCmd(
   overwrite: boolean,
   errSink: (line: string) => void,
   origin?: { source: string; plugin?: string },
+  marketplaceEntry?: Record<string, unknown>,
 ): string {
   // The importer logs JSON lines for a daemon. A person at the CLI gets the text and the CLI flag.
   const logger = new Logger({
     level: "warn",
     sink: (line) => errSink(String(JSON.parse(line).message).replace("overwrite: true", "--overwrite")),
   });
-  const report = importClaudePlugin(sourceDir, { sourceDir, workspaceRoot, overwrite, logger });
+  const report = importClaudePlugin(sourceDir, {
+    sourceDir,
+    workspaceRoot,
+    overwrite,
+    logger,
+    ...(marketplaceEntry === undefined ? {} : { marketplaceEntry }),
+  });
 
   // Write install receipt into .agency/skills/<pluginName>/receipt.json
   const receipt: InstallReceipt = {
@@ -236,11 +244,13 @@ const MARKETPLACE_FILES = [
 function marketplacePlugin(
   root: string,
   name: string | undefined,
-): { dir: string } | { git: GitSource; subdir?: string } | undefined {
+):
+  | (({ dir: string } | { git: GitSource; subdir?: string }) & { entry?: Record<string, unknown> })
+  | undefined {
   const file = MARKETPLACE_FILES.map((parts) => join(root, ...parts)).find((path) => existsSync(path));
   if (file === undefined || hasPluginManifest(root)) return undefined;
   const market = JSON.parse(readFileSync(file, "utf8")) as {
-    plugins?: { name: string; source: MarketplaceSource }[];
+    plugins?: ({ name: string; source: MarketplaceSource } & Record<string, unknown>)[];
     metadata?: { pluginRoot?: string };
   };
   const plugins = market.plugins ?? [];
@@ -261,18 +271,18 @@ function marketplacePlugin(
     if (inside.startsWith("..") || isAbsolute(inside)) {
       throw new Error(`The source of "${entry.name}" is outside the marketplace: ${source}`);
     }
-    return { dir };
+    return { dir, entry };
   }
   const ref = source.ref === undefined ? {} : { ref: source.ref };
   if (source.source === "github" && GITHUB_REPO.test(source.repo ?? "")) {
-    return { git: { url: `https://github.com/${source.repo}.git`, ...ref } };
+    return { git: { url: `https://github.com/${source.repo}.git`, ...ref }, entry };
   }
   if (source.source === "url" && GIT_URL.test(source.url ?? ""))
-    return { git: { url: source.url ?? "", ...ref } };
+    return { git: { url: source.url ?? "", ...ref }, entry };
   // A plugin in a folder of another repository, a monorepo: `url` is a git URL or owner/repo.
   if (source.source === "git-subdir" && source.url !== undefined && source.path !== undefined) {
     const git = gitSource(`${source.url}${source.ref === undefined ? "" : `#${source.ref}`}`);
-    if (git !== undefined) return { git, subdir: source.path };
+    if (git !== undefined) return { git, subdir: source.path, entry };
   }
   throw new Error(`The source of "${entry.name}" has a form that Agency cannot install`);
 }
@@ -294,14 +304,14 @@ export function pluginInstallSource(
     source: git === undefined ? resolve(source) : source,
     ...(name === undefined ? {} : { plugin: name }),
   };
-  const run = (dir: string): string => {
+  const run = (dir: string, entry?: Record<string, unknown>): string => {
     beforeInstall?.();
-    return pluginInstallCmd(dir, workspaceRoot, overwrite, errSink, origin);
+    return pluginInstallCmd(dir, workspaceRoot, overwrite, errSink, origin, entry);
   };
   const install = (root: string): string => {
     const picked = marketplacePlugin(root, name);
     if (picked === undefined) return run(root);
-    if ("dir" in picked) return run(picked.dir);
+    if ("dir" in picked) return run(picked.dir, picked.entry);
     return withClone(picked.git, (dir) => {
       const plugin = resolve(dir, picked.subdir ?? "");
       const inside = relative(dir, plugin);
@@ -334,11 +344,27 @@ export function pluginSyncCmd(
   workspaceRoot: string,
   overwrite: boolean,
   errSink: (line: string) => void,
+  userStore?: string,
 ): { text: string; failed: boolean } {
   const ids = claudeEnabledPlugins(workspaceRoot);
-  if (ids.length === 0)
-    return { text: "The Claude Code settings of this workspace enable no plugin.", failed: false };
+  // The plugins that Claude Code installed for the user: copied from its own copy, with no download.
+  const userPlugins = userStore === undefined ? [] : claudeUserPlugins();
+  if (ids.length === 0 && userPlugins.length === 0)
+    return { text: "The Claude Code settings enable no plugin.", failed: false };
   let failed = false;
+  const userLines = userPlugins.map(({ id, dir, entry }) => {
+    const [name = ""] = id.split("@");
+    if (!overwrite && existsSync(join(userStore ?? "", ".agency", "skills", name, "receipt.json"))) {
+      return `${id}: installed for the user already`;
+    }
+    try {
+      pluginInstallCmd(dir, userStore ?? "", overwrite, errSink, { source: dir }, entry);
+      return `${id}: installed for the user from ${dir}`;
+    } catch (error) {
+      failed = true;
+      return `${id}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
   const lines = ids.map((id) => {
     const [name = ""] = id.split("@");
     if (!overwrite && existsSync(join(workspaceRoot, ".agency", "skills", name, "receipt.json"))) {
@@ -353,7 +379,7 @@ export function pluginSyncCmd(
       return `${id}: ${error instanceof Error ? error.message : String(error)}`;
     }
   });
-  return { text: lines.join("\n"), failed };
+  return { text: [...userLines, ...lines].join("\n"), failed };
 }
 
 /** `plugin update <name>`: the plugin again from the source of its install. Its data folder stays. */

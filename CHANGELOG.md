@@ -63,6 +63,15 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **The plugins of a Claude Code user come over in one command**: `agency plugin sync` installs
+  each plugin that `enabledPlugins` of `~/.claude/settings.json` turns on, from the copy that
+  Claude Code installed, with no download, and `--scope user` installs any plugin for the user.
+  Plugins of the user load in every workspace (skills, commands, agents, hooks, MCP and LSP
+  servers, modules, output styles). Before, a plugin installed per workspace only, and the
+  plugins of Claude Code did not come over: on a real setup, `plugin list` and `mcp list` showed
+  nothing for 7 enabled plugins; now all 7 install. A plugin with no `plugin.json` (`strict:
+  false`, as the LSP plugins of `claude-plugins-official`) takes its marketplace entry as its
+  manifest.
 - **`context: fork` of a skill**: the skill runs in a subagent of its `agent` type and `model`, and
   the model gets only the answer, as in Claude Code.
 - **`allowed-tools` of a skill**: its rules run with no prompt for the rest of the turn that loads

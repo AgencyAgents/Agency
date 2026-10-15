@@ -24,6 +24,8 @@ export interface ImportClaudePluginOptions {
   overwrite?: boolean;
   /** Logger for warnings and info messages. */
   logger?: Logger;
+  /** The entry of the plugin in its marketplace: the manifest when the plugin has no plugin.json. */
+  marketplaceEntry?: Record<string, unknown>;
 }
 
 export interface ImportClaudePluginReport {
@@ -139,9 +141,17 @@ function partDirs(value: unknown, fallback: string): string[] {
 }
 
 /** The manifest of a plugin in any of the formats, or undefined when the folder has none with a name. */
-function readManifest(sourceDir: string, logger?: Logger): Manifest | undefined {
-  for (const [format, file] of MANIFESTS) {
-    const raw = readJsonFile(join(sourceDir, file));
+function readManifest(
+  sourceDir: string,
+  logger?: Logger,
+  entry?: Record<string, unknown>,
+): Manifest | undefined {
+  // As in Claude Code, the entry of a marketplace is the manifest of a plugin that has no plugin.json (`strict: false`).
+  const sources = [
+    ...MANIFESTS.map(([format, file]) => [format, file, readJsonFile(join(sourceDir, file))] as const),
+    ...(entry === undefined ? [] : [["claude", "marketplace.json", entry] as const]),
+  ];
+  for (const [format, file, raw] of sources) {
     if (!isRecord(raw)) continue;
     const pi = isRecord(raw.pi) ? raw.pi : undefined;
     // Any package has a package.json: only a Pi package counts.
@@ -497,7 +507,7 @@ export function importClaudePlugin(
   // -----------------------------------------------------------------------
   // 1. Read manifest
   // -----------------------------------------------------------------------
-  const manifest = readManifest(sourceDir, logger);
+  const manifest = readManifest(sourceDir, logger, opts.marketplaceEntry);
   if (!manifest) {
     throw new Error(
       `No valid plugin manifest found in ${sourceDir}. Expected .claude-plugin/plugin.json, ` +

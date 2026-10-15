@@ -20,6 +20,7 @@ import {
   runCodeChild,
   SessionStore,
   storagePaths,
+  userPluginStore,
 } from "@agency/core";
 import {
   PERMISSION_MODES,
@@ -1842,7 +1843,13 @@ async function pluginCmd(
   out: LineSink,
   err: LineSink,
 ): Promise<number> {
-  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const workspace = workspaceRootOf(parsed, deps);
+  if (parsed.scope !== undefined && parsed.scope !== "project" && parsed.scope !== "user") {
+    throw new Error(t("cli.plugin.bad_scope", { scope: parsed.scope }));
+  }
+  // `--scope user`: the plugin goes to the store of the user, and its files hold in every workspace.
+  const store = userPluginStore(deps.configDir);
+  const workspaceRoot = parsed.scope === "user" ? store : workspace;
 
   // Subcommand help
   if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
@@ -1855,9 +1862,15 @@ Subcommands:
   list                         Show installed skills and plugin modules
   install <plugin>@<marketplace>
                                Install a plugin of a marketplace that the Claude Code settings name
-  sync [--overwrite]           Install the enabledPlugins of .claude/settings.json
+  sync [--overwrite]           Install the enabledPlugins of .claude/settings.json of the workspace,
+                               and those of ~/.claude/settings.json for the user, from the copy
+                               that Claude Code installed
   update <name>                Install a plugin again from the source of its install
-  remove <name>                Remove an installed plugin`);
+  remove <name>                Remove an installed plugin
+
+Options:
+  --scope user                 install, update and remove act on the plugins of the user, which load
+                               in every workspace; the default is the workspace`);
     return 0;
   }
 
@@ -1871,7 +1884,7 @@ Subcommands:
       // `plugin@marketplace`, as Claude Code names a plugin: the marketplace comes from its settings.
       const byId =
         parsed.args[1] === undefined && /^[\w.-]+@[\w.-]+$/.test(sourceDir) && !existsSync(sourceDir)
-          ? claudePluginSource(sourceDir, workspaceRoot)
+          ? claudePluginSource(sourceDir, workspace)
           : undefined;
       const report = pluginInstallSource(
         byId?.source ?? sourceDir,
@@ -1881,6 +1894,7 @@ Subcommands:
         err,
       );
       out(report);
+      if (parsed.scope === "user") return 0;
       const { createFileTrustStore } = await import("@agency/guard");
       const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));
       if (!trustStore.isTrusted(workspaceRoot)) err(t("cli.plugin.untrusted"));
@@ -1892,12 +1906,13 @@ Subcommands:
   }
 
   if (parsed.subcommand === "list") {
-    out(pluginListCmd(workspaceRoot));
+    out(pluginListCmd(workspace));
+    if (existsSync(join(store, ".agency"))) out(`\nFor the user (every workspace):\n${pluginListCmd(store)}`);
     return 0;
   }
 
   if (parsed.subcommand === "sync") {
-    const { text, failed } = pluginSyncCmd(workspaceRoot, parsed.overwrite, err);
+    const { text, failed } = pluginSyncCmd(workspace, parsed.overwrite, err, store);
     out(text);
     return failed ? 1 : 0;
   }

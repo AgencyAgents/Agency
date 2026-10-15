@@ -27,6 +27,36 @@ export function claudeEnabledPlugins(workspaceRoot: string): string[] {
     .map(([id]) => id);
 }
 
+/**
+ * The plugins that `enabledPlugins` of `~/.claude/settings.json` turns on, with the folder of the copy that Claude Code
+ * installed (`installPath` of `~/.claude/plugins/installed_plugins.json`). A plugin with no copy is left out.
+ */
+export function claudeUserPlugins(
+  home: string | undefined = foreignHome(),
+): Array<{ id: string; dir: string; entry?: Record<string, unknown> }> {
+  if (home === undefined) return [];
+  const plugins = join(home, ".claude", "plugins");
+  const enabled = record(readJson(join(home, ".claude", "settings.json")).enabledPlugins);
+  const installed = record(readJson(join(plugins, "installed_plugins.json")).plugins);
+  const markets = readJson(join(plugins, "known_marketplaces.json"));
+  return Object.entries(enabled)
+    .filter(([id, on]) => on === true && /^[\w.-]+@[\w.-]+$/.test(id))
+    .flatMap(([id]) => {
+      const entries = installed[id];
+      const dir = record(Array.isArray(entries) ? entries[0] : entries).installPath;
+      if (typeof dir !== "string" || !existsSync(dir)) return [];
+      // The entry of the plugin in its marketplace: the manifest of a plugin with no plugin.json.
+      const [name, market = ""] = id.split("@");
+      const location = record(markets[market]).installLocation;
+      const list =
+        typeof location === "string"
+          ? readJson(join(location, ".claude-plugin", "marketplace.json")).plugins
+          : undefined;
+      const entry = (Array.isArray(list) ? list : []).map(record).find((plugin) => plugin.name === name);
+      return [{ id, dir, ...(entry === undefined ? {} : { entry }) }];
+    });
+}
+
 /** A marketplace source of Claude Code as a source of `plugin install` here: a folder, `owner/repo#ref` or a git URL. */
 function installSource(raw: unknown, workspaceRoot: string): string {
   const source = record(raw);

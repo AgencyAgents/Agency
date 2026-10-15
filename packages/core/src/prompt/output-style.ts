@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { configDir, foreignHome } from "../paths.ts";
+import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 
 /**
@@ -24,6 +24,7 @@ export function outputStyleInstructions(options: {
       ? [join(workspaceRoot, ".agency", "output-styles"), join(workspaceRoot, ".claude", "output-styles")]
       : []),
     join(options.configDirOverride ?? configDir(), "output-styles"),
+    join(userPluginStore(options.configDirOverride), ".agency", "output-styles"),
     ...(home === undefined ? [] : [join(home, ".claude", "output-styles")]),
   ];
   for (const dir of dirs) {

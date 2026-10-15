@@ -3,7 +3,7 @@ import { basename, join, relative } from "node:path";
 import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
 import { openCodeConfig } from "../config/opencode.ts";
-import { configDir, foreignHome } from "../paths.ts";
+import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import { discoverSkills, resolveSkillDirs, skillCommandTemplate } from "../plugins/skill.ts";
 import { expandAtFiles, parseCommandFile, runShellBlocks, substituteArgs } from "./runtime.ts";
 
@@ -146,6 +146,7 @@ export function loadCommands(options: {
           ...parseGeminiCommands(join(home, ".gemini", "commands"), "user"),
           ...FOREIGN_USER_COMMAND_DIRS.flatMap((parts) => parseCommandFiles(join(home, ...parts), "user")),
         ]),
+    ...parseCommandFiles(join(userPluginStore(options.configDirOverride), ".agency", "commands"), "user"),
     ...parseCommandFiles(userDir, "user"),
   ];
   // As in Claude Code, a skill is also the command `/<name>`; a command file of the same name wins here.

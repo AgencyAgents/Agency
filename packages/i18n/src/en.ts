@@ -203,6 +203,7 @@ export const en = {
   "cli.error.unknown_session": 'Unknown session "{id}".',
   "cli.error.session_delete_usage": "usage: agency session delete <id>",
   "cli.error.invalid_usage_by": "--by takes day, month or model",
+  "cli.plugin.bad_scope": "--scope of plugin takes project or user, not {scope}",
   "cli.error.invalid_since": "--since takes a date as YYYY-MM-DD or YYYY-MM",
   "cli.error.auth_login_usage": "usage: agency auth login <provider>",
   "cli.error.auth_oauth_unsupported":

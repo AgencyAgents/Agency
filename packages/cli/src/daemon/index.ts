@@ -40,6 +40,7 @@ import {
   storagePaths,
   type ToolSpec,
   TraceRecorder,
+  userPluginStore,
   WakeRegistry,
 } from "@agency/core";
 import {
@@ -304,6 +305,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   };
 
   const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
+  // The plugins installed for the user: their hooks, MCP and LSP servers hold in every workspace.
+  const store = userPluginStore(options.configDir);
+  const storeDirs = ["hooks", "mcp", "lsp"].map((part) => join(store, ".agency", part));
   const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
   const lspDir = join(options.workspaceRoot, ".agency", "lsp");
   const userMcpDir = join(options.configDir ?? configDir(), "mcp");
@@ -321,6 +325,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...filesOf(mcpDir),
     lspDir,
     ...filesOf(lspDir),
+    ...storeDirs.flatMap((dir) => [dir, ...filesOf(dir)]),
     join(options.workspaceRoot, ".mcp.json"),
     ...clientProjectPaths(options.workspaceRoot),
     ...foreignHookPaths(options.workspaceRoot),
@@ -385,6 +390,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // The hooks of the user's config, then those that `plugin install` put into a trusted workspace.
   const commandHooks: CommandHooks = mergeCommandHooks(
     config.hooks ?? {},
+    loadHookFiles(join(store, ".agency", "hooks"), (message) => logger.warn(message)),
     projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
     // The hooks that Claude Code, Codex, Cursor and Gemini CLI keep in the workspace.
     projectTrusted ? loadForeignHooks(options.workspaceRoot, (message) => logger.warn(message)) : {},
@@ -587,6 +593,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...(projectTrusted
       ? loadProjectMcpServers(options.workspaceRoot, (message) => logger.warn(message))
       : {}),
+    ...loadProjectMcpServers(store, (message) => logger.warn(message)),
     ...loadUserMcpServers(
       options.configDir ?? configDir(),
       (message) => logger.warn(message),
@@ -600,6 +607,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...(projectTrusted
       ? loadProjectLspServers(options.workspaceRoot, (message) => logger.warn(message))
       : {}),
+    ...loadProjectLspServers(store, (message) => logger.warn(message)),
     ...(config.lspServers as Record<string, unknown> | undefined),
   };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({

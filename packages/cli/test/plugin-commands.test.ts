@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dataDir } from "@agency/core";
+import { dataDir, resolveSkillDirs } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { runEntrypoint } from "../src/entrypoint.ts";
 import { gitSource, pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
@@ -502,4 +502,78 @@ describe("top-level --help", () => {
     expect(text).toContain("plugin list");
     expect(text).toContain("plugin remove");
   });
+});
+
+test("plugin sync copies the plugins that Claude Code installed for the user, and they load in every workspace", async () => {
+  const home = tempDir("agency-cc-home-");
+  const config = tempDir("agency-cc-config-");
+  const write = (path: string, value: unknown) => {
+    mkdirSync(dirname(join(home, path)), { recursive: true });
+    writeFileSync(join(home, path), typeof value === "string" ? value : JSON.stringify(value));
+  };
+  const plugins = join(home, ".claude", "plugins");
+  // A plugin with its manifest, and one whose manifest is its marketplace entry (`strict: false`), as the LSP plugins are.
+  write(".claude/plugins/cache/m/kit/1.0.0/.claude-plugin/plugin.json", { name: "kit" });
+  write(
+    ".claude/plugins/cache/m/kit/1.0.0/skills/hello/SKILL.md",
+    "---\ndescription: Says hello\n---\nHello.",
+  );
+  write(".claude/plugins/cache/m/kit/1.0.0/.mcp.json", {
+    mcpServers: { docs: { url: "https://d.test/mcp" } },
+  });
+  write(".claude/plugins/cache/m/lsp/1.0.0/README.md", "LSP");
+  write(".claude/plugins/marketplaces/m/.claude-plugin/marketplace.json", {
+    name: "m",
+    plugins: [
+      { name: "kit", source: "./kit" },
+      {
+        name: "lsp",
+        source: "./lsp",
+        strict: false,
+        lspServers: { "rust-analyzer": { command: "rust-analyzer", extensionToLanguage: { ".rs": "rust" } } },
+      },
+    ],
+  });
+  write(".claude/plugins/known_marketplaces.json", {
+    m: { installLocation: join(plugins, "marketplaces", "m") },
+  });
+  write(".claude/plugins/installed_plugins.json", {
+    version: 2,
+    plugins: {
+      "kit@m": [{ installPath: join(plugins, "cache", "m", "kit", "1.0.0") }],
+      "lsp@m": [{ installPath: join(plugins, "cache", "m", "lsp", "1.0.0") }],
+      "off@m": [{ installPath: join(plugins, "cache", "m", "kit", "1.0.0") }],
+    },
+  });
+  write(".claude/settings.json", { enabledPlugins: { "kit@m": true, "lsp@m": true, "off@m": false } });
+  const before = process.env.AGENCY_AGENTS_HOME;
+  process.env.AGENCY_AGENTS_HOME = home;
+  try {
+    const ws = tempDir("agency-cc-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    const deps = { ...c.deps, configDir: config };
+    expect(await runEntrypoint(["plugin", "sync"], deps)).toBe(0);
+    expect(c.out.at(-1)).toContain("kit@m: installed for the user from");
+    expect(c.out.at(-1)).toContain("lsp@m: installed for the user from");
+    expect(c.out.at(-1)).not.toContain("off@m");
+    const store = join(config, "plugin-store", ".agency");
+    expect(existsSync(join(store, "skills", "hello", "SKILL.md"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(store, "lsp", "lsp.json"), "utf8")).lspServers).toHaveProperty(
+      "rust-analyzer",
+    );
+    // The plugins of the user hold in another workspace too: its skill and its MCP server.
+    const other = tempDir("agency-cc-ws2-");
+    expect(resolveSkillDirs(other, config).map((entry) => entry.dir)).toContain(join(store, "skills"));
+    const listed = capture();
+    listed.deps.cwd = other;
+    expect(await runEntrypoint(["mcp", "list"], { ...listed.deps, configDir: config })).toBe(0);
+    expect(listed.out.join("\n")).toContain("docs (user): https://d.test/mcp");
+    await runEntrypoint(["plugin", "sync"], deps);
+    expect(c.out.at(-1)).toContain("kit@m: installed for the user already");
+    expect(await runEntrypoint(["plugin", "remove", "kit", "--scope", "user"], deps)).toBe(0);
+    expect(existsSync(join(store, "skills", "hello"))).toBe(false);
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
 });

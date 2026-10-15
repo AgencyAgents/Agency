@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { basename, dirname, join, resolve } from "node:path";
 import { openCodeConfig } from "../config/opencode.ts";
 import { type AgentConfig, DEFAULT_ROSTER, ToolPermissionSchema } from "../config/schema.ts";
-import { configDir, foreignHome } from "../paths.ts";
+import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 import { isFileInside } from "../prompt/instructions.ts";
 
@@ -391,6 +391,8 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
     for (const [handle, def] of loadAgentDir(join(home ?? "", ...parts), "user", warn, true))
       merged.set(handle, def);
   }
+  const storeDir = join(userPluginStore(opts.configDirOverride), ".agency", "agents");
+  for (const [handle, def] of loadAgentDir(storeDir, "user", warn)) merged.set(handle, def);
   for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
   if (opts.projectTrusted === false) return { agents: merged, seeded };
   // The agent folders of Claude Code, Cursor, Codex and OpenCode in the project; `.agency/agents` wins on a handle.

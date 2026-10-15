@@ -248,6 +248,8 @@ describe("resolveSkillDirs", () => {
       { dir: join(ws, "skills"), tier: "project" },
       ...agents.map((agent) => ({ dir: join(ws, agent, "skills"), tier: "project" as const })),
       { dir: join("/custom/config", "skills"), tier: "user" },
+      // The skills of the plugins installed for the user.
+      { dir: join("/custom/config", "plugin-store", ".agency", "skills"), tier: "user" },
       // The user folders of other agents, under the home that the test preload gives.
       ...[
         ".claude",

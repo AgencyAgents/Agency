@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { configDir, dataDir, loadConfig } from "@agency/core";
+import { configDir, dataDir, loadConfig, userPluginStore } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { type MessageKey, t } from "@agency/i18n";
 import { createKeychain, type KeychainBackend, openInBrowser } from "@agency/providers";
@@ -92,7 +92,10 @@ function knownServers(o: Pick<McpCmdOptions, "workspaceRoot" | "configDir" | "en
       rows.set(name, { origin, started, server: server as McpServerConfig });
   };
   add("project", trusted, loadProjectMcpServers(o.workspaceRoot));
-  add("user", true, loadUserMcpServers(o.configDir));
+  add("user", true, {
+    ...loadProjectMcpServers(userPluginStore(o.configDir)),
+    ...loadUserMcpServers(o.configDir),
+  });
   add("config", true, config.mcpServers);
   return { rows, trusted };
 }

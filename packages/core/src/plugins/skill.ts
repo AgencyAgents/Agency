@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Logger } from "../logger.ts";
 import type { ToolSpec } from "../loop.ts";
-import { configDir, foreignHome } from "../paths.ts";
+import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import type { PluginDefinition } from "./types.ts";
 
 const FOREIGN_USER_SKILL_DIRS = [
@@ -381,8 +381,9 @@ export function resolveSkillDirs(workspaceRoot: string, configDirOverride?: stri
     dirs.push({ dir: join(workspaceRoot, agent, "skills"), tier: "project" });
   }
 
-  // User-level skills: <configDir>/skills/
+  // User-level skills: <configDir>/skills/, then those of the plugins installed for the user.
   dirs.push({ dir: join(configDirOverride ?? configDir(), "skills"), tier: "user" });
+  dirs.push({ dir: join(userPluginStore(configDirOverride), ".agency", "skills"), tier: "user" });
 
   // The user skill folders of other agents: Claude Code, the shared `~/.agents`, Codex, Cursor, Pi, OpenCode, Gemini.
   const home = foreignHome();

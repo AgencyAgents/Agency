@@ -6,7 +6,7 @@ import { parse as parseJsonc } from "jsonc-parser";
 import type { EventBus } from "../events.ts";
 import type { Logger } from "../logger.ts";
 import type { ToolSpec } from "../loop.ts";
-import { configDir, foreignHome } from "../paths.ts";
+import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import type { PluginTier } from "./context.ts";
 import {
   collectPluginAgentsTexts,
@@ -283,7 +283,10 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
 
   const projectTrusted = options.projectTrusted ?? true;
   const projectFiles = projectTrusted ? discoverFiles(projectDir) : [];
-  const userFiles = discoverFiles(userDir);
+  const userFiles = [
+    ...discoverFiles(join(userPluginStore(options.configDirOverride), ".agency", "plugins")),
+    ...discoverFiles(userDir),
+  ];
 
   type Source = { id: string; path: string; kind: "file" | "npm" | "opencode" | "pi"; tier: PluginTier };
   const sources: Source[] = [];
