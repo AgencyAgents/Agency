@@ -1212,7 +1212,7 @@ describe("-p headless mode", () => {
     expect(modes).toEqual(["ask", "ask", "allow-edits", "deny", "allow-all"]);
     const codex = parseArgv(["-p", "x", "-C", "repo", "--output-schema", "s.json", "--skip-git-repo-check"]);
     expect([codex.workspace, codex.jsonSchema]).toEqual(["repo", "s.json"]);
-    expect(parseArgv(["-p", "x", "--no-tools"]).tools).toBe("");
+    expect(parseArgv(["-p", "x", "--no-tools"]).disallowedTools).toEqual(["*"]);
     const file = join(tempDir("agency-ep-prompt-"), "extra.md");
     writeFileSync(file, "From the file.");
     const prompts = parseArgv([
@@ -1279,12 +1279,11 @@ describe("-p headless mode", () => {
       ["bash", "grep"],
     ]);
     const pi = parseArgv(["-p", "x", "--mode", "json", "--no-session", "--fork", "s-2", "-nt"]);
-    expect([pi.streamJson, pi.session, pi.forkSession, pi.tools, pi.strictMcpConfig]).toEqual([
+    expect([pi.streamJson, pi.session, pi.forkSession, pi.disallowedTools]).toEqual([
       true,
       "s-2",
       true,
-      "",
-      true,
+      ["*"],
     ]);
 
     const headless = fakeRunHeadless();

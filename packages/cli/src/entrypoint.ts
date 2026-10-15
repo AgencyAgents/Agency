@@ -476,11 +476,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--fork-session":
         parsed.forkSession = true;
         break;
-      // Pi's `--no-tools` turns off the MCP tools too.
+      // Pi's `--no-tools` turns off the MCP tools too, those of `--mcp-config` with them: a deny of `*`.
       case "--no-tools":
       case "-nt":
-        parsed.tools = "";
-        parsed.strictMcpConfig = true;
+        parsed.disallowedTools.push("*");
         break;
       case "--format":
       case "--output-format": {
