@@ -1375,6 +1375,29 @@ describe("-p headless mode", () => {
     expect(err.join("\n")).toContain("not used by a run here: hooks, env");
   });
 
+  test("--image sends a PDF as a PDF, and an image as its type", async () => {
+    const dir = tempDir("agency-ep-files-");
+    writeFileSync(join(dir, "report.pdf"), "%PDF-1.4");
+    writeFileSync(join(dir, "shot.JPG"), "jpg");
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = [
+      "-p",
+      "x",
+      "--model",
+      "openai/fake-1",
+      "--image",
+      join(dir, "report.pdf"),
+      "-i",
+      join(dir, "shot.JPG"),
+    ];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.images?.map((image) => image.mimeType)).toEqual([
+      "application/pdf",
+      "image/jpeg",
+    ]);
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();

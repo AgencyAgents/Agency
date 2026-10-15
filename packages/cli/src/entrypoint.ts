@@ -51,7 +51,7 @@ import {
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
-import { loadMcpConfigArg } from "@agency/tools";
+import { imageMimeFor, loadMcpConfigArg } from "@agency/tools";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
@@ -921,16 +921,8 @@ function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[]
       // A prompt that goes out with no image gets an answer about some other thing.
       throw new Error(t("cli.error.image_unreadable", { path: p }));
     }
-    const ext = p.split(".").pop()?.toLowerCase() ?? "";
-    const mime =
-      ext === "png"
-        ? "image/png"
-        : ext === "jpg" || ext === "jpeg"
-          ? "image/jpeg"
-          : ext === "webp"
-            ? "image/webp"
-            : "image/png";
-    blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
+    // A PDF goes as a document, as the `read` tool attaches one.
+    blocks.push({ type: "image", mimeType: imageMimeFor(p) ?? "image/png", data: data.toString("base64") });
   }
   return blocks;
 }

@@ -356,7 +356,7 @@ The team report that `/goal` showed before is now `/report [outcome]`.
 
 ## PDFs
 
-`read` attaches a PDF (up to 1 MB) to the tool result, as Claude Code reads one, and each provider gets it in its own form: a `document` for Anthropic, an `input_file` for the Responses API of OpenAI, and a `file` part for OpenRouter, which turns it into text for any model with its free `cloudflare-ai` engine, so a model with no vision reads it too. Another provider with the OpenAI format takes no PDF: the model is told that the PDF was left out. An image still goes only to a model that sees images.
+`read` attaches a PDF (up to 1 MB) to the tool result, as Claude Code reads one, and each provider gets it in its own form: a `document` for Anthropic, an `input_file` for the Responses API of OpenAI, and a `file` part for OpenRouter, which turns it into text for any model with its free `cloudflare-ai` engine, so a model with no vision reads it too. Another provider with the OpenAI format takes no PDF: the model is told that the PDF was left out. An image still goes only to a model that sees images. `-p --image report.pdf` sends a PDF with the prompt in the same way.
 
 ## Notebooks
 

@@ -56,7 +56,7 @@ export {
 } from "./builtins/plan.ts";
 export { createProcessKillTool, createProcessListTool, createProcessOutputTool } from "./builtins/process.ts";
 export { createQuestionTool } from "./builtins/question.ts";
-export { createReadTool } from "./builtins/read.ts";
+export { createReadTool, imageMimeFor } from "./builtins/read.ts";
 export { createSpawnTool, extractFinalText } from "./builtins/spawn.ts";
 export {
   createAgentInspectTool,
