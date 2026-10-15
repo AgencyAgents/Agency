@@ -128,9 +128,9 @@ function flagServer(o: McpCmdOptions): Record<string, unknown> {
   const [target, ...args] = o.rest;
   const transport =
     o.transport ?? (args.length === 0 && /^https?:\/\//i.test(target ?? "") ? "http" : "stdio");
-  if (transport === "sse") throw new Error(t("cli.mcp.sse"));
-  if (transport !== "http" && transport !== "stdio") throw new Error(t("cli.mcp.transport", { transport }));
-  if (target === undefined || (transport === "http" && args.length > 0))
+  if (transport !== "http" && transport !== "sse" && transport !== "stdio")
+    throw new Error(t("cli.mcp.transport", { transport }));
+  if (target === undefined || (transport !== "stdio" && args.length > 0))
     throw new Error(t("cli.mcp.add_usage"));
   if (transport === "stdio") {
     const env = pairs(o.serverEnv, "=", "cli.mcp.bad_env");
@@ -138,7 +138,7 @@ function flagServer(o: McpCmdOptions): Record<string, unknown> {
   }
   if (!URL.canParse(target)) throw new Error(t("cli.mcp.bad_url", { url: target }));
   const headers = pairs(o.headers, ":", "cli.mcp.bad_header");
-  return { type: "http", url: target, ...(Object.keys(headers).length > 0 ? { headers } : {}) };
+  return { type: transport, url: target, ...(Object.keys(headers).length > 0 ? { headers } : {}) };
 }
 
 /** The server of `add-json`: the entry of an `mcpServers` map, as Claude Code writes it. */
@@ -151,7 +151,6 @@ function jsonServer(rest: string[]): Record<string, unknown> {
       t("cli.mcp.bad_json", { reason: error instanceof Error ? error.message : String(error) }),
     );
   }
-  if (raw?.type === "sse") throw new Error(t("cli.mcp.sse"));
   const parsed = McpServerConfigSchema.safeParse(raw);
   if (!parsed.success)
     throw new Error(

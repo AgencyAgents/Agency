@@ -42,10 +42,16 @@ const base = (server: Raw): Raw | undefined =>
         env: server.env,
         url: server.url ?? server.serverUrl,
         headers: server.headers,
+        type: server.type === "sse" ? "sse" : undefined,
       });
 
 const gemini = (server: Raw): Raw | undefined => {
-  const out = base({ ...server, url: server.httpUrl ?? server.url });
+  // The `url` of Gemini CLI is a server over SSE, its `httpUrl` one over Streamable HTTP.
+  const out = base({
+    ...server,
+    url: server.httpUrl ?? server.url,
+    type: server.httpUrl === undefined && server.url !== undefined ? "sse" : undefined,
+  });
   if (out === undefined) return undefined;
   // Gemini expands `$VAR` in env values only.
   const env = record(server.env);

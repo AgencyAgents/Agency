@@ -5,6 +5,8 @@ import { z } from "zod";
 import { clientProjectFiles } from "./foreign.ts";
 
 export const McpServerConfigSchema = z.object({
+  /** `sse` is the older HTTP transport of MCP; another value (`stdio`, `http`) changes nothing. */
+  type: z.string().optional(),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),

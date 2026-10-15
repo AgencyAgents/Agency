@@ -232,8 +232,6 @@ export const en = {
     'Usage: agency mcp add [--scope user|project] [--env KEY=value] <name> -- <command> [args], or agency mcp add [--header "Name: value"] <name> <url>, or agency mcp add-json <name> <json>. A name has letters, digits, _ and -.',
   "cli.mcp.scope": 'Scope "{scope}" is not known: use user or project.',
   "cli.mcp.transport": 'Transport "{transport}" is not known: use stdio or http.',
-  "cli.mcp.sse":
-    "Agency does not use the SSE transport of MCP: give the Streamable HTTP url of the server (often /mcp in place of /sse).",
   "cli.mcp.bad_env": "--env takes KEY=value: {value}",
   "cli.mcp.bad_header": '--header takes "Name: value": {value}',
   "cli.mcp.bad_url": 'The url "{url}" is not valid.',

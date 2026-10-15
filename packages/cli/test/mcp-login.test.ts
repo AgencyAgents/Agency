@@ -180,13 +180,17 @@ test("mcp add, add-json, list, get and remove manage the servers of the user and
   expect(out.at(-1)).toContain('"KEY": "***"');
   expect(out.join("\n")).not.toContain("secret");
 
-  // A name in use, a bad name, SSE, a pair with no separator and a scope that is not known are refused.
+  // A server over SSE, the older transport, is written with its type.
+  expect(await run("add", "-t", "sse", "old", "https://o.test/sse")).toBe(0);
+  expect(await run("get", "old")).toBe(0);
+  expect(out.at(-1)).toContain('"type": "sse"');
+  expect(await run("remove", "old")).toBe(0);
+
+  // A name in use, a bad name, a pair with no separator and a scope that is not known are refused.
   expect(await run("add", "fs", "--", "node")).toBe(1);
   expect(err.at(-1)).toContain("--overwrite");
   expect(await run("add", "--overwrite", "fs", "--", "node")).toBe(0);
   expect(await run("add", "a.b", "--", "node")).toBe(1);
-  expect(await run("add", "-t", "sse", "old", "https://o.test/sse")).toBe(1);
-  expect(err.at(-1)).toContain("SSE");
   expect(await run("add", "-e", "NOVALUE", "x", "--", "node")).toBe(1);
   expect(await run("add-json", "y", '{"args":["a"]}')).toBe(1);
   expect(await run("list", "-s", "local")).toBe(1);
