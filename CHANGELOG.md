@@ -32,6 +32,7 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **User instructions of other agents**: with `"userAgentInstructions": true`, the
   `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, OpenCode and Pi user
   instruction files join the instructions of every workspace.
+- **`--tools <names>`**: `-p` offers only these built-in tools, as in Claude Code.
 - **`-o, --output-last-message <file>`**: `-p` writes the answer to a file too, as `codex exec`
   does.
 - **`--fallback-model <provider/model>`**: `-p` goes on with this model when its model stays

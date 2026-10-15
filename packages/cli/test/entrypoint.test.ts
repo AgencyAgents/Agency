@@ -1112,6 +1112,16 @@ describe("-p headless mode", () => {
     expect(readFileSync(file, "utf8")).toBe('{"ok":true}\n');
   });
 
+  test("--tools gives the turn the built-in tools by their names here; default is all, and empty is none", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    for (const value of ["Bash, Read,TodoWrite", "default", ""]) {
+      const argv = ["-p", "hi", "--model", "openai/fake-1", "--tools", value];
+      expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    }
+    expect(headless.calls.map((call) => call.tools)).toEqual([["bash", "read", "todo_write"], undefined, []]);
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
+  agencyToolName,
   CODE_COMMAND,
   type Config,
   cacheDir,
@@ -146,6 +147,8 @@ Options:
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
                            (repeatable); --strict-mcp-config uses only these servers
+  --tools <names>          With -p: only these built-in tools (Bash,Read,Edit); "" is none,
+                           default is all. MCP tools stay
   --fallback-model <provider/model>
                            With -p: the model of the turn when its model is overloaded
   -o, --output-last-message <file>
@@ -216,6 +219,8 @@ export interface ParsedArgv {
   strictMcpConfig: boolean;
   /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
   outputLastMessage: string | undefined;
+  /** `--tools <names>` of `-p`: the built-in tools of the run, as Claude Code names them; `default` is all. */
+  tools: string | undefined;
   /** `--fallback-model <provider/model>` of `-p`: the model of the turn when the model is overloaded. */
   fallbackModel: string | undefined;
   /** `-w, --worktree <name>` of `-p`: the turn runs in a git worktree of this name. */
@@ -300,6 +305,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     strictMcpConfig: false,
     worktree: undefined,
     fallbackModel: undefined,
+    tools: undefined,
     outputLastMessage: undefined,
     serverEnv: [],
     headers: [],
@@ -460,6 +466,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "-o":
       case "--output-last-message":
         parsed.outputLastMessage = value();
+        break;
+      case "--tools":
+        parsed.tools = value();
         break;
       case "--fallback-model":
         parsed.fallbackModel = value();
@@ -737,6 +746,13 @@ async function runPrintMode(
       throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
     permissions = rules.permissions;
   }
+  let tools: string[] | undefined;
+  if (parsed.tools !== undefined && parsed.tools.trim() !== "default") {
+    const names = parsed.tools.split(/[\s,]+/).filter(Boolean);
+    const unknown = names.filter((name) => agencyToolName(name) === undefined);
+    if (unknown.length > 0) throw new Error(t("cli.error.unknown_rules", { rules: unknown.join(", ") }));
+    tools = names.map((name) => agencyToolName(name) as string);
+  }
   let mcp: { servers: Record<string, unknown>; strict: boolean } | undefined;
   if (parsed.mcpConfig.length > 0 || parsed.strictMcpConfig) {
     const servers: Record<string, unknown> = {};
@@ -843,6 +859,7 @@ async function runPrintMode(
         ...(permissions === undefined ? {} : { permissions }),
         ...(mcp === undefined ? {} : { mcp }),
         ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
+        ...(tools === undefined ? {} : { tools }),
         maxToolIterations: parsed.maxSteps,
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
@@ -869,6 +886,7 @@ async function runPrintMode(
     ...(permissions === undefined ? {} : { permissions }),
     ...(mcp === undefined ? {} : { mcp }),
     ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
+    ...(tools === undefined ? {} : { tools }),
     maxToolIterations: parsed.maxSteps,
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });

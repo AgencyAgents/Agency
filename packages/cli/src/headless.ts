@@ -39,6 +39,7 @@ export interface RunHeadlessOptions {
   permissions?: Record<string, ToolPermissionValue>;
   mcp?: RunTurnParams["mcp"];
   fallbackModel?: string;
+  tools?: string[];
   maxToolIterations?: number;
   budget?: RunTurnParams["budget"];
   outputSchema?: Record<string, unknown>;
@@ -194,6 +195,7 @@ export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnR
       ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
       ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
       ...(options.fallbackModel === undefined ? {} : { fallbackModel: options.fallbackModel }),
+      ...(options.tools === undefined ? {} : { tools: options.tools }),
       maxToolIterations: options.maxToolIterations,
       ...(options.budget === undefined ? {} : { budget: options.budget }),
       ...(options.outputSchema === undefined ? {} : { outputSchema: options.outputSchema }),

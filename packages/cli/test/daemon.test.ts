@@ -655,6 +655,42 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("the tools of a turn offer only the listed built-in tools, and an allow rule does not bring one back", async () => {
+    const offered: string[][] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        offered.push((request.tools ?? []).map((tool) => tool.name).sort());
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const spec = (name: string): ToolSpec => ({
+      name,
+      description: name,
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => ({ content: "" }),
+    });
+    const mcpTool = { ...spec("docs_search"), origin: "mcp" as const };
+    const { client } = await startFakeDaemon({ adapterFor, tools: [spec("read"), spec("grep"), mcpTool] });
+    const turn = (turnId: string, extra: Record<string, unknown>) =>
+      client.call("run_turn", {
+        turnId,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "k",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        ...extra,
+      });
+    await turn("t-tools-all", {});
+    await turn("t-tools-read", { tools: ["read"], permissions: { grep: "allow" } });
+    await turn("t-tools-none", { tools: [] });
+
+    expect(offered).toEqual([["docs_search", "grep", "read"], ["docs_search", "read"], ["docs_search"]]);
+  }, 60_000);
+
   test("a key that a tool result holds does not reach the model or the result of the turn", async () => {
     const envKey = "env-key-value-9d2c";
     const turnKey = "turn-key-value-41aa";

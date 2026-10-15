@@ -503,6 +503,18 @@ export async function executeTurn(
           if (isolatedRunner) return [codeTool(() => scriptSandboxEnv(), isolatedRunner)];
           return hostCode ? [codeTool(() => modelCommandEnv())] : [];
         };
+        // A built-in tool that `--tools` leaves out is denied, so it is not offered; this wins over an allow rule.
+        const turnPermissions =
+          params.tools === undefined
+            ? params.permissions
+            : {
+                ...params.permissions,
+                ...Object.fromEntries(
+                  [...(builtinsMode && turnScope ? turnScope.tools : tools), { name: CODE_TOOL }]
+                    .filter((t) => !("origin" in t && t.origin === "mcp") && !params.tools?.includes(t.name))
+                    .map((t) => [t.name, "deny" as const]),
+                ),
+              };
         try {
           const effectiveCapabilities =
             params.capabilities ??
@@ -510,7 +522,7 @@ export async function executeTurn(
           const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
           const sessionGate = gateForSession(sessionId)
             .withMode(params.permissionMode ?? "ask")
-            .withRules(params.permissions);
+            .withRules(turnPermissions);
           const gatedTools =
             builtinsMode && turnScope
               ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
@@ -672,7 +684,7 @@ export async function executeTurn(
             } catch {}
             const sessionGate = gateForSession(sessionId)
               .withMode(params.permissionMode ?? "ask")
-              .withRules(params.permissions);
+              .withRules(turnPermissions);
             const fallbackCapabilities =
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
