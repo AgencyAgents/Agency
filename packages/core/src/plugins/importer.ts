@@ -710,6 +710,8 @@ export function importClaudePlugin(
       }
       const target = `${name}.md`;
       const targetFile = join(workspaceRoot, ".agency", "commands", target);
+      // A command names the scripts of its plugin by `${CLAUDE_PLUGIN_ROOT}`, as a hook does.
+      content = withPluginRoot(content, root, data);
       if (writePart(targetFile, content, `command "${target}"`, write)) report.commandsInstalled.push(target);
     }
   }
@@ -728,7 +730,7 @@ export function importClaudePlugin(
         : "";
     const target = `${name}.md`;
     const targetFile = join(workspaceRoot, ".agency", "commands", target);
-    if (writePart(targetFile, `${head}${body}`, `command "${target}"`, write))
+    if (writePart(targetFile, withPluginRoot(`${head}${body}`, root, data), `command "${target}"`, write))
       report.commandsInstalled.push(target);
   }
 

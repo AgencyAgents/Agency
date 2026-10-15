@@ -176,7 +176,11 @@ export function expandCommand(
   template: string,
   args: string,
   workspaceRoot?: string,
-  opts?: { shell?: boolean },
+  opts?: {
+    shell?: boolean;
+    shellCommand?: { command: string; buildArgs: (command: string) => string[] };
+    env?: Record<string, string>;
+  },
 ): string {
   const { body } = parseCommandFile(template);
   let out = substituteArgs(body, args);
@@ -212,7 +216,12 @@ export function expandCommand(
       }
     });
   }
-  if (workspaceRoot && opts?.shell === true) out = runShellBlocks(out, { cwd: workspaceRoot });
+  if (workspaceRoot && opts?.shell === true)
+    out = runShellBlocks(out, {
+      cwd: workspaceRoot,
+      ...(opts.shellCommand === undefined ? {} : { shell: opts.shellCommand }),
+      ...(opts.env === undefined ? {} : { env: opts.env }),
+    });
 
   return out;
 }

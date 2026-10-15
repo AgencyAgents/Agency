@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { SandboxBoundary } from "@agency/guard";
 import { splitFrontmatter } from "../plugins/skill.ts";
@@ -185,30 +185,57 @@ export function extractShellBlocks(body: string): string[] {
   return out;
 }
 
-/** Run each `` !`cmd` `` block inline; failures degrade to a marker, never throw. */
+/** A fenced block of Claude Code: three backticks and `!` on a line, the script, and a closing fence. */
+const FENCED_SHELL_RE = /^```!\s*\r?\n([\s\S]*?)\r?\n```[ \t]*$/gm;
+
+/**
+ * Run each `` !`cmd` `` block and each fenced ```` ```! ```` block inline; failures degrade to a marker, never throw.
+ * `shell` is the shell of the bash tool: with none, the system shell (cmd.exe on Windows) runs the block.
+ */
 export function runShellBlocks(
   body: string,
-  opts: { cwd: string; timeoutMs?: number; maxBytes?: number },
+  opts: {
+    cwd: string;
+    timeoutMs?: number;
+    maxBytes?: number;
+    shell?: { command: string; buildArgs: (command: string) => string[] };
+    /** Variables beside those of the daemon. */
+    env?: Record<string, string>;
+  },
 ): string {
   const timeout = opts.timeoutMs ?? 15_000;
   const cap = opts.maxBytes ?? 8192;
-  return body.replace(SHELL_BLOCK_RE, (_m, raw: string) => {
+  const run = (raw: string): string => {
     const cmd = String(raw).trim();
+    const options = {
+      cwd: opts.cwd,
+      timeout,
+      windowsHide: true,
+      encoding: "utf8",
+      maxBuffer: cap * 4,
+      env: { ...process.env, ...opts.env },
+    } as const;
     try {
-      const out = execSync(cmd, {
-        cwd: opts.cwd,
-        timeout,
-        windowsHide: true,
-        encoding: "utf8",
-        maxBuffer: cap * 4,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
+      let out: string;
+      if (opts.shell === undefined) {
+        out = execSync(cmd, { ...options, stdio: ["ignore", "pipe", "ignore"] });
+      } else {
+        const result = spawnSync(opts.shell.command, opts.shell.buildArgs(cmd), {
+          ...options,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        if (result.error !== undefined || result.status !== 0) throw result.error ?? new Error("exit");
+        out = result.stdout;
+      }
       const trimmed = out.trim();
       return trimmed.length > cap ? `${trimmed.slice(0, cap)}[[truncated]]` : trimmed;
     } catch {
       return `[[shell failed: ${cmd.slice(0, 200)}]]`;
     }
-  });
+  };
+  return body
+    .replace(FENCED_SHELL_RE, (_m, raw: string) => run(raw))
+    .replace(SHELL_BLOCK_RE, (_m, raw: string) => run(raw));
 }
 
 const AT_FILE_RE = /(^|\s)@([A-Za-z0-9_][A-Za-z0-9_./~-]*)/g;

@@ -70,7 +70,7 @@ function makePonytailFixture(sourceDir: string): void {
   // commands/ponytail.md
   writeText(
     join(sourceDir, "commands", "ponytail.md"),
-    "# /ponytail\n\nActivate ponytail mode.\n\nUsage: `/ponytail lite|full|ultra`",
+    '# /ponytail\n\nActivate ponytail mode.\n\nUsage: `/ponytail lite|full|ultra`\n\n```!\n"${CLAUDE_PLUGIN_ROOT}/scripts/on.sh"\n```',
   );
 
   // agents/reviewer.md
@@ -379,6 +379,11 @@ describe("importClaudePlugin", () => {
       // Commands
       expect(report.commandsInstalled).toEqual(["ponytail.md"]);
       expect(existsSync(join(ws, ".agency", "commands", "ponytail.md"))).toBe(true);
+      // A command names the scripts of its plugin by the root variable, as a hook does.
+      const command = readFileSync(join(ws, ".agency", "commands", "ponytail.md"), "utf8");
+      expect(command).toContain(
+        `"${join(ws, ".agency", "plugin-roots", "ponytail").replaceAll("\\", "/")}/scripts/on.sh"`,
+      );
     } finally {
       rmSync(src, { recursive: true, force: true });
       rmSync(ws, { recursive: true, force: true });

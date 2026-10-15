@@ -20,13 +20,14 @@ import { buildScriptSandboxArgv, scriptSandboxAvailable, scriptSandboxEnv } from
 import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import { modelCommandEnv, type SessionScope } from "@agency/tools";
+import { modelCommandEnv, resolveConfiguredShell, type SessionScope } from "@agency/tools";
 import {
   assertPreflightCaps,
   estimatePreflightTurnCostUsd,
   modelRunOptions,
   recordTurnCompletion,
 } from "../costing.ts";
+import { sandboxWindowsShell } from "../session-scopes.ts";
 import { assertTaskPreflightCaps } from "../task-ledger.ts";
 import { costUsdForHandle, drainParentInbox, findChildSession, handleForSession } from "../team-context.ts";
 import {
@@ -397,7 +398,10 @@ export async function executeTurn(
           } catch {}
         }
         const typed = userTextOf(params.session);
-        applySlashCommand(commands, options.workspaceRoot, params.session);
+        applySlashCommand(commands, options.workspaceRoot, params.session, {
+          command: resolveConfiguredShell(process.platform, sandboxWindowsShell(config)),
+          env: { CLAUDE_CODE_SESSION_ID: sessionId },
+        });
         if (params.images?.length) {
           const last = params.session[params.session.length - 1];
           if (last && last.role === "user") {
