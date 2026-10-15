@@ -61,6 +61,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the flags of `claude mcp add` (`--env`, `--header`, `--transport`, `--scope`), to a file
   of the user config or to the `.mcp.json` of the workspace, and show where each server
   comes from.
+- **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
+  as `/export` of Claude Code writes it.
 - **PDFs**: `read` attaches a PDF, as Claude Code reads one: a document for Anthropic, a file
   for the Responses API, and a file for OpenRouter, parsed to text with its free engine for
   any model. `-p --image <file>.pdf` sends one with the prompt.

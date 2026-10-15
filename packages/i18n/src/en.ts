@@ -263,6 +263,8 @@ export const en = {
   "cli.session.cloned": "Cloned session {id} as {cloneId}.",
   "cli.session.clone_usage": "usage: agency session clone <id> [newId]",
   "cli.session.show_usage": "usage: agency session show <id>",
+  "cli.session.export_usage": "usage: agency session export <id> [-o <file>]",
+  "cli.session.exported": "Session {id} written to {path}.",
   "cli.session.rename_usage": "usage: agency session rename <id> <title>",
   "cli.session.no_title": "Session {id} has no title.",
   "cli.session.rename_empty": "Title cannot be empty.",

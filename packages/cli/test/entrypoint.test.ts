@@ -281,6 +281,52 @@ describe("session commands", () => {
     expect(noArg.err.join("\n")).toContain("usage");
   });
 
+  test("session export writes the conversation as Markdown, to stdout or a file", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    let parentId: string | null = null;
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "read a.md" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: "c1", name: "read", input: { path: "a.md" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", toolCallId: "c1", content: "has ``` inside", isError: false }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "It has a fence." }] },
+    ];
+    for (const message of messages) {
+      const entry = await store.append("s-x", { type: "message", parentId, message });
+      parentId = entry.id;
+    }
+    const { out, deps } = capture();
+    expect(await runEntrypoint(["session", "export", "s-x"], { sessionsDir, ...deps })).toBe(0);
+    const markdown = out.join("\n");
+    expect(markdown).toStartWith("# s-x\n\n## User\n\nread a.md");
+    expect(markdown).toContain('Tool call `read`:\n\n```json\n{\n  "path": "a.md"\n}\n```');
+    expect(markdown).toContain("Result:\n\n````\nhas ``` inside\n````");
+    expect(markdown).toContain("## Tool results\n\nResult:");
+    expect(markdown).toEndWith("## Assistant\n\nIt has a fence.");
+
+    const dir = tempDir("agency-ep-export-");
+    const file = capture();
+    expect(
+      await runEntrypoint(["session", "export", "s-x", "-o", "chat.md"], {
+        sessionsDir,
+        cwd: dir,
+        ...file.deps,
+      }),
+    ).toBe(0);
+    expect(readFileSync(join(dir, "chat.md"), "utf8")).toBe(`${markdown}\n`);
+    expect(await runEntrypoint(["session", "export", "nope"], { sessionsDir, ...capture().deps })).toBe(1);
+    await store.append("s-x", { type: "session_title", parentId, title: "fence talk" });
+    const byName = capture();
+    expect(await runEntrypoint(["session", "export", "fence talk"], { sessionsDir, ...byName.deps })).toBe(0);
+    expect(byName.out.join("\n")).toStartWith("# fence talk\n\n## User");
+  });
+
   test("session fork copies entries under a new id and rejects unknown ids", async () => {
     const sessionsDir = tempDir("agency-ep-sessions-");
     const store = new SessionStore(sessionsDir);

@@ -342,6 +342,10 @@ Agent files are in `agents/` of the user config directory, and in `.agency/agent
 
 A worker has the permission mode of the run that started it. In the default mode it can read, and an ask goes to the approval surface of the parent turn, so a headless run refuses it. In `allow-edits` it can change files, and in `allow-all` it can use the shell.
 
+## Session export
+
+`agency session export <id>` prints the conversation of a session as Markdown, as `/export` of Claude Code and `pi --export` give one: the text of each turn, each tool call with its input, and each result. `-o <file>` writes it to a file. It follows the branch of the latest tip. `session show`, `session export` and `session fork` take the title of a session in place of its id, as `--resume` does.
+
 ## Session goal
 
 A session can hold a goal: a condition that must be true before a turn ends. When the model ends a turn, the daemon asks the model of that turn if the newest part of the transcript shows that the goal is met. If it does not, the model gets the reason as a message and the turn goes on. When the goal is met, the daemon clears it.

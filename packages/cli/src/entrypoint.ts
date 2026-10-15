@@ -86,7 +86,10 @@ Commands:
   storage prune            Clear the cache; with retention flags, prune old sessions
   session list [query]     List sessions for this workspace (id, title, created, entries);
                            optional query filters by title (id fallback), case-insensitive
-  session show <id>        Show session details
+  session show <id>        Show session details (show, export and fork take a session's
+                           title too)
+  session export <id> [-o <file>]
+                           The conversation of a session as Markdown, to stdout or a file
   session rename <id> <title>  Rename a session
   session fork <id>        Fork (clone) a session under a new id
   session clone <id> [newId]  Clone a session file under a new id (or the given one)
@@ -898,6 +901,42 @@ function reportTurn<T extends RunTurnRpcResult>(
   return failed ? 1 : 0;
 }
 
+/** A session as Markdown, as `/export` of Claude Code writes one: the text, each tool call and its result. */
+function sessionMarkdown(title: string, messages: Message[]): string {
+  // A fence longer than any run of backticks in the text, so the text cannot close it.
+  const fenced = (text: string, lang = ""): string => {
+    const fence = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+    return `${fence}${lang}\n${text}\n${fence}`;
+  };
+  const parts = [`# ${title}`];
+  for (const message of messages) {
+    const lines: string[] = [];
+    for (const block of message.content) {
+      if (block.type === "text" && block.text.trim() !== "") lines.push(block.text);
+      else if (block.type === "image") lines.push(`[${block.mimeType}]`);
+      else if (block.type === "tool_call")
+        lines.push(`Tool call \`${block.name}\`:\n\n${fenced(JSON.stringify(block.input, null, 2), "json")}`);
+      else if (block.type === "tool_result")
+        lines.push(`Result${block.isError ? " (error)" : ""}:\n\n${fenced(block.content)}`);
+    }
+    if (lines.length === 0) continue;
+    const role = message.content.every((block) => block.type === "tool_result")
+      ? "Tool results"
+      : message.role === "user"
+        ? "User"
+        : "Assistant";
+    parts.push(`## ${role}\n\n${lines.join("\n\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+/** `--resume <name>`, as in Claude Code: a value that is no session id is the title of one. */
+function sessionIdOrName(store: SessionStore, value: string): string {
+  const ids = store.list();
+  if (ids.includes(value)) return value;
+  return ids.find((id) => getSessionTitle(store.load(id)) === value) ?? value;
+}
+
 /** Copies a session to a new id and returns the id: `session fork`, and `-p --fork-session`. */
 async function forkSession(store: SessionStore, id: string): Promise<string> {
   const forkId = `${id}-fork-${Date.now()}`;
@@ -1071,12 +1110,8 @@ async function runPrintMode(
       sessionId = latestSessionId(store);
       if (sessionId === undefined) throw new Error(t("cli.error.no_sessions"));
     }
-    // `--resume <name>`, as in Claude Code: a value that is no session id is the title of one.
+    sessionId = sessionIdOrName(store, sessionId);
     const ids = store.list();
-    if (!ids.includes(sessionId)) {
-      const name = sessionId;
-      sessionId = ids.find((id) => getSessionTitle(store.load(id)) === name) ?? name;
-    }
     if (parsed.forkSession) {
       if (!ids.includes(sessionId)) throw new Error(t("cli.error.unknown_session", { id: sessionId }));
       sessionId = await forkSession(store, sessionId);
@@ -1395,7 +1430,7 @@ async function runSessionCmd(
   }
 
   if (parsed.subcommand === "show") {
-    const id = parsed.args[0];
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
     if (id === undefined) {
       err(t("cli.session.show_usage"));
       return 1;
@@ -1412,6 +1447,30 @@ async function runSessionCmd(
     } else {
       out(t("cli.session.shown", { id, entries: String(entries.length), createdAt }));
       if (title) out(`  title: ${title}`);
+    }
+    return 0;
+  }
+
+  if (parsed.subcommand === "export") {
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
+    if (id === undefined) {
+      err(t("cli.session.export_usage"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const entries = store.load(id);
+    const tip = store.latestTip(entries);
+    const markdown = sessionMarkdown(
+      getSessionTitle(entries) ?? id,
+      tip === undefined ? [] : store.messagesFor(entries, tip),
+    );
+    if (parsed.outputLastMessage === undefined) out(markdown);
+    else {
+      writeFileSync(resolve(deps.cwd ?? process.cwd(), parsed.outputLastMessage), `${markdown}\n`);
+      out(t("cli.session.exported", { id, path: parsed.outputLastMessage }));
     }
     return 0;
   }
@@ -1443,7 +1502,7 @@ async function runSessionCmd(
   }
 
   if (parsed.subcommand === "fork") {
-    const id = parsed.args[0];
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
     if (id === undefined) {
       err(t("cli.session.fork_usage"));
       return 1;
