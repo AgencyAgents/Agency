@@ -6,7 +6,7 @@ import type {
   RiskTier,
   ToolPolicy,
 } from "@agency/guard";
-import { isCommandPatternTool, isPathPatternTool, requireTool } from "@agency/guard";
+import { isCommandPatternTool, isPathPatternTool, PermissionsGate, requireTool } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import {
   type CacheSegment,
@@ -30,6 +30,7 @@ import {
 } from "@agency/schema";
 import type { AutoReviewer } from "./auto-review.ts";
 import { CODE_TOOL } from "./codemode.ts";
+import { permissionsFromRules } from "./config/claude-permissions.ts";
 import { type AgencyEvents, HookBlock, HookStop } from "./events.ts";
 import { pruneStaleResults } from "./prune.ts";
 import {
@@ -58,6 +59,8 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
       onProgress?: (message: string) => void;
       /** Variables that plugins add to the environment of a shell command (the `shell.env` event). */
       env?: Record<string, string>;
+      /** Pre-approves tools for the rest of the turn, as rules of Claude Code: the `allowed-tools` of a skill. */
+      grantTools?: (rules: string[]) => void;
       /** Runs another tool of this turn through the same checks as a call of the model. */
       callTool?: (
         name: string,
@@ -177,6 +180,8 @@ export interface RunTurnOptions {
   compactionLimit?: number;
   /** `keepToolResults` of the config: old results of re-runnable tools stay whole in each request. */
   keepToolResults?: boolean;
+  /** Rules of Claude Code that the turn starts with pre-approved: the `allowed-tools` of a skill that `/name` ran. */
+  grantedTools?: string[];
   /** The model takes image input: images that a tool returned go to it. Absent means no. */
   vision?: boolean;
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
@@ -229,12 +234,35 @@ export type TurnError = { code: string; message: string };
  * drives a full turn, including any tool-calling round-trips it takes to
  * reach a non-tool_use stop reason, a budget breach, or the iteration cap.
  */
+/** The tools pre-approved in a turn; a skill that the model loads adds its rules. */
+const turnGrants = new WeakMap<RunTurnOptions, string[]>();
+
+/**
+ * True when a granted rule allows the call. As in Claude Code, a grant answers only a prompt of no rule: a deny rule
+ * or an ask pattern of the config still holds.
+ */
+function granted(
+  rules: string[],
+  request: { tool: string; command?: string; path?: string },
+  cwd?: string,
+): boolean {
+  if (rules.length === 0) return false;
+  const { permissions } = permissionsFromRules({ allow: rules });
+  const gate = new PermissionsGate({
+    permissions,
+    workspaceRoot: cwd ?? process.cwd(),
+    absentToolsDenied: true,
+  });
+  return gate.decisionFor({ ...request, riskTier: "dangerous" }) === "allow";
+}
+
 export async function runTurn(
   adapter: ProviderAdapter,
   scheduler: Scheduler,
   http: HttpClient,
   options: RunTurnOptions,
 ): Promise<RunTurnResult> {
+  turnGrants.set(options, [...(options.grantedTools ?? [])]);
   const messages = [...options.session];
   // The reviewer of auto mode reads the transcript of this turn as it grows.
   const review = options.reviewApproval;
@@ -951,11 +979,17 @@ async function executeOne(
       let blocked: string | undefined;
       // A PreToolUse `allow` answers the prompt of a default ask only: an ask rule of the config still asks.
       const hookAllows = before.decision === "allow";
+      const grants = turnGrants.get(options) ?? [];
       const ask: typeof askUser =
-        askUser === undefined && review === undefined && !hookAllows
+        askUser === undefined && review === undefined && !hookAllows && grants.length === 0
           ? undefined
           : async (request) => {
-              if (hookAllows && request.source?.startsWith("default:")) return "once";
+              // The ask of no rule: a tool with no entry, or a call that no pattern of its map names.
+              const noRule =
+                request.source?.startsWith("default:") || request.source?.endsWith(":unmatched-map-ask");
+              if (hookAllows && noRule) return "once";
+              if (noRule && granted(grants, request, options.cwd)) return "once";
+              if (askUser === undefined && review === undefined) return "reject";
               if (review !== undefined && request.source?.startsWith("default:")) {
                 const verdict = await review(request);
                 if (verdict?.allow === true) return "once";
@@ -1059,6 +1093,11 @@ async function executeOne(
     requestApproval: options.requestApproval,
     taskDepth: options.taskDepth,
     env: shellEnv,
+    grantTools: (rules: string[]) => {
+      const grants = turnGrants.get(options);
+      if (grants === undefined) turnGrants.set(options, [...rules]);
+      else grants.push(...rules);
+    },
     onProgress: onEvent
       ? (message: string) => {
           onEvent({ type: "tool_progress", id: call.id, name: resolved.name, message });

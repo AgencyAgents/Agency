@@ -84,6 +84,9 @@ function yamlTrue(value: string | undefined): boolean {
   return value !== undefined && /^(true|yes|on|1)$/i.test(value);
 }
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder of Claude Code
+const SKILL_DIR = "${CLAUDE_SKILL_DIR}";
+
 /** The listing of Claude Code cuts the description and `when_to_use` of a skill here. */
 const MAX_SKILL_DESCRIPTION = 1536;
 
@@ -100,6 +103,7 @@ export function parseSkillFrontmatter(text: string): {
   body: string;
   modelInvocable: boolean;
   userInvocable: boolean;
+  allowedTools?: string[];
 } {
   const split = splitFrontmatter(text);
   const { fields } = split;
@@ -115,6 +119,9 @@ export function parseSkillFrontmatter(text: string): {
     userInvocable: fields["user-invocable"] === undefined || yamlTrue(fields["user-invocable"]),
   };
   if (fields.name !== undefined) result.name = fields.name;
+  // `Read, Bash(git *)`, `Read Grep` or a YAML list: each rule is a tool name with its optional pattern.
+  const rules = fields["allowed-tools"]?.match(/[A-Za-z_][\w.:-]*(?:\([^)]*\))?/g);
+  if (rules) result.allowedTools = rules;
   if (described !== "") {
     result.description =
       described.length > MAX_SKILL_DESCRIPTION
@@ -146,6 +153,8 @@ export interface SkillDescriptor {
   modelInvocable: boolean;
   /** False for `user-invocable: false`: no `/name` command. */
   userInvocable: boolean;
+  /** `allowed-tools`: rules of Claude Code that the turn which loads the skill runs with no prompt. */
+  allowedTools?: string[];
 }
 
 /**
@@ -216,6 +225,9 @@ export function discoverSkills(dirs: SkillDirEntry[], logger?: Logger): SkillDes
         tier,
         modelInvocable: parsed.modelInvocable,
         userInvocable: parsed.userInvocable,
+        ...(parsed.allowedTools
+          ? { allowedTools: parsed.allowedTools.map((rule) => rule.replaceAll(SKILL_DIR, skillDir)) }
+          : {}),
       });
     }
   }
@@ -267,8 +279,7 @@ export function skillText(skill: SkillDescriptor, args: string): string {
   const words = (args.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((word) =>
     word.replace(/^(["'])(.*)\1$/s, "$2"),
   );
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder of Claude Code
-  const body = skill.body.replaceAll("${CLAUDE_SKILL_DIR}", () => dir);
+  const body = skill.body.replaceAll(SKILL_DIR, () => dir);
   const filled = body
     .replace(/\$ARGUMENTS\[(\d+)\]/g, (all, n: string) => words[Number(n)] ?? all)
     .replaceAll("$ARGUMENTS", () => args);
@@ -280,8 +291,7 @@ export function skillText(skill: SkillDescriptor, args: string): string {
 export function skillCommandTemplate(skill: SkillDescriptor): string {
   const dir = dirname(skill.path);
   const body = skill.body
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder of Claude Code
-    .replaceAll("${CLAUDE_SKILL_DIR}", () => dir)
+    .replaceAll(SKILL_DIR, () => dir)
     .replace(/\$ARGUMENTS\[([0-8])\]/g, (_all, n: string) => `$${Number(n) + 1}`);
   const tail = /\$ARGUMENTS|\$[1-9]/.test(body) ? "" : "\n\nARGUMENTS: $ARGUMENTS";
   return `Skill: ${skill.name}\nBase directory: ${dir} (paths in the skill are relative to it)\n\n${body}${tail}`;
@@ -302,12 +312,13 @@ export function createSkillTool(skills: SkillDescriptor[]): ToolSpec {
       required: ["name"],
     },
     riskTier: "safe",
-    handler: async (input) => {
+    handler: async (input, ctx) => {
       const skill = skills.find((candidate) => candidate.name === input.name);
       if (!skill) {
         const names = skills.map((candidate) => candidate.name).join(", ");
         return { content: `unknown skill: ${String(input.name)}. The skills are: ${names}`, isError: true };
       }
+      if (skill.allowedTools) ctx.grantTools?.(skill.allowedTools);
       return { content: skillText(skill, typeof input.arguments === "string" ? input.arguments : "") };
     },
   };

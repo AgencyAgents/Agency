@@ -13,6 +13,8 @@ export interface CommandTemplate {
   path: string;
   source: "project" | "user";
   description?: string;
+  /** The `allowed-tools` of a skill: the turn of its command runs them with no prompt. */
+  allowedTools?: string[];
 }
 
 /** `.prompt.md` reads the prompt files of Copilot: with no `$ARGUMENTS`, the words of the command go after the prompt. */
@@ -161,6 +163,7 @@ export function loadCommands(options: {
       path: skill.path,
       source: skill.tier,
       ...(skill.description === undefined ? {} : { description: skill.description }),
+      ...(skill.allowedTools ? { allowedTools: skill.allowedTools } : {}),
     });
   }
   for (const c of user) map.set(c.name, c);

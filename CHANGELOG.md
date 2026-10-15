@@ -63,6 +63,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **`allowed-tools` of a skill**: its rules run with no prompt for the rest of the turn that loads
+  the skill, by the model or by `/<name>`, as in Claude Code; a deny rule or an ask pattern still
+  holds. `${CLAUDE_SKILL_DIR}` works in a rule.
 - **Old tool results leave the requests**: a result over 2,000 characters of a tool that can run
   again (`read`, `bash`, `grep`, `glob`, `fetch`, `websearch`, `lsp_*`) that is over 10 model
   calls old becomes a one-line note, in batches of 20,000 tokens decided by a replay of the
