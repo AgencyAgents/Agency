@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
@@ -1079,6 +1088,28 @@ describe("-p headless mode", () => {
     expect(code).toBe(1);
     expect(bad.err.join("\n")).toContain("--mcp-config is not valid");
     expect(headless.calls).toHaveLength(2);
+  });
+
+  test("-o writes the answer, or the structured answer, to a file", async () => {
+    const file = join(tempDir("agency-ep-last-"), "last.txt");
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "-o", file];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...fakeRunHeadless() })).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("hi from the fake daemon\n");
+    const structured = fakeRunHeadless({
+      ...TURN_RESULT,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_call", id: "s1", name: "structured_output", input: { ok: true } }],
+        },
+      ],
+    });
+    const schema = JSON.stringify({ type: "object" });
+    expect(
+      await runEntrypoint([...argv, "--json-schema", schema], { ...baseDeps(), ...deps, ...structured }),
+    ).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe('{"ok":true}\n');
   });
 
   test("--fallback-model reaches the turn", async () => {

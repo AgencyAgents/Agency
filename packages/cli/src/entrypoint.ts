@@ -148,6 +148,8 @@ Options:
                            (repeatable); --strict-mcp-config uses only these servers
   --fallback-model <provider/model>
                            With -p: the model of the turn when its model is overloaded
+  -o, --output-last-message <file>
+                           With -p: also write the answer to this file
   -w, --worktree <name>    With -p: run in the git worktree .agency/worktrees/<name>
                            on branch agency/<name> (made when missing)
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
@@ -212,6 +214,8 @@ export interface ParsedArgv {
   /** `--mcp-config <file|json>` of `-p`: MCP servers of this run; `--strict-mcp-config` drops the others. */
   mcpConfig: string[];
   strictMcpConfig: boolean;
+  /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
+  outputLastMessage: string | undefined;
   /** `--fallback-model <provider/model>` of `-p`: the model of the turn when the model is overloaded. */
   fallbackModel: string | undefined;
   /** `-w, --worktree <name>` of `-p`: the turn runs in a git worktree of this name. */
@@ -296,6 +300,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     strictMcpConfig: false,
     worktree: undefined,
     fallbackModel: undefined,
+    outputLastMessage: undefined,
     serverEnv: [],
     headers: [],
     transport: undefined,
@@ -451,6 +456,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       case "--strict-mcp-config":
         parsed.strictMcpConfig = true;
+        break;
+      case "-o":
+      case "--output-last-message":
+        parsed.outputLastMessage = value();
         break;
       case "--fallback-model":
         parsed.fallbackModel = value();
@@ -644,9 +653,14 @@ function printJsonOrText(out: LineSink, format: "text" | "json", payload: unknow
 function reportTurn<T extends RunTurnRpcResult>(
   out: LineSink,
   err: LineSink,
-  parsed: Pick<ParsedArgv, "format" | "streamJson">,
+  parsed: Pick<ParsedArgv, "format" | "streamJson" | "outputLastMessage">,
   result: T,
 ): number {
+  if (parsed.outputLastMessage !== undefined) {
+    const answer =
+      "structuredOutput" in result ? JSON.stringify(result.structuredOutput) : assistantText(result.messages);
+    writeFileSync(resolve(parsed.outputLastMessage), `${answer}\n`);
+  }
   // The last line of a stream: one line, like each event before it.
   if (parsed.streamJson) out(JSON.stringify({ type: "result", ...result }));
   else printJsonOrText(out, parsed.format, result, assistantText(result.messages));
@@ -869,7 +883,7 @@ async function runPrintMode(
   }
   if (parsed.format === "text" && !parsed.streamJson) {
     out(JSON.stringify(answer.input));
-    return reportTurn(() => {}, err, parsed, result);
+    return reportTurn(() => {}, err, parsed, { ...result, structuredOutput: answer.input });
   }
   return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
 }
