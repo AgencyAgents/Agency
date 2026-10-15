@@ -179,6 +179,11 @@ Options:
   --help, -h               Show this help
   --version, -v            Show version
 
+Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
+--output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
+the permission modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose,
+--include-partial-messages and --skip-git-repo-check change nothing.
+
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
 
@@ -338,6 +343,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     version: false,
   };
   const positionals: string[] = [];
+  // `claude -p --output-format json "query"`: the `-p` of Claude Code takes no value, and the prompt comes later.
+  let promptLater = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -368,6 +375,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.version = true;
         break;
       case "--continue":
+      case "-c":
         parsed.continueLast = true;
         break;
       case "--oauth":
@@ -377,6 +385,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.device = true;
         break;
       case "--workspace":
+      case "-C":
+      case "--cd":
         parsed.workspace = value();
         break;
       case "--model":
@@ -386,13 +396,32 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.provider = value();
         break;
       case "--session":
+      case "--session-id":
+      case "--resume":
+      case "-r":
         parsed.session = value();
         break;
       case "-p":
-      case "--print":
-        parsed.print = value();
+      case "--print": {
+        const next = argv[i + 1];
+        if (inline === undefined && (next === undefined || (next.startsWith("-") && next !== "-")))
+          promptLater = true;
+        else parsed.print = value();
         break;
-      case "--format": {
+      }
+      // Claude Code asks for `--verbose` with stream-json, and `codex exec` for a git check flag outside a repository.
+      case "--verbose":
+      case "--include-partial-messages":
+      case "--skip-git-repo-check":
+        break;
+      case "--dangerously-skip-permissions":
+        parsed.permissionMode = "allow-all";
+        break;
+      case "--no-tools":
+        parsed.tools = "";
+        break;
+      case "--format":
+      case "--output-format": {
         const format = value();
         if (format !== "text" && format !== "json" && format !== "stream-json") {
           throw new Error(t("cli.error.invalid_format"));
@@ -402,7 +431,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
         break;
       }
       case "--permission-mode": {
-        const mode = value();
+        const raw = value();
+        const mode = CLAUDE_PERMISSION_MODES[raw] ?? raw;
         if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
@@ -423,7 +453,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
         );
         break;
       }
-      case "--max-steps": {
+      case "--max-steps":
+      case "--max-turns": {
         const steps = Number(value());
         if (!Number.isInteger(steps) || steps < 1) throw new Error(t("cli.error.invalid_max_steps"));
         parsed.maxSteps = steps;
@@ -433,6 +464,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.goal = value();
         break;
       case "--json-schema":
+      case "--output-schema":
         parsed.jsonSchema = value();
         break;
       case "--system-prompt":
@@ -518,6 +550,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     }
   }
 
+  if (promptLater) parsed.print = positionals.shift() ?? "-";
   parsed.command = positionals[0];
   parsed.subcommand = positionals[1];
   parsed.args = positionals.slice(2);
@@ -525,6 +558,15 @@ export function parseArgv(argv: string[]): ParsedArgv {
 }
 
 type LineSink = (line: string) => void;
+
+/** The modes of `claude --permission-mode`; `plan` changes no file, as `deny` refuses each tool above `safe`. */
+const CLAUDE_PERMISSION_MODES: Record<string, PermissionMode> = {
+  default: "ask",
+  dontAsk: "ask",
+  acceptEdits: "allow-edits",
+  plan: "deny",
+  bypassPermissions: "allow-all",
+};
 
 function workspaceRootOf(parsed: ParsedArgv, deps: EntrypointDeps): string {
   return resolve(deps.cwd ?? process.cwd(), parsed.workspace ?? ".");

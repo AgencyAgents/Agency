@@ -1131,6 +1131,34 @@ describe("-p headless mode", () => {
     expect(() => parseArgv(["-p", "hi", "--thinking", "huge"])).toThrow("--thinking must be one of");
   });
 
+  test("the -p flags of Claude Code, codex exec and Pi parse as the flags here", async () => {
+    const cc = parseArgv(["-p", "--output-format", "stream-json", "--verbose", "--max-turns", "3", "fix it"]);
+    expect([cc.print, cc.streamJson, cc.maxSteps, cc.command]).toEqual(["fix it", true, 3, undefined]);
+    expect(parseArgv(["--print"]).print).toBe("-");
+    expect(parseArgv(["-p", "-"]).print).toBe("-");
+    expect(parseArgv(["-p", "hi"]).print).toBe("hi");
+    expect(parseArgv(["-p", "--", "-x y"]).print).toBe("-x y");
+    expect(parseArgv(["-p=-x y"]).print).toBe("-x y");
+    expect(parseArgv(["-c", "-p", "go on"]).continueLast).toBe(true);
+    expect(parseArgv(["-p", "-r", "s-1", "go on"]).session).toBe("s-1");
+    expect(parseArgv(["-p", "x", "--session-id", "s-2"]).session).toBe("s-2");
+    expect(parseArgv(["-p", "x", "--dangerously-skip-permissions"]).permissionMode).toBe("allow-all");
+    const modes = ["default", "dontAsk", "acceptEdits", "plan", "bypassPermissions"].map(
+      (mode) => parseArgv(["-p", "x", "--permission-mode", mode]).permissionMode,
+    );
+    expect(modes).toEqual(["ask", "ask", "allow-edits", "deny", "allow-all"]);
+    const codex = parseArgv(["-p", "x", "-C", "repo", "--output-schema", "s.json", "--skip-git-repo-check"]);
+    expect([codex.workspace, codex.jsonSchema]).toEqual(["repo", "s.json"]);
+    expect(parseArgv(["-p", "x", "--no-tools"]).tools).toBe("");
+
+    const headless = fakeRunHeadless();
+    const { deps, out } = capture();
+    const argv = ["-p", "--model", "openai/fake-1", "--output-format", "json", "say hi"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.prompt).toBe("say hi");
+    expect(JSON.parse(out.join("\n")).stopReason).toBe("end_turn");
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();
