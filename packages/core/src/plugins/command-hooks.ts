@@ -116,6 +116,12 @@ export interface HookOutcome {
   allow?: true;
   /** A PermissionDenied hook lets the model retry the call. */
   retry?: true;
+  /** A PreToolUse hook wants the user asked, though a rule allows the call. */
+  ask?: true;
+  /** `updatedInput` of a PreToolUse hook: the call runs with this input. */
+  input?: Record<string, unknown>;
+  /** `updatedToolOutput` of a PostToolUse hook: the model gets this in place of the result. */
+  output?: string;
 }
 
 const DEFAULT_TIMEOUT_S = 60;
@@ -502,9 +508,10 @@ function parseJson(text: string): Record<string, unknown> | undefined {
 export async function runCommandHooks(
   hooks: CommandHooks,
   event: CommandHookEvent,
-  input: Record<string, unknown>,
+  eventInput: Record<string, unknown>,
   opts: HookRunOptions,
 ): Promise<HookOutcome> {
+  let input = eventInput;
   // What a matcher tests: the tool, the trigger of a compaction, the agent type, the type of a notification, the
   // typed command, or the type of a provider error.
   const subject = [
@@ -515,9 +522,11 @@ export async function runCommandHooks(
     input.command_name,
     input.error,
   ].find((value): value is string => typeof value === "string");
-  const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
+  let stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
   const context: string[] = [];
   let retry = false;
+  let permission: "allow" | "ask" | undefined;
+  let output: string | undefined;
   // As in Claude Code: a SessionStart hook writes `export` lines to CLAUDE_ENV_FILE for the shell commands of the session.
   const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
   const envFile = event === "SessionStart" && sessionId !== undefined ? opts.envFile?.(sessionId) : undefined;
@@ -602,12 +611,44 @@ export async function runCommandHooks(
       else if (!json && out.stdout && (event === "UserPromptSubmit" || event === "SessionStart")) {
         context.push(out.stdout);
       }
+      if (event === "PreToolUse") {
+        // As in Claude Code: `ask` wins over `allow`, and the next hook sees the input that this one gave.
+        if (specific.permissionDecision === "ask") permission = "ask";
+        else if (specific.permissionDecision === "allow" && permission === undefined) permission = "allow";
+        const updated = specific.updatedInput;
+        if (typeof updated === "object" && updated !== null && !Array.isArray(updated)) {
+          input = { ...input, tool_input: updated };
+          stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
+        }
+      }
+      const replaced = specific.updatedToolOutput ?? specific.updatedMCPToolOutput;
+      if (event === "PostToolUse" && replaced !== undefined) output = toolOutputText(replaced);
     }
   }
   return {
     ...(context.length > 0 ? { context: context.join("\n") } : {}),
     ...(retry ? { retry: true as const } : {}),
+    ...(permission === "ask"
+      ? { ask: true as const }
+      : permission === "allow"
+        ? { allow: true as const }
+        : {}),
+    ...(input !== eventInput ? { input: input.tool_input as Record<string, unknown> } : {}),
+    ...(output === undefined ? {} : { output }),
   };
+}
+
+/** The text of an `updatedToolOutput`: a string, the `stdout` and `stderr` of a Bash result of Claude Code, or JSON. */
+function toolOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const shaped = value as { stdout?: unknown; stderr?: unknown; content?: unknown } | null;
+  if (typeof shaped?.stdout === "string") {
+    return [shaped.stdout, shaped.stderr]
+      .filter((part) => typeof part === "string" && part !== "")
+      .join("\n");
+  }
+  if (typeof shaped?.content === "string") return shaped.content;
+  return JSON.stringify(value);
 }
 
 /** Connects the tool and stop events of the bus to the command hooks. Returns the function that disconnects them. */
@@ -617,7 +658,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
   const agentTypes = new Map<string, string>();
   const offs = [
     bus.on("tool.execute.before", async (payload) => {
-      const p = payload as ToolPayload;
+      const p = payload as AgencyEvents["tool.execute.before"];
       const out = await runCommandHooks(
         hooks,
         "PreToolUse",
@@ -625,6 +666,12 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
         opts,
       );
       if (out.block !== undefined) throw new HookBlock(out.block);
+      if (out.input !== undefined) p.input = out.input;
+      // An `ask` of one hook set holds against an `allow` of another.
+      if (out.ask) p.decision = "ask";
+      else if (out.allow && p.decision === undefined) p.decision = "allow";
+      if (out.context !== undefined)
+        p.context = p.context === undefined ? out.context : `${p.context}\n${out.context}`;
     }),
     bus.on("tool.execute.after", async (payload) => {
       const p = payload as ToolPayload;
@@ -634,6 +681,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       const out = result?.isError
         ? await runCommandHooks(hooks, "PostToolUseFailure", { ...base, error: result.content }, opts)
         : await runCommandHooks(hooks, "PostToolUse", { ...base, tool_response: p.result }, opts);
+      if (out.output !== undefined) (payload as AgencyEvents["tool.execute.after"]).output = out.output;
       const text = out.block ?? out.context;
       if (text !== undefined) throw new HookBlock(text);
     }),

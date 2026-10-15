@@ -46,10 +46,36 @@ async function blockOf(bus: EventBus, command: string): Promise<string | undefin
   return block instanceof HookBlock ? block.message : undefined;
 }
 
+/** The input that the hooks give a bash call of `rewrite-me`, and the result that they give for it. */
+async function rewrites(bus: EventBus): Promise<{ input: Record<string, unknown>; output?: string }> {
+  const before = {
+    tool: "bash",
+    input: { command: "rewrite-me" } as Record<string, unknown>,
+    sessionId: "s",
+  };
+  await bus.emitCollect("tool.execute.before", before);
+  const after: {
+    tool: string;
+    input: Record<string, unknown>;
+    result: { content: string };
+    output?: string;
+  } = {
+    tool: "bash",
+    input: before.input,
+    result: { content: "a long log" },
+  };
+  await bus.emitCollect("tool.execute.after", after);
+  return { input: before.input, ...(after.output === undefined ? {} : { output: after.output }) };
+}
+
 const OPENCODE_PLUGIN = `import { tool } from "@opencode-ai/plugin";
 export const Guard = async ({ directory, $ }) => ({
   "tool.execute.before": async (input, output) => {
     if (input.tool === "bash" && String(output.args.command).startsWith("rm")) throw new Error("no rm in " + typeof directory);
+    if (output.args.command === "rewrite-me") output.args = { command: "rewritten" };
+  },
+  "tool.execute.after": async (input, output) => {
+    if (input.args.command === "rewritten") output.output = "short";
   },
   tool: {
     hello: tool({
@@ -75,6 +101,12 @@ export default function (pi) {
   pi.on("tool_call", async (event) =>
     event.toolName === "bash" && event.input.command.startsWith("rm") ? { block: true, reason: "pi says no" } : undefined,
   );
+  pi.on("tool_call", async (event) => {
+    if (event.input.command === "rewrite-me") event.input.command = "rewritten";
+  });
+  pi.on("tool_result", async (event) =>
+    event.input.command === "rewritten" ? { content: [{ type: "text", text: "short" }] } : undefined,
+  );
   pi.registerCommand("stats", { description: "Stats", handler: async () => {} });
   pi.registerShortcut("ctrl+x", { handler: () => {} });
 }
@@ -88,6 +120,7 @@ test("an OpenCode plugin of .opencode/plugins runs: its hook blocks, and its too
   expect(result.errors).toEqual([]);
   expect(await blockOf(bus, "rm -rf x")).toBe("no rm in string");
   expect(await blockOf(bus, "ls")).toBeUndefined();
+  expect(await rewrites(bus)).toEqual({ input: { command: "rewritten" }, output: "short" });
   const hello = registry.tools.get("guard_hello");
   expect(hello?.inputSchema).toMatchObject({
     type: "object",
@@ -114,6 +147,7 @@ test("a Pi extension of .pi/extensions runs: its tool has the TypeBox schema, an
     isError: false,
   });
   expect(await blockOf(bus, "rm x")).toBe("pi says no");
+  expect(await rewrites(bus)).toEqual({ input: { command: "rewritten" }, output: "short" });
 });
 
 test("the code of other agents does not load in a workspace that is not trusted", async () => {

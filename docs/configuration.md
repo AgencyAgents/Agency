@@ -405,7 +405,7 @@ The summary ends with the messages that you wrote in the folded part, word for w
 
 | Event | When it runs | Effect of a block |
 |---|---|---|
-| `PreToolUse` | Before each tool call | The tool does not run. The model gets the reason as the tool result. |
+| `PreToolUse` | Before each tool call, and before its permission check | The tool does not run. The model gets the reason as the tool result. |
 | `PostToolUse` | After each tool call that succeeded | The reason is added to the tool result. |
 | `PostToolUseFailure` | After each tool call that failed | The reason is added to the tool result. |
 | `PostToolBatch` | Once after all tool calls of one reply, before the next request. The input has `tool_calls`: `tool_name`, `tool_input`, `tool_use_id` and `tool_response` of each call. There is no matcher | The turn ends with the reason, and the model gets no more requests. `additionalContext` is added once, to the last tool result. |
@@ -427,6 +427,8 @@ Each command gets the event as JSON on stdin: `hook_event_name`, `cwd`, `session
 
 - Exit code 2 is a block, and stderr is the reason. So is exit code 0 with `{"decision": "block", "reason": "..."}` on stdout, or with `hookSpecificOutput.permissionDecision` set to `deny`.
 - Any other exit code that is not 0 is a failed hook. It does not block.
+- A `PreToolUse` command can change the call, as in Claude Code: `hookSpecificOutput.updatedInput` is the whole input that the tool gets, and the permission rules judge that input, not the one of the model; the next hook sees it too. `permissionDecision: "allow"` answers the prompt of a call that no rule names, also in a run with no person to ask (`-p`); a deny or ask rule still holds. `"ask"` asks you even where a rule or the mode allows, and the reviewer of auto mode cannot answer it. An `ask` of one hook wins over an `allow` of another. Its `additionalContext` goes to the model with the result. So a hook that rewrites a command, such as that of rtk, works here.
+- A `PostToolUse` command can replace the result: the model gets `hookSpecificOutput.updatedToolOutput` (or `updatedMCPToolOutput`) in place of it: a string as it is, the `stdout` and `stderr` of the Bash form of Claude Code, or other JSON as text. An OpenCode plugin that sets `output.args` or `output.output`, and a Pi extension that changes `event.input` or returns `content` from `tool_result`, do the same.
 - A `PermissionRequest` command can also approve: exit code 0 with `hookSpecificOutput.decision.behavior` set to `allow` on stdout runs the call, and you are not asked. `deny` refuses it. With no answer, the ask goes to you as before. A deny wins over an allow. The hook also runs in a run with no person to ask (`-p`), so a script can approve there. It does not run for a call that a rule or the permission mode already allows or denies.
 - Stdout of a `UserPromptSubmit` or `SessionStart` command is given to the model as context and stays in the session. `hookSpecificOutput.additionalContext` does the same.
 - A `SessionStart` command gets `CLAUDE_ENV_FILE`, as in Claude Code: the `export NAME=value` (and `declare -x`) lines that it appends there become variables of each later shell command of the session, with `$NAME` taken from the environment and the lines before. Claude Code runs the file as shell code before each command; here a line that is not an assignment, such as `source` or `nvm use`, is skipped. Each start of the session empties the file first.

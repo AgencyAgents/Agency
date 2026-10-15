@@ -803,6 +803,91 @@ describe("hooks in the loop", () => {
     expect({ ran, reviewed }).toEqual({ ran: ["bash"], reviewed: 1 });
   });
 
+  test("PreToolUse and PostToolUse hooks change the input and the result, as in Claude Code; the rules judge the new input", async () => {
+    let n = 0;
+    const run = async (c: {
+      pre?: object;
+      post?: object;
+      permissions?: ConstructorParameters<typeof PermissionsGate>[0]["permissions"];
+      answer?: "once" | "reject";
+    }) => {
+      n += 1;
+      const reply = (output: object) =>
+        `console.log(${JSON.stringify(JSON.stringify({ hookSpecificOutput: output }))});`;
+      const hooks: Parameters<typeof attachCommandHooks>[1] = {};
+      if (c.pre)
+        hooks.PreToolUse = [{ hooks: [{ type: "command", command: hook(`rw-pre-${n}`, reply(c.pre)) }] }];
+      if (c.post)
+        hooks.PostToolUse = [{ hooks: [{ type: "command", command: hook(`rw-post-${n}`, reply(c.post)) }] }];
+      const bus = new EventBus();
+      attachCommandHooks(bus, hooks, { cwd: dir });
+      const ran: string[] = [];
+      let asked = 0;
+      const result = await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [
+          {
+            name: "bash",
+            description: "runs a command",
+            inputSchema: {},
+            riskTier: "dangerous",
+            handler: async (input) => {
+              ran.push(String(input.command));
+              return { content: `ran ${String(input.command)}` };
+            },
+          },
+        ],
+        model: "m",
+        apiKey: "k",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        eventBus: bus,
+        sessionId: "s1",
+        toolPolicy: new PermissionsGate({
+          workspaceRoot: dir,
+          ...(c.permissions ? { permissions: c.permissions } : {}),
+        }),
+        ...(c.answer
+          ? {
+              requestApproval: async () => {
+                asked += 1;
+                return c.answer as "once" | "reject";
+              },
+            }
+          : {}),
+      });
+      return { ran, asked, text: resultText(result.messages)[0] };
+    };
+    // `allow` answers the default ask of a run with no one to ask, and the tool gets the new input.
+    expect(
+      await run({ pre: { permissionDecision: "allow", updatedInput: { command: "rtk npm test" } } }),
+    ).toMatchObject({
+      ran: ["rtk npm test"],
+    });
+    // A deny rule judges the input of the hook; an ask rule still asks.
+    const rewrite = { permissionDecision: "allow", updatedInput: { command: "rm -rf build" } };
+    expect((await run({ pre: rewrite, permissions: { bash: { "rm *": "deny" } } })).ran).toEqual([]);
+    expect(
+      (await run({ pre: { permissionDecision: "allow" }, permissions: { bash: { "npm *": "ask" } } })).ran,
+    ).toEqual([]);
+    // `ask` goes to the user though a rule allows.
+    expect(
+      await run({ pre: { permissionDecision: "ask" }, permissions: { bash: "allow" }, answer: "reject" }),
+    ).toMatchObject({
+      ran: [],
+      asked: 1,
+    });
+    // The model gets the output of the PostToolUse hook, and the context of the PreToolUse hook.
+    expect(
+      await run({
+        pre: { additionalContext: "on branch dev" },
+        post: { updatedToolOutput: { stdout: "2 passed", stderr: "", interrupted: false, isImage: false } },
+        permissions: { bash: "allow" },
+      }),
+    ).toEqual({ ran: ["npm test"], asked: 0, text: "2 passed\n\non branch dev" });
+  });
+
   test("a SubagentStop hook gets the type of the agent, and its matcher tests it", async () => {
     const bus = new EventBus();
     const stopped = capture("substop-type");

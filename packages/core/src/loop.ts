@@ -30,7 +30,7 @@ import {
 } from "@agency/schema";
 import type { AutoReviewer } from "./auto-review.ts";
 import { CODE_TOOL } from "./codemode.ts";
-import { HookBlock, HookStop } from "./events.ts";
+import { type AgencyEvents, HookBlock, HookStop } from "./events.ts";
 import {
   compactMessages,
   countMessageTokens,
@@ -839,11 +839,12 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "notebook_
 
 async function executeOne(
   spec: ToolSpec | undefined,
-  call: Extract<ContentBlock, { type: "tool_call" }>,
+  modelCall: Extract<ContentBlock, { type: "tool_call" }>,
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
   inner = false,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
+  let call = modelCall;
   const resolved = spec ?? resolveToolSpec(options.tools, call.name);
   if (!resolved) {
     const available = options.tools.map((t) => t.name).join(", ");
@@ -867,6 +868,36 @@ async function executeOne(
   const validationError = validateToolInput(resolved.inputSchema, call.input);
   if (validationError) {
     return { content: validationError, isError: true };
+  }
+
+  // As in Claude Code, PreToolUse comes before the permission check: the rules judge the input that a hook gave.
+  const before: AgencyEvents["tool.execute.before"] = {
+    tool: resolved.name,
+    input: call.input,
+    sessionId: options.sessionId,
+    turnId: options.turnId,
+  };
+  if (options.eventBus) {
+    try {
+      if (options.eventBus.emitCollect) {
+        const { errors } = await options.eventBus.emitCollect("tool.execute.before", before);
+        if (errors.length > 0) {
+          const first = errors[0];
+          return { content: first instanceof Error ? first.message : String(first), isError: true };
+        }
+      } else if (options.eventBus.emitAsync) {
+        await options.eventBus.emitAsync("tool.execute.before", before);
+      } else {
+        options.eventBus.emit("tool.execute.before", before);
+      }
+    } catch {}
+    options.eventBus.emit("event", { event: "tool.execute.before", payload: before });
+    if (before.input !== call.input) {
+      call = { ...call, input: before.input };
+      const error = validateToolInput(resolved.inputSchema, call.input);
+      if (error)
+        return { content: `the input that a PreToolUse hook gave is not valid: ${error}`, isError: true };
+    }
   }
 
   let shellEnv: Record<string, string> | undefined;
@@ -915,10 +946,13 @@ async function executeOne(
       const askUser = options.requestApproval;
       const review = options.reviewApproval;
       let blocked: string | undefined;
+      // A PreToolUse `allow` answers the prompt of a default ask only: an ask rule of the config still asks.
+      const hookAllows = before.decision === "allow";
       const ask: typeof askUser =
-        askUser === undefined && review === undefined
+        askUser === undefined && review === undefined && !hookAllows
           ? undefined
           : async (request) => {
+              if (hookAllows && request.source?.startsWith("default:")) return "once";
               if (review !== undefined && request.source?.startsWith("default:")) {
                 const verdict = await review(request);
                 if (verdict?.allow === true) return "once";
@@ -940,10 +974,21 @@ async function executeOne(
               if (asked.decision === "deny") return "reject";
               return askUser(request);
             };
-      const verdict = await options.toolPolicy.check(
+      let verdict = await options.toolPolicy.check(
         { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title },
         ask,
       );
+      // A PreToolUse `ask` goes to the user even where a rule or the mode allows; the reviewer cannot answer it.
+      if (verdict === "allow" && before.decision === "ask") {
+        const answer = await askUser?.({
+          tool: resolved.name,
+          title: subject.command ?? subject.path ?? resolved.name,
+          ...subject,
+          riskTier: resolved.riskTier,
+          source: "hook:PreToolUse",
+        });
+        if (answer === undefined || answer === "reject") verdict = "deny";
+      }
       if (bus) {
         try {
           bus.emit("permission.replied", {
@@ -993,29 +1038,6 @@ async function executeOne(
     }
   }
 
-  if (options.eventBus) {
-    const payload = {
-      tool: resolved.name,
-      input: call.input,
-      sessionId: options.sessionId,
-      turnId: options.turnId,
-    };
-    try {
-      if (options.eventBus.emitCollect) {
-        const { errors } = await options.eventBus.emitCollect("tool.execute.before", payload);
-        if (errors.length > 0) {
-          const first = errors[0];
-          return { content: first instanceof Error ? first.message : String(first), isError: true };
-        }
-      } else if (options.eventBus.emitAsync) {
-        await options.eventBus.emitAsync("tool.execute.before", payload);
-      } else {
-        options.eventBus.emit("tool.execute.before", payload);
-      }
-    } catch {}
-    options.eventBus.emit("event", { event: "tool.execute.before", payload });
-  }
-
   const toolSignal = signal ?? NEVER_ABORTED;
   const onEvent = options.onEvent;
   let innerCalls = 0;
@@ -1050,7 +1072,7 @@ async function executeOne(
     result = { ...result, content: options.redactToolResult(result.content, resolved.name) };
 
   if (options.eventBus) {
-    const afterPayload = {
+    const afterPayload: AgencyEvents["tool.execute.after"] = {
       tool: resolved.name,
       input: call.input,
       result: { content: result.content, isError: result.isError ?? false },
@@ -1060,13 +1082,17 @@ async function executeOne(
     try {
       if (options.eventBus.emitCollect) {
         const { errors } = await options.eventBus.emitCollect("tool.execute.after", afterPayload);
+        if (afterPayload.output !== undefined) result = { ...result, content: afterPayload.output };
         const notes = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
         if (notes.length > 0) result = { ...result, content: [result.content, ...notes].join("\n\n") };
       } else if (options.eventBus.emitAsync) {
         await options.eventBus.emitAsync("tool.execute.after", afterPayload);
+        if (afterPayload.output !== undefined) result = { ...result, content: afterPayload.output };
       } else options.eventBus.emit("tool.execute.after", afterPayload);
     } catch {}
     options.eventBus.emit("event", { event: "tool.execute.after", payload: afterPayload });
+    if (before.context !== undefined)
+      result = { ...result, content: `${result.content}\n\n${before.context}` };
     if (MUTATING_TOOLS.has(resolved.name)) {
       const target =
         typeof call.input.path === "string"

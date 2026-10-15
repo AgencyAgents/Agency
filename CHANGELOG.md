@@ -63,6 +63,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Hooks change a tool call and its result**, as in Claude Code: `PreToolUse` runs before the
+  permission check, and its `updatedInput` replaces the input that the rules judge and the tool
+  gets; `permissionDecision` `allow` answers a default prompt and `ask` asks though a rule
+  allows; its `additionalContext` reaches the model. `updatedToolOutput` of `PostToolUse`
+  replaces the result. OpenCode plugins (`output.args`, `output.output`) and Pi extensions
+  (`event.input`, `content` of `tool_result`) do the same. A command-rewriting hook such as that
+  of rtk now works.
 - **Read-only shell commands run without a prompt**, as in Claude Code: `ls`, `cat`, `head`,
   `grep`, `find`, `wc`, `diff`, `cd`, `git status`, `git diff`, `git log` and similar, on
   files of the workspace. Before, `-p` in `ask` mode refused even `ls`. An absolute path, `..`,

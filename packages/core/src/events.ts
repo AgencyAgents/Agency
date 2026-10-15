@@ -10,9 +10,14 @@ export interface AgencyEvents {
   "log.entry": { level: string; message: string; traceId?: string };
   "tool.execute.before": {
     tool: string;
+    /** A listener can put another input here: the permission rules and the tool get that one. */
     input: Record<string, unknown>;
     sessionId?: string;
     turnId?: string;
+    /** A hook answered the prompt of a default ask (`allow`), or wants the user asked though a rule allows (`ask`). */
+    decision?: "allow" | "ask";
+    /** Text of a hook that goes to the model with the result. */
+    context?: string;
   };
   "tool.execute.after": {
     tool: string;
@@ -20,6 +25,8 @@ export interface AgencyEvents {
     result: { content: string; isError?: boolean };
     sessionId?: string;
     turnId?: string;
+    /** A listener can put another result here: the model gets it in place of the result of the tool. */
+    output?: string;
   };
   /** All calls of one reply, after the last one ended and before the next request. */
   "tool.batch.after": {

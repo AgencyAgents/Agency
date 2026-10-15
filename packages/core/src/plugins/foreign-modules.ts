@@ -122,10 +122,10 @@ export async function openCodePlugins(
     if (before) {
       hooks["tool.execute.before"] = (async (payload: Raw) => {
         try {
-          await before(
-            { tool: payload.tool, sessionID: payload.sessionId, callID: "" },
-            { args: payload.input },
-          );
+          // An OpenCode plugin changes `output.args`, or puts other args there.
+          const output = { args: payload.input };
+          await before({ tool: payload.tool, sessionID: payload.sessionId, callID: "" }, output);
+          payload.input = output.args;
         } catch (error) {
           // A throw is how an OpenCode plugin refuses a call.
           return { block: message(error) };
@@ -137,10 +137,13 @@ export async function openCodePlugins(
     if (after) {
       hooks["tool.execute.after"] = (async (payload: Raw) => {
         const result = (payload.result ?? {}) as Raw;
+        const output = { title: "", output: result.content, metadata: {} };
         await after(
           { tool: payload.tool, sessionID: payload.sessionId, callID: "", args: payload.input },
-          { title: "", output: result.content, metadata: {} },
+          output,
         );
+        if (typeof output.output === "string" && output.output !== result.content)
+          payload.output = output.output;
       }) as HookHandler;
     }
     const env = hook("shell.env");
@@ -321,6 +324,11 @@ export async function piExtensions(
           return {
             block: typeof result.reason === "string" ? result.reason : `blocked by the Pi extension ${id}`,
           };
+        }
+        // As in Pi: a tool_result handler gives the content that the model gets in place of the result.
+        if (name === "tool_result" && Array.isArray(result.content)) {
+          const parts = (result.content as Raw[]).filter((part) => part.type === "text");
+          payload.output = parts.map((part) => String(part.text)).join("\n");
         }
       }
       return undefined;
