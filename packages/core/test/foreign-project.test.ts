@@ -225,7 +225,13 @@ test("the user files of other agents load at the user tier, and AGENCY_AGENTS_HO
         .sort(),
     ).toEqual(["mine", "shared"]);
     const commands = loadCommands({ workspaceRoot: ws, configDirOverride: config });
-    expect(commands.map((c) => `${c.name}:${c.source}`)).toEqual(["draft:user", "note:user"]);
+    // A skill is also a command, as in Claude Code.
+    expect(commands.map((c) => `${c.name}:${c.source}`)).toEqual([
+      "draft:user",
+      "mine:user",
+      "note:user",
+      "shared:user",
+    ]);
     const roster = resolveFileRoster({
       workspaceRoot: ws,
       configDirOverride: config,

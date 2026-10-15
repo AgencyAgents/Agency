@@ -486,6 +486,8 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
 
     plugins.push({ id: skill.name, path: skill.path, tier: skill.tier, definition: def, unsubscribes });
 
+    // `disable-model-invocation`: only a `/name` of the user loads it.
+    if (!skill.modelInvocable) continue;
     // A skill with a description loads on demand. With none, the model has no way to choose it: its body stays in the prompt.
     if (skill.description) {
       onDemand.push(skill);

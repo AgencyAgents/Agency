@@ -4,6 +4,7 @@ import { SandboxBoundary } from "@agency/guard";
 import { AgencyError } from "@agency/schema";
 import { openCodeConfig } from "../config/opencode.ts";
 import { configDir, foreignHome } from "../paths.ts";
+import { discoverSkills, resolveSkillDirs, skillCommandTemplate } from "../plugins/skill.ts";
 import { expandAtFiles, parseCommandFile, runShellBlocks, substituteArgs } from "./runtime.ts";
 
 export interface CommandTemplate {
@@ -145,8 +146,23 @@ export function loadCommands(options: {
         ]),
     ...parseCommandFiles(userDir, "user"),
   ];
+  // As in Claude Code, a skill is also the command `/<name>`; a command file of the same name wins here.
+  const skills = discoverSkills(
+    resolveSkillDirs(root, options.configDirOverride).filter(
+      (entry) => options.projectTrusted !== false || entry.tier !== "project",
+    ),
+  ).filter((skill) => skill.userInvocable);
   // project wins on name collision
   const map = new Map<string, CommandTemplate>();
+  for (const skill of skills) {
+    map.set(skill.name, {
+      name: skill.name,
+      content: skillCommandTemplate(skill),
+      path: skill.path,
+      source: skill.tier,
+      ...(skill.description === undefined ? {} : { description: skill.description }),
+    });
+  }
   for (const c of user) map.set(c.name, c);
   for (const c of project) map.set(c.name, c);
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));

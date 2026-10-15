@@ -55,7 +55,8 @@ This is the body.`;
     const text = "# Just a heading\n\nNo frontmatter here.";
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBeUndefined();
-    expect(result.description).toBeUndefined();
+    // As in Claude Code: with no description, the first line of the body.
+    expect(result.description).toBe("Just a heading");
     expect(result.body).toBe(text);
   });
 
@@ -70,7 +71,7 @@ This is the body.`;
     const text = "---\n---\nBody content";
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBeUndefined();
-    expect(result.description).toBeUndefined();
+    expect(result.description).toBe("Body content");
     expect(result.body.trim()).toBe("Body content");
   });
 
@@ -96,7 +97,7 @@ author: me
 Body`;
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBe("test");
-    expect(result.description).toBeUndefined();
+    expect(result.description).toBe("Body");
   });
 });
 
@@ -207,6 +208,8 @@ describe("skillToPlugin", () => {
       description: "A demo",
       body: "# Demo\n\nBody content",
       tier: "project" as const,
+      modelInvocable: true,
+      userInvocable: true,
     };
     const def = skillToPlugin(skill);
     expect(def.id).toBe("demo");
@@ -222,6 +225,8 @@ describe("skillToPlugin", () => {
       path: "/fake/skills/empty/SKILL.md",
       body: "",
       tier: "user" as const,
+      modelInvocable: true,
+      userInvocable: true,
     };
     const def = skillToPlugin(skill);
     expect(def.id).toBe("empty");
@@ -384,9 +389,9 @@ describe("skills on demand", () => {
       const prompt = result.instructions.join("\n");
       expect(prompt).toContain("- deploy: Use when the user asks for a release");
       expect(prompt).not.toContain("DEPLOY-BODY");
-      // No description: the model has no way to choose it, so the body stays in the prompt.
-      expect(prompt).toContain("PLAIN-BODY always here");
-      expect(result.skills.map((skill) => skill.name)).toEqual(["deploy"]);
+      // No description: as in Claude Code, the first line of the body is its line in the listing.
+      expect(prompt).toContain("- plain: PLAIN-BODY always here");
+      expect(result.skills.map((skill) => skill.name)).toEqual(["deploy", "plain"]);
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }
@@ -415,13 +420,14 @@ describe("skills on demand", () => {
     }
   });
 
-  test("a workspace with no described skill has no listing", async () => {
+  test("a skill that only the user may load has no listing, and its body is not in the prompt", async () => {
     const ws = makeWs("none");
     try {
-      writeSkill(ws, "plain", "name: plain", "PLAIN-BODY");
+      writeSkill(ws, "plain", "name: plain\ndisable-model-invocation: yes", "PLAIN-BODY");
       const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus() });
       expect(result.skills).toEqual([]);
       expect(result.instructions.join("\n")).not.toContain("skill tool");
+      expect(result.instructions.join("\n")).not.toContain("PLAIN-BODY");
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

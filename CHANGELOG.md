@@ -63,6 +63,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Skills as Claude Code reads them**: a skill is also the command `/<name> [arguments]`;
+  `disable-model-invocation`, `user-invocable`, `when_to_use`, `${CLAUDE_SKILL_DIR}`,
+  `$ARGUMENTS` and `$ARGUMENTS[N]` work; frontmatter takes quotes, `>` and `|` blocks and lists.
+  A skill with no `description` is listed by the first line of its body, where before its whole
+  body went into every system prompt.
 - **Hooks change a tool call and its result**, as in Claude Code: `PreToolUse` runs before the
   permission check, and its `updatedInput` replaces the input that the rules judge and the tool
   gets; `permissionDecision` `allow` answers a default prompt and `ask` asks though a rule
