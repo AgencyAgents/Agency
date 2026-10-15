@@ -63,6 +63,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **`-p` keeps a session, as `claude -p`, `codex exec` and `pi -p` do**: the JSON result names it in
+  `session_id`, and `-r <id>` goes on from it; `-n` names it. Before, the `session_id` of a run was null, and
+  `-r` with it began an empty session (seen live). `--no-session-persistence`, `--ephemeral` and
+  `--no-session` keep none. A hook of such a run gets a `transcript_path` that exists.
 - **Plugins that loop or read the transcript, such as ralph-loop, work**: a command that you type runs its
   fenced ```` ```! ```` blocks as Claude Code does (before, only `` !`cmd` `` ran, and only through
   `command_run`, never for a command typed as a prompt), in the shell of the `bash` tool rather than cmd.exe;

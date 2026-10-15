@@ -21,6 +21,7 @@ import {
 import type { ImageBlock, Message } from "@agency/schema";
 import { clientProjectPaths } from "@agency/tools";
 import type { RunTurnParams, RunTurnRpcResult, SystemPromptParts } from "./daemon.ts";
+import { runSessionTurn } from "./session-runner.ts";
 
 export interface RunHeadlessOptions {
   workspaceRoot: string;
@@ -43,6 +44,8 @@ export interface RunHeadlessOptions {
   maxToolIterations?: number;
   budget?: RunTurnParams["budget"];
   outputSchema?: Record<string, unknown>;
+  /** The turn is the first of this new session, which keeps it: a later `-r <id>` goes on from it. */
+  sessionId?: string;
   onEvent?: (event: unknown) => void;
   /** Injectable for tests; production callers never pass this. */
   daemonEntryPath?: string;
@@ -172,6 +175,32 @@ export async function connectHeadlessClient(
  */
 export async function runHeadless(options: RunHeadlessOptions): Promise<RunTurnRpcResult> {
   const { client } = await connectHeadlessClient(options);
+  if (options.sessionId !== undefined) {
+    try {
+      const { result } = await runSessionTurn(client, {
+        sessionId: options.sessionId,
+        provider: options.provider,
+        model: options.model,
+        systemPrompt: options.systemPrompt,
+        ...(options.systemPromptParts === undefined ? {} : { systemPromptParts: options.systemPromptParts }),
+        userText: options.prompt,
+        ...(options.images === undefined ? {} : { images: options.images }),
+        ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
+        ...(options.budget === undefined ? {} : { budget: options.budget }),
+        ...(options.permissionMode === undefined ? {} : { permissionMode: options.permissionMode }),
+        ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
+        ...(options.mcp === undefined ? {} : { mcp: options.mcp }),
+        ...(options.fallbackModel === undefined ? {} : { fallbackModel: options.fallbackModel }),
+        ...(options.tools === undefined ? {} : { tools: options.tools }),
+        ...(options.maxToolIterations === undefined ? {} : { maxToolIterations: options.maxToolIterations }),
+        nonInteractive: true,
+        ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
+      });
+      return result;
+    } finally {
+      await client.close();
+    }
+  }
 
   const turnId = randomUUID();
   // Subscribe unconditionally: per-client fanout (A3) delivers this turn's

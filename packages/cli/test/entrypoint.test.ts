@@ -626,6 +626,25 @@ describe("-p headless mode", () => {
     expect(fake.calls).toHaveLength(0);
   });
 
+  test("-p keeps a new session and reports its id; --no-session-persistence keeps none", async () => {
+    const fake = fakeRunHeadless();
+    const { out, deps } = capture();
+    const run = (...flags: string[]) =>
+      runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--output-format", "json", ...flags], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+    expect(await run()).toBe(0);
+    const id = fake.calls[0]?.sessionId;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(out.join("")).session_id).toBe(id);
+    out.length = 0;
+    expect(await run("--no-session-persistence")).toBe(0);
+    expect(fake.calls[1]?.sessionId).toBeUndefined();
+    expect(JSON.parse(out.join("")).session_id).toBeUndefined();
+  });
+
   test("a retry shows as a line of progress, so a wait for a rate limit is not silent", async () => {
     const { err, deps } = capture();
     await runEntrypoint(["-p", "hello", "--model", "openai/fake-1"], {

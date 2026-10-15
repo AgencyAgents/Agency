@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -226,6 +227,8 @@ export interface ParsedArgv {
   device: boolean;
   overwrite: boolean;
   rollback: boolean;
+  /** `-p --no-session-persistence` (`--ephemeral`, `--no-session`): the run keeps no session. */
+  ephemeral: boolean;
   /** `agency import --yes` imports all; `--dry-run` only shows. */
   yes: boolean;
   dryRun: boolean;
@@ -362,6 +365,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     scope: undefined,
     overwrite: false,
     rollback: false,
+    ephemeral: false,
     yes: false,
     dryRun: false,
     continueLast: false,
@@ -468,9 +472,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--verbose":
       case "--include-partial-messages":
       case "--skip-git-repo-check":
+        break;
       case "--no-session-persistence":
       case "--ephemeral":
       case "--no-session":
+        parsed.ephemeral = true;
         break;
       // `codex exec resume --last`.
       case "--last":
@@ -1197,8 +1203,17 @@ async function runPrintMode(
     }
   }
 
+  // As `claude -p`, `codex exec` and `pi -p` do, the run keeps a session that `-r <id>` goes on from.
+  const sessionId = parsed.ephemeral || outputSchema !== undefined ? undefined : randomUUID();
+  if (sessionId !== undefined && parsed.name !== undefined && parsed.name.trim() !== "") {
+    const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
+      bus: deps.bus ?? new EventBus(),
+    });
+    await store.append(sessionId, { type: "session_title", parentId: null, title: parsed.name.trim() });
+  }
   const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
   const result = await (deps.runHeadless ?? runHeadless)({
+    ...(sessionId === undefined ? {} : { sessionId }),
     workspaceRoot,
     instanceDir: deps.instanceDir,
     provider,
@@ -1217,7 +1232,8 @@ async function runPrintMode(
     ...(parsed.thinking === undefined ? {} : { thinkingLevel: parsed.thinking }),
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
-  if (outputSchema === undefined) return reportTurn(out, err, parsed, result);
+  if (outputSchema === undefined)
+    return reportTurn(out, err, parsed, sessionId === undefined ? result : { sessionId, ...result });
   const answer = result.messages
     .flatMap((m) => m.content)
     .findLast((b) => b.type === "tool_call" && b.name === STRUCTURED_OUTPUT_TOOL);
