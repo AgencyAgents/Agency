@@ -912,8 +912,12 @@ async function runPrintMode(
   await validateTurnKey(provider, config, deps);
   // Each rule of a run must hold: a rule that maps to nothing here would let through a call that the user denied.
   let permissions: Record<string, ToolPermissionValue> | undefined;
-  if (parsed.allowedTools.length > 0 || parsed.disallowedTools.length > 0) {
-    const rules = permissionsFromRules({ allow: parsed.allowedTools, deny: parsed.disallowedTools });
+  // As in Claude Code, a deny of `*` takes every tool away, and of `mcp__*` every MCP tool.
+  const denyAll = parsed.disallowedTools.includes("*");
+  const denyMcp = denyAll || parsed.disallowedTools.includes("mcp__*");
+  const denyRules = parsed.disallowedTools.filter((rule) => rule !== "*" && rule !== "mcp__*");
+  if (parsed.allowedTools.length > 0 || denyRules.length > 0) {
+    const rules = permissionsFromRules({ allow: parsed.allowedTools, deny: denyRules });
     if (rules.skipped.length > 0)
       throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
     permissions = rules.permissions;
@@ -925,6 +929,7 @@ async function runPrintMode(
     if (unknown.length > 0) throw new Error(t("cli.error.unknown_rules", { rules: unknown.join(", ") }));
     tools = names.map((name) => agencyToolName(name) as string);
   }
+  if (denyAll) tools = [];
   let mcp: { servers: Record<string, unknown>; strict: boolean } | undefined;
   if (parsed.mcpConfig.length > 0 || parsed.strictMcpConfig) {
     const servers: Record<string, unknown> = {};
@@ -941,6 +946,7 @@ async function runPrintMode(
     }
     mcp = { servers, strict: parsed.strictMcpConfig };
   }
+  if (denyMcp) mcp = { servers: {}, strict: true };
   // OpenAI asks an app to show while the plan pays.
   if (provider === CHATGPT_PROVIDER && parsed.format !== "json" && !parsed.streamJson) {
     err(t("cli.progress.chatgpt_plan", { url: CHATGPT_USAGE_URL }));

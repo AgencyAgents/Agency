@@ -1299,6 +1299,26 @@ describe("-p headless mode", () => {
     expect(headless.calls[0]?.prompt).toBe("say hi");
   });
 
+  test("a deny of * takes every tool away, and a deny of mcp__* the MCP tools", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const run = (rules: string) =>
+      runEntrypoint(["-p", "x", "--model", "openai/fake-1", "--disallowedTools", rules], {
+        ...baseDeps(),
+        ...deps,
+        ...headless,
+      });
+    expect(await run("*")).toBe(0);
+    expect(await run("mcp__*,Bash")).toBe(0);
+    const [all, mcp] = headless.calls;
+    expect([all?.tools, all?.mcp, all?.permissions]).toEqual([[], { servers: {}, strict: true }, undefined]);
+    expect([mcp?.tools, mcp?.mcp, mcp?.permissions]).toEqual([
+      undefined,
+      { servers: {}, strict: true },
+      { bash: "deny" },
+    ]);
+  });
+
   test("--fallback-model reaches the turn", async () => {
     const headless = fakeRunHeadless();
     const { deps } = capture();

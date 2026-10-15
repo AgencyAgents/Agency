@@ -39,7 +39,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 - **The JSON result of `-p` has the fields of Claude Code**: `result`, `is_error`, `subtype`,
   `num_turns`, `session_id` and `total_cost_usd`, so `jq -r .result` works.
 - **`--thinking <level>`**: the reasoning effort of a `-p` run, as in Pi.
-- **`--tools <names>`**: `-p` offers only these built-in tools, as in Claude Code.
+- **`--tools <names>`**: `-p` offers only these built-in tools, as in Claude Code. A
+  `--disallowed-tools` of `*` takes every tool away, and of `mcp__*` every MCP tool.
 - **`-o, --output-last-message <file>`**: `-p` writes the answer to a file too, as `codex exec`
   does.
 - **`--fallback-model <provider/model>`**: `-p` goes on with this model when its model stays
