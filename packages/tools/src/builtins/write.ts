@@ -8,6 +8,7 @@ import { runFormatter } from "../formatter.ts";
 import type { ReadState } from "../read-state.ts";
 import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
+import { syntaxNote } from "../syntax.ts";
 
 export interface WriteToolOptions {
   /** Session read journal; set to warn when overwriting a file never read. */
@@ -44,8 +45,9 @@ export function createWriteTool(
       requirePathScope(deps.identity, deps.capabilities, resolved);
 
       const existed = existsSync(resolved);
-      if (existed) {
-        snapshots.capture(resolved, readFileSync(resolved, "utf8"), ctx.turnId);
+      const before = existed ? readFileSync(resolved, "utf8") : undefined;
+      if (before !== undefined) {
+        snapshots.capture(resolved, before, ctx.turnId);
       } else {
         mkdirSync(dirname(resolved), { recursive: true });
       }
@@ -58,6 +60,8 @@ export function createWriteTool(
       if (existed && options?.readState && !options.readState.has(resolved)) {
         content += `\n${t("tool.write.unread_overwrite", { path: input.path })}`;
       }
+      const broken = syntaxNote(input.path, before, input.content);
+      if (broken !== undefined) content += `\n${broken}`;
       return { content };
     },
   };

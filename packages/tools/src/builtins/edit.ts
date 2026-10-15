@@ -9,6 +9,7 @@ import { runFormatter } from "../formatter.ts";
 import type { ReadState } from "../read-state.ts";
 import { str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
+import { syntaxNote } from "../syntax.ts";
 
 export interface EditToolOptions {
   /** LSP diagnostics seam: error-severity diagnostics ride along on results. */
@@ -133,6 +134,8 @@ export function createEditTool(
         snapshots.recordAfter(resolved);
         let content = t("tool.edit.applied", { path: input.path });
         if (hunks.length > 1) content += `\n${t("tool.edit.hunks_applied", { count: hunks.length })}`;
+        const broken = syntaxNote(input.path, current, outcome.content);
+        if (broken !== undefined) content += `\n${broken}`;
         if (outcome.warnings.length > 0) {
           content += `\n${t("lsp.diagnostics.warning", {
             count: outcome.warnings.length,
