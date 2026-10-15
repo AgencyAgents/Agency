@@ -214,6 +214,8 @@ export interface HookRunOptions {
   ) => Promise<string>;
   /** The CLAUDE_ENV_FILE of a session: the variables that its SessionStart hooks write there reach its shell commands. */
   envFile?: (sessionId: string) => string;
+  /** The `transcript_path` of a session: its JSONL file, whose message lines have the `role` and content blocks of Claude Code. */
+  transcriptPath?: (sessionId: string) => string;
   /** Calls a tool of an MCP server of the session. Absent: an `mcp_tool` hook fails, and does not block. */
   callMcpTool?: (call: {
     sessionId: string | undefined;
@@ -522,14 +524,24 @@ export async function runCommandHooks(
     input.command_name,
     input.error,
   ].find((value): value is string => typeof value === "string");
-  let stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
+  // A turn with no session is the session "default" in the daemon; a hook of Claude Code always gets a session_id.
+  const sessionId = typeof input.session_id === "string" ? input.session_id : "default";
+  const transcript = opts.transcriptPath?.(sessionId);
+  const stdinOf = (value: Record<string, unknown>): string =>
+    JSON.stringify({
+      hook_event_name: event,
+      cwd: opts.cwd,
+      session_id: sessionId,
+      ...(transcript === undefined ? {} : { transcript_path: transcript }),
+      ...value,
+    });
+  let stdin = stdinOf(input);
   const context: string[] = [];
   let retry = false;
   let permission: "allow" | "ask" | undefined;
   let output: string | undefined;
   // As in Claude Code: a SessionStart hook writes `export` lines to CLAUDE_ENV_FILE for the shell commands of the session.
-  const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
-  const envFile = event === "SessionStart" && sessionId !== undefined ? opts.envFile?.(sessionId) : undefined;
+  const envFile = event === "SessionStart" ? opts.envFile?.(sessionId) : undefined;
   if (envFile !== undefined) {
     mkdirSync(dirname(envFile), { recursive: true });
     writeFileSync(envFile, "");
@@ -618,7 +630,7 @@ export async function runCommandHooks(
         const updated = specific.updatedInput;
         if (typeof updated === "object" && updated !== null && !Array.isArray(updated)) {
           input = { ...input, tool_input: updated };
-          stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
+          stdin = stdinOf(input);
         }
       }
       const replaced = specific.updatedToolOutput ?? specific.updatedMCPToolOutput;

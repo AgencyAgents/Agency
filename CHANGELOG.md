@@ -63,6 +63,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   comes from.
 - **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
   as `/export` of Claude Code writes it.
+- **Plugins that loop or read the transcript, such as ralph-loop, work**: a command that you type runs its
+  fenced ```` ```! ```` blocks as Claude Code does (before, only `` !`cmd` `` ran, and only through
+  `command_run`, never for a command typed as a prompt), in the shell of the `bash` tool rather than cmd.exe;
+  `plugin install` expands `${CLAUDE_PLUGIN_ROOT}` in commands; a hook gets `transcript_path`, and
+  `session_id: default` for a turn with no session (before, a Stop or tool hook of such a turn had none);
+  shell commands get `CLAUDE_CODE_SESSION_ID`. Live: `/ralph-loop` of the official marketplace wrote its
+  state file; before, the model got the script as text and searched the repository for minutes.
 - **`agency import`: what you set up in other agents, with one question per set**. It finds
   the MCP servers of the user files of 19 clients, the user hooks of Claude Code, Codex, Cursor
   and Gemini CLI (with the `env` of the Claude Code settings, which those hooks get), the plugins

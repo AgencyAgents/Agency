@@ -240,6 +240,7 @@ describe("runCommandHooks", () => {
           body: {
             hook_event_name: "PreToolUse",
             cwd: dir,
+            session_id: "default",
             tool_name: "bash",
             tool_input: { command: "deploy" },
           },
@@ -1065,6 +1066,22 @@ describe("agent hooks", () => {
     expect(calls).toBe(0);
     expect((await runCommandHooks(stopHook("agent"), "Stop", {}, { cwd: "." })).block).toBeUndefined();
   });
+});
+
+test("a hook gets the transcript_path of its session, and session_id default for a turn with none", async () => {
+  const echo = on(
+    "Stop",
+    hook(
+      "echo-input",
+      'console.log(JSON.stringify({ decision: "block", reason: require("fs").readFileSync(0, "utf8") }));',
+    ),
+  );
+  const opts = { cwd: dir, transcriptPath: (id: string) => join(dir, `${id}.jsonl`) };
+  const named = JSON.parse((await runCommandHooks(echo, "Stop", { session_id: "s1" }, opts)).block ?? "{}");
+  expect(named.transcript_path).toBe(join(dir, "s1.jsonl"));
+  const none = JSON.parse((await runCommandHooks(echo, "Stop", {}, opts)).block ?? "{}");
+  expect(none.session_id).toBe("default");
+  expect(none.transcript_path).toBe(join(dir, "default.jsonl"));
 });
 
 describe("CLAUDE_ENV_FILE", () => {

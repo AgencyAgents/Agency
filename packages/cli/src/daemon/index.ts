@@ -403,6 +403,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     cwd: options.workspaceRoot,
     shell,
     envFile: envFileOf,
+    transcriptPath: (sessionId) => join(todoSessionsDir, `${sessionId}.jsonl`),
     askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
     askAgent: agentHookModel({
       config,
@@ -448,6 +449,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // The variables that the SessionStart hooks of a session wrote to its CLAUDE_ENV_FILE reach each of its shell commands.
   eventBus.on("shell.env", (payload) => {
     const { env, sessionId } = payload as { env: Record<string, string>; sessionId?: string };
+    // As Claude Code sets it: a plugin script keys its state by the session (ralph-loop does).
+    if (sessionId !== undefined) env.CLAUDE_CODE_SESSION_ID ??= sessionId;
     // A turn with no session runs its hooks as the session "default" (handlers/turn.ts).
     const file = envFileOf(sessionId ?? "default");
     if (!existsSync(file)) return;
