@@ -19,6 +19,11 @@ test("a read-only command of the workspace, after the read-only set of Claude Co
   for (const command of [
     "rm a.txt",
     "ls > out.txt",
+    "echo x>a.txt",
+    "echo x>>a.txt",
+    "git log --all>a.txt",
+    "cat r.ts>out",
+    "file -C",
     "cat /etc/passwd",
     "cat ~/.ssh/id_rsa",
     "cat ../other/x",

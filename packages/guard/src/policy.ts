@@ -488,7 +488,7 @@ const UNSAFE_OPTIONS: Record<string, RegExp> = {
   egrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
   fgrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
   diff: /^(-[a-zA-Z]*r|--recursive)/,
-  file: /^(-[a-zA-Z]*[mf]|--magic-file|--files-from)/,
+  file: /^(-[a-zA-Z]*[mfC]|--magic-file|--files-from|--compile)/,
   tree: /^-[a-zA-Z]*o/,
   git: /^(--output|--ext-diff|--open-files-in-pager|-[a-zA-Z]*O)/,
 };
@@ -512,6 +512,8 @@ export function isReadOnlyCommand(command: string): boolean {
     const words = shellWords(part);
     for (let i = 0; i < words.length; i++) {
       const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(words[i] as string);
+      // A redirect inside a word (`echo x>a.txt`) writes as well: only the ones read above are known.
+      if (redirect === null && /[<>]/.test(words[i] as string)) return false;
       if (redirect === null) argv.push(words[i] as string);
       else {
         const target = redirect[3] || words[++i] || "";
