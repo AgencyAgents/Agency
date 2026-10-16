@@ -349,9 +349,18 @@ async function execute(root: string, w: Workflow, runId: string): Promise<void> 
     try {
       const agent = agentInfo(root, spec.agent);
       const fallback = currentModel(root);
-      const provider = agent.provider ?? fallback?.provider;
-      const model = agent.model ?? fallback?.model;
+      // As the daemon's dispatch does: an agent pinned to a provider with no key runs on the default model.
+      const pinned =
+        agent.provider && agent.model && project(root)?.providers?.connected.includes(agent.provider);
+      const provider = pinned ? agent.provider : fallback?.provider;
+      const model = pinned ? agent.model : fallback?.model;
       if (!provider || !model) throw new Error("Connect a provider in Settings to run workflows.");
+      if (!pinned) {
+        const label = fallback?.label ?? model;
+        step(i, (s) => {
+          s.model = label;
+        });
+      }
       const { sessionId } = await host.rpc<{ sessionId: string }>(root, "session_create");
       step(i, (s) => {
         s.sessionId = sessionId;
