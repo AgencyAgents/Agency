@@ -252,7 +252,8 @@ export interface SessionSendParams {
   turnId?: string;
   provider: string;
   model: string;
-  systemPrompt: string;
+  /** DEFAULT_SYSTEM_PROMPT when absent: the daemon adds the environment, the instructions and the skills. */
+  systemPrompt?: string;
   systemPromptParts?: SystemPromptParts;
   userText: string;
   images?: import("@agency/schema").ImageBlock[];
@@ -420,6 +421,8 @@ export interface AgentDaemonOptions {
   approvalsDir?: string;
   /** Called instead of process.exit so tests can observe an idle shutdown. */
   onIdleShutdown?: () => void;
+  /** Overrides the key store of provider keys; tests pass a fake so the OS keychain stays untouched. */
+  keychain?: KeychainBackend;
 }
 
 export interface AgentDaemon {

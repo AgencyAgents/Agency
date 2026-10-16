@@ -40,6 +40,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `outputStyle` | string | — | The name of an output style: its text joins the instructions (see Output styles) |
 | `memory` | boolean | `true` | The `memory` tool and its notes in the prompt (see Memory) |
 | `userAgentPlugins` | boolean | `false` | Also loads the code plugins of the user folders of OpenCode and Pi (see Plugins of other agents) |
+| `skills.disabled` | `string[]` | — | Names of skills that do not load, neither in the prompt list nor as `/<name>` |
 | `userAgentInstructions` | boolean | `false` | Also loads the user instruction files of other agents, such as `~/.claude/CLAUDE.md` (see Projects of other agents) |
 | `permissions` | `Record<tool, allow\|ask\|deny \| Record<pattern, allow\|ask\|deny>>` | `{}` | See Permissions |
 | `trust` | `{required: boolean}` | `{required:false}` | When true, `safe`-tier tools run in untrusted workspaces, `moderate`/`dangerous` require trust |

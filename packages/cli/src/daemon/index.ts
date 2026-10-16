@@ -93,6 +93,7 @@ import {
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
+import { registerDesktopHandlers } from "./handlers/desktop.ts";
 import {
   installDetachHook,
   projectBoardFile,
@@ -301,7 +302,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // the keychain is created lazily on the first keyless run_turn and reused.
   let keychainPromise: Promise<KeychainBackend> | undefined;
   const getKeychain = () => {
-    keychainPromise ??= createKeychain(process.platform, join(dataDir(), "keys"));
+    keychainPromise ??= options.keychain
+      ? Promise.resolve(options.keychain)
+      : createKeychain(process.platform, join(dataDir(), "keys"));
     return keychainPromise;
   };
 
@@ -489,6 +492,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
       userAgentPlugins: config.userAgentPlugins === true,
+      disabledSkills: config.skills?.disabled,
       projectTrusted,
       bus: eventBus,
       logger,
@@ -515,6 +519,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
       userAgentPlugins: config.userAgentPlugins === true,
+      disabledSkills: config.skills?.disabled,
       projectTrusted,
       bus: eventBus,
       logger,
@@ -547,6 +552,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     workspaceRoot: options.workspaceRoot,
     configDirOverride: options.configDir,
     projectTrusted,
+    disabledSkills: config.skills?.disabled,
   });
 
   const defaultCapabilitiesSync: Capabilities =
@@ -800,20 +806,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     options.onIdleShutdown?.();
   };
 
+  const disposeDesktop = registerDesktopHandlers(handlers, ctx, { leave });
+
+  // An SSE subscriber of the HTTP gateway is a client too: a desktop window holds no TCP connection.
+  const clients = { tcp: 0, sse: 0 };
+  const onClientCount = (): void => {
+    clearTimeout(idleTimer);
+    clearInterval(staleConfigTimer);
+    idleTimer = undefined;
+    // stop() closes the SSE streams, and their count drops to 0 after the daemon stopped.
+    if (stopped || clients.tcp + clients.sse > 0) return;
+    idleTimer = setTimeout(leave, idleLingerMs);
+    // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
+    staleConfigTimer = setInterval(() => {
+      if (configFingerprint.check()) leave();
+    }, 1_000);
+    staleConfigTimer.unref?.();
+  };
+
   server = await startDaemonServer({
     token: authToken,
     handlers,
     onClientCount(count) {
-      clearTimeout(idleTimer);
-      clearInterval(staleConfigTimer);
-      idleTimer = undefined;
-      if (count > 0) return;
-      idleTimer = setTimeout(leave, idleLingerMs);
-      // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
-      staleConfigTimer = setInterval(() => {
-        if (configFingerprint.check()) leave();
-      }, 1_000);
-      staleConfigTimer.unref?.();
+      clients.tcp = count;
+      onClientCount();
     },
 
     onClientDisconnect: cancelTurnsOf,
@@ -835,6 +851,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   httpGateway = startHttpGateway({
     handlers,
     onClientDisconnect: cancelTurnsOf,
+    onSubscriberCount(count) {
+      clients.sse = count;
+      onClientCount();
+    },
     token: authToken,
     store: todoStore,
     sessionForEvent: (event) => sessionKeyForEvent(ctx, event),
@@ -866,6 +886,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       clearTimeout(idleTimer);
       clearInterval(staleConfigTimer);
       stopBoardSync();
+      disposeDesktop();
       if (builtinsMode) {
         for (const scope of sessionScopes.values()) {
           try {

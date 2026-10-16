@@ -26,7 +26,9 @@ export type RpcMethod =
   | "commands_list"
   | "config_get"
   | "config_set"
+  | "config_write"
   | "cost_report"
+  | "daemon_restart"
   | "decisions_read"
   | "dispatch_compare"
   | "inbox_send"
@@ -37,6 +39,8 @@ export type RpcMethod =
   | "permissions_list"
   | "plan_approve"
   | "prompt_inspect"
+  | "provider_connect"
+  | "provider_disconnect"
   | "providers_list"
   | "redo"
   | "report_get"
@@ -51,6 +55,8 @@ export type RpcMethod =
   | "session_rename"
   | "session_send"
   | "session_show"
+  | "skill_write"
+  | "skills_list"
   | "task_file"
   | "team_open"
   | "team_status"
@@ -299,8 +305,12 @@ export interface SurfaceClient {
   config_get(params?: Record<string, unknown>): Promise<unknown>;
   /** Set one runtime-safe config key in memory until restart. */
   config_set(params?: Record<string, unknown>): Promise<unknown>;
+  /** Persist one dotted config key to the user config file, comments kept; null removes it. */
+  config_write(params?: Record<string, unknown>): Promise<unknown>;
   /** Sum usage entries plus trace spans per session and agent (Phase 9 adds budgets and caps). */
   cost_report(params?: Record<string, unknown>): Promise<unknown>;
+  /** Leave once no turn runs, so the next client starts a daemon with the new config. */
+  daemon_restart(params?: Record<string, unknown>): Promise<unknown>;
   /** Read the shared choice log entries. */
   decisions_read(params?: Record<string, unknown>): Promise<unknown>;
   /** Fan out one prompt to two agents and compare. */
@@ -321,6 +331,10 @@ export interface SurfaceClient {
   plan_approve(params?: Record<string, unknown>): Promise<unknown>;
   /** Resolve the system prompt without running a turn. */
   prompt_inspect(params?: Record<string, unknown>): Promise<unknown>;
+  /** Validate a provider API key and store it in the key store. */
+  provider_connect(params?: Record<string, unknown>): Promise<unknown>;
+  /** Remove the stored key of a provider; a key from an environment variable stays. */
+  provider_disconnect(params?: Record<string, unknown>): Promise<unknown>;
   /** List providers with defaults, connectivity, and liveness. */
   providers_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Redo a snapshot-backed file change. */
@@ -349,6 +363,10 @@ export interface SurfaceClient {
   session_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Read a session through the single SessionProjector view. */
   session_show(params?: Record<string, unknown>): Promise<unknown>;
+  /** Create a SKILL.md in the project or user skills folder; never overwrites. */
+  skill_write(params?: Record<string, unknown>): Promise<unknown>;
+  /** List discovered skills with origin, tier, tools, body, and enabled flag. */
+  skills_list(params?: Record<string, unknown>): Promise<unknown>;
   /** File a board item with goal, criteria, scope, and budget. */
   task_file(params?: Record<string, unknown>): Promise<unknown>;
   /** Open a team behind approval when the goal needs parallel specialists. */
@@ -402,7 +420,9 @@ export function createSurfaceClient(
     commands_list: (params) => call("commands_list", params ?? {}),
     config_get: (params) => call("config_get", params ?? {}),
     config_set: (params) => call("config_set", params ?? {}),
+    config_write: (params) => call("config_write", params ?? {}),
     cost_report: (params) => call("cost_report", params ?? {}),
+    daemon_restart: (params) => call("daemon_restart", params ?? {}),
     decisions_read: (params) => call("decisions_read", params ?? {}),
     dispatch_compare: (params) => call("dispatch_compare", params ?? {}),
     inbox_send: (params) => call("inbox_send", params ?? {}),
@@ -413,6 +433,8 @@ export function createSurfaceClient(
     permissions_list: (params) => call("permissions_list", params ?? {}),
     plan_approve: (params) => call("plan_approve", params ?? {}),
     prompt_inspect: (params) => call("prompt_inspect", params ?? {}),
+    provider_connect: (params) => call("provider_connect", params ?? {}),
+    provider_disconnect: (params) => call("provider_disconnect", params ?? {}),
     providers_list: (params) => call("providers_list", params ?? {}),
     redo: (params) => call("redo", params ?? {}),
     report_get: (params) => call("report_get", params ?? {}),
@@ -427,6 +449,8 @@ export function createSurfaceClient(
     session_rename: (params) => call("session_rename", params ?? {}),
     session_send: (params) => call("session_send", params ?? {}),
     session_show: (params) => call("session_show", params ?? {}),
+    skill_write: (params) => call("skill_write", params ?? {}),
+    skills_list: (params) => call("skills_list", params ?? {}),
     task_file: (params) => call("task_file", params ?? {}),
     team_open: (params) => call("team_open", params ?? {}),
     team_status: (params) => call("team_status", params ?? {}),

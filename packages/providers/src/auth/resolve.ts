@@ -30,7 +30,8 @@ export function keyEnvName(provider: string): string {
   return `AGENCY_${envId(provider)}_API_KEY`;
 }
 
-function envNames(provider: string, declared: readonly string[] = []): string[] {
+/** The variables that can hold the key of a provider, in the order that `resolveApiKey` reads them. */
+export function envNames(provider: string, declared: readonly string[] = []): string[] {
   return [...declared, keyEnvName(provider), ...(OWN_ENV[provider] ?? [`${envId(provider)}_API_KEY`])];
 }
 

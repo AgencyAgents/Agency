@@ -165,6 +165,18 @@ async function restoreWithMode(
   };
 }
 
+/** The first prompt stands in for a title until the small model names the session, or when none is set. */
+function firstPrompt(entries: readonly Record<string, unknown>[]): string | undefined {
+  for (const entry of entries) {
+    const message = entry.message as Message | undefined;
+    if (entry.type !== "message" || message?.role !== "user") continue;
+    const block = message.content.find((b) => b.type === "text") as { text?: string } | undefined;
+    const line = block?.text?.trim().split("\n")[0]?.trim().slice(0, 80);
+    if (line) return line;
+  }
+  return undefined;
+}
+
 export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
   const {
     config,
@@ -184,7 +196,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       const last = entries[entries.length - 1];
       return {
         id,
-        title: getSessionTitle(entries),
+        title: getSessionTitle(entries) ?? firstPrompt(entries),
         tipId: todoStore.latestTip(entries) ?? last?.id ?? null,
         entries: entries.length,
         updatedAt: last?.createdAt ?? null,

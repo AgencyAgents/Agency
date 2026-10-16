@@ -620,6 +620,7 @@ export async function executeTurn(
               eventBus,
               redactToolResult: redactor.redactToolResult,
               drainMailbox: mailboxDrain,
+              drainSteering: () => sessionInboxes.get(sessionId)?.splice(0) ?? [],
               systemPrompt: mainPrompt.text,
               systemSegments: mainPrompt.segments,
               tools: effectiveTools,

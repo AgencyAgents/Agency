@@ -27,6 +27,7 @@
         "@agency/schema": "workspace:*",
         "@agency/telemetry": "workspace:*",
         "@agency/tools": "workspace:*",
+        "jsonc-parser": "^3",
       },
     },
     "packages/core": {

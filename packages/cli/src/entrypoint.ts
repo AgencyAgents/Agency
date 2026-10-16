@@ -1819,6 +1819,38 @@ async function daemonCancelCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: Li
   }
 }
 
+/** `daemon start`: finds or starts the daemon of the workspace and exits. The desktop app reads the token from `instanceFile`. */
+async function daemonStartCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const { defaultInstanceDir } = await import("./headless.ts");
+  const instanceDir = deps.instanceDir ?? defaultInstanceDir(envOf(deps));
+  const client = deps.ensureClient
+    ? await deps.ensureClient({ workspaceRoot, instanceDir })
+    : (await connectHeadlessClient({ workspaceRoot, instanceDir, log: err })).client;
+  await client.close();
+  const instanceFile = join(instanceDir, `${hashWorkspaceRoot(workspaceRoot)}.json`);
+  const info = JSON.parse(readFileSync(instanceFile, "utf8")) as InstanceInfo;
+  if (parsed.format === "json") {
+    out(
+      JSON.stringify({
+        status: "running",
+        port: info.port,
+        httpPort: info.httpPort ?? null,
+        pid: info.pid,
+        instanceFile,
+      }),
+    );
+  } else {
+    out(t("cli.daemon.status", { status: "running", port: String(info.port), pid: String(info.pid) }));
+  }
+  return 0;
+}
+
 async function daemonStatusCmd(
   parsed: ParsedArgv,
   deps: EntrypointDeps,
@@ -2087,11 +2119,13 @@ Subcommands:
         return daemonStatusCmd(parsed, deps, out, err);
       }
       if (parsed.subcommand === "cancel") return daemonCancelCmd(parsed, deps, out);
+      if (parsed.subcommand === "start") return daemonStartCmd(parsed, deps, out, err);
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency daemon <subcommand>
 
 Subcommands:
   status               Show daemon status for this workspace, with the turns that run
+  start                Start the daemon of this workspace if none runs, then exit
   cancel <turn>        Stop a turn that runs`);
         return 0;
       }
