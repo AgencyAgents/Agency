@@ -660,6 +660,16 @@ header .ol {
   background: transparent;
   padding: 0;
 }
+/* Stays on top while the list scrolls: -4px covers the .pop padding. */
+.pop-search {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  margin: -4px -4px 4px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: var(--pop);
+}
 
 .spin {
   animation: spin 0.9s linear infinite;

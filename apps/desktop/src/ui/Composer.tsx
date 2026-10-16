@@ -414,6 +414,7 @@ export function Composer(props: {
                 class="gh"
                 aria-haspopup="menu"
                 aria-expanded={openMenu() === "model"}
+                aria-label={`Model: ${model()?.label ?? "none"}`}
                 onClick={() => toggleMenu("model")}
               >
                 <span class="ell" style={{ "max-width": "220px" }}>

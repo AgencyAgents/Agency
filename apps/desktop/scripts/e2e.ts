@@ -111,6 +111,25 @@ writeFileSync(
     2,
   )}\n`,
 );
+// The catalog the daemon reads instead of models.dev: a gateway with more models than the menu shows unsearched.
+mkdirSync(join(home, "data", "cache"), { recursive: true });
+writeFileSync(
+  join(home, "data", "cache", "models-dev-catalog.json"),
+  JSON.stringify({
+    version: 2,
+    savedAt: new Date().toISOString(),
+    models: Array.from({ length: 14 }, (_, i) => ({
+      id: `vendor/model-${i}`,
+      family: "openrouter",
+      name: `Gateway Model ${i}`,
+      providerName: "OpenRouter",
+      contextWindow: 128000,
+      maxOutputTokens: 8000,
+      capabilities: { tools: true, vision: false, thinking: false },
+      releaseDate: `2026-01-${String(i + 1).padStart(2, "0")}`,
+    })),
+  }),
+);
 writeFileSync(join(ws, "note.txt"), "a note\n");
 const git = (...args: string[]) => execFileSync("git", args, { cwd: ws, stdio: "pipe" });
 git("init", "-q", "-b", "main");
@@ -118,11 +137,13 @@ git("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "add", "note.
 git("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-q", "-m", "init");
 
 const port = 9300 + Math.floor(Math.random() * 500);
-// No real provider keys: the app must see only the fake model.
+// No real provider keys: the app sees only the fake model and a gateway key that is never sent.
 const env: Record<string, string | undefined> = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !/_API_KEY$|_TOKEN$/i.test(k)),
 );
 Object.assign(env, {
+  AGENCY_OPENROUTER_API_KEY: "e2e-not-a-key",
+  AGENCY_DISABLE_MODELS_FETCH: "1",
   AGENCY_HOME: home,
   AGENCY_AGENTS_HOME: home,
   AGENCY_UPDATE_URL: `${origin}/no-update.json`,
@@ -509,6 +530,28 @@ try {
     if (branch !== `agency/${name}`) throw new Error(`the worktree is on ${branch}`);
     if (git("status", "--porcelain").toString().includes("worktrees"))
       throw new Error("the main checkout lists the worktree");
+  });
+
+  await step("model menu lists a connected gateway's models and finds one by search", async () => {
+    await click(button("New session"), "New session");
+    const menu = `document.querySelector('[role="menu"][aria-label="Model"]')`;
+    await click(`document.querySelector('button[aria-label^="Model:"]')`, "Model");
+    await until(
+      "the fake model and 14 gateway models",
+      `${menu}?.querySelectorAll('[role="menuitemradio"]').length === 15`,
+      30_000,
+    );
+    await ev(`${menu}.querySelector('input[type="search"]').focus()`);
+    await cdp.send("Input.insertText", { text: "model-13" });
+    await until("one match", `${menu}.querySelectorAll('[role="menuitemradio"]').length === 1`);
+    for (const type of ["keyDown", "keyUp"])
+      await cdp.send("Input.dispatchKeyEvent", {
+        type,
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+    await until("Enter picks it", `document.querySelector('button[aria-label="Model: Gateway Model 13"]')`);
   });
 
   await step("Open folder picks a second project in the system dialog", async () => {

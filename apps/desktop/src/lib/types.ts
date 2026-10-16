@@ -65,19 +65,17 @@ export interface Approval {
   request: ApprovalRequest;
 }
 
-export interface ModelInfo {
-  id: string;
-  family: string;
-  name: string;
-  providerName?: string;
-  contextWindow: number;
-  capabilities?: { tools: boolean; vision: boolean; thinking: boolean };
-}
-
 export interface ProviderSummary {
   id: string;
   name: string;
-  models: { id: string; name: string; contextWindow: number }[];
+  models: {
+    id: string;
+    name: string;
+    contextWindow: number;
+    capabilities?: { thinking?: boolean };
+    status?: "alpha" | "beta" | "deprecated" | "active";
+    releaseDate?: string;
+  }[];
 }
 
 export interface ProvidersList {

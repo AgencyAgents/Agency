@@ -6,7 +6,6 @@ import type {
   Approval,
   Effort,
   Entry,
-  ModelInfo,
   PermissionMode,
   ProvidersList,
   SendResult,
@@ -26,7 +25,6 @@ export interface ProjectState extends Project {
   untrusted: boolean;
   rows: SessionRow[];
   git: GitStatus | null;
-  models: ModelInfo[];
   providers: ProvidersList | null;
   config: Record<string, unknown> | null;
   commands: { name: string; description?: string; source?: string }[];
@@ -453,7 +451,6 @@ function blankProject(p: Project): ProjectState {
     untrusted: false,
     rows: [],
     git: null,
-    models: [],
     providers: null,
     config: null,
     commands: [],
@@ -464,10 +461,6 @@ async function loadProject(root: string): Promise<void> {
   await Promise.all([
     refreshRows(root),
     refreshGit(root),
-    host
-      .rpc<{ models: ModelInfo[] }>(root, "models_list")
-      .then((r) => patchProject(root, { models: r.models }))
-      .catch(() => {}),
     host
       .rpc<ProvidersList>(root, "providers_list")
       .then((r) => patchProject(root, { providers: r }))
@@ -599,7 +592,8 @@ export interface ModelChoice {
   thinking: boolean;
 }
 
-/** Models of connected providers, the configured default first. */
+/** Models of connected providers, the configured default first, then each provider's default and newest.
+ *  From providers_list: models_list holds only a built-in few, with no OpenRouter model. */
 export function modelChoices(root: string | null | undefined): ModelChoice[] {
   const p = project(root);
   if (!p) return [];
@@ -620,11 +614,12 @@ export function modelChoices(root: string | null | undefined): ModelChoice[] {
       });
     }
   };
+  const all = p.providers?.all ?? [];
   const configured = typeof p.config?.model === "string" ? p.config.model : undefined;
   if (configured?.includes("/")) {
     const [provider, ...rest] = configured.split("/");
     const model = rest.join("/");
-    const hit = p.models.find((m) => m.id === model);
+    const hit = all.find((x) => x.id === provider)?.models.find((m) => m.id === model);
     add(
       provider as string,
       model,
@@ -633,9 +628,14 @@ export function modelChoices(root: string | null | undefined): ModelChoice[] {
       hit?.capabilities?.thinking ?? true,
     );
   }
-  for (const m of p.models) {
-    if (connected.has(m.family))
-      add(m.family, m.id, m.name, m.contextWindow, m.capabilities?.thinking ?? false);
+  for (const x of all) {
+    if (!connected.has(x.id)) continue;
+    const live = x.models
+      .filter((m) => m.status !== "deprecated")
+      .sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""));
+    const first = p.providers?.default[x.id];
+    for (const m of [...live.filter((m) => m.id === first), ...live])
+      add(x.id, m.id, m.name, m.contextWindow, m.capabilities?.thinking ?? false);
   }
   const custom = (p.config?.provider ?? {}) as Record<
     string,
