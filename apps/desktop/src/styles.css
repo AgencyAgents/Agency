@@ -163,9 +163,6 @@ summary {
 summary::-webkit-details-marker {
   display: none;
 }
-details[open] > summary .chev {
-  transform: rotate(90deg);
-}
 ::placeholder {
   color: var(--muted-2);
   opacity: 1;
@@ -180,13 +177,20 @@ details[open] > summary .chev {
 }
 
 .chev {
-  transition: transform 0.12s ease;
   flex: none;
 }
 .grp-chev {
   display: none;
   flex: none;
-  transition: transform 0.12s ease;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chev,
+  .grp-chev {
+    transition: transform 0.12s ease;
+  }
+}
+details[open] > summary .chev {
+  transform: rotate(90deg);
 }
 .grp:hover .grp-ic {
   display: none;
@@ -524,8 +528,11 @@ header .ol {
   margin: 0 auto;
   position: relative;
 }
+.hov-row {
+  background: transparent;
+}
 .hov-row:hover {
-  background: var(--fill) !important;
+  background: var(--fill);
 }
 .col {
   width: 100%;
@@ -802,8 +809,6 @@ details[open]::details-content {
     background: none;
     color: inherit;
   }
-  .chev,
-  .grp-chev,
   .pn-tick {
     transition: none;
   }
@@ -857,7 +862,7 @@ header.bar {
   gap: 6px;
   padding: 0 14px 0 28px;
 }
-header.bar h1 {
+.bar h1 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
@@ -1406,10 +1411,13 @@ header.bar h1 {
     box-shadow: 12px 0 32px rgba(0, 0, 0, 0.1);
   }
   .hide-sm {
+    /* biome-ignore lint/complexity/noImportantStyles: beats inline display */
     display: none !important;
   }
   .pad {
+    /* biome-ignore lint/complexity/noImportantStyles: beats inline padding */
     padding-left: 16px !important;
+    /* biome-ignore lint/complexity/noImportantStyles: beats inline padding */
     padding-right: 16px !important;
   }
   .col {

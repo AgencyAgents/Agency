@@ -189,7 +189,6 @@ export function Details() {
                     padding: "3px 8px",
                     border: 0,
                     "border-radius": "6px",
-                    background: "transparent",
                     "text-align": "left",
                   }}
                   title={f.path}
