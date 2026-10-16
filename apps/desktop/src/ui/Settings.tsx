@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { createMemo, createSignal, For, type JSX, onCleanup, onMount, Show } from "solid-js";
 import { reconcile, unwrap } from "solid-js/store";
 import { errorText, host } from "../lib/host.ts";
-import { modelChoices, project, savePrefs, setState, state, toast } from "../lib/store.ts";
+import { modelChoices, project, rpcWhenUp, savePrefs, setState, state, toast } from "../lib/store.ts";
 import type { Effort, PermissionMode, ProvidersList } from "../lib/types.ts";
 import { I, P } from "./icons.tsx";
 import { type Choice, Choices, closeMenu, openMenu, Pop, toggleMenu } from "./menu.tsx";
@@ -587,7 +587,7 @@ export default function Settings(props: { onClose?: () => void }) {
     const r = root();
     if (!r) return false;
     try {
-      await host.rpc(r, "config_write", { key, value });
+      await rpcWhenUp(r, "config_write", { key, value });
       for (const x of state.projects) {
         if (!x.config) continue;
         const next = structuredClone(unwrap(x.config)) as Record<string, unknown>;
@@ -753,7 +753,7 @@ export default function Settings(props: { onClose?: () => void }) {
     const r = root();
     if (!r) return false;
     try {
-      await host.rpc(r, "provider_connect", { providerId: id, apiKey });
+      await rpcWhenUp(r, "provider_connect", { providerId: id, apiKey });
       await refreshProviders(r);
       return true;
     } catch (e) {
@@ -766,7 +766,7 @@ export default function Settings(props: { onClose?: () => void }) {
     const r = root();
     if (!r) return;
     try {
-      const res = await host.rpc<{ removed?: boolean; reason?: string }>(r, "provider_disconnect", {
+      const res = await rpcWhenUp<{ removed?: boolean; reason?: string }>(r, "provider_disconnect", {
         providerId: id,
       });
       if (res?.removed === false)

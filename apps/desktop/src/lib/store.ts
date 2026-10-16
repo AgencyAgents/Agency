@@ -170,6 +170,22 @@ export function project(root: string | null | undefined): ProjectState | undefin
   return root ? state.projects.find((p) => p.path === root) : undefined;
 }
 
+/** A write sent while the daemon restarts (after a config change) waits for it and goes once more. */
+export async function rpcWhenUp<T>(
+  root: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  try {
+    return await host.rpc<T>(root, method, params);
+  } catch (error) {
+    if (errorCode(error) !== "DAEMON_DOWN") throw error;
+    const end = Date.now() + 15_000;
+    while (project(root)?.conn !== "up" && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    return host.rpc<T>(root, method, params);
+  }
+}
+
 function patchProject(root: string, patch: Partial<ProjectState>): void {
   const i = state.projects.findIndex((p) => p.path === root);
   if (i >= 0) setState("projects", i, patch);
@@ -544,8 +560,12 @@ export async function removeProject(root: string): Promise<void> {
 export async function trustProject(root: string): Promise<void> {
   try {
     await host.trust(root);
-    patchProject(root, { untrusted: false, conn: "connecting", error: null });
-    await host.restart(root);
+    // A running daemon read the trust at start: it leaves once idle, and the host starts a new one.
+    if (project(root)?.conn === "up") await host.rpc(root, "daemon_restart").catch(() => {});
+    else {
+      patchProject(root, { untrusted: false, conn: "connecting", error: null });
+      await host.restart(root);
+    }
   } catch (error) {
     toast(errorText(error), { tone: "err" });
   }

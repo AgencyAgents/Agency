@@ -1,7 +1,17 @@
 import { createEffect, createMemo, createSignal, For, type JSX, on, onCleanup, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { errorText, host } from "../lib/host.ts";
-import { goNew, keyOf, openSession, project, setState, state, toast } from "../lib/store.ts";
+import {
+  goNew,
+  keyOf,
+  openSession,
+  project,
+  rpcWhenUp,
+  setState,
+  state,
+  toast,
+  trustProject,
+} from "../lib/store.ts";
 import { I, P, Spinner } from "./icons.tsx";
 import { Choices, Pop, toggleMenu } from "./menu.tsx";
 import { SideToggle, Toast } from "./SessionView.tsx";
@@ -143,6 +153,7 @@ export default function Skills(_props: { onClose?: () => void }) {
     return p && project(p) ? p : (state.current?.root ?? state.newRoot ?? state.projects[0]?.path ?? null);
   };
   const [skills, setSkills] = createSignal<Skill[] | null>(null);
+  const [trusted, setTrusted] = createSignal(true);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [query, setQuery] = createSignal("");
@@ -151,6 +162,8 @@ export default function Skills(_props: { onClose?: () => void }) {
   const [copied, setCopied] = createSignal(false);
 
   let seq = 0;
+  /** Toggles not yet on disk, by skill name. */
+  const wanted = new Map<string, boolean>();
   async function load(r: string | null, quiet = false) {
     const n = ++seq;
     if (!quiet) {
@@ -163,9 +176,13 @@ export default function Skills(_props: { onClose?: () => void }) {
     }
     setLoading(!quiet);
     try {
-      const res = await host.rpc<{ skills: Skill[] }>(r, "skills_list");
+      const res = await host.rpc<{ skills: Skill[]; trusted?: boolean }>(r, "skills_list");
       if (n !== seq) return;
-      setSkills(res.skills);
+      // A toggle still on its way to disk wins over what the file says now.
+      setSkills(
+        res.skills.map((s) => (wanted.has(s.name) ? { ...s, enabled: wanted.get(s.name) === true } : s)),
+      );
+      setTrusted(res.trusted !== false);
       setError(null);
     } catch (e) {
       if (n === seq && !quiet) setError(errorText(e));
@@ -213,12 +230,15 @@ export default function Skills(_props: { onClose?: () => void }) {
     const next = !s.enabled;
     const setOn = (on: boolean) =>
       setSkills((l) => l?.map((x) => (x.name === name ? { ...x, enabled: on } : x)) ?? null);
+    wanted.set(name, next);
     setOn(next);
     queue = queue.then(async () => {
       try {
         const value = (skills() ?? []).filter((x) => !x.enabled).map((x) => x.name);
-        await host.rpc(r, "config_write", { key: "skills.disabled", value });
+        await rpcWhenUp(r, "config_write", { key: "skills.disabled", value });
+        if (wanted.get(name) === next) wanted.delete(name);
       } catch (e) {
+        wanted.delete(name);
         setOn(!next);
         toast(`Could not turn ${next ? "on" : "off"} ${name}. ${errorText(e)}`, { tone: "err" });
         return;
@@ -299,7 +319,7 @@ export default function Skills(_props: { onClose?: () => void }) {
     const name = form.name;
     setSaving(true);
     try {
-      await host.rpc(r, "skill_write", {
+      await rpcWhenUp(r, "skill_write", {
         scope: form.where,
         name,
         description: form.desc.trim() || "No description yet.",
@@ -346,6 +366,17 @@ export default function Skills(_props: { onClose?: () => void }) {
           New skill
         </button>
       </div>
+
+      <Show when={!trusted() && root()}>
+        {(r) => (
+          <div class="banner" role="note" style={{ "justify-content": "space-between", gap: "12px" }}>
+            <span>Skills in this folder load once you trust it.</span>
+            <button type="button" class="ol" onClick={() => void trustProject(r())}>
+              Trust folder
+            </button>
+          </div>
+        )}
+      </Show>
 
       <Show when={loading()}>
         <div
