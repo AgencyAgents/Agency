@@ -127,6 +127,65 @@ jobs:
             dist/checksums-signed-*.txt
           if-no-files-found: error
 
+  desktop:
+    name: desktop (windows)
+    needs: [build]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Derive version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(bun --print "require('./package.json').version")" >> "$GITHUB_ENV"
+          fi
+      # The sidecar is the CLI binary the build job made and signed, not a second build.
+      - name: Download CLI binary
+        uses: actions/download-artifact@v8
+        with:
+          name: agency-windows
+          path: cli
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: bun install --frozen-lockfile
+      - name: Place sidecar
+        working-directory: apps/desktop
+        run: bun scripts/sidecar.ts --from ../../cli/agency-windows-x64.exe
+      - name: Build installer
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set: the installer ships without updater signatures or latest.json"
+            bun x tauri build --config "{\"version\":\"$VERSION\",\"bundle\":{\"createUpdaterArtifacts\":false}}"
+          else
+            bun x tauri build --config "{\"version\":\"$VERSION\"}"
+          fi
+      - name: Write updater feed
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        working-directory: apps/desktop
+        run: bun scripts/latest-json.ts --version "$env:VERSION" --bundle src-tauri/target/release/bundle/nsis --out src-tauri/target/release/bundle/nsis/latest.json
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: agency-desktop
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            apps/desktop/src-tauri/target/release/bundle/nsis/latest.json
+          if-no-files-found: error
+
   sbom:
     name: sbom
     runs-on: ubuntu-latest
@@ -152,7 +211,7 @@ jobs:
   release:
     name: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, sbom]
+    needs: [build, desktop, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -176,7 +235,7 @@ jobs:
           fi
           # checksums.txt covers install payloads only (binaries + SBOM),
           # never the detached .sig sidecars or the signed manifest itself.
-          sha256sum $(ls agency-* | grep -v '\.sig$') agency.cdx.json > checksums.txt
+          sha256sum $(ls agency-* | grep -v '\.sig$') Agency_*-setup.exe agency.cdx.json > checksums.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -185,7 +244,7 @@ jobs:
           # (raw 64-byte ed25519), the signed checksum manifest, the plain
           # checksums.txt for install-script verification, and the SBOM.
           # sort -u dedupes: platform globs already match their .sig sidecars.
-          FILES=$(ls artifacts/agency-* artifacts/agency-*.sig artifacts/checksums.txt artifacts/checksums-signed.txt artifacts/agency.cdx.json 2>/dev/null | sort -u)
+          FILES=$(ls artifacts/agency-* artifacts/agency-*.sig artifacts/Agency_* artifacts/latest.json artifacts/checksums.txt artifacts/checksums-signed.txt artifacts/agency.cdx.json 2>/dev/null | sort -u)
           # shellcheck disable=SC2086
           gh release create "$GITHUB_REF_NAME" \
             $FILES \

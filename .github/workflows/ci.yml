@@ -37,6 +37,10 @@ jobs:
         run: bun run typecheck
       - name: Typecheck tests
         run: bun run typecheck:test
+      # apps/desktop sits outside the workspaces with its own lockfile.
+      - name: Typecheck desktop app
+        working-directory: apps/desktop
+        run: bun install --frozen-lockfile && bun run typecheck
       # One command (`test:ci` in package.json): a multi-line step on Windows
       # reports only its last command's exit code, so a failed shard passed.
       # The rpc/scripts shard runs one bun process per test file: a leaked
