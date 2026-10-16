@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { globToRegExpSource, splitCommand, unwrapCommand } from "@agency/guard";
+import { modelCommandEnv } from "@agency/tools";
 import { z } from "zod";
 import { type AgencyEvents, type EventBus, HookBlock, HookStop } from "../events.ts";
 
@@ -253,6 +254,8 @@ export interface HookRunOptions {
   cwd: string;
   /** The shell that runs each command: the daemon gives the shell of its bash tool. Absent means the system shell. */
   shell?: { command: string; buildArgs: (command: string) => string[] };
+  /** Added to the environment of each command. */
+  env?: Record<string, string>;
   /** Text for the model from a background hook that ended: the daemon puts it in the inbox of the session. */
   onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
   /** The reply of a model to a prompt hook. Absent: a prompt hook fails, and does not block. */
@@ -284,14 +287,17 @@ function runOne(
   opts: HookRunOptions,
   timeoutS: number | undefined,
   env?: Record<string, string>,
+  setup?: { signal?: AbortSignal },
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const { cwd, shell } = opts;
+    // A setup script runs for the user's environment, not as config of the harness: it gets no harness secret.
+    const base = setup ? modelCommandEnv() : process.env;
     const spawnOptions = {
       cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
-      env: { ...process.env, ...env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
+      env: { ...base, ...opts.env, ...env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
     };
     const child = shell
       ? spawn(shell.command, shell.buildArgs(command), spawnOptions)
@@ -310,14 +316,23 @@ function runOne(
       }
     };
     const timer = timeoutS === undefined ? undefined : setTimeout(killTree, timeoutS * 1000);
+    setup?.signal?.addEventListener("abort", killTree, { once: true });
+    // A hook's answer is at the head of its output; the error of a failed setup script is at its tail.
+    const keep = (prev: string, d: unknown): string =>
+      setup
+        ? (prev + String(d)).slice(-MAX_OUTPUT_CHARS)
+        : prev.length < MAX_OUTPUT_CHARS
+          ? prev + String(d)
+          : prev;
     child.stdout.on("data", (d) => {
-      if (stdout.length < MAX_OUTPUT_CHARS) stdout += String(d);
+      stdout = keep(stdout, d);
     });
     child.stderr.on("data", (d) => {
-      if (stderr.length < MAX_OUTPUT_CHARS) stderr += String(d);
+      stderr = keep(stderr, d);
     });
     const done = (code: number | null) => {
       clearTimeout(timer);
+      setup?.signal?.removeEventListener("abort", killTree);
       resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
     };
     child.on("error", () => done(null));
@@ -326,6 +341,25 @@ function runOne(
     child.stdin.on("error", () => {});
     child.stdin.end(stdin);
   });
+}
+
+const SETUP_TIMEOUT_S = 600;
+const SETUP_ERROR_LINES = 20;
+const SETUP_ERROR_CHARS = 2000;
+
+/** Runs a setup script in the hook shell. Returns undefined on success, else why it failed with the last lines of its output. */
+export async function runSetupScript(
+  script: string,
+  opts: HookRunOptions,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  if (signal?.aborted) return "cancelled";
+  const out = await runOne(script, "", opts, SETUP_TIMEOUT_S, undefined, { signal });
+  if (out.code === 0) return undefined;
+  if (signal?.aborted) return "cancelled";
+  const tail = [out.stdout, out.stderr].filter(Boolean).join("\n").split("\n").slice(-SETUP_ERROR_LINES);
+  const why = out.code === null ? "did not run or timed out" : `exit code ${out.code}`;
+  return `${why}\n${tail.join("\n").slice(-SETUP_ERROR_CHARS)}`.trim();
 }
 
 /**

@@ -212,6 +212,10 @@ export const ConfigSchema = z
      * or cmd); other platforms always use POSIX sh. Defaults to powershell.
      */
     windowsShell: z.enum(["powershell", "gitbash", "cmd"]).optional(),
+    /** Variables added to the environment of the shell commands of the model, even when a name looks secret. */
+    shellEnv: z.record(z.string(), z.string()).optional(),
+    /** Shell script that runs once per session in the workspace root, before its first turn. A failure fails that turn. */
+    setupScript: z.string().optional(),
     /**
      * Web search for the websearch tool: a GET endpoint the query is appended
      * to as `?q=`. Absent means the tool is not offered to the model at all.

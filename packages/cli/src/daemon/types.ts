@@ -690,6 +690,8 @@ export interface DaemonContext {
   sessionInboxes: Map<string, Message[]>;
   /** Sessions whose running turn still reads its inbox; session_message queues only for these. */
   steerableSessions: Set<string>;
+  /** Sessions whose `setupScript` ran: it runs once for each session. */
+  setupDone: Set<string>;
   gate: PermissionsGate;
   gateForAgent: (handle: string) => PermissionsGate;
   isReadOnlyAgent: (handle: string) => boolean;

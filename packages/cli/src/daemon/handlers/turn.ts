@@ -12,6 +12,7 @@ import {
   parseHandles,
   parseSlashInput,
   runCommandHooks,
+  runSetupScript,
   runTurn,
   TraceRecorder,
   withTrace,
@@ -109,7 +110,8 @@ async function runPromptHooks(
   sessionId: string,
   prompt: string,
   session: RunTurnParams["session"],
-  expansion?: PromptExpansion,
+  expansion: PromptExpansion | undefined,
+  setup: { signal: AbortSignal; once: boolean },
 ): Promise<void> {
   const opts = ctx.hookRun;
   const context: string[] = [];
@@ -129,6 +131,16 @@ async function runPromptHooks(
   }
   // No reply in the history yet: this is the first prompt of the session.
   if (!session.some((m) => m.role === "assistant")) {
+    // A turn with no session id has no session to remember the run in: it runs the script every time.
+    if (ctx.config.setupScript && !(setup.once && ctx.setupDone.has(sessionId))) {
+      const failure = await runSetupScript(ctx.config.setupScript, opts, setup.signal);
+      if (failure !== undefined) {
+        throw new AgencyError(ErrorCode.INVALID_REQUEST, `the setup script failed: ${failure}`, {
+          source: PROMPT_HOOK_SOURCE,
+        });
+      }
+      if (setup.once) ctx.setupDone.add(sessionId);
+    }
     const start = await runCommandHooks(
       ctx.commandHooks,
       "SessionStart",
@@ -619,7 +631,12 @@ export async function executeTurn(
                 payload: { sessionId, prompt: promptText },
               });
             } catch {}
-            if (!childInfo) await runPromptHooks(ctx, sessionId, promptText, params.session, expansion);
+            if (!childInfo) {
+              await runPromptHooks(ctx, sessionId, promptText, params.session, expansion, {
+                signal: controller.signal,
+                once: params.sessionId !== undefined,
+              });
+            }
             const mainPrompt = resolvePrompt(params, {
               workspaceRoot: options.workspaceRoot,
               mcpFailures: effectiveMcpFailures,

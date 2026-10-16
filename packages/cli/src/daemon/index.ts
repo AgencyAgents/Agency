@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   AgentRegistry,
   attachCommandHooks,
@@ -88,6 +88,7 @@ import {
   loadUserMcpServers,
   resolveConfiguredShell,
   setDeniedCommandEnv,
+  setShellEnv,
   type TeamMcpPool,
 } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
@@ -164,7 +165,12 @@ export function createSandboxBackend(
       ...(sandboxConfig.allowedDomains ? { allowedDomains: sandboxConfig.allowedDomains } : {}),
       ...(windowsShell ? { windowsShell } : {}),
       // The keys, sessions and daemon tokens: a command that reads a token can drive the daemon.
-      hidden: [dataDir(), configDir()],
+      // The overlay folder holds the environments of every project, with their variables.
+      hidden: [
+        dataDir(),
+        configDir(),
+        ...(process.env.AGENCY_CONFIG_OVERLAY ? [dirname(process.env.AGENCY_CONFIG_OVERLAY)] : []),
+      ],
     });
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
@@ -185,6 +191,9 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   }
   for (const [envKey, value] of Object.entries(process.env)) {
     if (envKey.endsWith("_API_KEY") && value) redactor.registerSecret(value);
+  }
+  for (const [name, value] of Object.entries(config.shellEnv ?? {})) {
+    if (/KEY|SECRET|TOKEN|PASSWORD/i.test(name) && value) redactor.registerSecret(value);
   }
 
   const eventBus = new EventBus();
@@ -239,6 +248,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // A key in a variable that `provider.<id>.env` names is a key of the harness too, whatever its name.
   const providerEnv = Object.values(providers ?? {}).flatMap((provider) => provider.env ?? []);
   setDeniedCommandEnv([...(config.sandbox?.denyEnv ?? []), ...providerEnv], config.sandbox?.allowEnv);
+  setShellEnv(config.shellEnv);
   const shell = resolveConfiguredShell(process.platform, sandboxWindowsShell(config));
   const shellLabel = shell.label;
   const sandbox = createSandboxBackend(
@@ -430,6 +440,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       const result = await spec.handler(input, { signal, ...(sessionId === undefined ? {} : { sessionId }) });
       return { text: result.content, isError: result.isError === true };
     },
+    env: config.shellEnv,
     // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
     onBackgroundOutput: (sessionId, text) => {
       const id = sessionId ?? "default";
@@ -651,6 +662,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   }
   const sessionInboxes = new Map<string, import("@agency/schema").Message[]>();
   const steerableSessions = new Set<string>();
+  const setupDone = new Set<string>();
 
   // Session-scoped "always allow" grants: one manager per session id, persisted
   // to disk so grants survive daemon restart.
@@ -729,6 +741,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     teamFor,
     sessionInboxes,
     steerableSessions,
+    setupDone,
     gate,
     gateForAgent,
     isReadOnlyAgent,

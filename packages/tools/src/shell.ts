@@ -173,6 +173,7 @@ export function parseShellOutput(rawOutput: string, fallbackCwd: string): Parsed
 
 let deniedEnv: RegExp[] = [];
 let allowedEnv: RegExp[] = [];
+let addedEnv: Record<string, string> = {};
 
 /** The default of Codex: a name with KEY, SECRET or TOKEN in it, in any case, holds a credential. */
 const SECRET_NAME = /KEY|SECRET|TOKEN/i;
@@ -194,6 +195,11 @@ export function setDeniedCommandEnv(denied: readonly string[], allowed: readonly
   allowedEnv = namePatterns(allowed);
 }
 
+/** `shellEnv` of the config: set on purpose, so a command gets it even when the name looks secret. */
+export function setShellEnv(env: Record<string, string> = {}): void {
+  addedEnv = env;
+}
+
 /**
  * The environment of a command that the model wrote: no provider key of the harness (`AGENCY_<ID>_API_KEY`), no
  * variable of the deny list, and no secret name unless the allow list has it. A command could print such a value
@@ -207,5 +213,5 @@ export function modelCommandEnv(env: NodeJS.ProcessEnv = process.env): Record<st
     if (SECRET_NAME.test(name) && !allowedEnv.some((pattern) => pattern.test(name))) continue;
     out[name] = value;
   }
-  return out;
+  return { ...out, ...addedEnv };
 }
