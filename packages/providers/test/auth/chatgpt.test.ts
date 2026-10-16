@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { AgencyError, ErrorCode } from "@agency/schema";
+import { type AgencyError, ErrorCode } from "@agency/schema";
 import {
   chatgptAccessToken,
   getChatgptCredential,
