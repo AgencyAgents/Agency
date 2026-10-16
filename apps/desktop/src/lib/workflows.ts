@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { errorText, host } from "./host.ts";
-import { currentModel, modelChoices, project, refreshRows, state, toast } from "./store.ts";
+import { currentModel, modelChoices, project, refreshRows, rpcWhenUp, state, toast } from "./store.ts";
 import { duration } from "./transcript.ts";
 import type { Block, SendResult, SessionView } from "./types.ts";
 
@@ -261,7 +261,7 @@ const EFFORTS = ["low", "medium", "high", "max"];
 
 async function replyOf(root: string, sessionId: string): Promise<string> {
   try {
-    const { messages } = await host.rpc<SessionView>(root, "session_show", { sessionId });
+    const { messages } = await rpcWhenUp<SessionView>(root, "session_show", { sessionId });
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m?.role !== "assistant") continue;
@@ -361,7 +361,7 @@ async function execute(root: string, w: Workflow, runId: string): Promise<void> 
           s.model = label;
         });
       }
-      const { sessionId } = await host.rpc<{ sessionId: string }>(root, "session_create");
+      const { sessionId } = await rpcWhenUp<{ sessionId: string }>(root, "session_create");
       step(i, (s) => {
         s.sessionId = sessionId;
       });
@@ -374,7 +374,7 @@ async function execute(root: string, w: Workflow, runId: string): Promise<void> 
       const userText =
         (spec.text.trim() || "Do your part of this workflow.") +
         (previous ? `\n\nThe previous step reported:\n${previous}` : "");
-      const result = await host.rpc<SendResult>(root, "session_send", {
+      const result = await rpcWhenUp<SendResult>(root, "session_send", {
         sessionId,
         turnId,
         provider,

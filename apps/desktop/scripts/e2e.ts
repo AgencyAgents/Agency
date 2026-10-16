@@ -452,7 +452,7 @@ try {
     );
   });
 
-  await step("workflows: create a two-step workflow and run it", async () => {
+  await step("workflows: a two-step run survives a daemon restart", async () => {
     await click(button("Workflows"), "Workflows");
     await click(button("New workflow"), "New workflow");
     await fill('input[placeholder="Fix failing checks"]', "E2E flow");
@@ -461,7 +461,14 @@ try {
     await fill('textarea[aria-label="Instruction for step 2"]', "say hello twice");
     await click(button("Save"), "Save");
     const before = fake.requests;
-    await click(button("Run now"), "Run now");
+    await until("Run now", button("Run now"));
+    // A settings change restarts the daemon once it is idle: a step can start in that gap.
+    for (const pid of daemonPids()) {
+      try {
+        process.kill(pid);
+      } catch {}
+    }
+    await ev(`(${button("Run now")}).click()`);
     await until("run passed", `!!document.querySelector('[aria-label="Passed"]')`, 60_000);
     const saved = readdirSync(join(ws, ".agency", "workflows")).filter((f) => f.endsWith(".json"));
     if (saved.length !== 1) throw new Error(`workflow files: ${saved.join(", ")}`);

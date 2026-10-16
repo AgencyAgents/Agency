@@ -170,19 +170,22 @@ export function project(root: string | null | undefined): ProjectState | undefin
   return root ? state.projects.find((p) => p.path === root) : undefined;
 }
 
-/** A write sent while the daemon restarts (after a config change) waits for it and goes once more. */
+/** A call sent while the daemon restarts (after a config change) waits for it and goes again, for up to 15 s. */
 export async function rpcWhenUp<T>(
   root: string,
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<T> {
-  try {
-    return await host.rpc<T>(root, method, params);
-  } catch (error) {
-    if (errorCode(error) !== "DAEMON_DOWN") throw error;
-    const end = Date.now() + 15_000;
-    while (project(root)?.conn !== "up" && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
-    return host.rpc<T>(root, method, params);
+  const end = Date.now() + 15_000;
+  for (;;) {
+    try {
+      return await host.rpc<T>(root, method, params);
+    } catch (error) {
+      if (errorCode(error) !== "DAEMON_DOWN" || Date.now() > end) throw error;
+      // The status frame can still say "up" for the daemon that just left: wait, then ask again.
+      await new Promise((r) => setTimeout(r, 250));
+      while (project(root)?.conn !== "up" && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    }
   }
 }
 
