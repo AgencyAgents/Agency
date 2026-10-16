@@ -1,7 +1,7 @@
 /**
  * Installs an old build, serves a newer signed one on a local feed, and checks the app updates itself.
  * Both builds need plugins.updater.dangerousInsecureTransportProtocol, since the feed is plain http.
- * Usage: bun scripts/update-e2e.ts --old <old setup.exe> --new <new setup.exe> --version <new version> [--shot <png>]
+ * Usage: bun scripts/update-e2e.ts --old <old setup.exe> --new <new setup.exe> --version <new version> [--fail-first] [--shot <png>]
  */
 import { execFileSync, spawn } from "node:child_process";
 import {
@@ -37,7 +37,14 @@ mkdirSync(join(home, "config"), { recursive: true });
 
 let served = 0;
 let feedHits = 0;
+/** --fail-first: the first installer download fails, so the test must recover through "Try again". */
+let failNext = process.argv.includes("--fail-first");
 const server = http.createServer((req, res) => {
+  if (failNext && req.url === `/${encodeURIComponent(basename(newSetup))}`) {
+    failNext = false;
+    res.writeHead(503).end();
+    return;
+  }
   if (req.url === "/latest.json") {
     feedHits++;
     res.writeHead(200, { "content-type": "application/json" });
@@ -163,14 +170,24 @@ try {
   if (!first) throw new Error("the old build opened no page");
   const oldVersion = await appVersion(first);
   check(`old build runs as an older version (${oldVersion})`, !!oldVersion && oldVersion !== version);
-  let screen = false;
-  const end = Date.now() + 30_000;
-  while (!screen && Date.now() < end && first.readyState === WebSocket.OPEN) {
-    const text = await ev<string>(first, "document.body.innerText");
-    screen =
-      !!text?.includes(`Updating Agency to ${version}`) || !!text?.includes(`Installing Agency ${version}`);
-    if (!screen) await sleep(50);
+  const failFirst = process.argv.includes("--fail-first");
+  const seen = async (texts: string[]): Promise<boolean> => {
+    const end = Date.now() + 30_000;
+    while (Date.now() < end && first.readyState === WebSocket.OPEN) {
+      const text = (await ev<string>(first, "document.body.innerText")) ?? "";
+      if (texts.some((t) => text.includes(t))) return true;
+      await sleep(50);
+    }
+    return false;
+  };
+  if (failFirst) {
+    check("a failed download offers Try again", await seen(["The update did not install"]));
+    await ev(
+      first,
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Try again").click()`,
+    );
   }
+  const screen = await seen([`Updating Agency to ${version}`, `Installing Agency ${version}`]);
   check("the update screen shows the new version", screen);
   const shotFile = process.argv.includes("--shot")
     ? process.argv[process.argv.indexOf("--shot") + 1]
@@ -228,6 +245,6 @@ try {
 
 const failed = checks.filter(([, ok]) => !ok).length;
 console.log(`\n${checks.length - failed} passed, ${failed} failed`);
-if (failed === 0) rmSync(work, { recursive: true, force: true });
+if (failed === 0) rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 else console.log(`kept ${work}`);
 process.exit(failed === 0 ? 0 : 1);

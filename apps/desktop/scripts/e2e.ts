@@ -143,6 +143,12 @@ function daemonPids(): number[] {
 function cleanup(): void {
   if (proc?.pid) spawnSyncQuiet("taskkill", ["/T", "/F", "/PID", String(proc.pid)]);
   for (const pid of daemonPids()) spawnSyncQuiet("taskkill", ["/T", "/F", "/PID", String(pid)]);
+  // A daemon that started in the last step may have no instance file yet; its command line names this home.
+  spawnSyncQuiet("powershell", [
+    "-NoProfile",
+    "-Command",
+    `Get-CimInstance Win32_Process -Filter "Name = 'agency.exe'" | Where-Object { $_.CommandLine -like '*${home}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ]);
   proc = null;
   server.close();
 }
@@ -263,7 +269,45 @@ async function step(name: string, run: () => Promise<void>): Promise<void> {
   }
 }
 
+async function fill(selector: string, text: string): Promise<void> {
+  const q = `document.querySelector(${JSON.stringify(selector)})`;
+  await until(selector, q);
+  await ev(`(() => { const el = ${q}; el.focus(); el.select?.(); })()`);
+  await cdp.send("Input.insertText", { text });
+}
+
+async function waitFile(file: string, re: RegExp, label: string, ms = 15_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (re.test(readFileSync(file, "utf8"))) return;
+    await sleep(100);
+  }
+  throw new Error(`timed out: ${label}\n${readFileSync(file, "utf8")}`);
+}
+
+/** Drives the Windows folder picker through UI Automation: types the path and presses Select Folder. */
+function pickFolder(path: string): string {
+  // The folder box and Select Folder show as plain panes to UI Automation: drive them by window handle.
+  const byId = (id: string) => `(New-Object $P ($A::AutomationIdProperty, '${id}'))`;
+  return [
+    "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
+    'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public static class W { [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, string l); [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l); }\'',
+    "$A = [System.Windows.Automation.AutomationElement]; $T = [System.Windows.Automation.TreeScope]; $P = [System.Windows.Automation.PropertyCondition]",
+    // UI Automation lists an owned dialog under its owner window, not under the desktop.
+    "$app = $A::RootElement.FindFirst($T::Children, (New-Object $P ($A::ClassNameProperty, 'Tauri Window')))",
+    "$win = $null; for ($i = 0; $i -lt 100 -and -not $win; $i++) { $win = $app.FindFirst($T::Children, (New-Object $P ($A::NameProperty, 'Open a project folder'))); if (-not $win) { Start-Sleep -Milliseconds 200 } }",
+    "if (-not $win) { throw 'no folder dialog' }",
+    `$edit = $null; for ($i = 0; $i -lt 50 -and -not $edit; $i++) { $edit = $win.FindFirst($T::Descendants, ${byId("1152")}); if (-not $edit) { Start-Sleep -Milliseconds 200 } }`,
+    "if (-not $edit) { throw 'no folder box' }",
+    `[void][W]::SendMessage([IntPtr]$edit.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, '${path.replace(/'/g, "''")}')`,
+    "$btn = $win.FindFirst($T::Descendants, (New-Object $P ($A::NameProperty, 'Select Folder')))",
+    "if (-not $btn) { throw 'no Select Folder button' }",
+    "[void][W]::SendMessage([IntPtr]$btn.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)",
+  ].join("; ");
+}
+
 const wsName = ws.split(/[\\/]/).pop() ?? "";
+const extraDirs: string[] = [];
 try {
   await step("app opens the folder passed on the command line", async () => {
     await until("sidebar", `document.querySelector('nav[aria-label="Sessions"]')`, 60_000);
@@ -374,6 +418,71 @@ try {
       `document.querySelector('input[aria-label="Max steps per turn"]')?.value === "42"`,
       30_000,
     );
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await until("settings closed", `!document.querySelector('input[placeholder="Search settings"]')`);
+  });
+
+  await step("skills: trust the folder, create one, switch it off and on, use it", async () => {
+    await click(button("Skills"), "Skills");
+    const note = bodyHas("Skills in this folder load once you trust it.");
+    await until("trust note", note, 30_000);
+    await click(button("Trust folder"), "Trust folder");
+    await until("trusted", `!(${note}) && ${UP}`, 60_000);
+    await click(button("New skill"), "New skill");
+    await fill('input[placeholder="release-notes"]', "e2e-skill");
+    await fill('input[placeholder="When Agency should use this skill"]', "Checks the e2e flow");
+    await fill('textarea[placeholder="The steps Agency follows when the skill runs"]', "Say ok.");
+    await click(button("Create skill"), "Create skill");
+    await until(
+      "skill page",
+      `[...document.querySelectorAll("h2")].some((h) => h.textContent === "e2e-skill")`,
+    );
+    const file = readFileSync(join(ws, ".agency", "skills", "e2e-skill", "SKILL.md"), "utf8");
+    if (!file.includes("name: e2e-skill") || !file.includes("Say ok."))
+      throw new Error(`SKILL.md holds:\n${file}`);
+    await click(button("Turn off"), "Turn off");
+    await waitFile(configFile, /"disabled":\s*\[\s*"e2e-skill"\s*\]/, "skills.disabled lists e2e-skill");
+    await click(button("Turn on"), "Turn on");
+    await waitFile(configFile, /"disabled":\s*\[\s*\]/, "skills.disabled is empty again");
+    await click(button("Use in session"), "Use in session");
+    await until(
+      "composer holds the command",
+      `document.getElementById("composer")?.value.startsWith("/e2e-skill ")`,
+    );
+  });
+
+  await step("workflows: create a two-step workflow and run it", async () => {
+    await click(button("Workflows"), "Workflows");
+    await click(button("New workflow"), "New workflow");
+    await fill('input[placeholder="Fix failing checks"]', "E2E flow");
+    await fill('textarea[aria-label="Instruction for step 1"]', "say hello");
+    await click(button("Add step"), "Add step");
+    await fill('textarea[aria-label="Instruction for step 2"]', "say hello twice");
+    await click(button("Save"), "Save");
+    const before = fake.requests;
+    await click(button("Run now"), "Run now");
+    await until("run passed", `!!document.querySelector('[aria-label="Passed"]')`, 60_000);
+    const saved = readdirSync(join(ws, ".agency", "workflows")).filter((f) => f.endsWith(".json"));
+    if (saved.length !== 1) throw new Error(`workflow files: ${saved.join(", ")}`);
+    if (fake.requests - before !== 2)
+      throw new Error(`the run made ${fake.requests - before} model calls, not 2`);
+  });
+
+  await step("Open folder picks a second project in the system dialog", async () => {
+    const second = mkdtempSync(join(tmpdir(), "agency-e2e-ws2-"));
+    extraDirs.push(second);
+    await click(button("Open folder"), "Open folder");
+    execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", pickFolder(second)], {
+      stdio: "inherit",
+    });
+    const name = second.split(/[\\/]/).pop() ?? "";
+    await until("second project in the sidebar", bodyHas(name), 30_000);
+    const saved = JSON.parse(readFileSync(join(home, "desktop", "projects.json"), "utf8")) as {
+      path: string;
+    }[];
+    if (!saved.some((p) => resolve(p.path) === resolve(second)))
+      throw new Error("projects.json lacks the folder");
   });
 } catch {
   // The failed step already printed its reason.
@@ -384,8 +493,13 @@ try {
 const failed = results.filter((r) => !r[1]);
 console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`);
 if (failed.length === 0 && !process.argv.includes("--keep")) {
-  rmSync(home, { recursive: true, force: true });
-  rmSync(ws, { recursive: true, force: true });
+  for (const dir of [home, ws, ...extraDirs]) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    } catch (error) {
+      console.log(`could not remove ${dir}: ${error}`);
+    }
+  }
 } else {
   console.log(`kept ${home} and ${ws}`);
 }
