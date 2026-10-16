@@ -122,6 +122,8 @@ export function loadCommands(options: {
   configDirOverride?: string;
   /** False for a workspace that the user did not trust: a command file can hold shell blocks, so none loads. */
   projectTrusted?: boolean;
+  /** Names of skills the user switched off (`skills.disabled` of the config). */
+  disabledSkills?: readonly string[];
 }): CommandTemplate[] {
   const root = options.workspaceRoot;
   const projectDir = join(root, ".agency", "commands");
@@ -154,7 +156,7 @@ export function loadCommands(options: {
     resolveSkillDirs(root, options.configDirOverride).filter(
       (entry) => options.projectTrusted !== false || entry.tier !== "project",
     ),
-  ).filter((skill) => skill.userInvocable);
+  ).filter((skill) => skill.userInvocable && !options.disabledSkills?.includes(skill.name));
   // project wins on name collision
   const map = new Map<string, CommandTemplate>();
   for (const skill of skills) {

@@ -129,6 +129,8 @@ export interface RunTurnOptions {
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
   drainMailbox?: () => Message[];
+  /** The user's messages sent during the turn, drained once more at its end: team mailboxes stay out of it. */
+  drainSteering?: () => Message[];
   /** Team control (B3): detects identical tool+input 3x consecutively and
    *  halts the turn. Opt-in — enabled for dispatched peers only. */
   doomLoopDetection?: boolean;
@@ -541,6 +543,17 @@ export async function runTurn(
           if (reasons.length > 0) {
             stopBlocked = true;
             await append({ role: "user", content: [{ type: "text", text: reasons.join("\n\n") }] });
+            continue;
+          }
+        }
+        // A message sent while the model gave its last answer would wait for the next turn: answer it now.
+        if (canGoOn && options.drainSteering) {
+          let late: Message[] = [];
+          try {
+            late = options.drainSteering();
+          } catch {}
+          if (late.length > 0) {
+            for (const message of late) await append(message);
             continue;
           }
         }

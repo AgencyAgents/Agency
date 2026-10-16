@@ -434,4 +434,17 @@ describe("skills on demand", () => {
       rmSync(ws, { recursive: true, force: true });
     }
   });
+
+  test("a skill named in disabledSkills does not load", async () => {
+    const ws = makeWs("off");
+    try {
+      writeSkill(ws, "keep", "name: keep\ndescription: Stays", "KEEP");
+      writeSkill(ws, "drop", "name: drop\ndescription: Goes", "DROP");
+      const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus(), disabledSkills: ["drop"] });
+      expect(result.skills.map((skill) => skill.name)).toEqual(["keep"]);
+      expect(result.plugins.map((plugin) => plugin.id)).not.toContain("drop");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
 });

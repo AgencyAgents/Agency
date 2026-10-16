@@ -50,6 +50,8 @@ export interface PluginLoaderOptions {
   projectTrusted?: boolean;
   /** Also the code plugins of the user folders of OpenCode and Pi (`userAgentPlugins` of the config): they are code. */
   userAgentPlugins?: boolean;
+  /** Names of skills the user switched off (`skills.disabled` of the config): they do not load. */
+  disabledSkills?: readonly string[];
 }
 
 export interface PluginLoadResult {
@@ -475,7 +477,9 @@ export async function loadPlugins(options: PluginLoaderOptions): Promise<PluginL
   const skillDirs = resolveSkillDirs(options.workspaceRoot, options.configDirOverride).filter(
     (entry) => projectTrusted || entry.tier !== "project",
   );
-  const skills = discoverSkills(skillDirs, logger);
+  const skills = discoverSkills(skillDirs, logger).filter(
+    (skill) => !options.disabledSkills?.includes(skill.name),
+  );
   const onDemand: SkillDescriptor[] = [];
   for (const skill of skills) {
     if (seen.has(skill.name)) {

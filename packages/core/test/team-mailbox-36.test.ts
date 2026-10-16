@@ -135,4 +135,38 @@ describe("team mailbox correctness (item 36)", () => {
     expect(seenByIteration[0]!.some((t) => t.includes("change of plans"))).toBe(false);
     expect(seenByIteration[1]!.some((t) => t.includes("change of plans"))).toBe(true);
   });
+
+  it("a message sent during the last answer is answered in the same turn", async () => {
+    let steeringCalls = 0;
+    const drainSteering = (): Message[] => (++steeringCalls === 1 ? [msg("one more thing")] : []);
+    const seen: string[][] = [];
+    const adapter = {
+      family: "test",
+      async *stream(req: { messages: Message[] }) {
+        seen.push(req.messages.flatMap((m) => m.content.map((c) => (c as { text?: string }).text ?? "")));
+        yield { type: "text_delta" as const, text: `answer ${seen.length}` };
+        yield {
+          type: "message_stop" as const,
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    const scheduler = { schedule: (fn: () => Promise<unknown>) => fn() } as never;
+    const http = { fetch: async () => new Response() } as never;
+    const result = await runTurn(adapter as never, scheduler, http, {
+      identity: { type: "user" },
+      capabilities: { tools: "*", pathScopes: "*", network: "*" },
+      systemPrompt: "sys",
+      tools: [],
+      model: "m",
+      apiKey: "k",
+      session: [msg("start")],
+      drainSteering,
+      maxToolIterations: 10,
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(seen.length).toBe(2);
+    expect(seen[1]!.some((t) => t.includes("one more thing"))).toBe(true);
+  });
 });

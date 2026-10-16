@@ -146,6 +146,8 @@ export const ConfigSchema = z
     memory: z.boolean().optional(),
     /** Loads the code plugins of the user folders of OpenCode and Pi too. Off by default: they are code. */
     userAgentPlugins: z.boolean().optional(),
+    /** `disabled`: names of skills that do not load, neither as a prompt line nor as `/name`. */
+    skills: z.object({ disabled: z.array(z.string()).optional() }).optional(),
     /** Loads the user instructions of other agents (`~/.claude/CLAUDE.md`). Off by default: they are often about that agent. */
     userAgentInstructions: z.boolean().optional(),
     /**
