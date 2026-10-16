@@ -17,7 +17,13 @@ import {
   TraceRecorder,
   withTrace,
 } from "@agency/core";
-import { buildScriptSandboxArgv, scriptSandboxAvailable, scriptSandboxEnv } from "@agency/guard";
+import {
+  buildScriptSandboxArgv,
+  type PermissionMode,
+  type PermissionsGate,
+  scriptSandboxAvailable,
+  scriptSandboxEnv,
+} from "@agency/guard";
 import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -38,6 +44,7 @@ import {
   type DaemonContext,
   HEARTBEAT_INTERVAL_MS,
   keySourcesFor,
+  PLAN_EXIT_TOOL,
   type RunTurnParams,
   type RunTurnRpcResult,
   resolvePrompt,
@@ -517,6 +524,59 @@ export async function executeTurn(
                   handler: async () => ({ content: "The answer is recorded. End the turn now." }),
                 },
               ];
+        // An approved plan moves the rest of the turn, and the agents it starts, to allow-edits.
+        let turnMode: PermissionMode = params.permissionMode ?? "ask";
+        const planExitTools = (gate: PermissionsGate): CoreToolSpec[] =>
+          turnMode !== "plan" || params.nonInteractive === true
+            ? []
+            : [
+                {
+                  name: PLAN_EXIT_TOOL,
+                  description:
+                    "Plan mode only. Shows the user your finished plan and asks for approval. On approval, plan mode ends and you can edit files and run commands. Call it once, after you explored with read-only tools.",
+                  inputSchema: {
+                    type: "object",
+                    properties: { plan: { type: "string", description: "The full plan, as markdown." } },
+                    required: ["plan"],
+                  },
+                  riskTier: "safe",
+                  handler: async (input) => {
+                    if (turnMode !== "plan") {
+                      return { content: "The plan is already approved: carry it out.", isError: true };
+                    }
+                    const plan = typeof input.plan === "string" ? input.plan.trim() : "";
+                    if (plan === "")
+                      return { content: "plan_exit needs the plan as markdown.", isError: true };
+                    const answer = await requestApproval({
+                      tool: PLAN_EXIT_TOOL,
+                      title: plan,
+                      riskTier: "moderate",
+                      oneTime: true,
+                    });
+                    // Two plans in one batch: the first approval already ended plan mode.
+                    if (turnMode !== "plan") {
+                      return { content: "The plan is already approved: carry it out.", isError: true };
+                    }
+                    if (answer === "reject") {
+                      return {
+                        content:
+                          "The plan was not approved: the user rejected it or did not answer in time. Plan mode stays on. Ask what to change or revise the plan, then call plan_exit again.",
+                      };
+                    }
+                    turnMode = "allow-edits";
+                    gate.setMode(turnMode);
+                    const meta = activeTurnMeta.get(params.turnId);
+                    if (meta) meta.permissionMode = turnMode;
+                    const changed = { type: "mode_changed" as const, mode: turnMode };
+                    broadcast(eventStream, changed);
+                    if (params.sessionId !== undefined) broadcast(`session.${sessionId}`, changed);
+                    return {
+                      content:
+                        "The user approved the plan. Plan mode is over for this turn: you can write and edit files now. Carry out the plan.",
+                    };
+                  },
+                },
+              ];
         // `true` needs the script sandbox. `"host"` runs the script with the authority of a shell command, so it is
         // only for the software backend: a sandbox for commands must not have a tool that goes around it.
         const isolatedRunner =
@@ -554,9 +614,7 @@ export async function executeTurn(
             params.capabilities ??
             (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
           const effectiveMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
-          const sessionGate = gateForSession(sessionId)
-            .withMode(params.permissionMode ?? "ask")
-            .withRules(turnPermissions);
+          const sessionGate = gateForSession(sessionId).withMode(turnMode).withRules(turnPermissions);
           const gatedTools =
             builtinsMode && turnScope
               ? turnScope.tools.filter((t) => sessionGate.toolOffered(t.name, t.riskTier))
@@ -571,6 +629,7 @@ export async function executeTurn(
             ...deferTools(offeredTools, deferMode),
             ...codeTools(sessionGate),
             ...structuredTools,
+            ...planExitTools(sessionGate),
           ];
           activeTurnMeta.set(params.turnId, {
             capabilities: effectiveCapabilities,
@@ -582,7 +641,7 @@ export async function executeTurn(
             startedAt,
             budget: params.budget,
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
-            permissionMode: params.permissionMode,
+            permissionMode: turnMode,
           });
           ctx.steerableSessions.add(sessionId);
           try {
@@ -731,9 +790,7 @@ export async function executeTurn(
             try {
               eventBus.emit("model.fallback", fbEvent);
             } catch {}
-            const sessionGate = gateForSession(sessionId)
-              .withMode(params.permissionMode ?? "ask")
-              .withRules(turnPermissions);
+            const sessionGate = gateForSession(sessionId).withMode(turnMode).withRules(turnPermissions);
             const fallbackCapabilities =
               params.capabilities ??
               (builtinsMode ? await defaultCapabilitiesForSession(sessionId) : defaultCapabilitiesSync);
@@ -747,6 +804,7 @@ export async function executeTurn(
               ),
               ...codeTools(sessionGate),
               ...structuredTools,
+              ...planExitTools(sessionGate),
             ];
             activeTurnMeta.set(params.turnId, {
               capabilities: fallbackCapabilities,
@@ -758,20 +816,23 @@ export async function executeTurn(
               startedAt,
               budget: params.budget,
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
-              permissionMode: params.permissionMode,
+              permissionMode: turnMode,
             });
             // The fallback model's own limits: the primary's output limit can be too large for it.
             const fallbackInfo = catalogModel(fallbackRef.provider, fallbackRef.model);
-            const fallbackPrompt = resolvePrompt(params, {
-              workspaceRoot: options.workspaceRoot,
-              mcpFailures: fallbackMcpFailures,
-              shellLabel,
-              trustStore,
-              pluginInstructions: ctx.pluginInstructions,
-              memoryFile: ctx.memoryFile,
-              userAgentInstructions: ctx.userAgentInstructions,
-              environments: ctx.sessionEnvironments,
-            });
+            const fallbackPrompt = resolvePrompt(
+              { ...params, permissionMode: turnMode },
+              {
+                workspaceRoot: options.workspaceRoot,
+                mcpFailures: fallbackMcpFailures,
+                shellLabel,
+                trustStore,
+                pluginInstructions: ctx.pluginInstructions,
+                memoryFile: ctx.memoryFile,
+                userAgentInstructions: ctx.userAgentInstructions,
+                environments: ctx.sessionEnvironments,
+              },
+            );
             try {
               result = await runTurn(
                 adapterFor(fallbackRef.provider),
@@ -881,6 +942,7 @@ export async function executeTurn(
           ...result,
           ...(turnTiming.value === undefined ? {} : { timing: turnTiming.value }),
           cancelled: controller.signal.aborted,
+          permissionMode: turnMode,
           ...(served.provider === resolvedProvider
             ? {}
             : { servedBy: { provider: served.provider, model: served.model } }),

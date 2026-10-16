@@ -64,6 +64,23 @@ describe("ApprovalManager", () => {
     manager.respond(unrelated.id, "reject");
   });
 
+  test("always on a one-time ask counts once: it grants nothing and answers no other ask", async () => {
+    const manager = new ApprovalManager();
+    const plan = (): ApprovalRequest => ({ tool: "plan_exit", title: "Approve the plan", oneTime: true });
+    const first = manager.createPending(plan());
+    const second = manager.createPending(plan());
+
+    expect(manager.respond(first.id, "always")).toEqual({ resolved: true, retroactive: 0 });
+    await expect(first.promise).resolves.toBe("always");
+    expect(manager.pendingCount()).toBe(1);
+    expect(manager.hasAlways(plan())).toBe(false);
+    manager.grantAlways(plan());
+    expect(manager.hasAlways(plan())).toBe(false);
+
+    manager.respond(second.id, "reject");
+    await expect(second.promise).resolves.toBe("reject");
+  });
+
   test("reject resolves the ask and grants nothing", async () => {
     const manager = new ApprovalManager();
     const { id, promise } = manager.createPending(bashRequest("rm -rf build"));

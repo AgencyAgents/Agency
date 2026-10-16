@@ -180,7 +180,7 @@ export const en = {
   "cli.error.unknown_rules":
     "These permission rules have no counterpart here (a path outside the workspace, a domain, a whole MCP server): {rules}",
   "cli.error.invalid_permission_mode":
-    '--permission-mode must be "ask", "allow-edits", "auto", "allow-all", or "deny".',
+    '--permission-mode must be "ask", "plan", "allow-edits", "auto", "allow-all", or "deny".',
   "cli.error.invalid_number": "{flag} must be a non-negative number.",
   "cli.error.exec_session": "exec {verb} needs a session id (or --last).",
   "cli.error.fork_needs_session": "--fork-session needs --continue, --resume or --session.",

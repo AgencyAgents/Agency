@@ -1293,7 +1293,7 @@ describe("-p headless mode", () => {
     const modes = ["default", "dontAsk", "acceptEdits", "plan", "bypassPermissions"].map(
       (mode) => parseArgv(["-p", "x", "--permission-mode", mode]).permissionMode,
     );
-    expect(modes).toEqual(["ask", "ask", "allow-edits", "deny", "allow-all"]);
+    expect(modes).toEqual(["ask", "ask", "allow-edits", "plan", "allow-all"]);
     const codex = parseArgv(["-p", "x", "-C", "repo", "--output-schema", "s.json", "--skip-git-repo-check"]);
     expect([codex.workspace, codex.jsonSchema]).toEqual(["repo", "s.json"]);
     expect(parseArgv(["-p", "x", "--no-tools"]).disallowedTools).toEqual(["*"]);

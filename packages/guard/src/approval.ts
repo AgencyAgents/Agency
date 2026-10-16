@@ -31,6 +31,8 @@ export interface ApprovalRequest {
   source?: string;
   /** Redacted one-line summary of the parsed args (never raw secrets). */
   argsSummary?: string;
+  /** An ask that "always" must not answer again, such as a plan: the answer counts once and grants nothing. */
+  oneTime?: boolean;
 }
 
 /** One-line summary of the parsed args; callers redact values first. */
@@ -147,7 +149,7 @@ export class ApprovalManager {
 
   /** Whether this exact subject already carries a session "always" grant. */
   hasAlways(request: ApprovalRequest): boolean {
-    return this.grants.has(grantKey(request));
+    return request.oneTime !== true && this.grants.has(grantKey(request));
   }
 
   grantAlways(request: ApprovalRequest): void {
@@ -210,7 +212,7 @@ export class ApprovalManager {
     this.closeReasons.set(id, "answered");
     entry.resolve(decision);
 
-    if (decision !== "always") return { resolved: true, retroactive: 0 };
+    if (decision !== "always" || entry.request.oneTime === true) return { resolved: true, retroactive: 0 };
 
     this.grantAlways(entry.request);
     const key = grantKey(entry.request);

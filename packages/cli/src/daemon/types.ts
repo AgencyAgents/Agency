@@ -28,6 +28,7 @@ import {
   type PluginCommandContribution,
   type ProviderConfig,
   parseModelRef,
+  readOnlyReminder,
   resolveSmallModel,
   runTurn,
   type SessionStore,
@@ -100,6 +101,7 @@ export const DEFAULT_SYSTEM_PROMPT =
   "is named.";
 
 export const STRUCTURED_OUTPUT_TOOL = "structured_output";
+export const PLAN_EXIT_TOOL = "plan_exit";
 
 export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const DEFAULT_IDLE_LINGER_MS = 10 * 60 * 1000;
@@ -244,6 +246,8 @@ export interface RunTurnRpcResult {
   needsCompaction?: boolean;
   /** First request's time to first token, stream time and output tokens of all its requests. */
   timing?: TurnTiming;
+  /** The mode the turn ended in: an approved plan moves a plan turn to `allow-edits`. */
+  permissionMode?: PermissionMode;
 }
 
 /** Daemon-owned turn: the caller sends text, the daemon owns store,
@@ -822,6 +826,7 @@ export function resolvePrompt(
   });
 
   const reminders: SystemReminder[] = [...(params.systemReminders ?? [])];
+  if (params.permissionMode === "plan") reminders.push(readOnlyReminder());
   if (options.mcpFailures) {
     for (const [name, reason] of options.mcpFailures) reminders.push(mcpServerDownReminder(name, reason));
   }

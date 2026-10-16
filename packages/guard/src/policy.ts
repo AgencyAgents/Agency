@@ -17,7 +17,7 @@ export type RiskTier = "safe" | "moderate" | "dangerous";
 /** Non-interactive permission mode. `ask` is the default; the others are
  *  chosen only via the explicit `--permission-mode` flag, never silently.
  *  `auto` allows edits as `allow-edits` does, and a reviewer model answers the other asks of a default rule. */
-export const PERMISSION_MODES = ["ask", "allow-edits", "auto", "allow-all", "deny"] as const;
+export const PERMISSION_MODES = ["ask", "plan", "allow-edits", "auto", "allow-all", "deny"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /** Tools `allow-edits` and `auto` auto-allow: file mutations, not command execution. */
@@ -80,6 +80,8 @@ export interface ToolPolicy {
     request: ToolCallPolicyRequest,
     ask: ((request: ApprovalRequestLike) => Promise<"once" | "always" | "reject">) | undefined,
   ): Promise<"allow" | "deny">;
+  /** The tool result for a refused call, when the refusal has a cause the model can act on. */
+  denyReason?(request: ToolCallPolicyRequest): string | undefined;
 }
 
 /** Structural stand-in for the approval callback type (avoids an import cycle). */
@@ -107,6 +109,12 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
  *  workspaces; this allow is unreachable there.
  */
 const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
+
+/** Moderate-tier tools that only read: plan mode keeps them, still asking as `ask` does. */
+const PLAN_WEB_TOOLS: ReadonlySet<string> = new Set(["fetch", "websearch"]);
+
+/** Safe-tier tools that write state a later session reads: plan mode refuses them with the writes. */
+const PLAN_REFUSED_SAFE: ReadonlySet<string> = new Set(["memory"]);
 
 const DECISION_RANK: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
@@ -758,7 +766,7 @@ export class PermissionsGate implements ToolPolicy {
   private ceiling: PermissionsGate | undefined;
 
   constructor(
-    private readonly options: {
+    private options: {
       permissions?: Record<string, ToolPermissionValue>;
       workspaceRoot: string;
       /** Per-agent policy mode: tools absent from the map are filtered entirely. */
@@ -771,6 +779,11 @@ export class PermissionsGate implements ToolPolicy {
   ) {
     this.permissions = options.permissions ?? {};
     this.engine = new PolicyEngine(rulesFromPermissions(this.permissions), "ask");
+  }
+
+  /** Switches this gate's mode in place: a turn whose plan the user approved goes on in the new mode. */
+  setMode(mode: PermissionMode): void {
+    this.options = { ...this.options, permissionMode: mode };
   }
 
   /** Derives a gate with `mode` applied over the same policy and trust inputs. */
@@ -949,6 +962,7 @@ export class PermissionsGate implements ToolPolicy {
     if (this.options.permissionMode === "deny" && (request.riskTier ?? "dangerous") !== "safe") {
       return "deny";
     }
+    if (this.planRefuses(request)) return "deny";
 
     const decision = this.decisionFor(request);
     if (decision === "allow") return "allow";
@@ -982,6 +996,23 @@ export class PermissionsGate implements ToolPolicy {
       reads.some((path) => denied("read", path)) ||
       writes.some((path) => denied("edit", path) || denied("write", path))
     );
+  }
+
+  /** Plan mode is read-only: tools above `safe` and spawning agents are refused, except web reads and read-only shell commands. */
+  private planRefuses(request: ToolCallPolicyRequest): boolean {
+    if (this.options.permissionMode !== "plan") return false;
+    if (ORCHESTRATION_TOOLS.has(request.tool) || PLAN_REFUSED_SAFE.has(request.tool)) return true;
+    if ((request.riskTier ?? "dangerous") === "safe" || PLAN_WEB_TOOLS.has(request.tool)) return false;
+    return !(
+      isCommandPatternTool(request.tool) &&
+      request.command !== undefined &&
+      isReadOnlyCommand(request.command)
+    );
+  }
+
+  denyReason(request: ToolCallPolicyRequest): string | undefined {
+    if (!this.planRefuses(request)) return undefined;
+    return `plan mode: ${request.tool} is refused. This session is in plan mode, which is read-only. Do not call it again. Explore with read-only tools, then present your plan: call plan_exit with the full plan in markdown so the user can approve it.`;
   }
 
   /**

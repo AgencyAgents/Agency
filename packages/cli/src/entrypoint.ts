@@ -162,7 +162,7 @@ Options:
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
-  --permission-mode <mode> With -p: ask (default), allow-edits, auto, allow-all, or deny
+  --permission-mode <mode> With -p: ask (default), plan, allow-edits, auto, allow-all, or deny
   --allowed-tools <rules>  With -p: these tools run with no ask, as rules of Claude Code
                            (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
   --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
@@ -760,13 +760,12 @@ function applyClaudeSettings(parsed: ParsedArgv, raw: string, modeSet: boolean):
   ];
 }
 
-/** The modes of `claude --permission-mode`; `plan` changes no file, as `deny` refuses each tool above `safe`. */
+/** The modes of `claude --permission-mode` that have another name here; `plan` has the same one. */
 const CLAUDE_PERMISSION_MODES: Record<string, PermissionMode> = {
   default: "ask",
   manual: "ask",
   dontAsk: "ask",
   acceptEdits: "allow-edits",
-  plan: "deny",
   bypassPermissions: "allow-all",
 };
 

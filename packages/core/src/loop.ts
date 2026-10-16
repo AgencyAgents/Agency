@@ -1039,10 +1039,8 @@ async function executeOne(
               if (asked.decision === "deny") return "reject";
               return askUser(request);
             };
-      let verdict = await options.toolPolicy.check(
-        { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title },
-        ask,
-      );
+      const policyRequest = { tool: resolved.name, riskTier: resolved.riskTier, ...subject, ...title };
+      let verdict = await options.toolPolicy.check(policyRequest, ask);
       // A PreToolUse `ask` goes to the user even where a rule or the mode allows; the reviewer cannot answer it.
       if (verdict === "allow" && before.decision === "ask") {
         const answer = await askUser?.({
@@ -1092,9 +1090,10 @@ async function executeOne(
         return {
           // Measured: with the bare first sentence a weaker model sent the same refused call 15 times on average.
           content:
-            target === undefined
+            options.toolPolicy.denyReason?.(policyRequest) ??
+            (target === undefined
               ? `permission denied: ${resolved.name} is not permitted by the current permissions policy. Do not call it again: the answer will be the same. Continue without it, or tell the user that the task needs this permission.`
-              : `permission denied: ${resolved.name} with ${JSON.stringify(target)} is not permitted by the current permissions policy. Do not send this call again: the answer will be the same. A ${resolved.name} call with another ${subject.command === undefined ? "path" : "command"} can be permitted. Continue without this one, or tell the user that the task needs this permission.`,
+              : `permission denied: ${resolved.name} with ${JSON.stringify(target)} is not permitted by the current permissions policy. Do not send this call again: the answer will be the same. A ${resolved.name} call with another ${subject.command === undefined ? "path" : "command"} can be permitted. Continue without this one, or tell the user that the task needs this permission.`),
           isError: true,
         };
       }
