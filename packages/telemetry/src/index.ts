@@ -28,6 +28,7 @@ export {
   recordFeedbackUsage,
   type SessionUsageTotals,
   SessionUsageTracker,
+  type TurnTiming,
   turnCostUsd,
   type UsageSessionEntry,
   type UsageTurn,

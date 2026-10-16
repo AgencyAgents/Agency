@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
@@ -110,6 +110,32 @@ describe("models-dev disk cache", () => {
       expect(loaded?.models).toHaveLength(models.length);
       expect(loaded?.models.find((m) => m.id === "claude-opus-5")?.pricing.inputPerMTok).toBe(15);
       expect(readFileSync(join(dir, MODELS_DEV_CACHE_FILE), "utf8")).toContain("savedAt");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the parsed cache is reused until the file's mtime changes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-catalog-test-"));
+    try {
+      const file = join(dir, MODELS_DEV_CACHE_FILE);
+      const models = convertModelsDevCatalog(ModelsDevCatalogSchema.parse(SAMPLE_CATALOG));
+      const body = (id: string) =>
+        JSON.stringify({ version: 2, savedAt: "2026-01-01T00:00:00.000Z", models: [{ ...models[0], id }] });
+      writeFileSync(file, body("aaaa"));
+      utimesSync(file, 1000, 1000);
+      expect(loadCachedModelsDevCatalog(dir)?.models[0]?.id).toBe("aaaa");
+
+      // Same size and mtime, different content: only a skipped re-parse returns the old id.
+      writeFileSync(file, body("bbbb"));
+      utimesSync(file, 1000, 1000);
+      expect(loadCachedModelsDevCatalog(dir)?.models[0]?.id).toBe("aaaa");
+
+      utimesSync(file, 2000, 2000);
+      expect(loadCachedModelsDevCatalog(dir)?.models[0]?.id).toBe("bbbb");
+
+      saveModelsDevCatalog(dir, [{ ...models[0], id: "cccc" } as ModelInfo]);
+      expect(loadCachedModelsDevCatalog(dir)?.models[0]?.id).toBe("cccc");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

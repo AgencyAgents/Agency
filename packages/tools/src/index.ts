@@ -19,7 +19,12 @@ export { createEditTool } from "./builtins/edit.ts";
 export { createFetchTool } from "./builtins/fetch.ts";
 export { createGlobTool } from "./builtins/glob.ts";
 export { createGrepTool } from "./builtins/grep.ts";
-export { createMemoryTool, MAX_MEMORY_NOTES, readMemoryNotes } from "./builtins/memory.ts";
+export {
+  createMemoryTool,
+  MAX_MEMORY_NOTES,
+  readMemoryNotes,
+  writeMemoryNotes,
+} from "./builtins/memory.ts";
 export { createNotebookEditTool, renderNotebook } from "./builtins/notebook.ts";
 export {
   approvalRecordPath,

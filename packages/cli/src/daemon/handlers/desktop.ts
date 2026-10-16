@@ -5,12 +5,14 @@ import {
   discoverSkills,
   foreignHome,
   loadConfig,
+  memoryFile,
   resolveSkillDirs,
   userPluginStore,
 } from "@agency/core";
 import { envNames, oauthKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { readMemoryNotes, writeMemoryNotes } from "@agency/tools";
 import { applyEdits, modify } from "jsonc-parser";
 import { createHttpValidator, isValidProviderId } from "../../connect.ts";
 import type { DaemonContext } from "../types.ts";
@@ -109,6 +111,24 @@ export function registerDesktopHandlers(
     }, RESTART_POLL_MS);
     restartTimer.unref?.();
     return { restarting: true, activeTurns: ctx.activeControllers.size };
+  };
+
+  handlers.memory_get = async () => {
+    const path = ctx.memoryFile ?? memoryFile(options.workspaceRoot);
+    return { enabled: ctx.config.memory !== false, path, notes: readMemoryNotes(path) };
+  };
+
+  handlers.memory_remove = async (rawParams) => {
+    const note = ((rawParams ?? {}) as { note?: unknown }).note;
+    if (typeof note !== "string" || note === "")
+      throw invalid("memory_remove note must be a non-empty string");
+    const path = ctx.memoryFile ?? memoryFile(options.workspaceRoot);
+    const notes = readMemoryNotes(path);
+    const index = notes.indexOf(note);
+    if (index === -1) return { removed: false, notes };
+    notes.splice(index, 1);
+    writeMemoryNotes(path, notes);
+    return { removed: true, notes };
   };
 
   handlers.provider_connect = async (rawParams) => {

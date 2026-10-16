@@ -32,6 +32,8 @@ const RUNTIME_CONFIG_KEYS = [
   "theme",
 ];
 
+const MAX_TITLE_CHARS = 200;
+
 function requireSessionId(rawParams: unknown, method: string): string {
   const { sessionId } = rawParams as { sessionId?: string };
   if (!sessionId)
@@ -252,6 +254,29 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     turnCheckpoints.delete(sessionId);
     if (stack) turnCheckpoints.set(meta.id, stack);
     return { sessionId: meta.id, renamedFrom: sessionId };
+  };
+
+  handlers.session_title_set = async (rawParams) => {
+    const sessionId = requireSessionId(rawParams, "session_title_set");
+    const raw = (rawParams as { title?: unknown }).title;
+    const title = typeof raw === "string" ? raw.trim() : "";
+    if (title === "" || title.length > MAX_TITLE_CHARS)
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        `session_title_set title must be 1 to ${MAX_TITLE_CHARS} characters`,
+        { source: "surface" },
+      );
+    const entries = todoStore.load(sessionId);
+    if (entries.length === 0)
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
+        source: "surface",
+      });
+    await todoStore.append(sessionId, {
+      type: "session_title",
+      parentId: todoStore.latestTip(entries) ?? null,
+      title,
+    });
+    return { sessionId, title };
   };
 
   handlers.models_list = async (rawParams) => {

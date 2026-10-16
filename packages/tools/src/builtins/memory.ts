@@ -15,6 +15,11 @@ export function readMemoryNotes(file: string): string[] {
     .filter((line) => line.trim() !== "");
 }
 
+export function writeMemoryNotes(file: string, lines: string[]): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, lines.length > 0 ? `${lines.join("\n")}\n` : "", { mode: 0o600 });
+}
+
 /**
  * `memory`: notes that outlive the session, in a file of the user for this workspace, which the prompt of each later
  * session holds. ponytail: two sessions that write at the same time can lose a note; add a lock when that is seen.
@@ -47,10 +52,6 @@ export function createMemoryTool(file: string): ToolSpec {
         .replace(/\s+/g, " ")
         .trim();
       if (note === "") return { content: "note is required", isError: true };
-      const write = (lines: string[]) => {
-        mkdirSync(dirname(file), { recursive: true });
-        writeFileSync(file, lines.length > 0 ? `${lines.join("\n")}\n` : "", { mode: 0o600 });
-      };
       if (input.action === "add") {
         if (note.length > MAX_NOTE_CHARS) {
           return { content: `A note has at most ${MAX_NOTE_CHARS} characters.`, isError: true };
@@ -61,13 +62,13 @@ export function createMemoryTool(file: string): ToolSpec {
             isError: true,
           };
         }
-        write([...notes, `- ${note}`]);
+        writeMemoryNotes(file, [...notes, `- ${note}`]);
         return { content: `Saved. The memory holds ${notes.length + 1} notes.` };
       }
       if (input.action === "remove") {
         const kept = notes.filter((line) => !line.includes(note));
         if (kept.length === notes.length) return { content: `No note contains "${note}".`, isError: true };
-        write(kept);
+        writeMemoryNotes(file, kept);
         return { content: `Removed ${notes.length - kept.length} notes.` };
       }
       return { content: "action must be add, remove or view", isError: true };

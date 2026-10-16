@@ -102,13 +102,19 @@ export interface PricePerMTok {
   cacheWrite?: number;
 }
 
+/** One model request: request start to its first output (text, thinking or a tool call), then that output to the stream end. */
+export interface RequestTiming {
+  ttftMs: number;
+  streamMs: number;
+}
+
 export type LoopEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input?: Record<string, unknown> }
   | { type: "tool_result"; id: string; content: string; isError: boolean; images?: ImageBlock[] }
   | { type: "tool_progress"; id: string; name: string; message: string }
-  | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
+  | { type: "turn_complete"; stopReason: StopReason; usage: Usage; timing?: RequestTiming }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number }
   | { type: "iteration_limit"; iterations: number }
   | { type: "error"; code: string; message: string }
@@ -481,7 +487,7 @@ export async function runTurn(
         for (const id of turn.malformedCalls.keys()) turn.malformedCalls.set(id, CUT_CALL_NOTE);
       }
       salvageError = cut ? undefined : turn.error;
-      options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage });
+      options.onEvent?.({ type: "turn_complete", stopReason, usage: turn.usage, timing: turn.timing });
       if (tracer && modelSpanId) {
         tracer.endSpan(modelSpanId, {
           status: turn.stopReason === "error" ? "error" : "ok",
@@ -650,7 +656,11 @@ export async function runTurn(
       if (options.signal?.aborted) {
         if (calls.length > 0) await append(unrunResults(calls, "cancelled"));
         stopReason = "cancelled";
-        options.onEvent?.({ type: "turn_complete", stopReason, usage: { inputTokens: 0, outputTokens: 0 } });
+        options.onEvent?.({
+          type: "turn_complete",
+          stopReason,
+          usage: { inputTokens: 0, outputTokens: 0 },
+        });
         break;
       }
       endTurnError();
@@ -1257,6 +1267,7 @@ interface CollectedTurn {
   /** Tool-call ids whose streamed arguments never parsed, mapped to the per-call error message. */
   malformedCalls: Map<string, string>;
   error?: TurnError;
+  timing: RequestTiming;
 }
 
 async function collectTurn(
@@ -1272,6 +1283,8 @@ async function collectTurn(
   const malformedCalls = new Map<string, string>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: StopReason = "end_turn";
+  const startedAt = performance.now();
+  let firstTokenAt: number | undefined;
 
   const idle = new AbortController();
   const stalled = () =>
@@ -1298,10 +1311,12 @@ async function collectTurn(
       idleTimer = watch();
       switch (event.type) {
         case "text_delta":
+          firstTokenAt ??= performance.now();
           appendText(content, "text", event.text);
           onEvent?.({ type: "text_delta", text: event.text });
           break;
         case "thinking_delta":
+          firstTokenAt ??= performance.now();
           appendText(content, "thinking", event.text);
           onEvent?.({ type: "thinking_delta", text: event.text });
           break;
@@ -1324,6 +1339,7 @@ async function collectTurn(
           content.push({ type: "redacted_thinking", data: event.data });
           break;
         case "tool_call_start":
+          firstTokenAt ??= performance.now();
           nameByToolId.set(event.id, event.name);
           jsonByToolId.set(event.id, "");
           break;
@@ -1372,7 +1388,13 @@ async function collectTurn(
     clearTimeout(idleTimer);
   }
 
-  return { content, stopReason, usage, malformedCalls, ...salvaged };
+  // A request that gave no output at all has no first token: all of it counts as waiting.
+  const endedAt = performance.now();
+  const timing = {
+    ttftMs: (firstTokenAt ?? endedAt) - startedAt,
+    streamMs: firstTokenAt === undefined ? 0 : endedAt - firstTokenAt,
+  };
+  return { content, stopReason, usage, malformedCalls, timing, ...salvaged };
 }
 
 /**

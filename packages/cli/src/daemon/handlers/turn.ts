@@ -20,6 +20,7 @@ import { buildScriptSandboxArgv, scriptSandboxAvailable, scriptSandboxEnv } from
 import { clampEffortForModel, type KeychainBackend, keyEnvName, resolveApiKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import type { TurnTiming } from "@agency/telemetry";
 import { modelCommandEnv, resolveConfiguredShell, type SessionScope } from "@agency/tools";
 import {
   assertPreflightCaps,
@@ -380,8 +381,19 @@ export async function executeTurn(
         });
         // Usage of the model requests that finished. A turn that then fails or moves to the fallback still spent it.
         let spent: import("@agency/providers").Usage = { inputTokens: 0, outputTokens: 0 };
+        const turnTiming: { value?: TurnTiming } = {};
         const wrappedOnEvent = (event: LoopEvent): void => {
-          if (event.type === "turn_complete") spent = addUsage(spent, event.usage);
+          if (event.type === "turn_complete") {
+            spent = addUsage(spent, event.usage);
+          }
+          // A cancelled request reports no timing, so it adds none to the turn.
+          if (event.type === "turn_complete" && event.timing) {
+            turnTiming.value = {
+              ttftMs: turnTiming.value?.ttftMs ?? event.timing.ttftMs,
+              streamMs: (turnTiming.value?.streamMs ?? 0) + event.timing.streamMs,
+              outputTokens: (turnTiming.value?.outputTokens ?? 0) + event.usage.outputTokens,
+            };
+          }
           collectedTraceEvents.push(event);
           broadcast(eventStream, event);
         };
@@ -844,6 +856,7 @@ export async function executeTurn(
 
         const response: RunTurnRpcResult = {
           ...result,
+          ...(turnTiming.value === undefined ? {} : { timing: turnTiming.value }),
           cancelled: controller.signal.aborted,
           ...(served.provider === resolvedProvider
             ? {}

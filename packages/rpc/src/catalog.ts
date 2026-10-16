@@ -12,6 +12,7 @@ export const METHOD_DOCS: Record<string, string> = {
   session_list: "List daemon-known sessions with title and tip.",
   session_create: "Create an empty session, id generated when omitted.",
   session_export: "Return a session's raw entries verbatim, unknown types included.",
+  session_title_set: "Set the title of a session (1 to 200 characters); session_list shows it.",
   session_rename: "Move a session history to a new id (clone plus delete).",
   session_delete: "Drop a session scope, approvals, and stored entries.",
   session_fork: "Branch a session at a tip inside the same file.",
@@ -19,7 +20,8 @@ export const METHOD_DOCS: Record<string, string> = {
   session_message:
     "Queue mid-turn steering text drained per tool iteration; queued is false when no running turn reads it.",
   models_list: "List catalog models merged with config overrides.",
-  providers_list: "List providers with defaults, connectivity, and liveness.",
+  providers_list:
+    'List providers with defaults, connectivity, and liveness; models: "connected" lists models only for connected or configured providers.',
   config_get: "Read daemon config, secrets redacted, or one top-level key.",
   config_set: "Set one runtime-safe config key in memory until restart.",
   config_write: "Persist one dotted config key to the user config file, comments kept; null removes it.",
@@ -28,6 +30,8 @@ export const METHOD_DOCS: Record<string, string> = {
   provider_disconnect: "Remove the stored key of a provider; a key from an environment variable stays.",
   skills_list:
     "List discovered skills with origin, tier, tools, body, and enabled flag, and whether the workspace is trusted.",
+  memory_get: "Read the memory notes of the workspace: enabled flag, file path and note lines.",
+  memory_remove: "Remove the first memory note equal to the given line; returns the remaining notes.",
   skill_write: "Create a SKILL.md in the project or user skills folder; never overwrites.",
   permissions_list: "Show the permission maps plus effective offered tools.",
   todo_read: "Read the latest persisted todo_state for a session.",
@@ -91,7 +95,10 @@ export const EVENT_CATALOG: readonly EventDoc[] = [
   { name: "thinking_delta", description: "Reasoning chunk inside a turn stream." },
   { name: "tool_start", description: "A tool call began." },
   { name: "tool_result", description: "A tool call settled." },
-  { name: "turn_complete", description: "A turn finished with stop reason and usage." },
+  {
+    name: "turn_complete",
+    description: "A turn finished with stop reason, usage and timing (ttftMs, streamMs).",
+  },
   { name: "cost_meter", description: "Live turn cost plus run totals and per-agent spend." },
   { name: "cost_report", description: "Per-run totals with tokens, hit rate, and per-agent breakdown." },
   { name: "budget_exceeded", description: "A turn stopped on a budget cap." },

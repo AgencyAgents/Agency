@@ -53,9 +53,22 @@ export async function applyMcpPrompt(mcp: McpManager | undefined, session: Messa
 }
 
 export function registerCommandHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
-  const { builtinsMode, commands, config, http, options, sessionScopes } = ctx;
-  handlers.providers_list = async () => {
-    const base = await listProviders({ config, http, catalog: options.catalog });
+  const { builtinsMode, commands, config, getKeychain, http, options, sessionScopes } = ctx;
+  handlers.providers_list = async (rawParams) => {
+    const { models } = (rawParams ?? {}) as { models?: unknown };
+    if (models !== undefined && models !== "all" && models !== "connected") {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, 'models must be "all" or "connected"', {
+        source: "providers_list",
+      });
+    }
+    const keychain = await getKeychain().catch(() => undefined);
+    const base = await listProviders({
+      config,
+      http,
+      catalog: options.catalog,
+      ...(keychain === undefined ? {} : { keychain }),
+      ...(models === undefined ? {} : { models }),
+    });
     let mcpFailures: Record<string, string> = {};
     let lspStatuses: Record<string, string> = {};
     if (builtinsMode) {

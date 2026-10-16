@@ -136,7 +136,8 @@ export async function generateSessionTitle(
                 adapterFor: (p: string) => adapterFor(p),
                 ...(cheapModel ? { cheapModel } : {}),
               });
-              if (title) {
+              // The user can name the session while the title model runs; their name wins.
+              if (title && !getSessionTitle(todoStore.load(sessionId))) {
                 const tip = todoStore.latestTip(todoStore.load(sessionId)) ?? null;
                 await todoStore.append(sessionId, { type: "session_title", parentId: tip, title });
               }
@@ -167,6 +168,15 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_delete requires sessionId", {
         source: "session",
       });
+    // The turn would write on into a removed file, and its scope would be gone under it.
+    if (sendQueues.has(sessionId))
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        "the session runs a turn: stop it, then delete the session",
+        {
+          source: "session",
+        },
+      );
     const scope = sessionScopes.get(sessionId);
     if (scope) {
       try {
@@ -370,6 +380,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       usage: result.usage,
       model: served.model,
       pricing: ctx.catalogModel(served.provider, served.model)?.pricing,
+      ...(result.timing === undefined ? {} : { timing: result.timing }),
     });
     const response: SessionSendResult = {
       ...result,

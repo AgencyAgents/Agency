@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
@@ -205,11 +205,18 @@ function catalogPath(cacheDir: string): string {
   return join(cacheDir, MODELS_DEV_CACHE_FILE);
 }
 
+/** Parsed cache by path; the file is ~5 MB, so re-parse only when its mtime or size changed. */
+const parsedCache = new Map<string, { mtimeMs: number; size: number; value: CachedCatalog | undefined }>();
+
 export function loadCachedModelsDevCatalog(cacheDir: string): CachedCatalog | undefined {
   const path = catalogPath(cacheDir);
-  if (!existsSync(path)) return undefined;
   try {
-    return normalizeCachedCatalog(JSON.parse(readFileSync(path, "utf8"))) ?? undefined;
+    const { mtimeMs, size } = statSync(path);
+    const hit = parsedCache.get(path);
+    if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return hit.value;
+    const value = normalizeCachedCatalog(JSON.parse(readFileSync(path, "utf8"))) ?? undefined;
+    parsedCache.set(path, { mtimeMs, size, value });
+    return value;
   } catch {
     return undefined;
   }

@@ -71,7 +71,12 @@ export type TurnEvent =
       isError: boolean;
       images?: Array<{ type: "image"; mimeType: string; data: string }>;
     }
-  | { type: "turn_complete"; stopReason: StopReason; usage: Usage }
+  | {
+      type: "turn_complete";
+      stopReason: StopReason;
+      usage: Usage;
+      timing?: { ttftMs: number; streamMs: number };
+    }
   | { type: "budget_exceeded"; spentTokens: number; spentCostUsd: number };
 
 export interface ProviderModelSummary {

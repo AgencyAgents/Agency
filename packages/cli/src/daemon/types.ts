@@ -70,7 +70,7 @@ import {
 } from "@agency/providers";
 import type { DaemonServer } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message, type StopReason } from "@agency/schema";
-import type { Telemetry } from "@agency/telemetry";
+import type { Telemetry, TurnTiming } from "@agency/telemetry";
 import {
   MAX_MEMORY_NOTES,
   readMemoryNotes,
@@ -242,6 +242,8 @@ export interface RunTurnRpcResult {
    *  assistant messages, so the caller (which owns the SessionStore) can
    *  compact the session and retry the turn. */
   needsCompaction?: boolean;
+  /** First request's time to first token, stream time and output tokens of all its requests. */
+  timing?: TurnTiming;
 }
 
 /** Daemon-owned turn: the caller sends text, the daemon owns store,

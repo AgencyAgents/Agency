@@ -34,6 +34,8 @@ export type RpcMethod =
   | "inbox_send"
   | "lsp_status"
   | "mcp_status"
+  | "memory_get"
+  | "memory_remove"
   | "models_list"
   | "owners_read"
   | "permissions_list"
@@ -55,6 +57,7 @@ export type RpcMethod =
   | "session_rename"
   | "session_send"
   | "session_show"
+  | "session_title_set"
   | "skill_write"
   | "skills_list"
   | "task_file"
@@ -175,6 +178,7 @@ export interface TurnCompleteEvent {
   type: string;
   stopReason: string;
   usage: EventUsage;
+  timing?: Record<string, number>;
 }
 export interface CostMeterEvent {
   type: string;
@@ -321,6 +325,10 @@ export interface SurfaceClient {
   lsp_status(params?: Record<string, unknown>): Promise<unknown>;
   /** MCP server failures and prompts for a session scope. */
   mcp_status(params?: Record<string, unknown>): Promise<unknown>;
+  /** Read the memory notes of the workspace: enabled flag, file path and note lines. */
+  memory_get(params?: Record<string, unknown>): Promise<unknown>;
+  /** Remove the first memory note equal to the given line; returns the remaining notes. */
+  memory_remove(params?: Record<string, unknown>): Promise<unknown>;
   /** List catalog models merged with config overrides. */
   models_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Resolve path owners from the .agency/owners map. */
@@ -335,7 +343,7 @@ export interface SurfaceClient {
   provider_connect(params?: Record<string, unknown>): Promise<unknown>;
   /** Remove the stored key of a provider; a key from an environment variable stays. */
   provider_disconnect(params?: Record<string, unknown>): Promise<unknown>;
-  /** List providers with defaults, connectivity, and liveness. */
+  /** List providers with defaults, connectivity, and liveness; models: "connected" lists models only for connected or configured providers. */
   providers_list(params?: Record<string, unknown>): Promise<unknown>;
   /** Redo a snapshot-backed file change. */
   redo(params?: Record<string, unknown>): Promise<unknown>;
@@ -363,6 +371,8 @@ export interface SurfaceClient {
   session_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Read a session through the single SessionProjector view. */
   session_show(params?: Record<string, unknown>): Promise<unknown>;
+  /** Set the title of a session (1 to 200 characters); session_list shows it. */
+  session_title_set(params?: Record<string, unknown>): Promise<unknown>;
   /** Create a SKILL.md in the project or user skills folder; never overwrites. */
   skill_write(params?: Record<string, unknown>): Promise<unknown>;
   /** List discovered skills with origin, tier, tools, body, and enabled flag, and whether the workspace is trusted. */
@@ -428,6 +438,8 @@ export function createSurfaceClient(
     inbox_send: (params) => call("inbox_send", params ?? {}),
     lsp_status: (params) => call("lsp_status", params ?? {}),
     mcp_status: (params) => call("mcp_status", params ?? {}),
+    memory_get: (params) => call("memory_get", params ?? {}),
+    memory_remove: (params) => call("memory_remove", params ?? {}),
     models_list: (params) => call("models_list", params ?? {}),
     owners_read: (params) => call("owners_read", params ?? {}),
     permissions_list: (params) => call("permissions_list", params ?? {}),
@@ -449,6 +461,7 @@ export function createSurfaceClient(
     session_rename: (params) => call("session_rename", params ?? {}),
     session_send: (params) => call("session_send", params ?? {}),
     session_show: (params) => call("session_show", params ?? {}),
+    session_title_set: (params) => call("session_title_set", params ?? {}),
     skill_write: (params) => call("skill_write", params ?? {}),
     skills_list: (params) => call("skills_list", params ?? {}),
     task_file: (params) => call("task_file", params ?? {}),
