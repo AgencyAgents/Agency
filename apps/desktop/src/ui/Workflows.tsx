@@ -14,7 +14,15 @@ import {
 import { createStore, produce } from "solid-js/store";
 import { errorText } from "../lib/host.ts";
 import { keyOf, loadSession, openSession, state, toast } from "../lib/store.ts";
-import { buildTurns, chain, describeStep, duration, stepIconPath, type ToolStep } from "../lib/transcript.ts";
+import {
+  buildTurns,
+  chain,
+  describeStep,
+  duration,
+  stepIconPath,
+  type ToolStep,
+  toolsOf,
+} from "../lib/transcript.ts";
 import {
   agentInfo,
   agentsOf,
@@ -583,7 +591,7 @@ function workOf(r: string, sessionId: string | undefined): ToolStep[] {
     : view
       ? buildTurns(chain(view.entries, view.tipId)).flatMap((t) => t.parts)
       : [];
-  return parts.flatMap((p) => (p.kind === "work" ? p.steps : []));
+  return parts.flatMap((p) => (p.kind === "work" ? toolsOf(p) : []));
 }
 
 function RunPage(props: { root: string; w: Workflow; run: Run }) {

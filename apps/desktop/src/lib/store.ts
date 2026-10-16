@@ -1,7 +1,17 @@
 import { batch } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
+import { type Environment, environmentLayer } from "./environments.ts";
 import { type DaemonFrame, errorCode, errorText, type GitStatus, host, type Project } from "./host.ts";
-import { addAssistant, chain, type Part, type Turn } from "./transcript.ts";
+import {
+  addAssistant,
+  buildTurns,
+  chain,
+  history,
+  type Part,
+  type Turn,
+  toolsOf,
+  workAt,
+} from "./transcript.ts";
 import type {
   Approval,
   Effort,
@@ -16,7 +26,7 @@ import type {
 
 export type ConnState = "connecting" | "up" | "down";
 export type View = "welcome" | "new" | "session" | "review" | "skills" | "workflows";
-export type Filter = "all" | "running" | "needs" | "done";
+export type Filter = "all" | "running" | "needs" | "done" | "archived";
 export type Theme = "light" | "dark" | "system";
 
 export interface ProjectState extends Project {
@@ -58,6 +68,8 @@ export interface LiveTurn {
   prompt: string;
   note?: string;
   startedAt: number;
+  /** History turns before this one. Times cannot tell: a compaction stamps the entries it copies anew. */
+  baseTurns?: number;
   parts: Part[];
   approval: Approval | null;
   tokens: number;
@@ -82,9 +94,29 @@ interface Prefs {
   panel: boolean;
   fold: Record<string, boolean>;
   last: { root: string; id: string } | null;
+  /** Model refs picked last, newest first. */
+  recent: string[];
+  /** Sessions hidden from the list, by keyOf. */
+  archived: string[];
+  envs: Environment[];
+  /** The environment id of each project root. */
+  envOf: Record<string, string>;
 }
 
 const PREFS_KEY = "agency.prefs";
+
+export const MODES: { value: PermissionMode; label: string; desc: string }[] = [
+  { value: "ask", label: "Manual", desc: "Asks before each edit and command." },
+  { value: "plan", label: "Plan", desc: "Reads and plans. Changes nothing until you approve the plan." },
+  { value: "allow-edits", label: "Accept edits", desc: "Edits run. Commands still ask." },
+  { value: "auto", label: "Auto", desc: "Edits run. A reviewer model answers the other asks." },
+];
+export const EFFORT_LABEL: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  max: "Max",
+};
 
 function loadPrefs(): Prefs {
   const defaults: Prefs = {
@@ -97,9 +129,18 @@ function loadPrefs(): Prefs {
     panel: window.innerWidth > 1391,
     fold: {},
     last: null,
+    recent: [],
+    archived: [],
+    envs: [],
+    envOf: {},
   };
   try {
-    return { ...defaults, ...(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Partial<Prefs>) };
+    const saved = { ...defaults, ...(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Partial<Prefs>) };
+    // Modes of earlier versions: allow-all ran without asking, deny changed nothing.
+    const old = saved.mode as string;
+    if (!MODES.some((m) => m.value === saved.mode))
+      saved.mode = old === "allow-all" ? "auto" : old === "deny" ? "plan" : "ask";
+    return saved;
   } catch {
     return defaults;
   }
@@ -216,9 +257,10 @@ function flushDeltas(): void {
         "parts",
         produce((parts: Part[]) => {
           if (delta.thinking) {
-            const last = parts.at(-1);
-            if (last?.kind === "work") last.thinking.push(delta.thinking);
-            else parts.push({ kind: "work", steps: [], thinking: [delta.thinking], startedAt: Date.now() });
+            const work = workAt(parts, Date.now());
+            const last = work.items.at(-1);
+            if (last?.kind === "thought") last.text += delta.thinking;
+            else work.items.push({ kind: "thought", text: delta.thinking });
           }
           if (delta.text) {
             const last = parts.at(-1);
@@ -294,7 +336,7 @@ function onTurnEvent(root: string, turnId: string, data: Record<string, unknown>
         produce((parts: Part[]) => {
           for (const part of parts) {
             if (part.kind !== "work") continue;
-            const step = part.steps.find((s) => s.id === data.id);
+            const step = toolsOf(part).find((s) => s.id === data.id);
             if (step) {
               step.result = String(data.content ?? "");
               step.isError = data.isError === true;
@@ -308,6 +350,15 @@ function onTurnEvent(root: string, turnId: string, data: Record<string, unknown>
     case "approval_requested":
       setApproval(key, data);
       break;
+    case "mode_changed": {
+      // An approved plan: the turn goes on in Accept edits, and so does the picker.
+      const mode = MODES.find((m) => m.value === data.mode);
+      if (mode) {
+        savePrefs({ mode: mode.value });
+        toast(`Plan approved. Mode is now ${mode.label}.`, { tone: "ok" });
+      }
+      break;
+    }
     case "turn_complete": {
       const usage = data.usage as { inputTokens?: number; cachedInputTokens?: number } | undefined;
       if (usage) setState("live", key, "tokens", (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0));
@@ -462,7 +513,7 @@ async function loadProject(root: string): Promise<void> {
     refreshRows(root),
     refreshGit(root),
     host
-      .rpc<ProvidersList>(root, "providers_list")
+      .rpc<ProvidersList>(root, "providers_list", { models: "connected" })
       .then((r) => patchProject(root, { providers: r }))
       .catch(() => {}),
     host
@@ -529,9 +580,15 @@ export function goNew(root?: string): void {
   });
 }
 
-export async function addProject(path: string): Promise<void> {
+/** `envId`: the environment of the new project, written before its daemon starts and reads it. */
+export async function addProject(path: string, envId?: string): Promise<void> {
   try {
     const p = await host.addProject(path);
+    const env = envId ? state.prefs.envs.find((e) => e.id === envId) : undefined;
+    if (env) {
+      await host.setEnvironment(p.path, environmentLayer(env));
+      savePrefs({ envOf: { ...state.prefs.envOf, [p.path]: env.id } });
+    }
     if (!state.projects.some((x) => x.path === p.path)) {
       setState("projects", state.projects.length, blankProject(p));
       void host.connect(p.path, (frame) => onFrame(p.path, frame));
@@ -548,7 +605,59 @@ export async function newWorktree(root: string): Promise<void> {
   const path = await host
     .worktreeCreate(root)
     .catch((error) => void toast(errorText(error), { tone: "err" }));
-  if (path) await addProject(path);
+  // A worktree is the same project on another branch: it keeps the environment.
+  if (path) await addProject(path, state.prefs.envOf[root]);
+}
+
+/* ---------- session actions ---------- */
+
+export async function renameSession(root: string, id: string, title: string): Promise<void> {
+  const text = title.trim();
+  if (!text) return;
+  try {
+    await rpcWhenUp(root, "session_title_set", { sessionId: id, title: text });
+    if (state.sessions[keyOf(root, id)]) setState("sessions", keyOf(root, id), "title", text);
+    await refreshRows(root);
+  } catch (error) {
+    toast(errorText(error), { tone: "err" });
+  }
+}
+
+export async function duplicateSession(root: string, id: string): Promise<void> {
+  try {
+    const { sessionId } = await rpcWhenUp<{ sessionId: string }>(root, "session_clone", { sessionId: id });
+    const row = project(root)?.rows.find((r) => r.id === id);
+    await rpcWhenUp(root, "session_title_set", { sessionId, title: `${sessionTitle(root, row, id)} (copy)` });
+    await refreshRows(root);
+    openSession(root, sessionId);
+  } catch (error) {
+    toast(errorText(error), { tone: "err" });
+  }
+}
+
+export function archiveSession(root: string, id: string, on: boolean): void {
+  const key = keyOf(root, id);
+  const rest = state.prefs.archived.filter((k) => k !== key);
+  savePrefs({ archived: on ? [...rest, key] : rest });
+  toast(
+    on ? "Archived" : "Moved back to sessions",
+    on ? { act: { label: "Undo", run: () => archiveSession(root, id, false) } } : {},
+  );
+}
+
+export async function deleteSession(root: string, id: string): Promise<void> {
+  try {
+    await rpcWhenUp(root, "session_delete", { sessionId: id });
+  } catch (error) {
+    toast(errorText(error), { tone: "err" });
+    return;
+  }
+  const key = keyOf(root, id);
+  savePrefs({ archived: state.prefs.archived.filter((k) => k !== key) });
+  if (state.current?.root === root && state.current.id === id) goNew(root);
+  setState("sessions", key, undefined as never);
+  await refreshRows(root);
+  toast("Deleted");
 }
 
 export async function removeProject(root: string): Promise<void> {
@@ -580,6 +689,20 @@ export async function restartDaemon(root: string): Promise<void> {
   await host.restart(root);
 }
 
+/* ---------- environments ---------- */
+
+/** Writes the project's environment layer and restarts its daemon, which reads the layer at start. */
+export async function applyEnvironment(root: string, id: string): Promise<void> {
+  const env = state.prefs.envs.find((e) => e.id === id);
+  try {
+    await host.setEnvironment(root, environmentLayer(env));
+    savePrefs({ envOf: { ...state.prefs.envOf, [root]: env ? env.id : "" } });
+    if (project(root)?.conn === "up") await host.rpc(root, "daemon_restart");
+  } catch (error) {
+    toast(errorText(error), { tone: "err" });
+  }
+}
+
 /* ---------- models ---------- */
 
 export interface ModelChoice {
@@ -590,42 +713,69 @@ export interface ModelChoice {
   desc: string;
   contextWindow: number;
   thinking: boolean;
+  free: boolean;
 }
+
+type CatalogModel = ProvidersList["all"][number]["models"][number];
+
+/** Reasoning levels the provider's API distinguishes: OpenAI-style APIs stop at high, so max would send high. */
+export function effortsOf(m: ModelChoice | undefined): Effort[] {
+  if (!m?.thinking) return [];
+  return m.provider === "anthropic" || m.provider === "google"
+    ? ["low", "medium", "high", "max"]
+    : ["low", "medium", "high"];
+}
+
+/** The saved effort, lowered to the highest level the model has. */
+export function effortFor(m: ModelChoice | undefined): Effort | undefined {
+  const levels = effortsOf(m);
+  return levels.includes(state.prefs.effort) ? state.prefs.effort : levels.at(-1);
+}
+
+const choiceCache = new WeakMap<object, { config: unknown; list: ModelChoice[] }>();
 
 /** Models of connected providers, the configured default first, then each provider's default and newest.
  *  From providers_list: models_list holds only a built-in few, with no OpenRouter model. */
 export function modelChoices(root: string | null | undefined): ModelChoice[] {
   const p = project(root);
-  if (!p) return [];
-  const connected = new Set(p.providers?.connected ?? []);
-  const names = new Map((p.providers?.all ?? []).map((x) => [x.id, x.name]));
+  if (!p?.providers) return [];
+  const hit = choiceCache.get(p.providers);
+  if (hit && hit.config === p.config) return hit.list;
+  const connected = new Set(p.providers.connected);
+  const all = p.providers.all;
+  const names = new Map(all.map((x) => [x.id, x.name]));
+  const custom = (p.config?.provider ?? {}) as Record<
+    string,
+    { models?: Record<string, { contextWindow?: number }> }
+  >;
   const out = new Map<string, ModelChoice>();
-  const add = (provider: string, model: string, label: string, contextWindow: number, thinking: boolean) => {
-    const ref = `${provider}/${model}`;
-    if (!out.has(ref)) {
-      out.set(ref, {
-        ref,
-        provider,
-        model,
-        label,
-        desc: names.get(provider) ?? provider,
-        contextWindow,
-        thinking,
-      });
-    }
+  const add = (provider: string, m: CatalogModel) => {
+    const ref = `${provider}/${m.id}`;
+    if (out.has(ref)) return;
+    out.set(ref, {
+      ref,
+      provider,
+      model: m.id,
+      label: m.name || m.id,
+      desc: names.get(provider) ?? provider,
+      contextWindow: m.contextWindow,
+      thinking: m.capabilities?.thinking ?? false,
+      // A model of the user config has no price in the catalog: zero there means unknown, not free.
+      free:
+        m.id.endsWith(":free") ||
+        (m.pricing?.inputPerMTok === 0 &&
+          m.pricing?.outputPerMTok === 0 &&
+          !custom[provider]?.models?.[m.id]),
+    });
   };
-  const all = p.providers?.all ?? [];
   const configured = typeof p.config?.model === "string" ? p.config.model : undefined;
   if (configured?.includes("/")) {
-    const [provider, ...rest] = configured.split("/");
+    const [provider = "", ...rest] = configured.split("/");
     const model = rest.join("/");
-    const hit = all.find((x) => x.id === provider)?.models.find((m) => m.id === model);
+    const known = all.find((x) => x.id === provider)?.models.find((m) => m.id === model);
     add(
-      provider as string,
-      model,
-      hit?.name ?? model,
-      hit?.contextWindow ?? 200_000,
-      hit?.capabilities?.thinking ?? true,
+      provider,
+      known ?? { id: model, name: model, contextWindow: 200_000, capabilities: { thinking: true } },
     );
   }
   for (const x of all) {
@@ -633,24 +783,25 @@ export function modelChoices(root: string | null | undefined): ModelChoice[] {
     const live = x.models
       .filter((m) => m.status !== "deprecated")
       .sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""));
-    const first = p.providers?.default[x.id];
-    for (const m of [...live.filter((m) => m.id === first), ...live])
-      add(x.id, m.id, m.name, m.contextWindow, m.capabilities?.thinking ?? false);
+    const first = p.providers.default[x.id];
+    for (const m of [...live.filter((m) => m.id === first), ...live]) add(x.id, m);
   }
-  const custom = (p.config?.provider ?? {}) as Record<
-    string,
-    { models?: Record<string, { contextWindow?: number }> }
-  >;
   for (const [provider, def] of Object.entries(custom)) {
     for (const [model, meta] of Object.entries(def.models ?? {}))
-      add(provider, model, model, meta.contextWindow ?? 128_000, false);
+      add(provider, { id: model, name: model, contextWindow: meta.contextWindow ?? 128_000 });
   }
-  return [...out.values()];
+  const list = [...out.values()];
+  choiceCache.set(p.providers, { config: p.config, list });
+  return list;
 }
 
 export function currentModel(root: string | null | undefined): ModelChoice | undefined {
   const choices = modelChoices(root);
   return choices.find((c) => c.ref === state.prefs.model) ?? choices[0];
+}
+
+export function pickModel(ref: string): void {
+  savePrefs({ model: ref, recent: [ref, ...state.prefs.recent.filter((r) => r !== ref)].slice(0, 5) });
 }
 
 /* ---------- turns ---------- */
@@ -720,7 +871,7 @@ export async function send(
       key,
       "parts",
       produce((parts: Part[]) => {
-        parts.push({ kind: "note", text: `You: ${text}` });
+        parts.push({ kind: "said", text });
       }),
     );
     return;
@@ -730,6 +881,7 @@ export async function send(
   turnSessions.set(turnId, { root, id });
   let settled = () => {};
   settling.set(key, new Promise<void>((r) => (settled = r)));
+  const view = state.sessions[key]?.view;
   batch(() => {
     setState("sessions", key, "failure", null);
     setState("live", key, {
@@ -737,6 +889,7 @@ export async function send(
       prompt: text,
       note: attachments.length ? `With ${attachments.map((a) => a.name).join(", ")}` : undefined,
       startedAt: Date.now(),
+      baseTurns: view ? buildTurns(history(view.entries, view.tipId)).length : 0,
       parts: [],
       approval: null,
       tokens: 0,
@@ -752,7 +905,7 @@ export async function send(
       model: model.model,
       userText: text + files,
       ...(images.length ? { images } : {}),
-      ...(model.thinking ? { thinkingLevel: state.prefs.effort } : {}),
+      ...(effortFor(model) ? { thinkingLevel: effortFor(model) } : {}),
       permissionMode: state.prefs.mode,
     });
     if (result.error && !result.cancelled) {
@@ -803,6 +956,8 @@ export async function respond(
     });
     if (decision === "always") toast(`Always allowed ${approval.request.tool} for this session`);
   } catch (error) {
+    // The answer did not arrive: the ask still waits, so it comes back to be answered again.
+    if (state.live[key] && !state.live[key].approval) setState("live", key, "approval", approval);
     toast(errorText(error), { tone: "err" });
   }
 }

@@ -69,6 +69,12 @@ async fn daemon_restart(daemons: State<'_, Daemons>, root: String) -> Result<(),
     Ok(())
 }
 
+/// The layer stays as `{}` for no environment: a daemon that started with it fails without the file.
+#[tauri::command]
+fn environment_set(daemons: State<'_, Daemons>, root: String, layer: Value) -> Result<(), String> {
+    daemons.set_environment(&root, &layer)
+}
+
 #[tauri::command]
 async fn rpc(daemons: State<'_, Daemons>, root: String, method: String, params: Value) -> Result<Value, Value> {
     daemons.rpc(&root, &method, params).await
@@ -174,7 +180,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Arc::new(daemon::Daemons::new()))
+        .setup(|app| {
+            let dir = data_dir(app.handle())?.join("environments");
+            app.manage(Arc::new(daemon::Daemons::new(dir)));
+            Ok(())
+        })
         .manage(update::Pending::default())
         .manage(LaunchPath(std::sync::Mutex::new(folder_arg(std::env::args()))))
         .invoke_handler(tauri::generate_handler![
@@ -184,6 +194,7 @@ fn main() {
             launch_path,
             daemon_connect,
             daemon_restart,
+            environment_set,
             rpc,
             git_status,
             git_diff,

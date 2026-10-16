@@ -1,120 +1,319 @@
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
-import { type Failure, keyOf, type LiveTurn, respond, send, state } from "../lib/store.ts";
 import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js";
+import { tokens } from "../lib/format.ts";
+import {
+  type Failure,
+  keyOf,
+  type LiveTurn,
+  modelChoices,
+  respond,
+  send,
+  state,
+  toast,
+} from "../lib/store.ts";
+import {
+  activeLabel,
   buildTurns,
-  chain,
+  type DiffLine,
   describeStep,
+  diffLines,
+  duration,
+  history,
   type Part,
+  peek,
   stepIconPath,
+  summarize,
   type ToolStep,
   type Turn,
-  workLabel,
+  toolsOf,
+  type Work,
 } from "../lib/transcript.ts";
 import type { Approval } from "../lib/types.ts";
 import { I, P, Spinner } from "./icons.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { setOpenMenu } from "./menu.tsx";
 
-const ING: Record<string, string> = {
-  Read: "Reading",
-  Wrote: "Writing",
-  Edited: "Editing",
-  Ran: "Running",
-  Searched: "Searching",
-  Listed: "Listing",
-  Fetched: "Fetching",
-  Used: "Using",
-  Updated: "Updating",
-  Started: "Starting",
-};
+/** Disclosures the reader opened, by keys that outlive a reload of the session. */
+const opened = new Set<string>();
 
-function statusOf(live: LiveTurn): { text: string; streaming: boolean } {
-  if (live.approval) return { text: "Waiting for your approval", streaming: false };
-  const last = live.parts.at(-1);
-  if (last?.kind === "text") return { text: "", streaming: true };
-  if (last?.kind === "work") {
-    const step = [...last.steps].reverse().find((s) => s.result === undefined);
-    if (step) {
-      const [verb, ...rest] = describeStep(step).text.split(" ");
-      return { text: `${ING[verb as string] ?? verb} ${rest.join(" ")}`, streaming: false };
-    }
-  }
-  return { text: live.parts.length ? "Thinking" : "Reading the codebase", streaming: false };
+function useOpen(key: string, initial = false) {
+  const [open, setOpen] = createSignal(initial || opened.has(key));
+  const toggle = () => {
+    const next = !open();
+    setOpen(next);
+    if (next) opened.add(key);
+    else opened.delete(key);
+  };
+  return [open, toggle] as const;
 }
 
-function Step(props: { step: ToolStep }) {
-  const d = createMemo(() => describeStep(props.step));
-  const output = () => (props.step.result ?? "").trim();
+function Chevron() {
+  return <I d={P.chevR} size={11} sw={2.2} class="chev" />;
+}
+
+function Counts(props: { added: number; removed: number }) {
   return (
-    <li>
-      <Show
-        when={output()}
-        fallback={
-          <span class="step">
-            <I d={stepIconPath(d().icon)} size={15} />
-            <span class="ell">{d().text}</span>
-            <Show when={props.step.result === undefined}>
-              <Spinner size={11} />
-            </Show>
-          </span>
-        }
-      >
-        <details>
-          <summary>
-            <I d={stepIconPath(d().icon)} size={15} />
-            <span class="ell" style={props.step.isError ? { color: "var(--red)" } : {}}>
-              {d().text}
-            </span>
-            <I d={P.chevR} size={11} sw={2.2} class="chev" />
-          </summary>
-          <div class={props.step.isError ? "step-out mono err" : "step-out mono"}>
-            {output().slice(0, 20_000)}
+    <Show when={props.added || props.removed}>
+      <span class="chips">
+        <span class="chip add">+{props.added}</span>
+        <span class="chip del">−{props.removed}</span>
+      </span>
+    </Show>
+  );
+}
+
+function Diff(props: { lines: DiffLine[]; path?: string }) {
+  return (
+    <div class="mono diff">
+      <Show when={props.path}>
+        <div class="diff-path">{props.path}</div>
+      </Show>
+      <For each={props.lines.slice(0, 120)}>
+        {(l) => (
+          <div class={l.k === "+" ? "dl dl-add" : "dl dl-del"}>
+            <span class="dl-k">{l.k === "-" ? "−" : "+"}</span>
+            <span class="dl-t">{l.text}</span>
           </div>
-        </details>
+        )}
+      </For>
+    </div>
+  );
+}
+
+function ToolRow(props: { step: ToolStep; live: boolean }) {
+  const d = createMemo(() => describeStep(props.step));
+  const lines = createMemo(() => diffLines(props.step.name, props.step.input));
+  const output = () => (props.step.result ?? "").trim();
+  const showDiff = () => lines().length > 0 && !props.step.isError;
+  const canOpen = () => showDiff() || output() !== "";
+  const [open, toggle] = useOpen(`tool:${props.step.id}`);
+  return (
+    <li class={props.live ? "act fade" : "act"}>
+      <button
+        type="button"
+        class="act-row"
+        aria-expanded={canOpen() ? open() : undefined}
+        disabled={!canOpen()}
+        onClick={toggle}
+      >
+        <I d={stepIconPath(d().icon)} size={14} />
+        <span class={props.step.isError ? "ell err" : "ell"}>{d().text}</span>
+        <Show when={showDiff()}>
+          <Counts
+            added={lines().filter((l) => l.k === "+").length}
+            removed={lines().filter((l) => l.k === "-").length}
+          />
+        </Show>
+        <Show when={props.live && props.step.result === undefined}>
+          <Spinner size={11} />
+        </Show>
+        <Show when={canOpen()}>
+          <Chevron />
+        </Show>
+      </button>
+      <Show when={open() && canOpen()}>
+        <Show when={showDiff()} fallback={<div class="act-out mono">{output().slice(0, 20_000)}</div>}>
+          <div class="act-body">
+            <Diff lines={lines()} />
+          </div>
+        </Show>
       </Show>
     </li>
   );
 }
 
-function Work(props: { part: Extract<Part, { kind: "work" }>; running: boolean }) {
+function ThoughtRow(props: { text: string; id: string; streaming: boolean }) {
+  const [open, toggle] = useOpen(props.id);
   return (
-    <details class="work" open={props.running}>
-      <summary>
-        {workLabel(props.part, props.running)}
-        <I d={P.chevR} size={11} sw={2.2} class="chev" />
-      </summary>
-      <For each={props.part.thinking}>{(t) => <div class="thinking">{t.trim()}</div>}</For>
-      <Show when={props.part.steps.length > 0}>
-        <ul class="steps">
-          <For each={props.part.steps}>{(s) => <Step step={s} />}</For>
-        </ul>
+    <li class="act">
+      <button type="button" class="act-row" aria-expanded={open()} onClick={toggle}>
+        <I d={P.bulb} size={14} />
+        <span class={props.streaming ? "shimmer" : ""}>{props.streaming ? "Thinking" : "Thought"}</span>
+        <Show when={!open()}>
+          <span class="act-peek ell">{peek(props.text, props.streaming)}</span>
+        </Show>
+        <Chevron />
+      </button>
+      <Show when={open()}>
+        <div class="act-thought">
+          <Markdown text={props.text} />
+        </div>
       </Show>
-    </details>
+    </li>
   );
 }
 
-function Parts(props: { parts: Part[]; live: boolean }) {
+/** One collapsed line per group of steps: what it did when done, the step that runs now while live. */
+function WorkGroup(props: {
+  work: Work;
+  id: string;
+  live: boolean;
+  running: boolean;
+  waiting: boolean;
+  elapsed: string;
+}) {
+  const sum = createMemo(() => summarize(props.work));
+  const [open, toggle] = useOpen(props.id);
+  const active = () => {
+    if (props.waiting) return "Waiting for your approval";
+    const last = props.work.items.at(-1);
+    if (last?.kind === "tool" && last.result === undefined) return activeLabel(last);
+    return last?.kind === "thought" ? "Thinking" : "Working";
+  };
+  return (
+    <div class={props.live ? "work fade" : "work"}>
+      <button type="button" class="work-head" aria-expanded={open()} onClick={toggle}>
+        <Show
+          when={props.running}
+          fallback={
+            <>
+              <span class="ell">{sum().text}</span>
+              <Counts added={sum().added} removed={sum().removed} />
+            </>
+          }
+        >
+          <Spinner size={12} />
+          <span class={props.waiting ? "ell" : "ell shimmer"}>{active()}</span>
+          <span class="work-time">{props.elapsed}</span>
+        </Show>
+        <Chevron />
+      </button>
+      <Show when={open()}>
+        <ol class="acts">
+          <For each={props.work.items}>
+            {(a, i) => (
+              <Show
+                when={a.kind === "tool" && a}
+                fallback={
+                  <ThoughtRow
+                    id={`${props.id}:${i()}`}
+                    text={a.kind === "thought" ? a.text : ""}
+                    streaming={props.running && i() === props.work.items.length - 1}
+                  />
+                }
+              >
+                {(t) => <ToolRow step={t()} live={props.live} />}
+              </Show>
+            )}
+          </For>
+        </ol>
+      </Show>
+    </div>
+  );
+}
+
+function Parts(props: { parts: Part[]; id: string; live?: LiveTurn; elapsed?: string }) {
   return (
     <For each={props.parts}>
       {(part, i) => (
         <Switch>
           <Match when={part.kind === "text"}>
-            <Markdown text={(part as Extract<Part, { kind: "text" }>).text} />
+            <div class={props.live ? "fade" : ""}>
+              <Markdown text={(part as Extract<Part, { kind: "text" }>).text} />
+            </div>
           </Match>
           <Match when={part.kind === "work"}>
-            <Work
-              part={part as Extract<Part, { kind: "work" }>}
-              running={props.live && i() === props.parts.length - 1}
+            <WorkGroup
+              work={part as Work}
+              id={`${props.id}:${i()}`}
+              live={!!props.live}
+              running={!!props.live && !props.live.ending && i() === props.parts.length - 1}
+              waiting={!!props.live?.approval}
+              elapsed={props.elapsed ?? ""}
             />
           </Match>
           <Match when={part.kind === "note"}>
-            <p style={{ margin: 0, color: "var(--muted)", "font-size": "13px" }}>
-              {(part as Extract<Part, { kind: "note" }>).text}
-            </p>
+            <div class="divider">{(part as Extract<Part, { kind: "note" }>).text}</div>
+          </Match>
+          <Match when={part.kind === "aside"}>
+            <div class="aside">
+              <span>{(part as Extract<Part, { kind: "aside" }>).label}</span>
+              {(part as Extract<Part, { kind: "aside" }>).text}
+            </div>
+          </Match>
+          <Match when={part.kind === "said"}>
+            <div class="bubble-wrap said">
+              <div class="bubble">{(part as Extract<Part, { kind: "said" }>).text}</div>
+            </div>
           </Match>
         </Switch>
       )}
     </For>
+  );
+}
+
+const secs = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+/** Model, time to first token, output speed, tokens and duration of a finished turn. */
+function Footer(props: { root: string; turn: Turn }) {
+  const s = () => props.turn.stats;
+  const label = () => {
+    const m = s()?.model;
+    return m ? (modelChoices(props.root).find((c) => c.model === m)?.label ?? m) : undefined;
+  };
+  const rate = () => {
+    const x = s();
+    return x?.streamMs && x.outputTokens ? Math.round(x.outputTokens / (x.streamMs / 1000)) : undefined;
+  };
+  const took = () => {
+    const t = props.turn;
+    return t.startedAt && t.endedAt && t.endedAt > t.startedAt
+      ? duration(t.endedAt - t.startedAt)
+      : undefined;
+  };
+  const text = () =>
+    props.turn.parts
+      .flatMap((p) => (p.kind === "text" ? [p.text] : []))
+      .join("\n\n")
+      .trim();
+  const [copied, setCopied] = createSignal(false);
+  const copy = () =>
+    void navigator.clipboard.writeText(text()).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      },
+      () => toast("Could not copy to the clipboard.", { tone: "err" }),
+    );
+  return (
+    <div class="turn-foot">
+      <Show when={text()}>
+        <button type="button" class="ic" aria-label={copied() ? "Copied" : "Copy response"} onClick={copy}>
+          <I d={copied() ? P.check : P.copy} size={13} sw={1.7} />
+        </button>
+      </Show>
+      <Show when={label()}>
+        <span>{label()}</span>
+      </Show>
+      <Show when={s()?.ttftMs}>
+        {(ms) => <span title="Time from the request to the first streamed token">{secs(ms())} latency</span>}
+      </Show>
+      <Show when={rate()}>
+        <span title="Output tokens per second while the model streamed">{rate()} tok/s</span>
+      </Show>
+      <Show when={s()}>
+        {(x) => (
+          <span
+            title={`${x().inputTokens.toLocaleString()} input and ${x().outputTokens.toLocaleString()} output tokens`}
+          >
+            {tokens(x().outputTokens)} tokens out
+          </span>
+        )}
+      </Show>
+      <Show when={took()}>
+        <span>{took()}</span>
+      </Show>
+    </div>
   );
 }
 
@@ -129,22 +328,32 @@ function Prompt(props: { id: string; text: string; note?: string; anim?: boolean
   );
 }
 
-function diffLines(input: Record<string, unknown>): { k: "+" | "-" | " "; text: string }[] {
-  const hunks = Array.isArray(input.hunks)
-    ? (input.hunks as { oldText?: string; newText?: string }[])
-    : [{ oldText: String(input.oldText ?? ""), newText: String(input.newText ?? "") }];
-  const out: { k: "+" | "-" | " "; text: string }[] = [];
-  for (const h of hunks) {
-    for (const line of (h.oldText ?? "").split("\n")) if (h.oldText) out.push({ k: "-", text: line });
-    for (const line of (h.newText ?? "").split("\n")) if (h.newText) out.push({ k: "+", text: line });
-  }
-  if (typeof input.content === "string")
-    for (const line of input.content.split("\n").slice(0, 40)) out.push({ k: "+", text: line });
-  return out.slice(0, 80);
+/** plan_exit in plan mode: the plan arrives as the request title. "always" would approve later plans unseen. */
+function PlanCard(props: { root: string; approval: Approval }) {
+  return (
+    <section aria-label="Plan approval" class="card msg-in">
+      <div style={{ display: "flex", "flex-direction": "column", gap: "2px" }}>
+        <span style={{ "font-weight": 600 }}>Carry out this plan?</span>
+        <span style={{ color: "var(--muted)" }}>Approving switches the mode to Accept edits.</span>
+      </div>
+      <div class="plan-body">
+        <Markdown text={props.approval.request.title} />
+      </div>
+      <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
+        <button type="button" class="pri" onClick={() => void respond(props.root, props.approval, "once")}>
+          Approve plan
+        </button>
+        <button type="button" class="ol" onClick={() => void respond(props.root, props.approval, "reject")}>
+          Keep planning
+        </button>
+      </div>
+    </section>
+  );
 }
 
 function ApprovalCard(props: { root: string; approval: Approval; input?: Record<string, unknown> }) {
   const r = () => props.approval.request;
+  const lines = () => (props.input ? diffLines(r().tool, props.input) : []);
   const isEdit = () => ["edit", "write", "notebook_edit"].includes(r().tool);
   const command = () =>
     r().command ?? (typeof props.input?.command === "string" ? props.input.command : undefined);
@@ -160,11 +369,10 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
     const source = r().source ?? "";
     if (source.startsWith("rule") || source.includes("permission"))
       return `It matches the rule ${source.replace(/^rule:/, "")}, which asks first.`;
-    return state.prefs.mode === "ask"
-      ? "Ask before edits is on."
-      : `This ${r().riskTier ?? ""} tool asks first.`.replace("  ", " ");
+    if (state.prefs.mode === "ask") return "Manual mode asks before each edit and command.";
+    if (state.prefs.mode === "allow-edits") return "Accept edits mode still asks before commands.";
+    return `This ${r().riskTier ?? ""} tool asks first.`.replace("  ", " ");
   };
-  const lines = () => (isEdit() && props.input ? diffLines(props.input) : []);
   return (
     <section aria-label="Approval request" class="card msg-in">
       <div style={{ display: "flex", "flex-direction": "column", gap: "2px" }}>
@@ -172,31 +380,7 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
         <span style={{ color: "var(--muted)" }}>{why()}</span>
       </div>
       <Show when={isEdit()}>
-        <div class="mono diff">
-          <div class="diff-path">{r().path ?? r().title}</div>
-          <For each={lines()}>
-            {(l) => (
-              <div
-                class="dl"
-                style={{
-                  background: l.k === "+" ? "var(--diff-add)" : l.k === "-" ? "var(--diff-del)" : "var(--bg)",
-                }}
-              >
-                <span
-                  style={{
-                    width: "28px",
-                    flex: "none",
-                    "text-align": "center",
-                    color: l.k === "+" ? "var(--green)" : l.k === "-" ? "var(--red)" : "var(--disabled)",
-                  }}
-                >
-                  {l.k === " " ? "" : l.k === "-" ? "−" : "+"}
-                </span>
-                <span style={{ "padding-right": "12px" }}>{l.text}</span>
-              </div>
-            )}
-          </For>
-        </div>
+        <Diff lines={lines()} path={r().path ?? r().title} />
       </Show>
       <Show when={!isEdit() && (command() || r().argsSummary)}>
         <div class="mono cmdline">{command() ?? r().argsSummary}</div>
@@ -260,7 +444,10 @@ export function Transcript(props: { root: string; id: string }) {
   const live = () => state.live[key()];
   const turns = createMemo<Turn[]>(() => {
     const view = session()?.view;
-    return view ? buildTurns(chain(view.entries, view.tipId)) : [];
+    const all = view ? buildTurns(history(view.entries, view.tipId)) : [];
+    // The file already holds the running turn's prompt: the live view below shows it with its steps.
+    const l = live();
+    return l?.mine && l.baseTurns !== undefined ? all.slice(0, l.baseTurns) : all;
   });
   const prompts = createMemo(() => [
     ...turns().map((t) => t.prompt),
@@ -268,20 +455,58 @@ export function Transcript(props: { root: string; id: string }) {
   ]);
   const [navAt, setNavAt] = createSignal<number | null>(null);
 
+  const [now, setNow] = createSignal(Date.now());
+  createEffect(() => {
+    if (!live()) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    onCleanup(() => clearInterval(timer));
+  });
+  const elapsed = () => {
+    const l = live();
+    return l ? duration(Math.max(0, now() - l.startedAt)) : "";
+  };
+
   const pendingInput = () => {
     const l = live();
     if (!l?.approval) return undefined;
     for (const part of [...l.parts].reverse()) {
       if (part.kind !== "work") continue;
-      const step = [...part.steps].reverse().find((s) => s.result === undefined);
+      const step = toolsOf(part)
+        .reverse()
+        .find((s) => s.result === undefined);
       if (step) return step.input;
     }
     return undefined;
   };
 
   let scroller: HTMLDivElement | undefined;
+  let content: HTMLDivElement | undefined;
+  // Follows new output while the reader is at the end; scrolling up stops it until they come back.
+  let stick = true;
+  const [away, setAway] = createSignal(false);
+  const atEnd = () => !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+  const toEnd = (smooth = false) =>
+    scroller?.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  onMount(() => {
+    const grown = new ResizeObserver(() => {
+      if (stick) toEnd();
+      else setAway(!atEnd());
+    });
+    if (content) grown.observe(content);
+    onCleanup(() => grown.disconnect());
+  });
+  // Another session, or a prompt of mine, starts at the end.
+  createEffect(
+    on([key, () => (live()?.mine ? live()?.turnId : undefined)], () => {
+      stick = true;
+      setAway(false);
+      queueMicrotask(() => toEnd());
+    }),
+  );
   const onScroll = () => {
     if (!scroller) return;
+    stick = atEnd();
+    setAway(!stick);
     const els = scroller.querySelectorAll<HTMLElement>("[id^='prompt-']");
     if (els.length < 2) return;
     const line = scroller.getBoundingClientRect().top + 80;
@@ -289,7 +514,7 @@ export function Transcript(props: { root: string; id: string }) {
     els.forEach((el, i) => {
       if (el.getBoundingClientRect().top <= line) k = i;
     });
-    if (Math.abs(scroller.scrollTop) < 2) k = els.length - 1;
+    if (stick) k = els.length - 1;
     setNavAt(k);
   };
   const current = () => {
@@ -302,7 +527,7 @@ export function Transcript(props: { root: string; id: string }) {
       style={{ flex: 1, "min-height": 0, display: "flex", "flex-direction": "column", position: "relative" }}
     >
       <div class="tx-scroll" ref={scroller} onScroll={onScroll}>
-        <div class="pad col tx">
+        <div class="pad col tx" ref={content}>
           <Show when={session()?.loading && turns().length === 0 && !live()}>
             <div class="status">
               <Spinner />
@@ -311,33 +536,48 @@ export function Transcript(props: { root: string; id: string }) {
           </Show>
           <For each={turns()}>
             {(turn, i) => (
-              <>
+              <article class="turn">
                 <Prompt
                   id={`prompt-${i()}`}
                   text={turn.prompt}
                   note={turn.images ? `With ${turn.images} image${turn.images > 1 ? "s" : ""}` : undefined}
                 />
-                <Parts parts={turn.parts} live={false} />
-              </>
+                <div class="reply">
+                  <Parts parts={turn.parts} id={turn.key} />
+                  <Show when={turn.stats || turn.parts.length > 0}>
+                    <Footer root={props.root} turn={turn} />
+                  </Show>
+                </div>
+              </article>
             )}
           </For>
           <Show when={live()}>
             {(l) => (
-              <>
+              <article class="turn">
                 <Show when={l().mine && l().prompt}>
                   <Prompt id={`prompt-${turns().length}`} text={l().prompt} note={l().note} anim />
                 </Show>
-                <Parts parts={l().parts} live />
-                <Show when={l().approval}>
-                  {(a) => <ApprovalCard root={props.root} approval={a()} input={pendingInput()} />}
-                </Show>
-                <Show when={!statusOf(l()).streaming}>
-                  <div class="status">
-                    <Spinner />
-                    <span class={l().approval ? "" : "shimmer"}>{statusOf(l()).text}</span>
-                  </div>
-                </Show>
-              </>
+                <div class="reply">
+                  <Parts parts={l().parts} id={`live:${l().turnId}`} live={l()} elapsed={elapsed()} />
+                  <Show when={l().approval}>
+                    {(a) => (
+                      <Show
+                        when={a().request.tool === "plan_exit"}
+                        fallback={<ApprovalCard root={props.root} approval={a()} input={pendingInput()} />}
+                      >
+                        <PlanCard root={props.root} approval={a()} />
+                      </Show>
+                    )}
+                  </Show>
+                  <Show when={!l().ending && l().parts.at(-1)?.kind !== "work"}>
+                    <div class="status">
+                      <Spinner size={12} />
+                      <span class="shimmer">Working</span>
+                      <span class="work-time">{elapsed()}</span>
+                    </div>
+                  </Show>
+                </div>
+              </article>
             )}
           </Show>
           <Show when={!live() && session()?.failure}>
@@ -345,6 +585,20 @@ export function Transcript(props: { root: string; id: string }) {
           </Show>
         </div>
       </div>
+      <Show when={away()}>
+        <button
+          type="button"
+          class="jump"
+          aria-label="Jump to the latest message"
+          onClick={() => {
+            stick = true;
+            setAway(false);
+            toEnd(true);
+          }}
+        >
+          <I d={P.down} size={15} sw={1.9} />
+        </button>
+      </Show>
       <Show when={prompts().length > 1}>
         <nav aria-label="Prompts in this session" class="pn">
           <For each={prompts()}>

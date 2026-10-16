@@ -40,8 +40,18 @@ export function App() {
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape" && openMenu()) closeMenu();
   };
+  // The WebView's own menu (Reload, Save as, Print) is browser chrome; keep it only where Copy and Paste apply.
+  const onMenu = (e: MouseEvent) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("input, textarea, [contenteditable]") || String(getSelection()).trim()) return;
+    e.preventDefault();
+  };
   window.addEventListener("keydown", onKey);
-  onCleanup(() => window.removeEventListener("keydown", onKey));
+  window.addEventListener("contextmenu", onMenu);
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKey);
+    window.removeEventListener("contextmenu", onMenu);
+  });
 
   return (
     <>

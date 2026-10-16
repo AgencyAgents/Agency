@@ -1,22 +1,28 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { ago } from "../lib/format.ts";
 import {
   addProject,
+  archiveSession,
+  deleteSession,
+  duplicateSession,
   type Filter,
   goNew,
+  keyOf,
   openSession,
   type RowState,
+  renameSession,
   restartDaemon,
   rowState,
   savePrefs,
   sessionTitle,
   setState,
   state,
+  toast,
   trustProject,
 } from "../lib/store.ts";
 import { I, P, Spinner } from "./icons.tsx";
-import { Choices, Pop, toggleMenu } from "./menu.tsx";
+import { Choices, closeMenu, openMenu, Pop, setOpenMenu, toggleMenu } from "./menu.tsx";
 import { UpdateBanner } from "./Updater.tsx";
 
 interface Row {
@@ -25,6 +31,7 @@ interface Row {
   title: string;
   state: RowState;
   meta: string;
+  archived: boolean;
 }
 
 const FILTERS: { value: Filter; label: string }[] = [
@@ -32,9 +39,11 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: "running", label: "Running" },
   { value: "needs", label: "Needs you" },
   { value: "done", label: "Done" },
+  { value: "archived", label: "Archived" },
 ];
 
 function matches(row: Row, filter: Filter): boolean {
+  if (filter === "archived" || row.archived) return filter === "archived" && row.archived;
   if (filter === "all") return true;
   if (filter === "needs") return row.state === "needs" || row.state === "failed";
   if (filter === "done") return row.state === "idle";
@@ -61,6 +70,7 @@ export function Sidebar() {
         title: sessionTitle(p.path, r, r.id),
         state: rowState(p.path, r.id),
         meta: ago(r.updatedAt),
+        archived: state.prefs.archived.includes(keyOf(p.path, r.id)),
       }));
     }),
   );
@@ -69,6 +79,26 @@ export function Sidebar() {
     rows().filter((r) => matches(r, state.filter) && (!q() || r.title.toLowerCase().includes(q()))),
   );
   const narrowed = () => !!q() || state.filter !== "all";
+  const [menuAt, setMenuAt] = createSignal<{ row: Row; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = createSignal<string | null>(null);
+  // The row's input is made again when the list refreshes: the draft and the one select outlive it.
+  const [draft, setDraft] = createSignal("");
+  let selected: string | null = null;
+  const [doomed, setDoomed] = createSignal<Row | null>(null);
+  const openRowMenu = (row: Row, e: MouseEvent) => {
+    e.preventDefault();
+    // A keyboard context key reports 0,0: open beside the row instead.
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX || box.left + 24;
+    const y = e.clientY || box.bottom;
+    setMenuAt({ row, x: Math.min(x, window.innerWidth - 216), y: Math.min(y, window.innerHeight - 200) });
+    setOpenMenu("row-menu");
+  };
+  const act = (run: (row: Row) => void) => () => {
+    const m = menuAt();
+    closeMenu();
+    if (m) run(m.row);
+  };
   const byStatus = () => state.prefs.layout === "status";
 
   const groups = createMemo(() => {
@@ -250,7 +280,7 @@ export function Sidebar() {
               type="button"
               class="side-row grp"
               aria-expanded={isOpen(g.key)}
-              style={{ "font-weight": 600, "font-size": "13px" }}
+              style={{ "font-weight": 600, "font-size": "14px" }}
               onClick={() => {
                 if (!narrowed()) savePrefs({ fold: { ...state.prefs.fold, [g.key]: isOpen(g.key) } });
               }}
@@ -271,28 +301,58 @@ export function Sidebar() {
             </button>
             <For each={isOpen(g.key) ? g.rows : []}>
               {(r) => (
-                <button
-                  type="button"
-                  class={isOn(r) ? "side-row sess on" : "side-row sess"}
-                  aria-current={isOn(r) ? "page" : undefined}
-                  onClick={() => openSession(r.root, r.id)}
+                <Show
+                  when={renaming() !== keyOf(r.root, r.id)}
+                  fallback={
+                    <input
+                      class="side-rename"
+                      aria-label="Session name"
+                      value={draft()}
+                      onInput={(e) => setDraft(e.currentTarget.value)}
+                      ref={(el) =>
+                        setTimeout(() => {
+                          el.focus();
+                          if (selected === renaming()) return;
+                          selected = renaming();
+                          el.select();
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") setRenaming(null);
+                      }}
+                      onBlur={() => {
+                        if (renaming() !== keyOf(r.root, r.id)) return;
+                        setRenaming(null);
+                        if (draft().trim() !== r.title) void renameSession(r.root, r.id, draft());
+                      }}
+                    />
+                  }
                 >
-                  <span class="ell" style={{ flex: 1 }}>
-                    {r.title}
-                  </span>
-                  <Show when={r.state === "running"}>
-                    <Spinner label="Running" />
-                  </Show>
-                  <Show when={r.state === "needs"}>
-                    <I d={P.alert} size={14} sw={2} stroke="var(--amber)" label="Needs approval" />
-                  </Show>
-                  <Show when={r.state === "failed"}>
-                    <I d={P.fail} size={14} sw={2} stroke="var(--red)" label="Turn failed" />
-                  </Show>
-                  <Show when={r.state === "idle"}>
-                    <span style={{ color: "var(--muted)" }}>{r.meta}</span>
-                  </Show>
-                </button>
+                  <button
+                    type="button"
+                    class={isOn(r) ? "side-row sess on" : "side-row sess"}
+                    aria-current={isOn(r) ? "page" : undefined}
+                    onClick={() => openSession(r.root, r.id)}
+                    onContextMenu={(e) => openRowMenu(r, e)}
+                  >
+                    <span class="ell" style={{ flex: 1 }}>
+                      {r.title}
+                    </span>
+                    <Show when={r.state === "running"}>
+                      <Spinner label="Running" />
+                    </Show>
+                    <Show when={r.state === "needs"}>
+                      <I d={P.alert} size={14} sw={2} stroke="var(--amber)" label="Needs approval" />
+                    </Show>
+                    <Show when={r.state === "failed"}>
+                      <I d={P.fail} size={14} sw={2} stroke="var(--red)" label="Turn failed" />
+                    </Show>
+                    <Show when={r.state === "idle"}>
+                      <span style={{ color: "var(--muted)" }}>{r.meta}</span>
+                    </Show>
+                  </button>
+                </Show>
               )}
             </For>
           </section>
@@ -351,6 +411,118 @@ export function Sidebar() {
         <I d={P.gear} />
         <span style={{ flex: 1 }}>Settings</span>
       </button>
+
+      <Show when={openMenu() === "row-menu" && menuAt()}>
+        {(m) => (
+          <div
+            role="menu"
+            aria-label={`Actions for ${m().row.title}`}
+            class="pop"
+            style={{ position: "fixed", left: `${m().x}px`, top: `${m().y}px`, width: "200px" }}
+            ref={(el) => setTimeout(() => el.querySelector<HTMLElement>("button")?.focus())}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              class="mi"
+              onClick={act((r) => {
+                setDraft(r.title);
+                selected = null;
+                setRenaming(keyOf(r.root, r.id));
+              })}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="mi"
+              onClick={act((r) => void duplicateSession(r.root, r.id))}
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="mi"
+              onClick={act((r) => archiveSession(r.root, r.id, !r.archived))}
+            >
+              {m().row.archived ? "Unarchive" : "Archive"}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="mi"
+              onClick={act(
+                (r) =>
+                  void navigator.clipboard
+                    .writeText(r.id)
+                    .then(() => toast("Copied the session ID"))
+                    .catch(() => toast("Could not copy to the clipboard.", { tone: "err" })),
+              )}
+            >
+              Copy session ID
+            </button>
+            <div class="mi-sep" />
+            <button
+              type="button"
+              role="menuitem"
+              class="mi"
+              style={{ color: "var(--red)" }}
+              disabled={!!state.live[keyOf(m().row.root, m().row.id)]}
+              title={state.live[keyOf(m().row.root, m().row.id)] ? "Stop the turn first" : undefined}
+              onClick={act((r) => setDoomed(r))}
+            >
+              Delete
+            </button>
+          </div>
+        )}
+      </Show>
+
+      <Show when={doomed()}>
+        {(r) => (
+          // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: Escape and a click outside close it
+          <div
+            class="dialog-scrim"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setDoomed(null);
+            }}
+          >
+            <div
+              class="confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="del-title"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setDoomed(null);
+              }}
+            >
+              <h2 id="del-title">Delete this session?</h2>
+              <p>"{r().title}" and its history are removed from this computer. This cannot be undone.</p>
+              <div style={{ display: "flex", gap: "6px", "justify-content": "flex-end" }}>
+                <button
+                  type="button"
+                  class="gh"
+                  ref={(el) => setTimeout(() => el.focus())}
+                  onClick={() => setDoomed(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="pri danger"
+                  onClick={() => {
+                    setDoomed(null);
+                    void deleteSession(r().root, r().id);
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
     </nav>
   );
 }

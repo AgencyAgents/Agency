@@ -72,6 +72,8 @@ export const host = {
     return invoke("daemon_connect", { root, onEvent: channel });
   },
   restart: (root: string) => invoke<void>("daemon_restart", { root }),
+  setEnvironment: (root: string, layer: Record<string, unknown>) =>
+    invoke<void>("environment_set", { root, layer }),
   rpc: <T>(root: string, method: string, params: Record<string, unknown> = {}) =>
     invoke<T>("rpc", { root, method, params }),
 

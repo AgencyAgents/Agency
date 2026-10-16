@@ -73,6 +73,7 @@ export interface ProviderSummary {
     name: string;
     contextWindow: number;
     capabilities?: { thinking?: boolean };
+    pricing?: { inputPerMTok?: number; outputPerMTok?: number };
     status?: "alpha" | "beta" | "deprecated" | "active";
     releaseDate?: string;
   }[];
@@ -84,7 +85,7 @@ export interface ProvidersList {
   connected: string[];
 }
 
-export type PermissionMode = "ask" | "allow-edits" | "auto" | "allow-all" | "deny";
+export type PermissionMode = "ask" | "plan" | "allow-edits" | "auto";
 export type Effort = "low" | "medium" | "high" | "max";
 
 export interface SendResult {

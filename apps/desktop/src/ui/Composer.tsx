@@ -5,10 +5,12 @@ import { errorText, host } from "../lib/host.ts";
 import {
   type Attachment,
   currentModel,
+  EFFORT_LABEL,
+  effortFor,
   goNew,
   keyOf,
   loadSession,
-  modelChoices,
+  MODES,
   project,
   savePrefs,
   send,
@@ -19,23 +21,10 @@ import {
   undoTurn,
   usageOf,
 } from "../lib/store.ts";
-import type { Effort, PermissionMode } from "../lib/types.ts";
 import { I, P } from "./icons.tsx";
+import { ModelDialog } from "./ModelDialog.tsx";
 import { Choices, openMenu, Pop, toggleMenu } from "./menu.tsx";
 
-const MODES: { value: PermissionMode; label: string; desc: string }[] = [
-  { value: "ask", label: "Ask before edits", desc: "Asks before each edit and shell command." },
-  { value: "allow-edits", label: "Allow edits", desc: "Edits run. Shell commands still ask." },
-  { value: "auto", label: "Auto", desc: "Edits run. A reviewer model answers the other asks." },
-  { value: "allow-all", label: "Allow all", desc: "Nothing asks. Sandbox and deny rules still hold." },
-  { value: "deny", label: "Deny asks", desc: "Anything that would ask is refused." },
-];
-const EFFORTS: { value: Effort; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "max", label: "Max" },
-];
 const BUILTINS: { name: string; desc: string }[] = [
   { name: "compact", desc: "Summarize the conversation to free up context" },
   { name: "clear", desc: "Start a new session in this project" },
@@ -112,7 +101,6 @@ export function Composer(props: {
   // Not ready until the config loads too: a send before it would find no model.
   const down = () => project(props.root)?.conn !== "up" || !project(props.root)?.config;
   const model = () => currentModel(props.root);
-  const choices = () => modelChoices(props.root);
 
   const [ac, setAc] = createSignal<Ac | null>(null);
   const [files, setFiles] = createSignal<string[]>([]);
@@ -253,6 +241,12 @@ export function Composer(props: {
     if (a && e.key === "Escape") {
       e.preventDefault();
       setAc(null);
+      return;
+    }
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      const i = MODES.findIndex((m) => m.value === state.prefs.mode);
+      savePrefs({ mode: MODES[(i + 1) % MODES.length]?.value ?? "ask" });
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -408,56 +402,23 @@ export function Composer(props: {
               />
               <I d={P.plus} size={17} />
             </label>
-            <div style={{ position: "relative", display: "flex" }}>
-              <button
-                type="button"
-                class="gh"
-                aria-haspopup="menu"
-                aria-expanded={openMenu() === "model"}
-                aria-label={`Model: ${model()?.label ?? "none"}`}
-                onClick={() => toggleMenu("model")}
-              >
-                <span class="ell" style={{ "max-width": "220px" }}>
-                  {model()?.label ?? "No model"}
-                </span>
-                <Show when={model()?.thinking}>
-                  <span style={{ color: "var(--muted)" }}>
-                    {EFFORTS.find((x) => x.value === state.prefs.effort)?.label}
-                  </span>
-                </Show>
-                <I d={P.chevD} size={10} sw={2.4} stroke="var(--muted)" />
-              </button>
-              <Pop
-                id="model"
-                label="Model"
-                up
-                style={{ bottom: "calc(100% + 8px)", left: 0, width: "300px" }}
-              >
-                <Show
-                  when={choices().length > 0}
-                  fallback={
-                    <div style={{ padding: "6px 8px", color: "var(--muted)" }}>
-                      No provider is connected. Connect one in Settings.
-                    </div>
-                  }
-                >
-                  <Choices
-                    items={choices().map((c) => ({ value: c.ref, label: c.label, desc: c.desc }))}
-                    current={model()?.ref ?? ""}
-                    pick={(v) => savePrefs({ model: v })}
-                  />
-                </Show>
-                <Show when={model()?.thinking}>
-                  <div class="mi-sep" />
-                  <div class="mi-head">Reasoning effort</div>
-                  <Choices
-                    items={EFFORTS}
-                    current={state.prefs.effort}
-                    pick={(v) => savePrefs({ effort: v })}
-                  />
-                </Show>
-              </Pop>
-            </div>
+            <button
+              type="button"
+              class="gh"
+              aria-haspopup="dialog"
+              aria-expanded={openMenu() === "model"}
+              aria-label={`Model: ${model()?.label ?? "none"}`}
+              onClick={() => toggleMenu("model")}
+            >
+              <span class="ell" style={{ "max-width": "220px" }}>
+                {model()?.label ?? "No model"}
+              </span>
+              <Show when={effortFor(model())}>
+                {(e) => <span style={{ color: "var(--muted)" }}>{EFFORT_LABEL[e()]}</span>}
+              </Show>
+              <I d={P.chevD} size={10} sw={2.4} stroke="var(--muted)" />
+            </button>
+            <ModelDialog root={props.root} />
             <div style={{ position: "relative", display: "flex" }}>
               <button
                 type="button"

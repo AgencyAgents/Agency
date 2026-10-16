@@ -1,8 +1,19 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { createMemo, createSignal, For, type JSX, onCleanup, onMount, Show } from "solid-js";
 import { reconcile, unwrap } from "solid-js/store";
+import { type Environment, FULL_NETWORK_ONLY } from "../lib/environments.ts";
 import { errorText, host } from "../lib/host.ts";
-import { modelChoices, project, rpcWhenUp, savePrefs, setState, state, toast } from "../lib/store.ts";
+import {
+  applyEnvironment,
+  MODES,
+  modelChoices,
+  project,
+  rpcWhenUp,
+  savePrefs,
+  setState,
+  state,
+  toast,
+} from "../lib/store.ts";
 import type { Effort, PermissionMode, ProvidersList } from "../lib/types.ts";
 import { I, P } from "./icons.tsx";
 import { type Choice, Choices, closeMenu, openMenu, Pop, toggleMenu } from "./menu.tsx";
@@ -22,7 +33,7 @@ const ICONS = {
   models:
     "M8.5 6h7A2.5 2.5 0 0 1 18 8.5v7a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 6 15.5v-7A2.5 2.5 0 0 1 8.5 6ZM9.5 2.5V6M14.5 2.5V6M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5",
   permissions: `${P.shield}m9 12 2 2 4-4`,
-  sandbox: "M12 2.5 20.5 7v10L12 21.5 3.5 17V7ZM3.5 7 12 11.5 20.5 7M12 11.5v10",
+  environments: "M12 2.5 20.5 7v10L12 21.5 3.5 17V7ZM3.5 7 12 11.5 20.5 7M12 11.5v10",
   context: "M3.5 18a9 9 0 1 1 17 0ZM12 14l3.5-4",
   tools: "M7 11h10v3a5 5 0 0 1-10 0ZM9 3v8M15 3v8M12 19v2.5",
   hooks:
@@ -31,11 +42,17 @@ const ICONS = {
   instructions: `${P.file}M9 13h6M9 17h4`,
 };
 
-const BACKEND_HINT: Record<string, string> = {
-  software: "Checks paths inside the process. No isolation from the OS.",
-  docker: "Runs each shell command in a container.",
-  os: "Bubblewrap on Linux, Seatbelt on macOS, a restricted token on Windows.",
+const NETWORK: Record<Environment["network"], string> = {
+  full: "Full",
+  domains: "Allowed domains",
+  none: "None",
 };
+
+const ENV_HINT = `${
+  FULL_NETWORK_ONLY
+    ? "Variables and a setup script for each session. Windows cannot limit network access without administrator rights."
+    : "Network access, variables and a setup script for each session. Limited network runs commands in the OS sandbox."
+} Values are stored as plain text on this computer.`;
 
 const TONES: Record<string, string> = {
   Connected: "var(--green)",
@@ -68,7 +85,7 @@ interface Item {
 
 interface FieldSpec {
   label: string;
-  kind: "text" | "password" | "choice" | "select";
+  kind: "text" | "password" | "choice" | "select" | "lines";
   placeholder?: string;
   required?: boolean;
   options?: [string, string][];
@@ -307,6 +324,18 @@ function ListView(p: ListProps) {
                       void save();
                     }
                   }}
+                />
+              </Show>
+              <Show when={f.kind === "lines"}>
+                <textarea
+                  class="field mono"
+                  aria-label={f.label}
+                  value={mine()?.draft[j()] ?? ""}
+                  placeholder={f.placeholder}
+                  spellcheck={false}
+                  rows={4}
+                  style={{ padding: "8px 10px", "font-size": "12.5px", resize: "vertical" }}
+                  onInput={(e) => setDraft(j(), e.currentTarget.value)}
                 />
               </Show>
               <Show when={f.kind === "select"}>
@@ -565,6 +594,7 @@ export default function Settings(props: { onClose?: () => void }) {
       .then(setVersion)
       .catch(() => {});
     void loadMcp();
+    void loadNotes();
   });
   onCleanup(() => {
     setEdit(null);
@@ -609,6 +639,34 @@ export default function Settings(props: { onClose?: () => void }) {
     } catch (e) {
       toast(errorText(e), { tone: "err" });
       return false;
+    }
+  }
+
+  /** Rewrites the layer of each project that uses the environment, or clears it when the environment is gone. */
+  async function reapply(id: string) {
+    const kept = state.prefs.envs.some((e) => e.id === id);
+    for (const [r, used] of Object.entries(state.prefs.envOf))
+      if (used === id) await applyEnvironment(r, kept ? id : "");
+  }
+
+  /** null while unknown or when the daemon has no memory methods. */
+  const [notes, setNotes] = createSignal<string[] | null>(null);
+  async function loadNotes() {
+    const r = root();
+    if (!r) return;
+    try {
+      setNotes((await host.rpc<{ notes: string[] }>(r, "memory_get")).notes);
+    } catch {
+      setNotes(null);
+    }
+  }
+  async function forget(note: string | undefined) {
+    const r = root();
+    if (!r || note === undefined) return;
+    try {
+      setNotes((await rpcWhenUp<{ notes: string[] }>(r, "memory_remove", { note })).notes);
+    } catch (e) {
+      toast(errorText(e), { tone: "err" });
     }
   }
 
@@ -1065,13 +1123,7 @@ export default function Settings(props: { onClose?: () => void }) {
           "mode",
           "Default mode",
           "Shift+Tab changes it inside a session.",
-          [
-            ["ask", "Ask"],
-            ["allow-edits", "Allow edits"],
-            ["auto", "Auto"],
-            ["allow-all", "Allow all"],
-            ["deny", "Deny"],
-          ],
+          MODES.map((m) => [m.value, m.label]),
           () => state.prefs.mode,
           (v) => savePrefs({ mode: v as PermissionMode }),
         ),
@@ -1130,33 +1182,107 @@ export default function Settings(props: { onClose?: () => void }) {
       ],
     },
     {
-      id: "sandbox",
-      label: "Sandbox",
+      id: "environments",
+      label: "Environments",
       rows: [
-        cseg(
-          "sandbox.backend",
-          "Backend",
-          () => BACKEND_HINT[str(dig(cfg(), "sandbox.backend")) || "software"] ?? "",
-          [
-            ["software", "Software"],
-            ["docker", "Docker"],
-            ["os", "OS"],
-          ],
-          "software",
-        ),
-        toggle(
-          "sandbox.allowNetwork",
-          "Network for shell commands",
-          "With the OS backend on Windows this must be on.",
-        ),
-        ctext(
-          "sandbox.allowedDomains",
-          "Allowed domains",
-          "Linux and macOS only, through a proxy of the daemon.",
-          "host.example",
-          parseCsv,
-          fmtCsv,
-        ),
+        {
+          key: "environment",
+          label: "This project",
+          hint: () => "Changing it restarts the project's daemon after its running turns end.",
+          app: true,
+          ctl: () => (
+            <Sel
+              id="environment"
+              label="Environment of this project"
+              value={state.prefs.envOf[root() ?? ""] ?? ""}
+              items={[
+                { value: "", label: "None" },
+                ...state.prefs.envs.map((e) => ({ value: e.id, label: e.name })),
+              ]}
+              disabled={!root()}
+              set={(v) => {
+                const r = root();
+                if (r) void applyEnvironment(r, v);
+              }}
+            />
+          ),
+        },
+        {
+          key: "environments",
+          label: "Environments",
+          hint: () => ENV_HINT,
+          list: true,
+          app: true,
+          ctl: () => (
+            <ListView
+              id="environments"
+              label="Environments"
+              hint={ENV_HINT}
+              head={["Name", "Network", "Setup script"]}
+              cols="1fr 1fr 0.8fr"
+              empty="No environments. Sessions use your machine as it is."
+              disabled={false}
+              addLabel="Add environment"
+              items={state.prefs.envs.map((e) => ({
+                name: e.name,
+                cells: [e.name, NETWORK[e.network], e.setup.trim() ? "Yes" : "None"],
+                canEdit: true,
+                canRemove: true,
+              }))}
+              newDraft={() => ["", "full", "", "", ""]}
+              draftOf={(i) => {
+                const e = state.prefs.envs[i];
+                return [e?.name ?? "", e?.network ?? "full", e?.domains ?? "", e?.vars ?? "", e?.setup ?? ""];
+              }}
+              fields={[
+                { label: "Name", kind: "text", required: true, placeholder: "Node with registry access" },
+                {
+                  label: "Network access",
+                  kind: "choice",
+                  options: [
+                    ["full", NETWORK.full],
+                    ["domains", NETWORK.domains],
+                    ["none", NETWORK.none],
+                  ],
+                  show: () => !FULL_NETWORK_ONLY,
+                },
+                {
+                  label: "Allowed domains",
+                  kind: "text",
+                  required: true,
+                  placeholder: "registry.npmjs.org, github.com",
+                  show: (d) => d[1] === "domains",
+                },
+                { label: "Environment variables", kind: "lines", placeholder: "NODE_ENV=development" },
+                { label: "Setup script", kind: "lines", placeholder: "npm install" },
+              ]}
+              editTitle={(i) => (i === null ? "New environment" : "Edit environment")}
+              save={async (i, d) => {
+                const [name = "", network = "full", domains = "", vars = "", setup = ""] = d;
+                const old = i === null ? undefined : state.prefs.envs[i];
+                const env: Environment = {
+                  id: old?.id ?? crypto.randomUUID(),
+                  name,
+                  network: network as Environment["network"],
+                  domains,
+                  vars,
+                  setup,
+                };
+                savePrefs({
+                  envs: old ? state.prefs.envs.map((e) => (e === old ? env : e)) : [...state.prefs.envs, env],
+                });
+                await reapply(env.id);
+                return true;
+              }}
+              remove={(i) => {
+                const gone = state.prefs.envs[i];
+                if (!gone) return;
+                savePrefs({ envs: state.prefs.envs.filter((e) => e !== gone) });
+                void reapply(gone.id);
+              }}
+            />
+          ),
+        },
         ctext(
           "sandbox.denyEnv",
           "Hidden variables",
@@ -1179,26 +1305,29 @@ export default function Settings(props: { onClose?: () => void }) {
           parsePos,
           fmtStr,
         ),
-        toggle(
-          "keepToolResults",
-          "Keep old tool results whole",
-          "Off sends a one-line note for large old results.",
-        ),
         toggle("memory", "Memory", "The memory tool and its notes in the prompt.", true),
-        toggle(
-          "verifyGate",
-          "Verify before done",
-          "A turn that changed code and ran no passing check is sent back once.",
-          true,
-        ),
-        ctext(
-          "maxSteps",
-          "Max steps per turn",
-          "Tool steps when the caller sets no limit.",
-          "100",
-          parsePos,
-          fmtStr,
-        ),
+        {
+          key: "memory.notes",
+          label: "Saved notes",
+          hint: () => "Notes the model saved for this workspace. It reads them at the start of each session.",
+          list: true,
+          ctl: (off) => (
+            <ListView
+              id="memory"
+              label="Saved notes"
+              hint="Notes the model saved for this workspace. It reads them at the start of each session."
+              head={["Note"]}
+              cols="1fr"
+              empty="No notes yet. The model saves one when you ask it to remember something."
+              disabled={off || notes() === null}
+              items={(notes() ?? []).map((n) => {
+                const text = n.replace(/^- /, "");
+                return { name: text, cells: [text], canEdit: false, canRemove: true };
+              })}
+              remove={(i) => void forget(notes()?.[i])}
+            />
+          ),
+        },
       ],
     },
     {

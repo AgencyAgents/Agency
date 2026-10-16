@@ -56,24 +56,30 @@ const server = http.createServer(async (req, res) => {
       await sleep(gap);
     }
   };
-  if (last?.role === "tool") {
-    await words(["Wrote ", "hello.txt."], 20);
-    res.write(chunk({}, "stop"));
-  } else if (text.includes("write it")) {
-    const args = JSON.stringify({ path: "hello.txt", content: "hi\n" });
-    res.write(chunk({ role: "assistant", content: "Writing the file." }));
+  const call = (name: string, args: object) => {
     res.write(
       chunk({
         tool_calls: [
-          { index: 0, id: "call_1", type: "function", function: { name: "write", arguments: "" } },
+          { index: 0, id: `call_${fake.requests}`, type: "function", function: { name, arguments: "" } },
         ],
       }),
     );
-    res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: args } }] }));
+    res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] }));
     res.write(chunk({}, "tool_calls"));
+  };
+  if (last?.role === "tool" && text.includes("approved the plan")) {
+    call("write", { path: "plan.txt", content: "planned\n" });
+  } else if (last?.role === "tool") {
+    await words(["Wrote ", "hello.txt."], 20);
+    res.write(chunk({}, "stop"));
+  } else if (text.includes("make a plan")) {
+    call("plan_exit", { plan: "## Plan\n\n1. Write plan.txt" });
+  } else if (text.includes("write it")) {
+    res.write(chunk({ role: "assistant", content: "Writing the file." }));
+    call("write", { path: "hello.txt", content: "hi\n" });
   } else if (text.includes("go slow")) {
     await words(
-      Array.from({ length: 200 }, (_, i) => `word${i} `),
+      Array.from({ length: 200 }, (_, i) => `word${i}${i % 4 === 3 ? "\n\n" : " "}`),
       150,
     );
     if (closed) return;
@@ -359,10 +365,34 @@ try {
     if (written !== "hi\n") throw new Error(`hello.txt holds ${JSON.stringify(written)}`);
   });
 
-  await step("stop ends a running turn", async () => {
+  await step("the view follows a reply until you scroll up, then stop ends the turn", async () => {
     const before = fake.aborted;
-    await say("go slow");
-    await until("streaming", bodyHas("word3"));
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1100,
+      height: 520,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    try {
+      await say("go slow");
+      await until("streaming", bodyHas("word3"));
+      const tx = `document.querySelector(".tx-scroll")`;
+      const atEnd = `${tx}.scrollHeight - ${tx}.scrollTop - ${tx}.clientHeight < 48`;
+      await until(
+        "the reply overflows and the view follows it",
+        `${tx}.scrollHeight > ${tx}.clientHeight + 200 && ${atEnd}`,
+      );
+      await ev(`${tx}.scrollTop = 0`);
+      const jump = `document.querySelector('button[aria-label="Jump to the latest message"]')`;
+      await until("jump button", jump);
+      await sleep(800);
+      if (!(await ev<boolean>(`${tx}.scrollTop < 5`)))
+        throw new Error("the view moved after the reader scrolled up");
+      await click(jump, "Jump to the latest message");
+      await until("back at the end", atEnd);
+    } finally {
+      await cdp.send("Emulation.clearDeviceMetricsOverride");
+    }
     await click(`document.querySelector('button[aria-label="Stop turn"]')`, "Stop");
     await until("send is back", `document.querySelector('button[aria-label="Send"]')`, 10_000);
     await until(
@@ -383,6 +413,42 @@ try {
       `${bodyHas("Hello from the fake model.")} && ${bodyHas("Wrote hello.txt.")}`,
       30_000,
     );
+    await until(
+      "the tool group reads as one summary line",
+      `[...document.querySelectorAll(".work-head")].some((b) => b.textContent.includes("Wrote hello.txt"))`,
+    );
+    await until(
+      "a turn footer with latency, speed and tokens",
+      `[...document.querySelectorAll(".turn-foot")].some((f) => /latency/.test(f.textContent) && /tok\\/s/.test(f.textContent) && /tokens out/.test(f.textContent))`,
+    );
+  });
+
+  await step("right-click a session: rename it, and the name survives a reload", async () => {
+    await ev(`(() => {
+      const row = document.querySelector("button.side-row.sess");
+      const r = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: r.left + 20, clientY: r.top + 10 }));
+    })()`);
+    await click(
+      `[...document.querySelectorAll('[role="menu"][aria-label^="Actions for"] [role="menuitem"]')].find((b) => b.textContent === "Rename")`,
+      "Rename",
+    );
+    await until("rename field", `document.activeElement?.classList.contains("side-rename")`);
+    await cdp.send("Input.insertText", { text: "Renamed by e2e" });
+    for (const type of ["keyDown", "keyUp"])
+      await cdp.send("Input.dispatchKeyEvent", {
+        type,
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+    await until(
+      "renamed row",
+      `document.querySelector("button.side-row.sess")?.textContent.includes("Renamed by e2e")`,
+    );
+    await ev("location.reload()");
+    await sleep(500);
+    await until("name after reload", bodyHas("Renamed by e2e"), 30_000);
   });
 
   await step("daemon kill shows the banner, then reconnects", async () => {
@@ -414,18 +480,19 @@ try {
     await until("settings dialog", `document.querySelector('input[placeholder="Search settings"]')`);
     const before = readFileSync(configFile, "utf8");
     await ev(`document.querySelector('input[placeholder="Search settings"]').focus()`);
-    await cdp.send("Input.insertText", { text: "Max steps" });
-    await until("max steps field", `document.querySelector('input[aria-label="Max steps per turn"]')`);
-    await ev(`document.querySelector('input[aria-label="Max steps per turn"]').select()`);
-    await cdp.send("Input.insertText", { text: "42" });
-    await ev(`document.querySelector('input[aria-label="Max steps per turn"]').blur()`);
+    await cdp.send("Input.insertText", { text: "Compaction" });
+    await until("compaction limit field", `document.querySelector('input[aria-label="Compaction limit"]')`);
+    await ev(`document.querySelector('input[aria-label="Compaction limit"]').select()`);
+    await cdp.send("Input.insertText", { text: "50000" });
+    await ev(`document.querySelector('input[aria-label="Compaction limit"]').blur()`);
     const end = Date.now() + 10_000;
     let after = before;
-    while (Date.now() < end && !/"maxSteps":\s*42/.test(after)) {
+    while (Date.now() < end && !/"compactionLimit":\s*50000/.test(after)) {
       await sleep(100);
       after = readFileSync(configFile, "utf8");
     }
-    if (!/"maxSteps":\s*42/.test(after)) throw new Error(`config file lacks maxSteps 42:\n${after}`);
+    if (!/"compactionLimit":\s*50000/.test(after))
+      throw new Error(`config file lacks compactionLimit 50000:\n${after}`);
     if (!after.startsWith("// e2e user config")) throw new Error("the config comment was lost");
     await ev("location.reload()");
     await sleep(500);
@@ -433,10 +500,10 @@ try {
     await click(button("Settings"), "Settings");
     await until("settings dialog", `document.querySelector('input[placeholder="Search settings"]')`);
     await ev(`document.querySelector('input[placeholder="Search settings"]').focus()`);
-    await cdp.send("Input.insertText", { text: "Max steps" });
+    await cdp.send("Input.insertText", { text: "Compaction" });
     await until(
-      "the daemon reads back 42",
-      `document.querySelector('input[aria-label="Max steps per turn"]')?.value === "42"`,
+      "the daemon reads back 50000",
+      `document.querySelector('input[aria-label="Compaction limit"]')?.value === "50000"`,
       30_000,
     );
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
@@ -497,6 +564,70 @@ try {
       throw new Error(`the run made ${fake.requests - before} model calls, not 2`);
   });
 
+  await step("an environment's variable and setup script reach the next session", async () => {
+    await click(button("Settings"), "Settings");
+    await click(button("Environments"), "Environments section");
+    await click(button("Add environment"), "Add environment");
+    await fill('input[aria-label="Name"]', "E2E env");
+    await fill('textarea[aria-label="Environment variables"]', "AGENCY_E2E=from-env");
+    // The script runs in the shell of the model's commands, Git Bash or PowerShell: bun reads the same in both.
+    await fill(
+      'textarea[aria-label="Setup script"]',
+      `bun -e "require('fs').writeFileSync('setup-ran.txt', process.env.AGENCY_E2E)"`,
+    );
+    await click(button("Save", `document.querySelector('fieldset[aria-label="New environment"]')`), "Save");
+    const before = daemonPids();
+    await click(`document.querySelector('button[aria-label="Environment of this project"]')`, "Environment");
+    await click(
+      `[...document.querySelectorAll('[role="menuitemradio"]')].find((b) => b.textContent.includes("E2E env"))`,
+      "E2E env",
+    );
+    const end = Date.now() + 30_000;
+    while (Date.now() < end && !daemonPids().some((pid) => !before.includes(pid))) await sleep(200);
+    if (!daemonPids().some((pid) => !before.includes(pid))) throw new Error("the daemon did not restart");
+    await click(`document.querySelector('button[aria-label="Close settings"]')`, "Close settings");
+    await until("settings closed", `!document.querySelector('input[placeholder="Search settings"]')`);
+    await until("daemon up with the environment", UP, 60_000);
+    await click(button("New session"), "New session");
+    await say("say hello");
+    const marker = join(ws, "setup-ran.txt");
+    const stop = Date.now() + 30_000;
+    while (Date.now() < stop && !existsSync(marker)) await sleep(200);
+    if (!existsSync(marker) || !readFileSync(marker, "utf8").includes("from-env")) {
+      const failed = await ev<string>(
+        `document.querySelector('section[aria-label="Turn failed"]')?.innerText ?? ""`,
+      );
+      throw new Error(
+        `setup-ran.txt: ${existsSync(marker) ? readFileSync(marker, "utf8") : "missing"} ${failed}`,
+      );
+    }
+  });
+
+  await step("plan mode: the model presents a plan, approving it lets the edit run", async () => {
+    await click(button("New session"), "New session");
+    const mode = (label: string) =>
+      click(
+        `[...document.querySelectorAll('[role="menuitemradio"]')].find((b) => b.textContent.includes(${JSON.stringify(label)}))`,
+        label,
+      );
+    await click(`document.querySelector('button[aria-label^="Permission mode:"]')`, "Permission mode");
+    await mode("Plan");
+    await say("make a plan");
+    const card = `document.querySelector('section[aria-label="Plan approval"]')`;
+    await until("plan card", `${card}?.textContent.includes("Write plan.txt")`, 30_000);
+    if (existsSync(join(ws, "plan.txt"))) throw new Error("plan.txt exists before the approval");
+    await click(button("Approve plan", card), "Approve plan");
+    await until(
+      "mode is Accept edits",
+      `document.querySelector('button[aria-label="Permission mode: Accept edits"]')`,
+    );
+    await until("reply after the edit", bodyHas("Wrote hello.txt."), 30_000);
+    if (readFileSync(join(ws, "plan.txt"), "utf8") !== "planned\n")
+      throw new Error("plan.txt was not written");
+    await click(`document.querySelector('button[aria-label^="Permission mode:"]')`, "Permission mode");
+    await mode("Manual");
+  });
+
   await step("Runs in: New worktree opens a worktree project and the session works in it", async () => {
     await click(button("New session"), "New session");
     await click(button("Local"), "Runs in");
@@ -532,18 +663,18 @@ try {
       throw new Error("the main checkout lists the worktree");
   });
 
-  await step("model menu lists a connected gateway's models and finds one by search", async () => {
+  await step("model picker lists a connected gateway's models and finds one by search", async () => {
     await click(button("New session"), "New session");
-    const menu = `document.querySelector('[role="menu"][aria-label="Model"]')`;
+    const picker = `document.querySelector('[role="dialog"][aria-label="Choose a model"]')`;
     await click(`document.querySelector('button[aria-label^="Model:"]')`, "Model");
     await until(
       "the fake model and 14 gateway models",
-      `${menu}?.querySelectorAll('[role="menuitemradio"]').length === 15`,
+      `${picker}?.querySelectorAll('[role="option"]').length === 15`,
       30_000,
     );
-    await ev(`${menu}.querySelector('input[type="search"]').focus()`);
+    await ev(`${picker}.querySelector('input[type="search"]').focus()`);
     await cdp.send("Input.insertText", { text: "model-13" });
-    await until("one match", `${menu}.querySelectorAll('[role="menuitemradio"]').length === 1`);
+    await until("one match", `${picker}.querySelectorAll('[role="option"]').length === 1`);
     for (const type of ["keyDown", "keyUp"])
       await cdp.send("Input.dispatchKeyEvent", {
         type,

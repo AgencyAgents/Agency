@@ -51,8 +51,16 @@ impl Daemon {
 
 pub struct Daemons {
     agency: PathBuf,
+    /// One config layer file per project: the environment the app chose for it.
+    environments: PathBuf,
     http: reqwest::Client,
     map: Mutex<HashMap<String, Arc<Daemon>>>,
+}
+
+/// FNV-1a: a file name that stays the same for a root across builds, unlike the std hasher.
+pub fn environment_file(dir: &std::path::Path, root: &str) -> PathBuf {
+    let hash = root.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    dir.join(format!("{hash:016x}.json"))
 }
 
 /// The sidecar sits next to the app binary once installed; AGENCY_BIN points a dev build at another one.
@@ -90,14 +98,29 @@ fn http_client() -> reqwest::Client {
 }
 
 impl Daemons {
-    pub fn new() -> Self {
-        Self { agency: agency_bin(), http: http_client(), map: Mutex::new(HashMap::new()) }
+    pub fn new(environments: PathBuf) -> Self {
+        Self { agency: agency_bin(), environments, http: http_client(), map: Mutex::new(HashMap::new()) }
+    }
+
+    /// Writes the project's environment layer; the daemon reads it when it next starts.
+    pub fn set_environment(&self, root: &str, layer: &Value) -> Result<(), String> {
+        std::fs::create_dir_all(&self.environments).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(layer).map_err(|e| e.to_string())?;
+        // A daemon that starts mid-write must read the old file or the new one, never half of one.
+        let file = environment_file(&self.environments, root);
+        let part = file.with_extension("json.part");
+        std::fs::write(&part, text).map_err(|e| e.to_string())?;
+        std::fs::rename(&part, &file).map_err(|e| e.to_string())
     }
 
     async fn ensure(&self, root: &str) -> Result<Conn, String> {
-        let output = command(&self.agency)
-            .args(["daemon", "start", "--format", "json", "--workspace", root])
-            .output();
+        let mut cmd = command(&self.agency);
+        cmd.args(["daemon", "start", "--format", "json", "--workspace", root]);
+        let layer = environment_file(&self.environments, root);
+        if layer.exists() {
+            cmd.env("AGENCY_CONFIG_OVERLAY", layer);
+        }
+        let output = cmd.output();
         let output = tokio::time::timeout(Duration::from_secs(60), output)
             .await
             .map_err(|_| "The daemon did not start within 60 seconds.".to_string())?
