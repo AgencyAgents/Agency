@@ -100,6 +100,11 @@ async fn git_switch(root: String, branch: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn worktree_create(root: String) -> Result<String, String> {
+    host::worktree_add(&root).await
+}
+
+#[tauri::command]
 async fn pr_create(root: String) -> Result<String, String> {
     host::pr_create(&root).await
 }
@@ -185,6 +190,7 @@ fn main() {
             git_commit,
             git_push,
             git_switch,
+            worktree_create,
             pr_create,
             files_list,
             open_in,

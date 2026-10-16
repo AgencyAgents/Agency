@@ -19,6 +19,8 @@ export interface GitFile {
 
 export interface GitStatus {
   repo: boolean;
+  /** A linked worktree, not the main checkout. */
+  worktree?: boolean;
   branch?: string;
   branches?: string[];
   ahead?: number;
@@ -79,6 +81,7 @@ export const host = {
     invoke<string>("git_commit", { root, message, paths }),
   gitPush: (root: string) => invoke<void>("git_push", { root }),
   gitSwitch: (root: string, branch: string) => invoke<void>("git_switch", { root, branch }),
+  worktreeCreate: (root: string) => invoke<string>("worktree_create", { root }),
   prCreate: (root: string) => invoke<string>("pr_create", { root }),
   files: (root: string) => invoke<string[]>("files_list", { root }),
   openIn: (root: string, target: "vscode" | "zed" | "files" | "terminal") =>

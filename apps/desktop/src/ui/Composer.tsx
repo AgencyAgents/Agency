@@ -510,8 +510,8 @@ export function Composer(props: {
         <Show when={!props.isNew}>
           <div class="below">
             <span class="hide-sm" title="Runs in">
-              <I d={P.laptop} size={15} />
-              Local
+              <I d={project(props.root)?.git?.worktree ? P.folder : P.laptop} size={15} />
+              {project(props.root)?.git?.worktree ? "Worktree" : "Local"}
             </span>
             <div style={{ flex: 1 }} />
             <Show when={context()}>

@@ -550,6 +550,14 @@ export async function addProject(path: string): Promise<void> {
   }
 }
 
+export async function newWorktree(root: string): Promise<void> {
+  toast("Creating a worktree");
+  const path = await host
+    .worktreeCreate(root)
+    .catch((error) => void toast(errorText(error), { tone: "err" }));
+  if (path) await addProject(path);
+}
+
 export async function removeProject(root: string): Promise<void> {
   await host.removeProject(root);
   setState(

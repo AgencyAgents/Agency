@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { errorText, host } from "../lib/host.ts";
 import {
+  newWorktree,
   project,
   refreshGit,
   savePrefs,
@@ -464,20 +465,72 @@ function NewHero() {
           }}
         >
           <span>Runs</span>
-          <span
-            class="gh"
-            style={{
-              height: "30px",
-              gap: "6px",
-              color: "var(--text)",
-              "font-weight": 500,
-              cursor: "default",
-              background: "transparent",
-            }}
+          <Show
+            when={git()?.repo}
+            fallback={
+              <span
+                class="gh"
+                style={{
+                  height: "30px",
+                  gap: "6px",
+                  color: "var(--text)",
+                  "font-weight": 500,
+                  cursor: "default",
+                  background: "transparent",
+                }}
+              >
+                <I d={P.laptop} size={15} />
+                Local
+              </span>
+            }
           >
-            <I d={P.laptop} size={15} />
-            Local
-          </span>
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                class="gh"
+                aria-haspopup="menu"
+                aria-expanded={openMenu() === "runs"}
+                onClick={() => toggleMenu("runs")}
+                style={{ height: "30px", gap: "6px", color: "var(--text)", "font-weight": 500 }}
+              >
+                <I d={git()?.worktree ? P.folder : P.laptop} size={15} />
+                {git()?.worktree ? "Worktree" : "Local"}
+                <I d={P.chevD} size={10} sw={2.4} />
+              </button>
+              <Pop
+                id="runs"
+                label="Runs in"
+                style={{
+                  top: "calc(100% + 6px)",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  width: "300px",
+                  "text-align": "left",
+                }}
+              >
+                <Choices
+                  two
+                  items={[
+                    {
+                      value: "here",
+                      label: git()?.worktree ? "Worktree" : "Local",
+                      desc: "Works in this folder.",
+                    },
+                    {
+                      value: "new",
+                      label: "New worktree",
+                      desc: "A new branch from the last commit, in its own folder.",
+                    },
+                  ]}
+                  current="here"
+                  pick={(v) => {
+                    const r = root();
+                    if (v === "new" && r) void newWorktree(r);
+                  }}
+                />
+              </Pop>
+            </div>
+          </Show>
           <Show when={git()?.repo}>
             <span>on</span>
             <div style={{ position: "relative" }}>

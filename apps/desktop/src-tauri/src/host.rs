@@ -110,8 +110,12 @@ pub async fn git_status(root: &str) -> Result<Value, String> {
     }
     let branches: Vec<String> =
         git(root, &["branch", "--format=%(refname:short)"]).await.unwrap_or_default().lines().map(str::to_string).collect();
+    let dirs = git(root, &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]).await.unwrap_or_default();
+    let mut dirs = dirs.lines();
+    let worktree = dirs.next() != dirs.next();
     Ok(json!({
         "repo": true,
+        "worktree": worktree,
         "branch": branch,
         "branches": branches,
         "ahead": ahead,
@@ -157,6 +161,32 @@ pub async fn git_push(root: &str) -> Result<(), String> {
 
 pub async fn git_switch(root: &str, branch: &str) -> Result<(), String> {
     git(root, &["switch", branch]).await.map(|_| ())
+}
+
+/// A new branch in its own folder, laid out as `agency -p --worktree <name>` does, so the CLI can reuse it.
+/// Returns the folder that matches `root` inside it; trust of the repository covers it.
+pub async fn worktree_add(root: &str) -> Result<String, String> {
+    let prefix = git(root, &["rev-parse", "--show-prefix"]).await?;
+    let rel: Vec<&str> = prefix.trim().split('/').filter(|s| !s.is_empty()).collect();
+    let mut top = PathBuf::from(root);
+    for _ in &rel {
+        top.pop();
+    }
+    let repo: String = top
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' })
+        .collect();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.subsec_nanos();
+    let name = format!("{repo}-{:06x}", nanos & 0xff_ffff);
+    let parent = top.join(".agency").join("worktrees");
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    std::fs::write(parent.join(".gitignore"), "*\n").map_err(|e| e.to_string())?;
+    let dir = parent.join(&name);
+    git(root, &["worktree", "add", "-b", &format!("agency/{name}"), &dir.to_string_lossy(), "HEAD"]).await?;
+    Ok(rel.iter().fold(dir, |d, s| d.join(s)).to_string_lossy().to_string())
 }
 
 pub async fn pr_create(root: &str) -> Result<String, String> {
@@ -211,4 +241,41 @@ pub async fn trust(root: &str) -> Result<(), String> {
         return Err(out.stderr);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_worktree_mirrors_the_project_folder_and_stays_out_of_the_main_status() {
+        let base = std::env::temp_dir().join(format!("agency-wt-test-{}", std::process::id()));
+        let sub = base.join("pkg");
+        std::fs::create_dir_all(&sub).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").current_dir(&base).args(args).status().unwrap().success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(sub.join("a.txt"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+        let sub = sub.to_string_lossy().to_string();
+
+        tauri::async_runtime::block_on(async {
+            let made = worktree_add(&sub).await.unwrap();
+            let inside = base.join(".agency").join("worktrees");
+            assert!(made.starts_with(&*inside.to_string_lossy()), "{made}");
+            assert!(Path::new(&made).ends_with("pkg") && Path::new(&made).join("a.txt").is_file(), "{made}");
+            let status = git_status(&made).await.unwrap();
+            assert_eq!(status["worktree"], true);
+            let name = Path::new(&made).parent().and_then(|p| p.file_name()).unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with("agency-wt-test-"), "{name}");
+            assert_eq!(status["branch"], format!("agency/{name}"));
+            let main = git_status(&sub).await.unwrap();
+            assert_eq!(main["worktree"], false, "a subfolder of the main checkout");
+            assert_eq!(main["files"], json!([]), "the worktree is ignored by the main checkout");
+        });
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

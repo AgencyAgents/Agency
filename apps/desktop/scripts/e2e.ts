@@ -476,6 +476,41 @@ try {
       throw new Error(`the run made ${fake.requests - before} model calls, not 2`);
   });
 
+  await step("Runs in: New worktree opens a worktree project and the session works in it", async () => {
+    await click(button("New session"), "New session");
+    await click(button("Local"), "Runs in");
+    await click(
+      `[...document.querySelectorAll('[role="menuitemradio"]')].find((b) => b.textContent.includes("New worktree"))`,
+      "New worktree",
+    );
+    const parent = join(ws, ".agency", "worktrees");
+    await until(
+      "worktree project in the sidebar",
+      `${bodyHas(`${wsName}-`)} && ${button("Worktree")}`,
+      30_000,
+    );
+    const name = readdirSync(parent).find((f) => f.startsWith(`${wsName}-`)) ?? "";
+    const wt = join(parent, name);
+    await until("on the worktree branch", bodyHas(`agency/${name}`));
+    await until("daemon up in the worktree", UP, 60_000);
+    await say("write it");
+    await click(
+      button("Allow once", `document.querySelector('section[aria-label="Approval request"]')`),
+      "Allow once",
+    );
+    await until("tool result reply", bodyHas("Wrote hello.txt."));
+    await until(
+      "composer says Worktree",
+      `document.querySelector('[title="Runs in"]')?.textContent.trim() === "Worktree"`,
+    );
+    if (readFileSync(join(wt, "hello.txt"), "utf8") !== "hi\n")
+      throw new Error("hello.txt is not in the worktree");
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: wt }).toString().trim();
+    if (branch !== `agency/${name}`) throw new Error(`the worktree is on ${branch}`);
+    if (git("status", "--porcelain").toString().includes("worktrees"))
+      throw new Error("the main checkout lists the worktree");
+  });
+
   await step("Open folder picks a second project in the system dialog", async () => {
     const second = mkdtempSync(join(tmpdir(), "agency-e2e-ws2-"));
     extraDirs.push(second);
