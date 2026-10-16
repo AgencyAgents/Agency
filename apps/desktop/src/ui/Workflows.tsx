@@ -13,7 +13,7 @@ import {
 } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { errorText } from "../lib/host.ts";
-import { keyOf, loadSession, openSession, setState, state, toast } from "../lib/store.ts";
+import { keyOf, loadSession, openSession, state, toast } from "../lib/store.ts";
 import { buildTurns, chain, describeStep, duration, stepIconPath, type ToolStep } from "../lib/transcript.ts";
 import {
   agentInfo,
@@ -42,8 +42,19 @@ import {
 } from "../lib/workflows.ts";
 import { I, P, Spinner } from "./icons.tsx";
 import { Markdown } from "./Markdown.tsx";
-import { Choices, closeMenu, Pop, toggleMenu } from "./menu.tsx";
-import { SideToggle, Toast } from "./SessionView.tsx";
+import {
+  Box,
+  EditFrame,
+  Empty,
+  Group,
+  ItemHead,
+  NoProject,
+  PageBar,
+  PageHead,
+  Row,
+  titleStyle,
+} from "./page.tsx";
+import { Toast } from "./SessionView.tsx";
 
 /* ---------- navigation and shared state ---------- */
 
@@ -215,22 +226,6 @@ const sectionBox: JSX.CSSProperties = {
   "border-radius": "12px",
   overflow: "hidden",
 };
-const sectionHead: JSX.CSSProperties = {
-  height: "40px",
-  display: "flex",
-  "align-items": "center",
-  gap: "8px",
-  padding: "0 16px",
-  "border-bottom": "1px solid var(--line-soft)",
-  background: "var(--fill-3)",
-};
-const title: JSX.CSSProperties = {
-  margin: 0,
-  "font-size": "22px",
-  "line-height": 1.25,
-  "font-weight": 600,
-  "letter-spacing": "-0.3px",
-};
 const Chev = () => <I d="m9 6 6 6-6 6" size={12} sw={2} stroke="var(--muted-2)" />;
 
 /* ---------- home ---------- */
@@ -241,68 +236,45 @@ function Home(props: { root: string }) {
     const q = query().trim().toLowerCase();
     return all().filter((w) => !q || `${w.name} ${w.desc}`.toLowerCase().includes(q));
   });
+  const groups = createMemo(() =>
+    TRIGGERS.map((t) => ({ title: t.label, rows: shown().filter((w) => w.trigger === t.id) })).filter(
+      (g) => g.rows.length > 0,
+    ),
+  );
   const create = () => openEditor(props.root, null);
   return (
     <div class="page pad">
-      <div style={{ display: "flex", "align-items": "center", gap: "16px", "flex-wrap": "wrap" }}>
-        <div
-          style={{ flex: 1, "min-width": "260px", display: "flex", "flex-direction": "column", gap: "4px" }}
-        >
-          <h1 style={title}>Workflows</h1>
-          <span style={{ color: "var(--muted)" }}>Runs while Agency is open.</span>
-        </div>
-        <label class="search" style={{ width: "240px", "max-width": "100%" }}>
-          <I d={P.search} size={14} sw={1.7} />
-          <span class="sr">Search workflows</span>
-          <input
-            type="search"
-            placeholder="Search workflows"
-            value={query()}
-            onInput={(e) => setQuery(e.currentTarget.value)}
-          />
-        </label>
-        <button type="button" class="pri" onClick={create}>
-          <I d={P.plus} size={13} sw={2.2} />
-          New workflow
-        </button>
-      </div>
+      <PageHead
+        title="Workflows"
+        sub="A workflow chains agents into steps. Each step gets the report of the one before it."
+        search="Search workflows"
+        query={query()}
+        setQuery={setQuery}
+        add="New workflow"
+        onAdd={create}
+      />
 
       <Show when={isLoaded(props.root)}>
-        <Show when={shown().length > 0}>
-          <div class="list">
-            <For each={shown()}>{(w) => <Card root={props.root} w={w} />}</For>
-          </div>
-        </Show>
+        <For each={groups()}>
+          {(g) => (
+            <Group title={g.title} count={g.rows.length}>
+              <For each={g.rows}>{(w) => <Card root={props.root} w={w} />}</For>
+            </Group>
+          )}
+        </For>
         <Show when={shown().length === 0}>
-          <div
-            style={{
-              padding: "40px 24px",
-              border: "1px dashed var(--line-strong)",
-              "border-radius": "14px",
-              "text-align": "center",
-              display: "flex",
-              "flex-direction": "column",
-              "align-items": "center",
-              gap: "8px",
-            }}
+          <Empty
+            title={all().length === 0 ? "No workflows yet" : "No workflow matches"}
+            text={
+              all().length === 0
+                ? "Name the steps once, then run them by hand, on each commit or every night."
+                : undefined
+            }
           >
-            <span style={{ "font-weight": 600 }}>
-              {all().length === 0 ? "No workflows yet" : "No workflow matches"}
-            </span>
-            <Show when={all().length === 0}>
-              <span style={{ color: "var(--muted)", "max-width": "380px" }}>
-                A workflow chains agents. Each step runs after the last and gets its report.
-              </span>
-            </Show>
-            <button
-              type="button"
-              class={all().length === 0 ? "pri" : "ol"}
-              onClick={create}
-              style={{ "margin-top": "4px" }}
-            >
+            <button type="button" class="ol" onClick={create} style={{ "margin-top": "4px" }}>
               New workflow
             </button>
-          </div>
+          </Empty>
         </Show>
       </Show>
     </div>
@@ -319,90 +291,68 @@ function Card(props: { root: string; w: Workflow }) {
     const r = last();
     return r ? `${statusWord[r.status]}, ${ago(r.endedAt ?? r.startedAt)}` : "Not run yet";
   };
-  const t = () => trigger(props.w.trigger);
   return (
-    <div class="lrow">
-      <button type="button" class="lrow-main" onClick={() => go({ page: "wf", id: props.w.id })}>
-        <span
-          style={{
-            width: "32px",
-            height: "32px",
-            flex: "none",
-            "border-radius": "9px",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            background: "var(--fill)",
-            color: "var(--text-2)",
-          }}
-        >
-          <I d={t().icon} size={16} sw={1.6} />
-        </span>
-        <span style={{ flex: 1, "min-width": 0, display: "flex", "flex-direction": "column", gap: "1px" }}>
-          <span style={{ display: "flex", "align-items": "baseline", gap: "8px", "min-width": 0 }}>
-            <span style={{ "font-size": "13.5px", "font-weight": 600, "white-space": "nowrap" }}>
-              {props.w.name}
-            </span>
-            <span class="ell" style={{ color: "var(--muted-2)", "font-size": "12px" }}>
-              {t().label}
-            </span>
+    <Row
+      icon={trigger(props.w.trigger).icon}
+      name={props.w.name}
+      line={props.w.desc || "No description yet."}
+      open={() => go({ page: "wf", id: props.w.id })}
+      note={
+        <>
+          <span
+            class="hide-sm"
+            style={{
+              flex: "none",
+              "max-width": "200px",
+              display: "flex",
+              "align-items": "center",
+              "justify-content": "flex-end",
+              gap: "4px",
+              overflow: "hidden",
+            }}
+          >
+            <For each={props.w.steps}>
+              {(s, i) => (
+                <>
+                  <Show when={i() > 0}>
+                    <I d="m9 6 6 6-6 6" size={10} sw={2.4} stroke="var(--disabled)" />
+                  </Show>
+                  <span
+                    style={{
+                      height: "22px",
+                      display: "inline-flex",
+                      "align-items": "center",
+                      padding: "0 8px",
+                      "border-radius": "6px",
+                      "font-size": "12px",
+                      background: i() === active() ? "var(--accent-soft)" : "var(--fill)",
+                      color: i() === active() ? "var(--accent-text)" : "var(--text-2)",
+                      "font-weight": i() === active() ? 600 : 400,
+                    }}
+                  >
+                    {s.agent}
+                  </span>
+                </>
+              )}
+            </For>
           </span>
-          <span class="ell" style={{ color: "var(--muted)" }}>
-            {props.w.desc || "No description yet."}
+          <span
+            style={{
+              width: "172px",
+              flex: "none",
+              display: "flex",
+              "align-items": "center",
+              gap: "6px",
+              color: "var(--muted-2)",
+              "font-size": "12px",
+            }}
+          >
+            <Dot status={live() ? "running" : last()?.status} />
+            <span class="ell">{text()}</span>
           </span>
-        </span>
-        <span
-          class="hide-sm"
-          style={{
-            flex: "none",
-            "max-width": "200px",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "flex-end",
-            gap: "4px",
-            overflow: "hidden",
-          }}
-        >
-          <For each={props.w.steps}>
-            {(s, i) => (
-              <>
-                <Show when={i() > 0}>
-                  <I d="m9 6 6 6-6 6" size={10} sw={2.4} stroke="var(--disabled)" />
-                </Show>
-                <span
-                  style={{
-                    height: "22px",
-                    display: "inline-flex",
-                    "align-items": "center",
-                    padding: "0 8px",
-                    "border-radius": "6px",
-                    "font-size": "12px",
-                    background: i() === active() ? "var(--accent-soft)" : "var(--fill)",
-                    color: i() === active() ? "var(--accent-text)" : "var(--text-2)",
-                    "font-weight": i() === active() ? 600 : 400,
-                  }}
-                >
-                  {s.agent}
-                </span>
-              </>
-            )}
-          </For>
-        </span>
-        <span
-          style={{
-            width: "172px",
-            flex: "none",
-            display: "flex",
-            "align-items": "center",
-            gap: "6px",
-            color: "var(--muted-2)",
-            "font-size": "12px",
-          }}
-        >
-          <Dot status={live() ? "running" : last()?.status} />
-          <span class="ell">{text()}</span>
-        </span>
-      </button>
+        </>
+      }
+    >
       <Show
         when={live()}
         fallback={
@@ -431,7 +381,7 @@ function Card(props: { root: string; w: Workflow }) {
           </button>
         )}
       </Show>
-    </div>
+    </Row>
   );
 }
 
@@ -449,69 +399,38 @@ function Detail(props: { root: string; w: Workflow }) {
     if (id) go({ page: "run", id: props.w.id, runId: id });
   };
   return (
-    <div class="page pad" style={{ gap: "24px" }}>
-      <div style={{ display: "flex", "align-items": "flex-start", gap: "16px", "flex-wrap": "wrap" }}>
-        <span
-          style={{
-            width: "48px",
-            height: "48px",
-            flex: "none",
-            "border-radius": "13px",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            background: "var(--fill)",
-            color: "var(--text-2)",
-          }}
+    <div class="page pad">
+      <ItemHead
+        icon={trigger(props.w.trigger).icon}
+        name={props.w.name}
+        line={props.w.desc || "No description yet."}
+        meta={trigger(props.w.trigger).line}
+      >
+        <button type="button" class="ol" disabled={!!live()} onClick={() => openEditor(props.root, props.w)}>
+          Edit
+        </button>
+        <Show
+          when={live()}
+          fallback={
+            <button type="button" class="pri" onClick={() => void run()}>
+              Run now
+            </button>
+          }
         >
-          <I d={trigger(props.w.trigger).icon} size={22} sw={1.6} />
-        </span>
-        <div
-          style={{ flex: 1, "min-width": "220px", display: "flex", "flex-direction": "column", gap: "4px" }}
-        >
-          <h2 style={title}>{props.w.name}</h2>
-          <p style={{ margin: 0, "font-size": "14px", color: "var(--text-2)" }}>
-            {props.w.desc || "No description yet."}
-          </p>
-          <span style={{ color: "var(--muted)" }}>{trigger(props.w.trigger).line}</span>
-        </div>
-        <div style={{ display: "flex", gap: "6px", "align-items": "center" }}>
-          <button
-            type="button"
-            class="ol"
-            disabled={!!live()}
-            onClick={() => openEditor(props.root, props.w)}
-          >
-            Edit
-          </button>
-          <Show
-            when={live()}
-            fallback={
-              <button type="button" class="pri" onClick={() => void run()}>
-                Run now
-              </button>
-            }
-          >
-            {(l) => (
-              <button
-                type="button"
-                class="pri"
-                disabled={l().stopping}
-                onClick={() => stopRun(props.root, props.w.id)}
-              >
-                Stop
-              </button>
-            )}
-          </Show>
-        </div>
-      </div>
+          {(l) => (
+            <button
+              type="button"
+              class="pri"
+              disabled={l().stopping}
+              onClick={() => stopRun(props.root, props.w.id)}
+            >
+              Stop
+            </button>
+          )}
+        </Show>
+      </ItemHead>
 
-      <section aria-label="Steps" style={sectionBox}>
-        <div style={sectionHead}>
-          <span style={{ "font-weight": 500 }}>Steps</span>
-          <span style={{ flex: 1 }} />
-          <span style={{ color: "var(--muted)" }}>{progress()}</span>
-        </div>
+      <Box title="Steps" right={progress()}>
         <ol
           style={{
             "list-style": "none",
@@ -576,12 +495,9 @@ function Detail(props: { root: string; w: Workflow }) {
             }}
           </For>
         </ol>
-      </section>
+      </Box>
 
-      <section aria-label="Recent runs" style={sectionBox}>
-        <div style={sectionHead}>
-          <span style={{ "font-weight": 500 }}>Recent runs</span>
-        </div>
+      <Box title="Recent runs">
         <Show when={live()}>
           {(l) => (
             <RunRow
@@ -609,7 +525,7 @@ function Detail(props: { root: string; w: Workflow }) {
         <Show when={!live() && past().length === 0}>
           <p style={{ margin: 0, padding: "14px 16px", color: "var(--muted)" }}>Not run yet.</p>
         </Show>
-      </section>
+      </Box>
     </div>
   );
 }
@@ -690,7 +606,7 @@ function RunPage(props: { root: string; w: Workflow; run: Run }) {
         <div
           style={{ flex: 1, "min-width": "220px", display: "flex", "flex-direction": "column", gap: "6px" }}
         >
-          <h2 style={title}>{props.w.name}</h2>
+          <h2 style={titleStyle}>{props.w.name}</h2>
           <span style={{ display: "flex", "align-items": "center", gap: "8px", color: "var(--muted)" }}>
             <Dot status={props.run.status} size={8} />
             {summary()}
@@ -985,334 +901,305 @@ function Editor(props: { root: string }) {
   };
 
   return (
-    <form
-      onSubmit={(e) => void save(e)}
-      class="pad"
-      style={{
-        "max-width": "768px",
-        margin: "0 auto",
-        padding: "20px 32px 48px",
-        display: "flex",
-        gap: "32px",
-        "flex-wrap": "wrap",
-        "align-items": "flex-start",
-      }}
-    >
-      <div
-        style={{
-          flex: "1 1 400px",
-          "min-width": 0,
-          display: "flex",
-          "flex-direction": "column",
-          gap: "22px",
-        }}
-      >
-        <h2 style={title}>{draft.id ? "Edit workflow" : "New workflow"}</h2>
-        <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-          <span style={{ "font-weight": 500 }}>Name</span>
-          <input
-            type="text"
-            class="field"
-            value={draft.name}
-            placeholder="Fix failing checks"
-            aria-invalid={bad()}
-            onInput={(e) => setDraft("name", e.currentTarget.value)}
-          />
-          <Show when={bad()}>
-            <span style={{ color: "var(--red)" }}>Give the workflow a name.</span>
-          </Show>
-        </label>
-        <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-          <span style={{ "font-weight": 500 }}>Description</span>
-          <input
-            type="text"
-            class="field"
-            value={draft.desc}
-            placeholder="What the workflow does, in one line"
-            onInput={(e) => setDraft("desc", e.currentTarget.value)}
-          />
-        </label>
-        <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-          <span style={{ "font-weight": 500 }}>Runs</span>
-          <div class="seg" role="radiogroup" aria-label="Trigger" style={{ "align-self": "flex-start" }}>
-            <For each={TRIGGERS}>
-              {(t) => (
-                // biome-ignore lint/a11y/useSemanticElements: .seg styles button[aria-checked]
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={draft.trigger === t.id}
-                  onClick={() => setDraft("trigger", t.id)}
-                >
-                  {t.label}
-                </button>
-              )}
-            </For>
+    <EditFrame
+      title={draft.id ? "Edit workflow" : "New workflow"}
+      submit={(e) => void save(e)}
+      preview={
+        <Box title="Preview" right={`${draft.steps.length} ${draft.steps.length === 1 ? "step" : "steps"}`}>
+          <div style={{ padding: "16px", display: "flex", "flex-direction": "column", gap: "4px" }}>
+            <span style={{ "font-weight": 600, "overflow-wrap": "anywhere" }}>
+              {draft.name.trim() || "Untitled workflow"}
+            </span>
+            <span style={{ color: "var(--muted)" }}>{trigger(draft.trigger).line}</span>
           </div>
-          <Show when={draft.trigger !== "manual"}>
-            <span style={{ color: "var(--muted)" }}>Runs while Agency is open.</span>
-          </Show>
-        </div>
-        <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
-          <span style={{ "font-weight": 500 }}>Steps</span>
-          <For each={draft.steps}>
-            {(st, i) => (
-              <div style={sectionBox}>
-                <div
-                  style={{
-                    display: "flex",
-                    "align-items": "center",
-                    gap: "8px",
-                    padding: "8px 8px 8px 12px",
-                    background: "var(--fill-3)",
-                    "border-bottom": "1px solid var(--line-soft)",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "22px",
-                      height: "22px",
-                      flex: "none",
-                      "border-radius": "11px",
-                      background: "var(--bg)",
-                      border: "1px solid var(--line)",
-                      display: "flex",
-                      "align-items": "center",
-                      "justify-content": "center",
-                      "font-size": "12px",
-                      "font-weight": 600,
-                    }}
-                  >
-                    {i() + 1}
-                  </span>
-                  <span style={{ position: "relative", display: "inline-flex" }}>
-                    <select
-                      aria-label={`Agent for step ${i() + 1}`}
-                      onChange={(e) => setDraft("steps", i(), "agent", e.currentTarget.value)}
-                      style={{
-                        appearance: "none",
-                        height: "28px",
-                        padding: "0 26px 0 10px",
-                        border: "1px solid var(--line)",
-                        "border-radius": "8px",
-                        background: "var(--bg)",
-                        font: "inherit",
-                        "font-weight": 500,
-                        color: "var(--text)",
-                      }}
-                    >
-                      <For each={agents()}>
-                        {(name) => (
-                          <option value={name} selected={name === st.agent}>
-                            {name}
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                    <I
-                      d="m6 9 6 6 6-6"
-                      size={10}
-                      sw={2.4}
-                      stroke="var(--muted)"
-                      style={{ position: "absolute", right: "9px", top: "9px", "pointer-events": "none" }}
-                    />
-                  </span>
-                  <span class="ell" style={{ color: "var(--muted)" }}>
-                    {agentInfo(props.root, st.agent).label}
-                  </span>
-                  <span style={{ flex: 1 }} />
-                  <button
-                    type="button"
-                    class="ic"
-                    aria-label={`Move step ${i() + 1} up`}
-                    disabled={i() === 0}
-                    onClick={() => move(i(), -1)}
-                  >
-                    <I d="m6 15 6-6 6 6" size={13} sw={2} />
-                  </button>
-                  <button
-                    type="button"
-                    class="ic"
-                    aria-label={`Move step ${i() + 1} down`}
-                    disabled={i() === draft.steps.length - 1}
-                    onClick={() => move(i(), 1)}
-                  >
-                    <I d="m6 9 6 6 6-6" size={13} sw={2} />
-                  </button>
-                  <button
-                    type="button"
-                    class="ic"
-                    aria-label={`Remove step ${i() + 1}`}
-                    disabled={draft.steps.length === 1}
-                    onClick={() =>
-                      setDraft(
-                        "steps",
-                        draft.steps.filter((_, k) => k !== i()),
-                      )
-                    }
-                  >
-                    <I d={P.trash} size={13} sw={1.8} />
-                  </button>
-                </div>
-                <textarea
-                  rows="2"
-                  aria-label={`Instruction for step ${i() + 1}`}
-                  value={st.text}
-                  placeholder="What this agent does in this step"
-                  onInput={(e) => setDraft("steps", i(), "text", e.currentTarget.value)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    "box-sizing": "border-box",
-                    resize: "vertical",
-                    padding: "10px 12px",
-                    border: 0,
-                    outline: "none",
-                    font: "inherit",
-                    "line-height": 1.5,
-                    background: "var(--bg)",
-                  }}
-                />
-              </div>
-            )}
-          </For>
-          <button
-            type="button"
-            class="ol"
-            style={{ "align-self": "flex-start" }}
-            onClick={() =>
-              setDraft("steps", draft.steps.length, {
-                agent:
-                  agentsOf(props.root).find((a) => a.name !== draft.steps.at(-1)?.agent)?.name ??
-                  draft.steps.at(-1)?.agent ??
-                  "default",
-                text: "",
-              })
-            }
+          <ol
+            style={{
+              "list-style": "none",
+              margin: 0,
+              padding: "0 16px 6px",
+              display: "flex",
+              "flex-direction": "column",
+            }}
           >
-            <I d={P.plus} size={13} sw={2.2} />
-            Add step
-          </button>
-        </div>
-        <div style={{ display: "flex", gap: "6px", "align-items": "center", "padding-top": "4px" }}>
-          <Show when={existing()}>
-            <button
-              type="button"
-              class="gh"
-              onClick={() => void remove()}
-              style={{ "margin-left": "-8px", color: "var(--red)" }}
-            >
-              Delete workflow
-            </button>
-          </Show>
-          <div style={{ flex: 1 }} />
-          <button type="button" class="gh" onClick={back}>
-            Cancel
-          </button>
-          <button type="submit" class="pri" disabled={saving()}>
-            Save
-          </button>
-        </div>
-      </div>
-
-      <aside
-        aria-label="Preview"
-        style={{ ...sectionBox, flex: "1 1 280px", "min-width": 0, position: "sticky", top: 0 }}
-      >
-        <div style={sectionHead}>
-          <span style={{ "font-weight": 500 }}>Preview</span>
-          <span style={{ flex: 1 }} />
-          <span style={{ color: "var(--muted)" }}>
-            {draft.steps.length} {draft.steps.length === 1 ? "step" : "steps"}
-          </span>
-        </div>
-        <div style={{ padding: "16px", display: "flex", "flex-direction": "column", gap: "4px" }}>
-          <span style={{ "font-weight": 600, "overflow-wrap": "anywhere" }}>
-            {draft.name.trim() || "Untitled workflow"}
-          </span>
-          <span style={{ color: "var(--muted)" }}>{trigger(draft.trigger).line}</span>
-        </div>
-        <ol
-          style={{
-            "list-style": "none",
-            margin: 0,
-            padding: "0 16px 6px",
-            display: "flex",
-            "flex-direction": "column",
-          }}
-        >
-          <For each={draft.steps}>
-            {(st, i) => (
-              <li style={{ display: "flex", gap: "12px" }}>
-                <div
-                  style={{
-                    display: "flex",
-                    "flex-direction": "column",
-                    "align-items": "center",
-                    width: "22px",
-                    flex: "none",
-                  }}
-                >
-                  <span
+            <For each={draft.steps}>
+              {(st, i) => (
+                <li style={{ display: "flex", gap: "12px" }}>
+                  <div
                     style={{
-                      width: "22px",
-                      height: "22px",
-                      "border-radius": "11px",
-                      border: "1px solid var(--line-strong)",
                       display: "flex",
+                      "flex-direction": "column",
                       "align-items": "center",
-                      "justify-content": "center",
-                      "font-size": "11.5px",
-                      "box-sizing": "border-box",
+                      width: "22px",
+                      flex: "none",
                     }}
                   >
-                    {i() + 1}
-                  </span>
-                  <Show when={i() < draft.steps.length - 1}>
                     <span
                       style={{
-                        flex: 1,
-                        width: "1px",
-                        "min-height": "12px",
-                        background: "var(--line)",
-                        margin: "3px 0",
+                        width: "22px",
+                        height: "22px",
+                        "border-radius": "11px",
+                        border: "1px solid var(--line-strong)",
+                        display: "flex",
+                        "align-items": "center",
+                        "justify-content": "center",
+                        "font-size": "11.5px",
+                        "box-sizing": "border-box",
                       }}
-                    />
-                  </Show>
-                </div>
-                <div
-                  style={{
-                    flex: 1,
-                    "min-width": 0,
-                    padding: "1px 0 14px",
-                    display: "flex",
-                    "flex-direction": "column",
-                    gap: "1px",
-                  }}
-                >
-                  <span>
-                    <span style={{ "font-weight": 600 }}>{st.agent}</span>{" "}
-                    <span style={{ color: "var(--muted)" }}>{agentInfo(props.root, st.agent).label}</span>
-                  </span>
-                  <span
+                    >
+                      {i() + 1}
+                    </span>
+                    <Show when={i() < draft.steps.length - 1}>
+                      <span
+                        style={{
+                          flex: 1,
+                          width: "1px",
+                          "min-height": "12px",
+                          background: "var(--line)",
+                          margin: "3px 0",
+                        }}
+                      />
+                    </Show>
+                  </div>
+                  <div
                     style={{
-                      color: "var(--muted)",
-                      display: "-webkit-box",
-                      "-webkit-line-clamp": 2,
-                      "-webkit-box-orient": "vertical",
-                      overflow: "hidden",
-                      "overflow-wrap": "anywhere",
+                      flex: 1,
+                      "min-width": 0,
+                      padding: "1px 0 14px",
+                      display: "flex",
+                      "flex-direction": "column",
+                      gap: "1px",
                     }}
                   >
-                    {st.text.trim() || "No instruction yet."}
-                  </span>
-                </div>
-              </li>
+                    <span>
+                      <span style={{ "font-weight": 600 }}>{st.agent}</span>{" "}
+                      <span style={{ color: "var(--muted)" }}>{agentInfo(props.root, st.agent).label}</span>
+                    </span>
+                    <span
+                      style={{
+                        color: "var(--muted)",
+                        display: "-webkit-box",
+                        "-webkit-line-clamp": 2,
+                        "-webkit-box-orient": "vertical",
+                        overflow: "hidden",
+                        "overflow-wrap": "anywhere",
+                      }}
+                    >
+                      {st.text.trim() || "No instruction yet."}
+                    </span>
+                  </div>
+                </li>
+              )}
+            </For>
+          </ol>
+        </Box>
+      }
+    >
+      <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
+        <span style={{ "font-weight": 500 }}>Name</span>
+        <input
+          type="text"
+          class="field"
+          value={draft.name}
+          placeholder="Fix failing checks"
+          aria-invalid={bad()}
+          onInput={(e) => setDraft("name", e.currentTarget.value)}
+        />
+        <Show when={bad()}>
+          <span style={{ color: "var(--red)" }}>Give the workflow a name.</span>
+        </Show>
+      </label>
+      <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
+        <span style={{ "font-weight": 500 }}>Description</span>
+        <input
+          type="text"
+          class="field"
+          value={draft.desc}
+          placeholder="What the workflow does, in one line"
+          onInput={(e) => setDraft("desc", e.currentTarget.value)}
+        />
+      </label>
+      <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
+        <span style={{ "font-weight": 500 }}>Runs</span>
+        <div class="seg" role="radiogroup" aria-label="Trigger" style={{ "align-self": "flex-start" }}>
+          <For each={TRIGGERS}>
+            {(t) => (
+              // biome-ignore lint/a11y/useSemanticElements: .seg styles button[aria-checked]
+              <button
+                type="button"
+                role="radio"
+                aria-checked={draft.trigger === t.id}
+                onClick={() => setDraft("trigger", t.id)}
+              >
+                {t.label}
+              </button>
             )}
           </For>
-        </ol>
-      </aside>
-    </form>
+        </div>
+        <Show when={draft.trigger !== "manual"}>
+          <span style={{ color: "var(--muted)" }}>Runs while Agency is open.</span>
+        </Show>
+      </div>
+      <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
+        <span style={{ "font-weight": 500 }}>Steps</span>
+        <For each={draft.steps}>
+          {(st, i) => (
+            <div style={sectionBox}>
+              <div
+                style={{
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                  padding: "8px 8px 8px 12px",
+                  background: "var(--fill-3)",
+                  "border-bottom": "1px solid var(--line-soft)",
+                }}
+              >
+                <span
+                  style={{
+                    width: "22px",
+                    height: "22px",
+                    flex: "none",
+                    "border-radius": "11px",
+                    background: "var(--bg)",
+                    border: "1px solid var(--line)",
+                    display: "flex",
+                    "align-items": "center",
+                    "justify-content": "center",
+                    "font-size": "12px",
+                    "font-weight": 600,
+                  }}
+                >
+                  {i() + 1}
+                </span>
+                <span style={{ position: "relative", display: "inline-flex" }}>
+                  <select
+                    aria-label={`Agent for step ${i() + 1}`}
+                    onChange={(e) => setDraft("steps", i(), "agent", e.currentTarget.value)}
+                    style={{
+                      appearance: "none",
+                      height: "28px",
+                      padding: "0 26px 0 10px",
+                      border: "1px solid var(--line)",
+                      "border-radius": "8px",
+                      background: "var(--bg)",
+                      font: "inherit",
+                      "font-weight": 500,
+                      color: "var(--text)",
+                    }}
+                  >
+                    <For each={agents()}>
+                      {(name) => (
+                        <option value={name} selected={name === st.agent}>
+                          {name}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                  <I
+                    d="m6 9 6 6 6-6"
+                    size={10}
+                    sw={2.4}
+                    stroke="var(--muted)"
+                    style={{ position: "absolute", right: "9px", top: "9px", "pointer-events": "none" }}
+                  />
+                </span>
+                <span class="ell" style={{ color: "var(--muted)" }}>
+                  {agentInfo(props.root, st.agent).label}
+                </span>
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  class="ic"
+                  aria-label={`Move step ${i() + 1} up`}
+                  disabled={i() === 0}
+                  onClick={() => move(i(), -1)}
+                >
+                  <I d="m6 15 6-6 6 6" size={13} sw={2} />
+                </button>
+                <button
+                  type="button"
+                  class="ic"
+                  aria-label={`Move step ${i() + 1} down`}
+                  disabled={i() === draft.steps.length - 1}
+                  onClick={() => move(i(), 1)}
+                >
+                  <I d="m6 9 6 6 6-6" size={13} sw={2} />
+                </button>
+                <button
+                  type="button"
+                  class="ic"
+                  aria-label={`Remove step ${i() + 1}`}
+                  disabled={draft.steps.length === 1}
+                  onClick={() =>
+                    setDraft(
+                      "steps",
+                      draft.steps.filter((_, k) => k !== i()),
+                    )
+                  }
+                >
+                  <I d={P.trash} size={13} sw={1.8} />
+                </button>
+              </div>
+              <textarea
+                rows="2"
+                aria-label={`Instruction for step ${i() + 1}`}
+                value={st.text}
+                placeholder="What this agent does in this step"
+                onInput={(e) => setDraft("steps", i(), "text", e.currentTarget.value)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  "box-sizing": "border-box",
+                  resize: "vertical",
+                  padding: "10px 12px",
+                  border: 0,
+                  outline: "none",
+                  font: "inherit",
+                  "line-height": 1.5,
+                  background: "var(--bg)",
+                }}
+              />
+            </div>
+          )}
+        </For>
+        <button
+          type="button"
+          class="ol"
+          style={{ "align-self": "flex-start" }}
+          onClick={() =>
+            setDraft("steps", draft.steps.length, {
+              agent:
+                agentsOf(props.root).find((a) => a.name !== draft.steps.at(-1)?.agent)?.name ??
+                draft.steps.at(-1)?.agent ??
+                "default",
+              text: "",
+            })
+          }
+        >
+          <I d={P.plus} size={13} sw={2.2} />
+          Add step
+        </button>
+      </div>
+      <div style={{ display: "flex", gap: "6px", "align-items": "center", "padding-top": "4px" }}>
+        <Show when={existing()}>
+          <button
+            type="button"
+            class="gh"
+            onClick={() => void remove()}
+            style={{ "margin-left": "-8px", color: "var(--red)" }}
+          >
+            Delete workflow
+          </button>
+        </Show>
+        <div style={{ flex: 1 }} />
+        <button type="button" class="gh" onClick={back}>
+          Cancel
+        </button>
+        <button type="submit" class="pri" disabled={saving()}>
+          Save
+        </button>
+      </div>
+    </EditFrame>
   );
 }
 
@@ -1330,79 +1217,16 @@ const pageRun = (r: string | null): Run | undefined => {
   return r && c.page === "run" ? runsOf(r, c.id).find((x) => x.id === c.runId) : undefined;
 };
 
-function Header(props: { root: string | null }) {
-  const n = nav;
-  const wf = () => pageWf(props.root);
-  const run = () => pageRun(props.root);
-  const crumb = () => {
-    const c = n();
-    if (c.page === "edit") return c.id ? "Edit workflow" : "New workflow";
-    if (c.page === "run") {
-      const r = run();
-      return r?.status === "running" ? "Running now" : r ? `Run ${ago(r.startedAt)}` : "Run";
-    }
-    return wf()?.name ?? "";
-  };
-  return (
-    <header class="bar pad">
-      <SideToggle />
-      <Show when={n().page !== "home"}>
-        <nav
-          aria-label="Breadcrumb"
-          class="crumb"
-          style={{ display: "flex", "align-items": "center", gap: "4px", "min-width": 0 }}
-        >
-          <button
-            type="button"
-            class="gh"
-            onClick={() => go({ page: "home" })}
-            style={{ "margin-left": "-8px", color: "var(--muted)" }}
-          >
-            Workflows
-          </button>
-          <I d="m9 6 6 6-6 6" size={11} sw={2.2} stroke="var(--disabled)" />
-          <Show when={n().page === "run" && wf()}>
-            {(w) => (
-              <>
-                <button
-                  type="button"
-                  class="gh"
-                  onClick={() => go({ page: "wf", id: w().id })}
-                  style={{ color: "var(--muted)", "white-space": "nowrap" }}
-                >
-                  {w().name}
-                </button>
-                <I d="m9 6 6 6-6 6" size={11} sw={2.2} stroke="var(--disabled)" />
-              </>
-            )}
-          </Show>
-          <h1 style={{ margin: "0 0 0 4px" }}>{crumb()}</h1>
-        </nav>
-      </Show>
-      <div style={{ flex: 1 }} />
-      <Show when={state.projects.length > 1 && props.root}>
-        <div style={{ position: "relative" }}>
-          <button type="button" class="ol" aria-haspopup="menu" onClick={() => toggleMenu("wf-project")}>
-            <I d={P.folder} size={15} />
-            <span class="ell" style={{ "max-width": "160px" }}>
-              {state.projects.find((p) => p.path === props.root)?.name}
-            </span>
-            <I d={P.chevD} size={10} sw={2.4} stroke="var(--muted)" />
-          </button>
-          <Pop id="wf-project" label="Project" style={{ top: "34px", right: 0, width: "220px" }}>
-            <Choices
-              items={state.projects.map((p) => ({ value: p.path, label: p.name }))}
-              current={props.root as string}
-              pick={(path) => {
-                setPicked(path);
-                closeMenu();
-              }}
-            />
-          </Pop>
-        </div>
-      </Show>
-    </header>
-  );
+/** The breadcrumb after "Workflows" for the page shown. */
+function trail(r: string | null): { label: string; go?: () => void }[] {
+  const c = nav();
+  if (c.page === "home") return [];
+  if (c.page === "edit") return [{ label: c.id ? "Edit workflow" : "New workflow" }];
+  const w = pageWf(r);
+  if (c.page !== "run") return [{ label: w?.name ?? "" }];
+  const run = pageRun(r);
+  const label = run?.status === "running" ? "Running now" : run ? `Run ${ago(run.startedAt)}` : "Run";
+  return w ? [{ label: w.name, go: () => go({ page: "wf", id: w.id }) }, { label }] : [{ label }];
 }
 
 export default function Workflows(_props: { onClose?: () => void }) {
@@ -1422,25 +1246,19 @@ export default function Workflows(_props: { onClose?: () => void }) {
 
   return (
     <main class="view">
-      <Header root={root()} />
+      <PageBar
+        home="Workflows"
+        goHome={() => go({ page: "home" })}
+        trail={trail(root())}
+        root={root()}
+        pick={setPicked}
+        menu="wf-project"
+      />
       <Toast />
       <div style={{ flex: 1, "min-height": 0, overflow: "auto" }}>
         <Show
           when={root()}
-          fallback={
-            <div class="page pad">
-              <h1 style={title}>Workflows</h1>
-              <span style={{ color: "var(--muted)" }}>Open a project to create workflows.</span>
-              <button
-                type="button"
-                class="ol"
-                style={{ "align-self": "flex-start" }}
-                onClick={() => setState({ view: "welcome" })}
-              >
-                Open a project
-              </button>
-            </div>
-          }
+          fallback={<NoProject title="Workflows" text="Open a project to create workflows." />}
         >
           {(r) => (
             <Switch fallback={<Home root={r()} />}>
