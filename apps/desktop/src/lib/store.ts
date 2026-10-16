@@ -692,9 +692,18 @@ export async function send(
   if (state.live[key]?.ending) await (settling.get(key) ?? new Promise((r) => setTimeout(r, 400)));
   const live = state.live[key];
   if (live) {
-    await host
-      .rpc(root, "session_message", { sessionId: id, text })
-      .catch((e) => toast(errorText(e), { tone: "err" }));
+    const steer = await host
+      .rpc<{ queued: boolean }>(root, "session_message", { sessionId: id, text })
+      .catch((e) => {
+        toast(errorText(e), { tone: "err" });
+        return null;
+      });
+    if (steer?.queued === false) {
+      // The turn already read its inbox for the last time: this text starts the next turn.
+      await (settling.get(key) ?? new Promise((r) => setTimeout(r, 400)));
+      if (!state.live[key]) return send(root, id, text, attachments);
+    }
+    if (!steer?.queued) return;
     setState(
       "live",
       key,
