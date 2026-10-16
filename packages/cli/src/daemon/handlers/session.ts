@@ -390,6 +390,8 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires text", {
         source: "session",
       });
+    // No turn will read it: queued, it would only surface inside some later turn. The client sends a turn instead.
+    if (!ctx.steerableSessions.has(sessionId)) return { queued: false, depth: 0 };
     const box = sessionInboxes.get(sessionId) ?? [];
     sessionInboxes.set(sessionId, box);
     box.push({ role: "user", content: [{ type: "text", text }] });

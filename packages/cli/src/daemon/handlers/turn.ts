@@ -554,6 +554,7 @@ export async function executeTurn(
             taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
             permissionMode: params.permissionMode,
           });
+          ctx.steerableSessions.add(sessionId);
           try {
             // Root turns drain the session inbox (fed by session_message);
             // agent turns additionally drain their own mailbox, same call.
@@ -620,7 +621,12 @@ export async function executeTurn(
               eventBus,
               redactToolResult: redactor.redactToolResult,
               drainMailbox: mailboxDrain,
-              drainSteering: () => sessionInboxes.get(sessionId)?.splice(0) ?? [],
+              // An empty drain here is the turn's last look at the inbox: later messages start a turn instead.
+              drainSteering: () => {
+                const late = sessionInboxes.get(sessionId)?.splice(0) ?? [];
+                if (late.length === 0) ctx.steerableSessions.delete(sessionId);
+                return late;
+              },
               systemPrompt: mainPrompt.text,
               systemSegments: mainPrompt.segments,
               tools: effectiveTools,
@@ -653,6 +659,7 @@ export async function executeTurn(
             });
           } finally {
             activeTurnMeta.delete(params.turnId);
+            ctx.steerableSessions.delete(sessionId);
           }
         } catch (error) {
           recordFailedSpend(served);

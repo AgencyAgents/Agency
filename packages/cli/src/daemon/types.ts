@@ -686,6 +686,8 @@ export interface DaemonContext {
   teamContexts: Map<string, TeamContext>;
   teamFor: (parentSessionId: string) => TeamContext;
   sessionInboxes: Map<string, Message[]>;
+  /** Sessions whose running turn still reads its inbox; session_message queues only for these. */
+  steerableSessions: Set<string>;
   gate: PermissionsGate;
   gateForAgent: (handle: string) => PermissionsGate;
   isReadOnlyAgent: (handle: string) => boolean;

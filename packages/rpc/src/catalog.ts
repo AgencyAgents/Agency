@@ -16,7 +16,8 @@ export const METHOD_DOCS: Record<string, string> = {
   session_delete: "Drop a session scope, approvals, and stored entries.",
   session_fork: "Branch a session at a tip inside the same file.",
   session_clone: "Copy a session file to an independent new id.",
-  session_message: "Queue mid-turn steering text drained per tool iteration.",
+  session_message:
+    "Queue mid-turn steering text drained per tool iteration; queued is false when no running turn reads it.",
   models_list: "List catalog models merged with config overrides.",
   providers_list: "List providers with defaults, connectivity, and liveness.",
   config_get: "Read daemon config, secrets redacted, or one top-level key.",

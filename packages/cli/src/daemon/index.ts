@@ -650,6 +650,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     warnPersistence("dispatch-state restore", error);
   }
   const sessionInboxes = new Map<string, import("@agency/schema").Message[]>();
+  const steerableSessions = new Set<string>();
 
   // Session-scoped "always allow" grants: one manager per session id, persisted
   // to disk so grants survive daemon restart.
@@ -727,6 +728,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     teamContexts,
     teamFor,
     sessionInboxes,
+    steerableSessions,
     gate,
     gateForAgent,
     isReadOnlyAgent,

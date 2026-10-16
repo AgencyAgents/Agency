@@ -355,7 +355,7 @@ export interface SurfaceClient {
   session_fork(params?: Record<string, unknown>): Promise<unknown>;
   /** List daemon-known sessions with title and tip. */
   session_list(params?: Record<string, unknown>): Promise<unknown>;
-  /** Queue mid-turn steering text drained per tool iteration. */
+  /** Queue mid-turn steering text drained per tool iteration; queued is false when no running turn reads it. */
   session_message(params?: Record<string, unknown>): Promise<unknown>;
   /** Move a session history to a new id (clone plus delete). */
   session_rename(params?: Record<string, unknown>): Promise<unknown>;

@@ -98,4 +98,43 @@ describe("session_message mid-turn steering", () => {
     const secondTurnText = JSON.stringify(seenByCall[1]);
     expect(secondTurnText).toContain("steer: prefer blue");
   }, 15000);
+
+  test("a message with no turn to read it is not queued for a later turn", async () => {
+    const seen: Message[][] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push([...request.messages]);
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 5 } };
+      },
+    };
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agency-idle-ws-"));
+    const sessionsDir = mkdtempSync(join(tmpdir(), "agency-idle-sess-"));
+    dirs.push(workspaceRoot, sessionsDir);
+    const daemon = await createAgentDaemon({
+      workspaceRoot,
+      instanceFile: join(workspaceRoot, ".agency", "instance.json"),
+      sessionsDir,
+      adapterFor: () => adapter,
+      http: noopHttp,
+      tools: [],
+    });
+    daemons.push(daemon);
+    const client = await connectToDaemon(daemon.server.port, "127.0.0.1", { token: daemon.server.token });
+    clients.push(client);
+
+    const late = (await client.call("session_message", { sessionId: "idle-s1", text: "stale steer" })) as {
+      queued: boolean;
+    };
+    expect(late.queued).toBe(false);
+    await client.call("session_send", {
+      turnId: "idle-t1",
+      sessionId: "idle-s1",
+      provider: "anthropic",
+      model: "test-model",
+      userText: "hello",
+    });
+    expect(JSON.stringify(seen)).not.toContain("stale steer");
+  }, 15000);
 });
