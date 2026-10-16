@@ -45,7 +45,12 @@ export type SessionEntry = SessionEntryBase & Record<string, unknown>;
 export interface MessageEntry extends SessionEntryBase {
   type: "message";
   message: Message;
+  /** A user-role message that entered mid-turn: a viewer keeps it inside the running turn, not as a new prompt. */
+  origin?: MessageOrigin;
 }
+
+/** "harness": the loop wrote it (Stop-hook feedback). "inbox": the user or a teammate sent it while the turn ran. */
+export type MessageOrigin = "harness" | "inbox";
 
 export interface ModelChangeEntry extends SessionEntryBase {
   type: "model_change";

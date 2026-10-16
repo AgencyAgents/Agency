@@ -40,6 +40,7 @@ import {
   triggerTokens,
   withOverhead,
 } from "./sessions/compaction.ts";
+import type { MessageOrigin } from "./sessions/entry.ts";
 import { modelSummarizer } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
@@ -192,8 +193,9 @@ export interface RunTurnOptions {
   grantedTools?: string[];
   /** The model takes image input: images that a tool returned go to it. Absent means no. */
   vision?: boolean;
-  /** Runs for each message the turn appends, in order and before the next step: a session owner persists here. */
-  onMessage?: (message: Message) => void | Promise<void>;
+  /** Runs for each message the turn appends, in order and before the next step: a session owner persists here.
+   *  `origin` marks a user-role message that did not come from the prompt (see MessageOrigin). */
+  onMessage?: (message: Message, origin?: MessageOrigin) => void | Promise<void>;
   /** Prompt version tag for trace attribution (systemPromptParts identity/role version or caller-supplied). */
   promptVersion?: string;
   /** Optional trace recorder: when present runTurn emits turn/model/tool spans. */
@@ -276,9 +278,9 @@ export async function runTurn(
   const review = options.reviewApproval;
   const toolOptions: RunTurnOptions =
     review === undefined ? options : { ...options, reviewApproval: (request) => review(request, messages) };
-  const append = async (message: Message): Promise<void> => {
+  const append = async (message: Message, origin?: MessageOrigin): Promise<void> => {
     messages.push(message);
-    await options.onMessage?.(message);
+    await options.onMessage?.(message, origin);
   };
   const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
   const toolDefs = (): ToolDefinition[] =>
@@ -418,7 +420,7 @@ export async function runTurn(
       try {
         injected = options.drainMailbox();
       } catch {}
-      for (const message of injected) await append(message);
+      for (const message of injected) await append(message, "inbox");
     }
     // Before the provider refuses: a request near the limit costs the most, and a refused one is a lost request.
     let folded = false;
@@ -531,7 +533,7 @@ export async function runTurn(
         const cutShort = stopReason === "max_tokens" && !options.signal?.aborted && spoke;
         if (cutShort && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
           outputContinuations += 1;
-          await append({ role: "user", content: [{ type: "text", text: OUTPUT_CUT_NOTE }] });
+          await append({ role: "user", content: [{ type: "text", text: OUTPUT_CUT_NOTE }] }, "harness");
           continue;
         }
         // A stop hook can refuse the end of the turn: its reason goes to the model. The step limit bounds this.
@@ -548,7 +550,10 @@ export async function runTurn(
           const reasons = errors.filter((e): e is HookBlock => e instanceof HookBlock).map((e) => e.message);
           if (reasons.length > 0) {
             stopBlocked = true;
-            await append({ role: "user", content: [{ type: "text", text: reasons.join("\n\n") }] });
+            await append(
+              { role: "user", content: [{ type: "text", text: reasons.join("\n\n") }] },
+              "harness",
+            );
             continue;
           }
         }
@@ -559,7 +564,7 @@ export async function runTurn(
             late = options.drainSteering();
           } catch {}
           if (late.length > 0) {
-            for (const message of late) await append(message);
+            for (const message of late) await append(message, "inbox");
             continue;
           }
         }

@@ -8,6 +8,7 @@ import {
   gatherEnvironmentInfo,
   generateTitle,
   getSessionTitle,
+  type MessageOrigin,
   modelSummarizer,
   newEntryId,
   projectSessionView,
@@ -356,8 +357,15 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       ...(p.images?.length ? { images: p.images } : {}),
     };
     // Each message is stored as the turn produces it: a failed turn or a dead daemon keeps the finished steps.
-    const onMessage = async (message: Message): Promise<void> => {
-      tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
+    const onMessage = async (message: Message, origin?: MessageOrigin): Promise<void> => {
+      tip = (
+        await store.append(p.sessionId, {
+          type: "message",
+          parentId: tip,
+          message,
+          ...(origin ? { origin } : {}),
+        })
+      ).id;
     };
     const hooks = { onContextOverflow, onMessage };
     let result: Awaited<ReturnType<typeof executeTurn>>;

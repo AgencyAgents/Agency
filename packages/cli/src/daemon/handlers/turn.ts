@@ -168,7 +168,10 @@ export async function executeTurn(
   rpc: { clientId: string },
   hooks?: {
     onContextOverflow?: (overheadTokens?: number) => Promise<import("@agency/schema").Message[] | undefined>;
-    onMessage?: (message: import("@agency/schema").Message) => Promise<void>;
+    onMessage?: (
+      message: import("@agency/schema").Message,
+      origin?: import("@agency/core").MessageOrigin,
+    ) => Promise<void>;
   },
 ): Promise<RunTurnRpcResult> {
   const {
@@ -457,9 +460,12 @@ export async function executeTurn(
 
         // A fallback continues from these: a restart would run the primary's tools a second time.
         const carried: import("@agency/schema").Message[] = [];
-        const onPrimaryMessage = async (message: import("@agency/schema").Message): Promise<void> => {
+        const onPrimaryMessage = async (
+          message: import("@agency/schema").Message,
+          origin?: import("@agency/core").MessageOrigin,
+        ): Promise<void> => {
           carried.push(message);
-          await hooks?.onMessage?.(message);
+          await hooks?.onMessage?.(message, origin);
         };
         let result: Awaited<ReturnType<typeof runTurn>>;
         // The model that produced the result: a fallback has its own name and price in the cost records.
