@@ -365,7 +365,7 @@ export interface SurfaceClient {
   session_show(params?: Record<string, unknown>): Promise<unknown>;
   /** Create a SKILL.md in the project or user skills folder; never overwrites. */
   skill_write(params?: Record<string, unknown>): Promise<unknown>;
-  /** List discovered skills with origin, tier, tools, body, and enabled flag. */
+  /** List discovered skills with origin, tier, tools, body, and enabled flag, and whether the workspace is trusted. */
   skills_list(params?: Record<string, unknown>): Promise<unknown>;
   /** File a board item with goal, criteria, scope, and budget. */
   task_file(params?: Record<string, unknown>): Promise<unknown>;

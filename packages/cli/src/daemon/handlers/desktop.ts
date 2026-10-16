@@ -166,6 +166,7 @@ export function registerDesktopHandlers(
       resolveSkillDirs(root, options.configDir).filter((entry) => trusted || entry.tier !== "project"),
     );
     return {
+      trusted,
       skills: skills.map((skill) => ({
         name: skill.name,
         ...(skill.description === undefined ? {} : { description: skill.description }),

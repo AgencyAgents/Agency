@@ -60,13 +60,14 @@ async function start(
     configText?: string;
     project?: Record<string, string>;
     user?: Record<string, string>;
+    untrusted?: boolean;
   } = {},
 ) {
   const workspaceRoot = tmp("ws");
   const configDir = tmp("config");
   const keychain = memoryKeychain();
   const trustStorePath = join(tmp("trust"), "trust.json");
-  createFileTrustStore(trustStorePath).trust(workspaceRoot);
+  if (!extra.untrusted) createFileTrustStore(trustStorePath).trust(workspaceRoot);
   if (extra.configText !== undefined) writeFileSync(join(configDir, "config.jsonc"), extra.configText);
   for (const [name, text] of Object.entries(extra.project ?? {})) {
     mkdirSync(join(workspaceRoot, ".agency", "skills", name), { recursive: true });
@@ -207,7 +208,8 @@ test("skills_list lists project and user skills with origin and enabled", async 
     user: { notes: userSkill },
     configText: '{ "skills": { "disabled": ["notes"] } }',
   });
-  const { skills } = (await call("skills_list")).result as { skills: SkillRow[] };
+  const { skills, trusted } = (await call("skills_list")).result as { skills: SkillRow[]; trusted: boolean };
+  expect(trusted).toBe(true);
   const deploy = skills.find((s) => s.name === "deploy");
   const notes = skills.find((s) => s.name === "notes");
   expect(deploy).toMatchObject({
@@ -230,6 +232,17 @@ test("skills_list lists project and user skills with origin and enabled", async 
     enabled: false,
     path: join(configDir, "skills", "notes", "SKILL.md"),
   });
+});
+
+test("skills_list of an untrusted folder says so and hides its project skills", async () => {
+  const { call } = await start({
+    project: { deploy: projectSkill },
+    user: { notes: userSkill },
+    untrusted: true,
+  });
+  const { skills, trusted } = (await call("skills_list")).result as { skills: SkillRow[]; trusted: boolean };
+  expect(trusted).toBe(false);
+  expect(skills.map((s) => s.name)).toEqual(["notes"]);
 });
 
 test("skills_list names a skill of another agent by its tool", async () => {

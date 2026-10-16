@@ -26,7 +26,8 @@ export const METHOD_DOCS: Record<string, string> = {
   daemon_restart: "Leave once no turn runs, so the next client starts a daemon with the new config.",
   provider_connect: "Validate a provider API key and store it in the key store.",
   provider_disconnect: "Remove the stored key of a provider; a key from an environment variable stays.",
-  skills_list: "List discovered skills with origin, tier, tools, body, and enabled flag.",
+  skills_list:
+    "List discovered skills with origin, tier, tools, body, and enabled flag, and whether the workspace is trusted.",
   skill_write: "Create a SKILL.md in the project or user skills folder; never overwrites.",
   permissions_list: "Show the permission maps plus effective offered tools.",
   todo_read: "Read the latest persisted todo_state for a session.",
