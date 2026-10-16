@@ -281,30 +281,15 @@ export const ConfigSchema = z
   })
   .superRefine((data, ctx) => {
     if (!data.agents) return;
-    const entries = Object.keys(data.agents);
-    if (entries.length === 0) return;
-    const leader = data.agents.leader;
-    if (!leader) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "leader agent is required when agents are configured",
-        path: ["agents", "leader"],
-      });
-      return;
-    }
-    if (leader.enabled === false) {
+    const handles = Object.keys(data.agents);
+    if (handles.length === 0) return;
+    // As at run time: the leader is the agent that `leader` names, else the first of the roster.
+    const handle = data.leader ?? handles[0] ?? "";
+    if (data.agents[handle]?.enabled === false) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "leader agent must be enabled",
-        path: ["agents", "leader", "enabled"],
-      });
-    }
-    const enabledCount = Object.values(data.agents).filter((a) => a.enabled !== false).length;
-    if (enabledCount === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "at least one agent must be enabled (leader is required)",
-        path: ["agents"],
+        path: ["agents", handle, "enabled"],
       });
     }
   });
@@ -326,153 +311,6 @@ export interface AgentConfig {
   enabled?: boolean;
   permissions?: Record<string, ToolPermission>;
 }
-
-/**
- * Starter roster shipped with every fresh config: 8 named roles, each an
- * ordinary `{role, provider, model, effort}` entry additionally carrying the
- * `permissions` map the Phase 2 gate reads per agent (unlisted tools are
- * denied, so each map is the role's full tool allowlist). Handles double as
- * role names. Leader is enabled, satisfying the schema's leader requirement.
- * Providers spread across vendors by role, so cross-provider adjudication
- * and heterogeneous routing work out of the box.
- */
-export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
-  leader: {
-    role: "leader",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      write: "allow",
-      edit: "allow",
-      bash: "allow",
-      glob: "allow",
-      grep: "allow",
-      fetch: "allow",
-      websearch: "allow",
-      dispatch: "allow",
-      task: "allow",
-      todo_read: "allow",
-      todo_write: "allow",
-      process_output: "allow",
-      process_list: "allow",
-      process_kill: "allow",
-    },
-  },
-  planner: {
-    role: "planner",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      write: {
-        "*": "deny",
-        ".agency/plans/**": "allow",
-        ".opencode/plans/**": "allow",
-        ".omo/plans/**": "allow",
-      },
-      edit: {
-        "*": "deny",
-        ".agency/plans/**": "allow",
-        ".opencode/plans/**": "allow",
-        ".omo/plans/**": "allow",
-      },
-    },
-  },
-  "plan-reviewer": {
-    role: "plan-reviewer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-    },
-  },
-  coder: {
-    role: "coder",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      write: {
-        "*": "allow",
-        ".agency/plans/**": "deny",
-        ".opencode/plans/**": "deny",
-        ".omo/plans/**": "deny",
-      },
-      edit: {
-        "*": "allow",
-        ".agency/plans/**": "deny",
-        ".opencode/plans/**": "deny",
-        ".omo/plans/**": "deny",
-      },
-      bash: "allow",
-    },
-  },
-  executor: {
-    role: "executor",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      bash: "allow",
-      process_output: "allow",
-      process_list: "allow",
-      process_kill: "allow",
-    },
-  },
-  explorer: {
-    role: "explorer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "low",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-    },
-  },
-  researcher: {
-    role: "researcher",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      fetch: "allow",
-      websearch: "allow",
-    },
-  },
-  "code-reviewer": {
-    role: "code-reviewer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      bash: "allow",
-    },
-  },
-};
 
 export const defaultConfig: Config = ConfigSchema.parse({
   schemaVersion: CONFIG_SCHEMA_VERSION,

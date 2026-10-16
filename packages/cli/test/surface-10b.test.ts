@@ -34,8 +34,15 @@ function echoAdapter(): ProviderAdapter {
 
 async function startDaemon() {
   const workspaceRoot = tempDir("agency-10b-ws-");
+  const configDir = tempDir("agency-10b-cfg-");
+  mkdirSync(join(configDir, "agents"));
+  writeFileSync(
+    join(configDir, "agents", "coder.md"),
+    "---\nrole: coder\nprovider: anthropic\nmodel: claude-sonnet-5\neffort: high\n---\nYou are the coder.\n",
+  );
   const daemon = await createAgentDaemon({
     workspaceRoot,
+    configDir,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
     sessionsDir: tempDir("agency-10b-sess-"),
     approvalsDir: tempDir("agency-10b-appr-"),

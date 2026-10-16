@@ -4,7 +4,146 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionsGate } from "@agency/guard";
 import { configFlags, loadConfig } from "../src/config/loader.ts";
-import { type AgentConfig, DEFAULT_ROSTER, parseModelRef } from "../src/config/schema.ts";
+import { type AgentConfig, parseModelRef } from "../src/config/schema.ts";
+
+/** Explicit user-defined roster: the gate maps the starter agents once shipped with. */
+const ROSTER: Record<string, AgentConfig> = {
+  leader: {
+    role: "leader",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      write: "allow",
+      edit: "allow",
+      bash: "allow",
+      glob: "allow",
+      grep: "allow",
+      fetch: "allow",
+      websearch: "allow",
+      dispatch: "allow",
+      task: "allow",
+      todo_read: "allow",
+      todo_write: "allow",
+      process_output: "allow",
+      process_list: "allow",
+      process_kill: "allow",
+    },
+  },
+  planner: {
+    role: "planner",
+    provider: "openai",
+    model: "gpt-5.2",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      write: {
+        "*": "deny",
+        ".agency/plans/**": "allow",
+        ".opencode/plans/**": "allow",
+        ".omo/plans/**": "allow",
+      },
+      edit: {
+        "*": "deny",
+        ".agency/plans/**": "allow",
+        ".opencode/plans/**": "allow",
+        ".omo/plans/**": "allow",
+      },
+    },
+  },
+  "plan-reviewer": {
+    role: "plan-reviewer",
+    provider: "google",
+    model: "gemini-3-pro",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+    },
+  },
+  coder: {
+    role: "coder",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      write: {
+        "*": "allow",
+        ".agency/plans/**": "deny",
+        ".opencode/plans/**": "deny",
+        ".omo/plans/**": "deny",
+      },
+      edit: {
+        "*": "allow",
+        ".agency/plans/**": "deny",
+        ".opencode/plans/**": "deny",
+        ".omo/plans/**": "deny",
+      },
+      bash: "allow",
+    },
+  },
+  executor: {
+    role: "executor",
+    provider: "openai",
+    model: "gpt-5.2",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      bash: "allow",
+      process_output: "allow",
+      process_list: "allow",
+      process_kill: "allow",
+    },
+  },
+  explorer: {
+    role: "explorer",
+    provider: "google",
+    model: "gemini-3-pro",
+    effort: "low",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+    },
+  },
+  researcher: {
+    role: "researcher",
+    provider: "openai",
+    model: "gpt-5.2",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      fetch: "allow",
+      websearch: "allow",
+    },
+  },
+  "code-reviewer": {
+    role: "code-reviewer",
+    provider: "google",
+    model: "gemini-3-pro",
+    effort: "medium",
+    enabled: true,
+    permissions: {
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      bash: "allow",
+    },
+  },
+};
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "agency-config-test-"));
@@ -301,17 +440,20 @@ describe("loadConfig", () => {
   });
 });
 
-describe("DEFAULT_ROSTER", () => {
-  const EXPECTED_HANDLES = [
-    "leader",
-    "planner",
-    "plan-reviewer",
-    "coder",
-    "executor",
-    "explorer",
-    "researcher",
-    "code-reviewer",
-  ];
+describe("agents", () => {
+  test("no agents key gives an empty roster", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    const config = loadConfig({ globalDir: dir, env: {} });
+    expect(config.agents).toBeUndefined();
+  });
+
+  test("an explicit empty agents record is valid without a leader", () => {
+    const dir = tempDir();
+    cleanup.push(dir);
+    writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ schemaVersion: 2, agents: {} }));
+    expect(loadConfig({ globalDir: dir, env: {} }).agents).toEqual({});
+  });
 
   /** Mirrors daemon.ts gateForAgent: per-agent map with absentToolsDenied. */
   function gateFor(entry: AgentConfig, workspaceRoot: string): PermissionsGate {
@@ -322,52 +464,10 @@ describe("DEFAULT_ROSTER", () => {
     });
   }
 
-  test("ships the 8-agent starter roster", () => {
-    expect(Object.keys(DEFAULT_ROSTER).sort()).toEqual([...EXPECTED_HANDLES].sort());
-  });
-
-  test("every roster entry is an enabled {role, provider, model, effort} entry with permissions", () => {
-    for (const handle of EXPECTED_HANDLES) {
-      const entry = DEFAULT_ROSTER[handle];
-      expect(entry).toBeDefined();
-      expect(entry!.role).toBe(handle);
-      expect(typeof entry!.provider).toBe("string");
-      expect(typeof entry!.model).toBe("string");
-      expect(typeof entry!.effort).toBe("string");
-      expect(entry!.enabled).toBe(true);
-      expect(entry!.permissions).toBeDefined();
-      expect(Object.keys(entry!.permissions!)).not.toEqual([]);
-    }
-  });
-
-  test("starter roster spreads providers across vendors", () => {
-    const providers = new Set(Object.values(DEFAULT_ROSTER).map((entry) => entry.provider));
-    expect(providers.size).toBeGreaterThan(1);
-    expect(DEFAULT_ROSTER.leader!.provider).toBe("anthropic");
-    expect(DEFAULT_ROSTER.coder!.provider).toBe("anthropic");
-  });
-
-  test("fresh config with no agents key gets the 8-agent default roster on load", () => {
-    const dir = tempDir();
-    cleanup.push(dir);
-    const config = loadConfig({ globalDir: dir, env: {} });
-    expect(config.agents).toBeDefined();
-    expect(Object.keys(config.agents!).sort()).toEqual([...EXPECTED_HANDLES].sort());
-    expect(config.agents!.leader?.enabled).toBe(true);
-  });
-
-  test("default roster passes validation (leader present and enabled)", () => {
-    const dir = tempDir();
-    cleanup.push(dir);
-    const config = loadConfig({ globalDir: dir, env: {} });
-    expect(config.agents!.leader).toBeDefined();
-    expect(config.agents!.leader?.enabled).toBe(true);
-  });
-
   test("leader gets full access (Phase 2 gate offers every core + orchestration tool)", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.leader!, dir);
+    const gate = gateFor(ROSTER.leader!, dir);
     for (const tool of [
       "read",
       "write",
@@ -392,7 +492,7 @@ describe("DEFAULT_ROSTER", () => {
   test("planner gets read/glob/grep plus plans-dir writes, no bash", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.planner!, dir);
+    const gate = gateFor(ROSTER.planner!, dir);
     expect(gate.toolOffered("read")).toBe(true);
     expect(gate.toolOffered("glob")).toBe(true);
     expect(gate.toolOffered("grep")).toBe(true);
@@ -404,25 +504,10 @@ describe("DEFAULT_ROSTER", () => {
     expect(gate.decisionFor({ tool: "edit", path: "src/a.ts" })).toBe("deny");
   });
 
-  test("planner allow and coder deny maps cover all plan dir spellings", () => {
-    expect(DEFAULT_ROSTER.planner!.permissions!.write).toMatchObject({
-      "*": "deny",
-      ".agency/plans/**": "allow",
-      ".opencode/plans/**": "allow",
-      ".omo/plans/**": "allow",
-    });
-    expect(DEFAULT_ROSTER.coder!.permissions!.write).toMatchObject({
-      "*": "allow",
-      ".agency/plans/**": "deny",
-      ".opencode/plans/**": "deny",
-      ".omo/plans/**": "deny",
-    });
-  });
-
   test("plan-reviewer gets read/glob/grep only", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER["plan-reviewer"]!, dir);
+    const gate = gateFor(ROSTER["plan-reviewer"]!, dir);
     expect(gate.toolOffered("read")).toBe(true);
     expect(gate.toolOffered("glob")).toBe(true);
     expect(gate.toolOffered("grep")).toBe(true);
@@ -434,7 +519,7 @@ describe("DEFAULT_ROSTER", () => {
   test("coder gets read/write/edit/bash minus the plans directory", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.coder!, dir);
+    const gate = gateFor(ROSTER.coder!, dir);
     for (const tool of ["read", "write", "edit", "bash", "glob", "grep"]) {
       expect(gate.toolOffered(tool)).toBe(true);
     }
@@ -447,7 +532,7 @@ describe("DEFAULT_ROSTER", () => {
   test("executor gets bash plus background-process tools, no write/edit", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.executor!, dir);
+    const gate = gateFor(ROSTER.executor!, dir);
     expect(gate.toolOffered("bash")).toBe(true);
     expect(gate.toolOffered("process_output")).toBe(true);
     expect(gate.toolOffered("process_list")).toBe(true);
@@ -459,7 +544,7 @@ describe("DEFAULT_ROSTER", () => {
   test("explorer gets read/glob/grep only", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.explorer!, dir);
+    const gate = gateFor(ROSTER.explorer!, dir);
     expect(gate.toolOffered("read")).toBe(true);
     expect(gate.toolOffered("glob")).toBe(true);
     expect(gate.toolOffered("grep")).toBe(true);
@@ -471,7 +556,7 @@ describe("DEFAULT_ROSTER", () => {
   test("researcher gets fetch/websearch only, no codebase read", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER.researcher!, dir);
+    const gate = gateFor(ROSTER.researcher!, dir);
     expect(gate.toolOffered("fetch")).toBe(true);
     expect(gate.toolOffered("websearch")).toBe(true);
     expect(gate.toolOffered("read")).toBe(false);
@@ -485,7 +570,7 @@ describe("DEFAULT_ROSTER", () => {
   test("code-reviewer gets read/glob/grep plus bash, no write/edit", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    const gate = gateFor(DEFAULT_ROSTER["code-reviewer"]!, dir);
+    const gate = gateFor(ROSTER["code-reviewer"]!, dir);
     expect(gate.toolOffered("read")).toBe(true);
     expect(gate.toolOffered("glob")).toBe(true);
     expect(gate.toolOffered("grep")).toBe(true);
@@ -494,7 +579,7 @@ describe("DEFAULT_ROSTER", () => {
     expect(gate.toolOffered("edit")).toBe(false);
   });
 
-  test("user-supplied agents in config are NOT overridden by DEFAULT_ROSTER", () => {
+  test("user-supplied agents in config are loaded as written", () => {
     const dir = tempDir();
     cleanup.push(dir);
     writeFileSync(
@@ -563,19 +648,24 @@ describe("DEFAULT_ROSTER", () => {
     expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
   });
 
-  test("missing leader causes validation error when agents are configured", () => {
+  test("with no leader named, the first agent of the roster leads and must be enabled", () => {
     const dir = tempDir();
     cleanup.push(dir);
-    writeFileSync(
-      join(dir, "config.jsonc"),
-      JSON.stringify({
-        schemaVersion: 2,
-        agents: {
-          helper: { role: "helper", provider: "openai", effort: "low", enabled: true },
-        },
-      }),
-    );
-    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent is required");
+    const write = (enabled: boolean) =>
+      writeFileSync(
+        join(dir, "config.jsonc"),
+        JSON.stringify({
+          schemaVersion: 2,
+          agents: {
+            helper: { role: "helper", provider: "openai", effort: "low", enabled },
+            other: { role: "coder", provider: "openai", effort: "low", enabled: true },
+          },
+        }),
+      );
+    write(true);
+    expect(Object.keys(loadConfig({ globalDir: dir, env: {} }).agents ?? {})).toEqual(["helper", "other"]);
+    write(false);
+    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
   });
 
   test("zero enabled agents causes validation error", () => {
@@ -591,15 +681,8 @@ describe("DEFAULT_ROSTER", () => {
         },
       }),
     );
-    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("at least one agent must be enabled");
-  });
-
-  test("default roster passes validation (leader present and enabled)", () => {
-    const dir = tempDir();
-    cleanup.push(dir);
-    const config = loadConfig({ globalDir: dir, env: {} });
-    expect(config.agents).toBeDefined();
-    expect(Object.keys(config.agents!).length).toBe(8);
+    // A roster with no enabled agent has a disabled leader.
+    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
   });
 
   test("provider is optional — agent can be defined without provider", () => {

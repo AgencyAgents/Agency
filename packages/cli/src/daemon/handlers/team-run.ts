@@ -31,7 +31,7 @@ import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import { extractFinalText, type McpTokenStore, type SessionScope, TeamMcpPool } from "@agency/tools";
 import { modelRunOptions, teamRunUsage } from "../costing.ts";
-import { drainDigest, drainParentInbox, type TeamContext } from "../team-context.ts";
+import { drainDigest, drainParentInbox, NO_AGENTS_MESSAGE, type TeamContext } from "../team-context.ts";
 import { type DaemonContext, keySourcesFor, type RunTurnParams } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { createTurnApproval } from "./plan.ts";
@@ -509,6 +509,9 @@ export function registerTeamRunHandlers(handlers: Record<string, MethodHandler>,
       explicitRequest: explicitRequest === true,
     });
     if (!decision.openTeam) return { opened: false, reason: decision.reason };
+    if (teamRegistry.list().length === 0) {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, NO_AGENTS_MESSAGE, { source: "team" });
+    }
     const handles = teamRegistry.list().map((a) => a.handle);
     const composition = defaultTeamComposition({
       writers: handles.filter((h) => !isReadOnlyAgent(h)),

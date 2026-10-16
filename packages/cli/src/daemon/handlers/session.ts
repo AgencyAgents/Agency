@@ -32,7 +32,7 @@ import {
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
 import { modelRunOptions } from "../costing.ts";
-import { handleForSession } from "../team-context.ts";
+import { handleForSession, NO_AGENTS_MESSAGE } from "../team-context.ts";
 import {
   autoReviewerFor,
   type DaemonContext,
@@ -476,8 +476,9 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     runTask: async (input, ctx) => {
       const agentType = agentTypes.find((type) => type.name === input.agent);
       if (input.agent !== undefined && agentType === undefined) {
-        const names = agentTypes.map((type) => type.name).join(", ") || "none";
-        return { content: `unknown agent type: ${input.agent}. The types are: ${names}`, isError: true };
+        const names = agentTypes.map((type) => type.name).join(", ");
+        const known = names ? `The types are: ${names}` : NO_AGENTS_MESSAGE;
+        return { content: `unknown agent type: ${input.agent}. ${known}`, isError: true };
       }
       const parentTurnId = ctx.turnId;
       const parentSessionId = ctx.sessionId ?? "default";

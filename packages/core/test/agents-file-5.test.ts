@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseAgentFile, resolveFileRoster } from "../src/agents/files.ts";
-import { DEFAULT_ROSTER } from "../src/config/schema.ts";
+import type { AgentConfig } from "../src/config/schema.ts";
 import { EventBus } from "../src/events.ts";
 import { importClaudePlugin } from "../src/plugins/importer.ts";
 import { collectPluginAgents, loadPlugins } from "../src/plugins/loader.ts";
@@ -19,6 +19,18 @@ function writeText(path: string, content: string): void {
   writeFileSync(path, content, "utf8");
 }
 
+const CONFIG_AGENTS: Record<string, AgentConfig> = {
+  leader: { role: "leader", provider: "anthropic", model: "claude-sonnet-5", effort: "high", enabled: true },
+  coder: {
+    role: "coder",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: { read: "allow", bash: "allow" },
+  },
+};
+
 const CODER_OVERRIDE = `---
 role: coder
 provider: openai
@@ -29,7 +41,7 @@ You are the override coder. Ship it.
 `;
 
 describe("phase 5 file-based agents", () => {
-  test("project agent file overrides the matching default role", () => {
+  test("project agent file overrides the matching config agent", () => {
     const ws = makeDir("override");
     const userDir = makeDir("override-user");
     try {
@@ -37,8 +49,7 @@ describe("phase 5 file-based agents", () => {
       const roster = resolveFileRoster({
         workspaceRoot: ws,
         configDirOverride: userDir,
-        configAgents: { ...DEFAULT_ROSTER },
-        seed: false,
+        configAgents: CONFIG_AGENTS,
       });
       const coder = roster.agents.get("coder");
       expect(coder?.model).toBe("gpt-test");
@@ -62,8 +73,7 @@ describe("phase 5 file-based agents", () => {
       const roster = resolveFileRoster({
         workspaceRoot: ws,
         configDirOverride: userDir,
-        configAgents: { ...DEFAULT_ROSTER },
-        seed: false,
+        configAgents: CONFIG_AGENTS,
         warn: (message) => warnings.push(message),
       });
       expect(roster.agents.get("coder")?.model).toBe("gpt-test");
@@ -88,12 +98,12 @@ describe("phase 5 file-based agents", () => {
       const roster = resolveFileRoster({
         workspaceRoot: ws,
         configDirOverride: userDir,
-        configAgents: { ...DEFAULT_ROSTER },
+        configAgents: CONFIG_AGENTS,
         projectTrusted: false,
       });
       expect(existsSync(join(ws, ".agency", "agents", "leader.md"))).toBe(false);
       expect(roster.agents.get("coder")?.source).toBe("config");
-      expect(roster.agents.get("coder")?.model).toBe(DEFAULT_ROSTER.coder?.model);
+      expect(roster.agents.get("coder")?.model).toBe(CONFIG_AGENTS.coder?.model);
       expect(roster.agents.get("explorer")?.source).toBe("user");
     } finally {
       rmSync(ws, { recursive: true, force: true });
@@ -101,18 +111,19 @@ describe("phase 5 file-based agents", () => {
     }
   });
 
-  test("first run seeds default roster files into the project", () => {
-    const ws = makeDir("seed");
-    const userDir = makeDir("seed-user");
+  test("resolving the roster writes no agent files and starts empty without config agents", () => {
+    const ws = makeDir("noseed");
+    const userDir = makeDir("noseed-user");
     try {
-      const roster = resolveFileRoster({
+      const roster = resolveFileRoster({ workspaceRoot: ws, configDirOverride: userDir });
+      expect([...roster.agents.keys()]).toEqual([]);
+      const withConfig = resolveFileRoster({
         workspaceRoot: ws,
         configDirOverride: userDir,
-        configAgents: { ...DEFAULT_ROSTER },
+        configAgents: CONFIG_AGENTS,
       });
-      expect(roster.seeded).toBe(true);
-      expect(existsSync(join(ws, ".agency", "agents", "coder.md"))).toBe(true);
-      expect(roster.agents.get("coder")?.systemPrompt.length).toBeGreaterThan(0);
+      expect([...withConfig.agents.keys()].sort()).toEqual(["coder", "leader"]);
+      expect(existsSync(join(ws, ".agency"))).toBe(false);
     } finally {
       rmSync(ws, { recursive: true, force: true });
       rmSync(userDir, { recursive: true, force: true });
@@ -162,8 +173,7 @@ describe("phase 5 file-based agents", () => {
       const roster = resolveFileRoster({
         workspaceRoot: ws,
         configDirOverride: userDir,
-        configAgents: { ...DEFAULT_ROSTER },
-        seed: false,
+        configAgents: CONFIG_AGENTS,
       });
       const reviewer = roster.agents.get("reviewer");
       expect(reviewer?.systemPrompt).toBe("You review diffs.");

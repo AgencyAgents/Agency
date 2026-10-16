@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { openCodeConfig } from "../config/opencode.ts";
-import { type AgentConfig, DEFAULT_ROSTER, ToolPermissionSchema } from "../config/schema.ts";
+import { type AgentConfig, ToolPermissionSchema } from "../config/schema.ts";
 import { configDir, foreignHome, userPluginStore } from "../paths.ts";
 import { splitFrontmatter } from "../plugins/skill.ts";
 import { isFileInside } from "../prompt/instructions.ts";
@@ -68,7 +68,7 @@ const OPENCODE_TOOLS: Record<string, string[]> = {
 /** Model values of a Claude Code agent file that name no model of a provider here: the worker keeps its parent's model. */
 const CLAUDE_MODEL_ALIASES = new Set(["inherit", "sonnet", "opus", "haiku"]);
 
-export type AgentSource = "project" | "user" | "config" | "seed" | "plugin";
+export type AgentSource = "project" | "user" | "config" | "plugin";
 
 export interface FileAgentDef {
   handle: string;
@@ -284,39 +284,10 @@ function toFileDef(handle: string, agent: AgentConfig, source: AgentSource): Fil
   };
 }
 
-/** Render one roster entry as seed file content. */
-export function renderSeedAgentFile(agent: AgentConfig): string {
-  const lines = [`role: ${agent.role}`];
-  if (agent.provider) lines.push(`provider: ${agent.provider}`);
-  if (agent.model) lines.push(`model: ${agent.model}`);
-  if (agent.effort) lines.push(`effort: ${agent.effort}`);
-  if (agent.permissions) lines.push(`permissions: ${JSON.stringify(agent.permissions)}`);
-  return `---\n${lines.join("\n")}\n---\nYou are ${agent.role}, an agency team agent.\n`;
-}
-
-/** Write DEFAULT_ROSTER entries missing from the project dir. Returns files written. */
-export function ensureSeedAgents(
-  workspaceRoot: string,
-  base: Record<string, AgentConfig> = DEFAULT_ROSTER,
-): string[] {
-  if (!existsSync(workspaceRoot)) return [];
-  const dir = join(workspaceRoot, ".agency", "agents");
-  mkdirSync(dir, { recursive: true });
-  const written: string[] = [];
-  for (const [handle, agent] of Object.entries(base)) {
-    const file = join(dir, agentFileName(handle));
-    if (existsSync(file)) continue;
-    writeFileSync(file, renderSeedAgentFile(agent), "utf8");
-    written.push(file);
-  }
-  return written;
-}
-
 export interface ResolveFileRosterOptions {
   workspaceRoot: string;
   configDirOverride?: string;
   configAgents?: Record<string, AgentConfig>;
-  seed?: boolean;
   /** False for a workspace that the user did not trust: an agent file can grant itself tools, so none loads. */
   projectTrusted?: boolean;
   /** Gets a line for each agent file that is skipped. */
@@ -325,7 +296,6 @@ export interface ResolveFileRosterOptions {
 
 export interface FileRoster {
   agents: Map<string, FileAgentDef>;
-  seeded: boolean;
 }
 
 const FOREIGN_USER_AGENT_DIRS = [
@@ -372,17 +342,11 @@ function openCodeAgents(workspaceRoot: string, warn: (message: string) => void):
   return out;
 }
 
-/** Merge order: config/seed base, then user files, then project files. */
+/** Merge order: config base, then user files, then project files. Nothing is written to disk. */
 export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
-  const base = opts.configAgents ?? DEFAULT_ROSTER;
   const merged = new Map<string, FileAgentDef>();
-  for (const [handle, agent] of Object.entries(base)) merged.set(handle, toFileDef(handle, agent, "config"));
-  let seeded = false;
-  // No seed in an untrusted workspace: the files would not load, and their folder would look like project content.
-  if (opts.seed !== false && opts.projectTrusted !== false) {
-    const written = ensureSeedAgents(opts.workspaceRoot, base);
-    seeded = written.length > 0;
-  }
+  for (const [handle, agent] of Object.entries(opts.configAgents ?? {}))
+    merged.set(handle, toFileDef(handle, agent, "config"));
   const userDir = join(opts.configDirOverride ?? configDir(), "agents");
   const warn = opts.warn ?? (() => {});
   // The user agent files of other agents, then those of Agency, which win on a handle.
@@ -394,7 +358,7 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   const storeDir = join(userPluginStore(opts.configDirOverride), ".agency", "agents");
   for (const [handle, def] of loadAgentDir(storeDir, "user", warn)) merged.set(handle, def);
   for (const [handle, def] of loadAgentDir(userDir, "user", warn)) merged.set(handle, def);
-  if (opts.projectTrusted === false) return { agents: merged, seeded };
+  if (opts.projectTrusted === false) return { agents: merged };
   // The agent folders of Claude Code, Cursor, Codex and OpenCode in the project; `.agency/agents` wins on a handle.
   for (const agent of [".claude", ".cursor", ".codex", ".opencode"]) {
     for (const [handle, def] of loadAgentDir(
@@ -419,5 +383,5 @@ export function resolveFileRoster(opts: ResolveFileRosterOptions): FileRoster {
   }
   const projectDir = join(opts.workspaceRoot, ".agency", "agents");
   for (const [handle, def] of loadAgentDir(projectDir, "project", warn)) merged.set(handle, def);
-  return { agents: merged, seeded };
+  return { agents: merged };
 }

@@ -8,7 +8,6 @@ import {
   type Config,
   ConfigSchema,
   configMigrations,
-  DEFAULT_ROSTER,
   defaultConfig,
 } from "./schema.ts";
 
@@ -184,14 +183,7 @@ export function loadConfig(sources: ConfigSources = {}): Config {
       cause: parsed.error,
     });
   }
-  const config = parsed.data;
-
-  // Fresh config with no agents key gets the default empty roster.
-  if (!config.agents) {
-    (config as Record<string, unknown>).agents = { ...DEFAULT_ROSTER };
-  }
-
-  return config;
+  return parsed.data;
 }
 
 /**

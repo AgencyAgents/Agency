@@ -27,6 +27,7 @@ import {
   costUsdForHandle,
   drainDigest,
   drainParentInbox,
+  NO_AGENTS_MESSAGE,
   worktreeBranchFor,
   worktreePathFor,
 } from "../team-context.ts";
@@ -66,10 +67,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
   return createDispatchTool({
     dispatch: async (input, ctx) => {
       if (teamRegistry.list().length === 0) {
-        return {
-          content: "no agents enabled: enable at least one agent (leader is required)",
-          isError: true,
-        };
+        return { content: NO_AGENTS_MESSAGE, isError: true };
       }
 
       // Hard budget caps: throw before spawning any peer.

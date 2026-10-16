@@ -181,7 +181,6 @@ test("agent files of Claude Code, Cursor, OpenCode and Copilot load with their u
     workspaceRoot: ws,
     configDirOverride: folder({}),
     configAgents: {},
-    seed: false,
     warn: (w) => warnings.push(w),
   });
   expect(agents.get("reviewer")).toMatchObject({ description: "Reviews code", tools: ["grep", "read"] });
@@ -236,7 +235,6 @@ test("the user files of other agents load at the user tier, and AGENCY_AGENTS_HO
       workspaceRoot: ws,
       configDirOverride: config,
       configAgents: {},
-      seed: false,
     });
     expect(roster.agents.get("helper")).toMatchObject({ source: "user", description: "Helps" });
 
@@ -406,7 +404,6 @@ test("the instructions, commands and agents of opencode.json load, inside the wo
     workspaceRoot: ws,
     configDirOverride: folder({}),
     configAgents: {},
-    seed: false,
   });
   expect(agents.get("review")).toMatchObject({
     description: "Reviews code",
