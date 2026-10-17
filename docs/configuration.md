@@ -71,7 +71,7 @@ Schema version is `2`; older files migrate via `configMigrations`. Validation is
 | `shellEnv` | `Record<string, string>` | — | Variables for each command of the model, each hook and the setup script. They pass even when the name looks secret or `denyEnv` names it: they are set on purpose. A value whose name has `KEY`, `SECRET`, `TOKEN`, `PASS`, `PWD`, `AUTH` (not `AUTHOR`), `CREDENTIAL` or `PRIVATE` in it, and a URL with a password in it, is removed from logs and from what the model sees |
 | `setupScript` | string | — | A command that runs once in each session before its first turn, in the workspace root and the shell of the hooks, with `shellEnv` and no provider key of the harness. A failure or a run over 10 minutes fails the first turn with the last 20 lines of its output; the model does not run. Cancelling the turn stops the script |
 | `agents` | `Record<handle, {role, provider, model, effort, permissions?}>` | — | Team roster; handle `[a-z][a-z0-9-]*`; effort `off|minimal|low|medium|high|xhigh|max|auto` |
-| `leader` | string | — | Handle of leader agent; defaults to first roster entry |
+| `leader` | string | — | Handle of leader agent; defaults to the first enabled roster entry. A disabled leader gives a warning, not an invalid config |
 | `budgets` | `{perAgentUsd?, teamUsd?, dailyUsd?, monthlyUsd?}` | — | Per-agent and team ceilings plus daemon-wide daily and monthly hard caps that refuse before the first provider call |
 
 ### Agents presets (team roster)

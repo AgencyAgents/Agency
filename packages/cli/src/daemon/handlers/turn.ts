@@ -337,10 +337,12 @@ export async function executeTurn(
             }
           }
         } else if (mentioned.length === 0 && params.thinkingLevel === undefined) {
-          const cfgAgents = (config as unknown as { agents?: Record<string, { effort: string }> }).agents;
+          const cfgAgents = (
+            config as unknown as { agents?: Record<string, { effort: string; enabled?: boolean }> }
+          ).agents;
           const leaderHandle =
             (config as unknown as { leader?: string }).leader ??
-            (cfgAgents ? Object.keys(cfgAgents)[0] : undefined);
+            Object.keys(cfgAgents ?? {}).find((h) => cfgAgents?.[h]?.enabled);
           const leaderEffort = leaderHandle ? cfgAgents?.[leaderHandle]?.effort : undefined;
           if (leaderEffort === "auto") {
             // Leader case (no dispatcher): use small-model classification
