@@ -100,6 +100,12 @@ describe("requireNetwork", () => {
     expect(() => requireNetwork(user, caps, "api.anthropic.com")).not.toThrow();
     expect(() => requireNetwork(user, caps, "evil.example.com")).toThrow(AgencyError);
   });
+
+  test("a *. entry allows the hosts under it, as the sandbox proxy does", () => {
+    const caps: Capabilities = { tools: [], pathScopes: [], network: ["*.npmjs.org"] };
+    expect(() => requireNetwork(user, caps, "registry.npmjs.org")).not.toThrow();
+    expect(() => requireNetwork(user, caps, "npmjs.org")).toThrow(AgencyError);
+  });
 });
 
 test("tools get the network limit of shell commands: none or the allowed hosts under the os backend, egress under Docker", () => {

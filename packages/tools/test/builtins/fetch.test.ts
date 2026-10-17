@@ -51,3 +51,22 @@ describe("createFetchTool", () => {
     await expect(tool.handler({ url: "https://evil.example.com" }, { signal })).rejects.toThrow();
   });
 });
+
+test("follows a redirect on the same host; a redirect to another host comes back as a note, not fetched", async () => {
+  const asked: string[] = [];
+  const http: HttpClient = {
+    fetch: async (url) => {
+      asked.push(url);
+      if (url === "https://allowed.dev/a")
+        return new Response(null, { status: 302, headers: { location: "/b" } });
+      if (url === "https://allowed.dev/b")
+        return new Response(null, { status: 301, headers: { location: "http://169.254.169.254/latest" } });
+      return new Response("should not be read", { status: 200 });
+    },
+  };
+  const tool = createFetchTool(deps(), http);
+  const result = await tool.handler({ url: "https://allowed.dev/a" }, { signal });
+  expect(asked).toEqual(["https://allowed.dev/a", "https://allowed.dev/b"]);
+  expect(result.content).toContain("redirects to http://169.254.169.254/latest");
+  expect(result.content).not.toContain("should not be read");
+});

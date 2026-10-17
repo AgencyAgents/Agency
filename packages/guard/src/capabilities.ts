@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { hostAllowed } from "./domain-proxy.ts";
 
 /**
  * Who's asking. `user` is the person at the keyboard; `agent`/`plugin` exist
@@ -186,6 +187,7 @@ export function intersectPathScopes(
 export function requireNetwork(identity: CallerIdentity, capabilities: Capabilities, host: string): void {
   if (capabilities.network === "none") deny(identity, "this caller has no network access");
   if (capabilities.network === "*") return;
-  if (capabilities.network.includes(host)) return;
+  // The patterns of `sandbox.allowedDomains` hold here too: `*.npmjs.org` allows `registry.npmjs.org`.
+  if (hostAllowed(host, capabilities.network)) return;
   deny(identity, `host "${host}" is outside this caller's allowed hosts`);
 }

@@ -116,6 +116,8 @@ export const en = {
   "tool.glob.no_matches": "no files matched",
   "tool.glob.truncated": "[truncated at {count} results]",
   "tool.fetch.truncated": "[truncated at {chars} characters]",
+  "tool.fetch.redirect":
+    "{url} redirects to {location}, which is on another host. To follow it, fetch that URL.",
   "tool.browser.truncated": "[truncated at {chars} characters]",
   "tool.browser.no_page": "browser has no open page: call navigate with a URL first",
   "tool.browser.screenshot_unavailable":
