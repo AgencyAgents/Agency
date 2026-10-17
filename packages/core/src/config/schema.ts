@@ -286,7 +286,8 @@ export const ConfigSchema = z
   .superRefine((data, ctx) => {
     if (!data.agents) return;
     const handles = Object.keys(data.agents);
-    if (handles.length === 0) return;
+    // With no agent enabled there is no team, so there is no leader to check.
+    if (!handles.some((h) => data.agents?.[h]?.enabled)) return;
     // As at run time: the leader is the agent that `leader` names, else the first of the roster.
     const handle = data.leader ?? handles[0] ?? "";
     if (data.agents[handle]?.enabled === false) {

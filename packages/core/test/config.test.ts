@@ -678,6 +678,7 @@ describe("agents", () => {
         schemaVersion: 2,
         agents: {
           leader: { role: "leader", provider: "anthropic", effort: "high", enabled: false },
+          helper: { role: "helper", provider: "openai", effort: "low", enabled: true },
         },
       }),
     );
@@ -704,7 +705,7 @@ describe("agents", () => {
     expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
   });
 
-  test("zero enabled agents causes validation error", () => {
+  test("a roster with no enabled agent loads: it is no team, as agent files without `enabled` give", () => {
     const dir = tempDir();
     cleanup.push(dir);
     writeFileSync(
@@ -717,8 +718,9 @@ describe("agents", () => {
         },
       }),
     );
-    // A roster with no enabled agent has a disabled leader.
-    expect(() => loadConfig({ globalDir: dir, env: {} })).toThrow("leader agent must be enabled");
+    expect(Object.keys(loadConfig({ globalDir: dir, env: {} }).agents ?? {})).toEqual(["leader", "helper"]);
+    writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ agents: { coder: { role: "coder" } } }));
+    expect(loadConfig({ globalDir: dir, env: {} }).agents?.coder?.enabled).toBe(false);
   });
 
   test("provider is optional — agent can be defined without provider", () => {
