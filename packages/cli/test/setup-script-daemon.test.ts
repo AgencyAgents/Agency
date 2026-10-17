@@ -6,7 +6,7 @@ import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import { setShellEnv } from "@agency/tools";
-import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
+import { type AgentDaemon, createAgentDaemon, secretShellValues } from "../src/daemon.ts";
 
 const noopHttp: HttpClient = { fetch: async () => new Response() };
 const daemons: AgentDaemon[] = [];
@@ -146,4 +146,19 @@ describe("setupScript", () => {
     await new Promise((r) => setTimeout(r, 3500));
     expect(existsSync(marker)).toBe(false);
   }, 30000);
+});
+
+test("shellEnv hides a value by a secret's name or a password in a URL, not a plain setting", () => {
+  expect(
+    secretShellValues({
+      GITHUB_TOKEN: "t",
+      DB_PASS: "p",
+      AUTH_HEADER: "a",
+      AUTHOR: "me",
+      DATABASE_URL: "postgres://u:pw@host/db",
+      HOME_URL: "https://example.com",
+      SETUP_FOO: "bar",
+      EMPTY_KEY: "",
+    }),
+  ).toEqual(["t", "p", "a", "postgres://u:pw@host/db"]);
 });

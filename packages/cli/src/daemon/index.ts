@@ -176,6 +176,16 @@ export function createSandboxBackend(
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
 }
+/** The values of `shellEnv` that the model must not see: a secret by its name, or a URL with a password in it. */
+export function secretShellValues(shellEnv: Record<string, string> | undefined): string[] {
+  return Object.entries(shellEnv ?? {}).flatMap(([name, value]) =>
+    value &&
+    (/KEY|SECRET|TOKEN|PASS|PWD|AUTH(?!OR)|CREDENTIAL|PRIVATE/i.test(name) || /:\/\/[^/\s:@]+:[^/\s@]+@/.test(value))
+      ? [value]
+      : [],
+  );
+}
+
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
   // fetch, websearch and the browser get the network limit of shell commands.
@@ -195,9 +205,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   for (const [envKey, value] of Object.entries(process.env)) {
     if (envKey.endsWith("_API_KEY") && value) redactor.registerSecret(value);
   }
-  for (const [name, value] of Object.entries(config.shellEnv ?? {})) {
-    if (/KEY|SECRET|TOKEN|PASSWORD/i.test(name) && value) redactor.registerSecret(value);
-  }
+  for (const value of secretShellValues(config.shellEnv)) redactor.registerSecret(value);
 
   const eventBus = new EventBus();
   const rotatingSink = options.logsDir ? createRotatingFileSink({ dir: options.logsDir }) : undefined;
