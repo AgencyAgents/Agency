@@ -523,7 +523,10 @@ function blankProject(p: Project): ProjectState {
 }
 
 async function loadProject(root: string): Promise<void> {
+  // The open session needs none of the rest: the first providers_list waits for the model catalogs (678 ms measured).
+  const open = state.current?.root === root ? loadSession(root, state.current.id) : undefined;
   await Promise.all([
+    open,
     refreshRows(root),
     refreshGit(root),
     host
@@ -543,7 +546,6 @@ async function loadProject(root: string): Promise<void> {
       .then((r) => patchProject(root, { commands: r.commands }))
       .catch(() => {}),
   ]);
-  if (state.current?.root === root) void loadSession(root, state.current.id);
 }
 
 export async function refreshRows(root: string): Promise<void> {
