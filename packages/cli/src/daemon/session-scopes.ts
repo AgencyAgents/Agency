@@ -186,13 +186,17 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         }
       }
       ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
-      try {
-        await registerBoardToolsForScope(scope, getCtx(), ownerHandle, handle);
-      } catch {}
-      try {
-        await registerCoordToolsForScope(scope, getCtx(), ownerHandle ?? handle ?? "lead");
-        (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
-      } catch {}
+      // Each tool is sent with every request: a session with no team to coordinate does not pay for the team's tools.
+      const inTeam = ownerHandle !== undefined || handle !== undefined || teamRegistry.list().length > 0;
+      if (inTeam) {
+        try {
+          await registerBoardToolsForScope(scope, getCtx(), ownerHandle, handle);
+        } catch {}
+        try {
+          await registerCoordToolsForScope(scope, getCtx(), ownerHandle ?? handle ?? "lead");
+          (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
+        } catch {}
+      }
       if (ownerHandle) {
         const ownerGate = gateForAgent(ownerHandle);
         if (ownerGate !== gate) {
