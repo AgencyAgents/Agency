@@ -71,6 +71,8 @@ export interface ToolSpec<Input = Record<string, unknown>> {
   origin?: "mcp";
   /** Seldom needed: out of the request until the model finds it with `tool_search`. */
   deferred?: boolean;
+  /** True for a call that changes nothing: it runs beside the other calls of the reply, as a `safe` tool does. */
+  readOnly?(input: Input & Record<string, unknown>): boolean;
   handler(input: Input & Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
   renderCall?(input: Input & Record<string, unknown>): string;
   renderResult?(result: ToolResult & { input?: Record<string, unknown> }): string;

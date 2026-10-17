@@ -77,6 +77,7 @@ export function createWebSearchTool(deps: ToolDeps, http: HttpClient, config: We
       required: ["query"],
     },
     riskTier: "moderate",
+    readOnly: () => true,
     renderCall: (input) => `websearch ${summarize(str(input.query))}`,
     renderResult: (result) =>
       result.isError

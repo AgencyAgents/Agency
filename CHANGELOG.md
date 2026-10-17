@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **Read-only calls run together, and start while the reply streams**, as in Claude Code: `fetch`,
+  `websearch`, a read-only shell command with no `cd` (`git status`, `ls`, `cat`) and an MCP tool with
+  `readOnlyHint` now run beside the other read-only calls of a reply, where before each ran alone. A read-only
+  call before the first write of a reply starts as soon as its arguments are complete, while the model still
+  writes the rest; a call whose result the turn does not use is cancelled.
 - **More rule files**: `.windsurf/rules/` (by `trigger`), `.kilocode/rules/`, Zed's `.rules`,
   `.trae/rules/project_rules.md`, and the `AGENTS.override.md` of Codex in place of `AGENTS.md`.
 - **`opencode.json` of a workspace**: its `instructions` files, its `command` map and its

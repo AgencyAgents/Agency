@@ -33,6 +33,7 @@ export function createFetchTool(deps: ToolDeps, http: HttpClient): ToolSpec {
       required: ["url"],
     },
     riskTier: "moderate",
+    readOnly: () => true,
     renderCall: (input) => `fetch ${summarize(str(input.url))}`,
     renderResult: (result) => {
       const url = str(result.input?.url);

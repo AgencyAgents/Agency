@@ -1,3 +1,4 @@
+import { isReadOnlyCommand } from "@agency/guard";
 import { t } from "@agency/i18n";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.ts";
@@ -176,6 +177,9 @@ export function createBashTool(
       required: ["command"],
     },
     riskTier: "dangerous",
+    // `cd` is read-only but moves the cwd that the next call starts in.
+    readOnly: (input) =>
+      !input.background && isReadOnlyCommand(input.command) && !/\bcd\b/.test(input.command),
     renderCall: (input) => `bash ${summarize(str(input.command))}`,
     renderResult: (result) =>
       result.isError

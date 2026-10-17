@@ -85,6 +85,8 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
   hidden?: () => boolean;
   /** Seldom needed: kept out of the tool list until `tool_search` finds it, so each request is smaller. */
   deferred?: boolean;
+  /** True for a call that changes nothing: it runs beside the other calls of the reply, as a `safe` tool does. */
+  readOnly?(input: Input & Record<string, unknown>): boolean;
 }
 
 /** Erased tool type for registries holding mixed-input tools. */
@@ -362,6 +364,13 @@ export async function runTurn(
       tag: routeSelection.tag,
     });
   }
+  // A read-only call starts as soon as its arguments are whole, while the model still writes the rest of its reply.
+  const startCall: StartCall = (call, signal) => {
+    const spec = resolveToolSpec(options.tools, call.name);
+    return parallelSafe(spec, undefined, call.input)
+      ? runCall({ call, ...(spec ? { spec } : {}) }, toolOptions, signal)
+      : undefined;
+  };
   const collectWithFallback = async (): Promise<CollectedTurn> => {
     const runOne = async (model: string): Promise<CollectedTurn> => {
       const request: ProviderRequest = {
@@ -380,7 +389,14 @@ export async function runTurn(
       };
       const turn = await scheduler.schedule(
         () =>
-          collectTurn(adapter, http, request, options.onEvent, options.streamIdleMs ?? adapter.streamIdleMs),
+          collectTurn(
+            adapter,
+            http,
+            request,
+            options.onEvent,
+            options.streamIdleMs ?? adapter.streamIdleMs,
+            startCall,
+          ),
         {
           onRetry: (attempt, message, next) => {
             options.onEvent?.({ type: "retry", attempt, message, next });
@@ -475,6 +491,7 @@ export async function runTurn(
         promptVersion: options.promptVersion,
       });
     }
+    let discardStarted: (() => void) | undefined;
     try {
       let turn: CollectedTurn;
       try {
@@ -497,6 +514,7 @@ export async function runTurn(
         turn = await collectWithFallback();
       }
 
+      discardStarted = turn.discard;
       if (turn.stopReason === "max_tokens" && outputContinuations < MAX_OUTPUT_CONTINUATIONS) {
         turn.content = withoutCutLine(turn.content);
       }
@@ -543,7 +561,13 @@ export async function runTurn(
               ? unrunResults(toolCalls, "cancelled")
               : {
                   role: "user",
-                  content: await runTools(toolCalls, toolOptions, turn.malformedCalls, options.signal),
+                  content: await runTools(
+                    toolCalls,
+                    toolOptions,
+                    turn.malformedCalls,
+                    options.signal,
+                    turn.started,
+                  ),
                 },
           );
         }
@@ -635,7 +659,13 @@ export async function runTurn(
           }
         }
       }
-      const results = await runTools(toolCalls, toolOptions, turn.malformedCalls, options.signal);
+      const results = await runTools(
+        toolCalls,
+        toolOptions,
+        turn.malformedCalls,
+        options.signal,
+        turn.started,
+      );
       if (options.eventBus?.emitCollect) {
         const { errors } = await options.eventBus.emitCollect("tool.batch.after", {
           calls: toolCalls.map((tc, i) => {
@@ -723,6 +753,9 @@ export async function runTurn(
       emitErrorEvent(error, options.onEvent);
       if (calls.length > 0) await append(unrunResults(calls, "error"));
       throw error;
+    } finally {
+      // Calls that started early and whose results the turn did not take are cancelled; taken ones are done already.
+      discardStarted?.();
     }
   }
 
@@ -825,14 +858,24 @@ interface ToolCallItem {
 
 /**
  * True when a call can run beside its neighbors without ordering hazards:
- * safe-tier tools (reads) and calls with no handler to run (malformed
+ * safe-tier tools, read-only calls, and calls with no handler to run (malformed
  * arguments, unknown tools — both resolve to fixed error results). Anything
  * mutating, unclassified, or unknown-risk runs alone, in call order.
  */
-function parallelSafe(spec: ToolSpec | undefined, malformed: string | undefined): boolean {
+function parallelSafe(
+  spec: ToolSpec | undefined,
+  malformed: string | undefined,
+  input: Record<string, unknown>,
+): boolean {
   if (malformed !== undefined) return true;
   if (spec === undefined) return true;
-  return spec.riskTier === "safe";
+  if (spec.riskTier === "safe") return true;
+  try {
+    return spec.readOnly?.(input) === true;
+  } catch {
+    // An input of the wrong shape fails its schema check later; until then it counts as a write.
+    return false;
+  }
 }
 
 async function runTools(
@@ -840,6 +883,8 @@ async function runTools(
   options: RunTurnOptions,
   malformedCalls: ReadonlyMap<string, string>,
   signal: AbortSignal | undefined,
+  /** Calls that began while the reply streamed (see `CollectedTurn.started`). */
+  started?: ReadonlyMap<string, Promise<ToolResultLike>>,
 ): Promise<ContentBlock[]> {
   const results: Array<Extract<ContentBlock, { type: "tool_result" }>> = new Array(calls.length);
 
@@ -851,7 +896,7 @@ async function runTools(
   calls.forEach((call, index) => {
     const malformed = malformedCalls.get(call.id);
     const spec = resolveToolSpec(options.tools, call.name);
-    if (!parallelSafe(spec, malformed)) {
+    if (!parallelSafe(spec, malformed, call.input)) {
       if (pending.length > 0) batches.push(pending);
       pending = [];
       batches.push([
@@ -908,25 +953,10 @@ async function runTools(
     }
 
     const settled = await Promise.all(
-      batch.map(async (item): Promise<{ item: ToolCallItem; result: ToolResultLike }> => {
-        const t = options.traceRecorder;
-        const spanId = t ? t.startToolSpan(t.getTurnSpanId(), { toolName: item.call.name }) : null;
-        let result: ToolResultLike;
-        try {
-          result = item.malformed
-            ? { content: item.malformed, isError: true }
-            : await executeOne(item.spec, item.call, options, signal);
-        } catch (error) {
-          result = { content: error instanceof Error ? error.message : String(error), isError: true };
-        }
-        if (t && spanId) {
-          t.endSpan(spanId, {
-            status: result.isError ? "error" : "ok",
-            attributes: { isError: result.isError },
-          });
-        }
-        return { item, result };
-      }),
+      batch.map(async (item) => ({
+        item,
+        result: await (started?.get(item.call.id) ?? runCall(item, options, signal)),
+      })),
     );
     for (const { item, result } of settled) {
       emit(item.call.id, result);
@@ -936,6 +966,31 @@ async function runTools(
 
   // The event above streams full content to the TUI; only the conversation is capped.
   return truncateToolResults(results);
+}
+
+/** One call in its trace span. It never throws: a failure is an error result. */
+async function runCall(
+  item: Pick<ToolCallItem, "call" | "malformed" | "spec">,
+  options: RunTurnOptions,
+  signal: AbortSignal | undefined,
+): Promise<ToolResultLike> {
+  const t = options.traceRecorder;
+  const spanId = t ? t.startToolSpan(t.getTurnSpanId(), { toolName: item.call.name }) : null;
+  let result: ToolResultLike;
+  try {
+    result = item.malformed
+      ? { content: item.malformed, isError: true }
+      : await executeOne(item.spec, item.call, options, signal);
+  } catch (error) {
+    result = { content: error instanceof Error ? error.message : String(error), isError: true };
+  }
+  if (t && spanId) {
+    t.endSpan(spanId, {
+      status: result.isError ? "error" : "ok",
+      attributes: { isError: result.isError },
+    });
+  }
+  return result;
 }
 
 function resolveToolSpec(tools: ToolSpec[], name: string): ToolSpec | undefined {
@@ -1317,7 +1372,17 @@ interface CollectedTurn {
   malformedCalls: Map<string, string>;
   error?: TurnError;
   timing: RequestTiming;
+  /** Results of the leading read-only calls, which began while the rest of the reply streamed. */
+  started: Map<string, Promise<ToolResultLike>>;
+  /** Cancels the started calls whose results the turn will not use. */
+  discard: () => void;
 }
+
+/** Starts a call while the reply streams; undefined when it must wait for the whole reply. */
+type StartCall = (
+  call: Extract<ContentBlock, { type: "tool_call" }>,
+  signal: AbortSignal,
+) => Promise<ToolResultLike> | undefined;
 
 async function collectTurn(
   adapter: ProviderAdapter,
@@ -1325,7 +1390,13 @@ async function collectTurn(
   request: Parameters<ProviderAdapter["stream"]>[0],
   onEvent: ((event: LoopEvent) => void) | undefined,
   idleMs = STREAM_IDLE_MS,
+  startCall?: StartCall,
 ): Promise<CollectedTurn> {
+  const started = new Map<string, Promise<ToolResultLike>>();
+  const early = new AbortController();
+  const earlySignal = request.signal ? AbortSignal.any([request.signal, early.signal]) : early.signal;
+  // Only calls before the first write start early: a later read must see what that write does.
+  let leading = startCall !== undefined;
   const content: ContentBlock[] = [];
   const jsonByToolId = new Map<string, string>();
   const nameByToolId = new Map<string, string>();
@@ -1420,8 +1491,19 @@ async function collectTurn(
           // The tool_start event fires once the streamed arguments are parsed
           // (not at tool_call_start): the TUI's renderCall needs the input, and
           // nothing else can run between here and the provider round-trip.
-          content.push({ type: "tool_call", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
-          onEvent?.({ type: "tool_start", id: event.id, name: nameByToolId.get(event.id) ?? "", input });
+          const call = {
+            type: "tool_call" as const,
+            id: event.id,
+            name: nameByToolId.get(event.id) ?? "",
+            input,
+          };
+          content.push(call);
+          onEvent?.({ type: "tool_start", id: event.id, name: call.name, input });
+          if (leading && !malformedCalls.has(event.id)) {
+            const running = startCall?.(call, earlySignal);
+            if (running === undefined) leading = false;
+            else started.set(event.id, running);
+          }
           break;
         }
         case "message_stop":
@@ -1431,6 +1513,7 @@ async function collectTurn(
       }
     }
   } catch (error) {
+    early.abort();
     if (idle.signal.aborted && !request.signal?.aborted) throw stalled();
     throw error;
   } finally {
@@ -1443,7 +1526,16 @@ async function collectTurn(
     ttftMs: (firstTokenAt ?? endedAt) - startedAt,
     streamMs: firstTokenAt === undefined ? 0 : endedAt - firstTokenAt,
   };
-  return { content, stopReason, usage, malformedCalls, timing, ...salvaged };
+  return {
+    content,
+    stopReason,
+    usage,
+    malformedCalls,
+    timing,
+    started,
+    discard: () => early.abort(),
+    ...salvaged,
+  };
 }
 
 /**
