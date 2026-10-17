@@ -7,7 +7,7 @@ import { applyEditsVerified, type EditHunk } from "../edit-engine.ts";
 import type { FormatterConfig } from "../formatter.ts";
 import { runFormatter } from "../formatter.ts";
 import type { ReadState } from "../read-state.ts";
-import { str, summarize } from "../render.ts";
+import { clip, str, summarize } from "../render.ts";
 import type { SnapshotStore } from "../snapshot.ts";
 import { syntaxNote } from "../syntax.ts";
 
@@ -53,6 +53,38 @@ function hunksFor(input: EditInput): EditHunk[] {
   ];
 }
 
+const AROUND = 3;
+const MAX_SHOWN = 40;
+
+/**
+ * Each changed block of the file as it is now, with 3 lines around it and the numbers of a `read` slice: the model can
+ * check the change and place the next one with no new read. A block that the formatter changed, a `replaceAll`, a
+ * deletion or a block over 40 lines is not shown.
+ */
+function changedLines(after: string, hunks: readonly EditHunk[]): string {
+  const lines = after.split("\n");
+  const blocks: string[] = [];
+  let from = 0;
+  for (const hunk of hunks) {
+    if (hunk.replaceAll || hunk.newText === "") continue;
+    let at = after.indexOf(hunk.newText, from);
+    if (at === -1) at = after.indexOf(hunk.newText);
+    if (at === -1) continue;
+    from = at + hunk.newText.length;
+    const first = after.slice(0, at).split("\n").length - 1;
+    const start = Math.max(0, first - AROUND);
+    const end = Math.min(lines.length - 1, first + hunk.newText.split("\n").length - 1 + AROUND);
+    if (end - start + 1 > MAX_SHOWN) continue;
+    blocks.push(
+      lines
+        .slice(start, end + 1)
+        .map((line, i) => `${String(start + i + 1).padStart(6)}  ${line}`)
+        .join("\n"),
+    );
+  }
+  return blocks.join("\n...\n");
+}
+
 export function createEditTool(
   deps: ToolDeps,
   snapshots: SnapshotStore,
@@ -93,7 +125,7 @@ export function createEditTool(
     riskTier: "moderate",
     renderCall: (input) => `edit ${str(input.path)}`,
     renderResult: (result) =>
-      result.isError ? `edit failed: ${summarize(result.content)}` : summarize(result.content),
+      result.isError ? `edit failed: ${summarize(result.content)}` : clip(result.content),
 
     async handler(input, ctx) {
       const resolved = await deps.sandbox.resolvePathGated(input.path, {
@@ -134,6 +166,8 @@ export function createEditTool(
         snapshots.recordAfter(resolved);
         let content = t("tool.edit.applied", { path: input.path });
         if (hunks.length > 1) content += `\n${t("tool.edit.hunks_applied", { count: hunks.length })}`;
+        const shown = changedLines(readFileSync(resolved, "utf8"), hunks);
+        if (shown !== "") content += `\n${shown}`;
         const broken = syntaxNote(input.path, current, outcome.content);
         if (broken !== undefined) content += `\n${broken}`;
         if (outcome.warnings.length > 0) {

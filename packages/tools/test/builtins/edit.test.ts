@@ -72,4 +72,25 @@ describe("createEditTool", () => {
     const entry = snapshots.capture(join(root, "a.ts"), "before");
     expect(snapshots.read(entry)).toBe("before");
   });
+
+  test("the result shows the changed lines with their numbers, so no read has to follow", async () => {
+    const { deps, root, snapshots } = setup();
+    const lines = Array.from({ length: 40 }, (_, i) => `const v${i + 1} = ${i + 1};`);
+    writeFileSync(join(root, "a.ts"), `${lines.join("NL")}NL`.replaceAll("NL", String.fromCharCode(10)));
+    const tool = createEditTool(deps, snapshots, {});
+
+    const result = await tool.handler(
+      { path: "a.ts", oldText: "const v20 = 20;", newText: "const v20 = 200;" },
+      { signal },
+    );
+
+    expect(result.isError).toBeFalsy();
+    const shown = result.content.split(String.fromCharCode(10));
+    expect(shown[0]).toBe("edited a.ts");
+    expect(shown).toContain("    20  const v20 = 200;");
+    expect(shown).toContain("    17  const v17 = 17;");
+    expect(shown).toContain("    23  const v23 = 23;");
+    expect(shown).not.toContain("    16  const v16 = 16;");
+    expect(tool.renderResult?.({ content: result.content, isError: false })).toBe("edited a.ts");
+  });
 });
