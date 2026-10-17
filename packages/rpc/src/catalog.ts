@@ -24,6 +24,7 @@ export const METHOD_DOCS: Record<string, string> = {
     'List providers with defaults, connectivity, and liveness; models: "connected" lists models only for connected or configured providers.',
   config_get: "Read daemon config, secrets redacted, or one top-level key.",
   config_set: "Set one runtime-safe config key in memory until restart.",
+  config_user: "The user config file alone, without provider keys: the layer that config_write edits.",
   config_write: "Persist one dotted config key to the user config file, comments kept; null removes it.",
   daemon_restart: "Leave once no turn runs, so the next client starts a daemon with the new config.",
   provider_connect: "Validate a provider API key and store it in the key store.",

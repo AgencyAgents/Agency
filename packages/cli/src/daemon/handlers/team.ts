@@ -33,6 +33,8 @@ type FileBackedAgent = AgentConfig & {
   tools?: string[];
   pathScope?: string[];
   description?: string;
+  /** The agent file that defines it: Settings edits the agent there, since a file wins over the config. */
+  file?: string;
 };
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
@@ -69,6 +71,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         ...(def.tools !== undefined ? { tools: def.tools } : {}),
         ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
         ...(def.description !== undefined ? { description: def.description } : {}),
+        ...(def.file !== undefined ? { file: def.file } : {}),
       };
     }
     cfg.agents = merged;

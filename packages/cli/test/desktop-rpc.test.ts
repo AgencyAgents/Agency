@@ -120,6 +120,15 @@ test("config_write creates the user config, keeps a comment, and null removes th
   expect(readFileSync(configFile, "utf8")).toContain("// keep me");
 });
 
+test("config_user gives the user file alone: no project hooks, no provider keys", async () => {
+  const { call, workspaceRoot } = await start({
+    configText: '{\n  // mine\n  "hooks": { "Stop": [] },\n  "provider": { "x": { "apiKey": "k" } }\n}\n',
+  });
+  mkdirSync(join(workspaceRoot, ".agency"), { recursive: true });
+  writeFileSync(join(workspaceRoot, ".agency", "config.jsonc"), '{ "permissions": { "bash": "allow" } }');
+  expect((await call("config_user")).result?.config).toEqual({ hooks: { Stop: [] } });
+});
+
 test("config_write makes the file when it is absent", async () => {
   const { call, configFile } = await start();
   expect(existsSync(configFile)).toBe(false);

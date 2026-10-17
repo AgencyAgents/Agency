@@ -27,6 +27,7 @@ export type RpcMethod =
   | "commands_list"
   | "config_get"
   | "config_set"
+  | "config_user"
   | "config_write"
   | "cost_report"
   | "daemon_restart"
@@ -312,6 +313,8 @@ export interface SurfaceClient {
   config_get(params?: Record<string, unknown>): Promise<unknown>;
   /** Set one runtime-safe config key in memory until restart. */
   config_set(params?: Record<string, unknown>): Promise<unknown>;
+  /** The user config file alone, without provider keys: the layer that config_write edits. */
+  config_user(params?: Record<string, unknown>): Promise<unknown>;
   /** Persist one dotted config key to the user config file, comments kept; null removes it. */
   config_write(params?: Record<string, unknown>): Promise<unknown>;
   /** Sum usage entries plus trace spans per session and agent (Phase 9 adds budgets and caps). */
@@ -434,6 +437,7 @@ export function createSurfaceClient(
     commands_list: (params) => call("commands_list", params ?? {}),
     config_get: (params) => call("config_get", params ?? {}),
     config_set: (params) => call("config_set", params ?? {}),
+    config_user: (params) => call("config_user", params ?? {}),
     config_write: (params) => call("config_write", params ?? {}),
     cost_report: (params) => call("cost_report", params ?? {}),
     daemon_restart: (params) => call("daemon_restart", params ?? {}),

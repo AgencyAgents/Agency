@@ -13,7 +13,7 @@ import { envNames, oauthKey } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { readMemoryNotes, writeMemoryNotes } from "@agency/tools";
-import { applyEdits, modify } from "jsonc-parser";
+import { applyEdits, modify, parse } from "jsonc-parser";
 import { createHttpValidator, isValidProviderId } from "../../connect.ts";
 import type { DaemonContext } from "../types.ts";
 
@@ -100,6 +100,16 @@ export function registerDesktopHandlers(
       throw invalid(error instanceof Error ? error.message : String(error));
     }
     return { key, value, file };
+  };
+
+  /** The user file alone: an editor that writes back a whole key must not copy project or environment values. */
+  handlers.config_user = async () => {
+    const file = join(userDir(), "config.jsonc");
+    const raw: unknown = existsSync(file) ? parse(readFileSync(file, "utf8")) : {};
+    const { provider: _keys, ...config } = (
+      raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+    ) as Record<string, unknown>;
+    return { config, file };
   };
 
   handlers.daemon_restart = async () => {
