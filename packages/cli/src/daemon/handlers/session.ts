@@ -331,6 +331,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       type: "message",
       parentId: tipId,
       message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
+      turnId,
     });
     let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
     // Reactive compaction forks the branch, so new appends rebase onto

@@ -7,6 +7,8 @@ export const METHOD_DOCS: Record<string, string> = {
   run_turn: "Run one model turn over caller-owned messages.",
   cancel_turn: "Abort an in-flight turn and refuse its pending asks.",
   turns_list: "List the turns that run: id, session, model and start time.",
+  session_rewind:
+    "Rewind a session to before a prompt (default: the last): files its turns wrote go back; an edit since stops it unless force.",
   session_send: "Daemon-owned turn: send text, history and usage stay server-side.",
   session_show: "Read a session through the single SessionProjector view.",
   session_list: "List daemon-known sessions with title and tip.",

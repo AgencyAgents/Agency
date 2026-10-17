@@ -47,6 +47,8 @@ export interface MessageEntry extends SessionEntryBase {
   message: Message;
   /** A user-role message that entered mid-turn: a viewer keeps it inside the running turn, not as a new prompt. */
   origin?: MessageOrigin;
+  /** On a prompt: the turn it started, whose file writes a rewind puts back. */
+  turnId?: string;
 }
 
 /** "harness": the loop wrote it (Stop-hook feedback). "inbox": the user or a teammate sent it while the turn ran. */

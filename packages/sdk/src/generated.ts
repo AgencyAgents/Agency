@@ -57,6 +57,7 @@ export type RpcMethod =
   | "session_list"
   | "session_message"
   | "session_rename"
+  | "session_rewind"
   | "session_send"
   | "session_show"
   | "session_title_set"
@@ -373,6 +374,8 @@ export interface SurfaceClient {
   session_message(params?: Record<string, unknown>): Promise<unknown>;
   /** Move a session history to a new id (clone plus delete). */
   session_rename(params?: Record<string, unknown>): Promise<unknown>;
+  /** Rewind a session to before a prompt (default: the last): files its turns wrote go back; an edit since stops it unless force. */
+  session_rewind(params?: Record<string, unknown>): Promise<unknown>;
   /** Daemon-owned turn: send text, history and usage stay server-side. */
   session_send(params?: Record<string, unknown>): Promise<unknown>;
   /** Read a session through the single SessionProjector view. */
@@ -467,6 +470,7 @@ export function createSurfaceClient(
     session_list: (params) => call("session_list", params ?? {}),
     session_message: (params) => call("session_message", params ?? {}),
     session_rename: (params) => call("session_rename", params ?? {}),
+    session_rewind: (params) => call("session_rewind", params ?? {}),
     session_send: (params) => call("session_send", params ?? {}),
     session_show: (params) => call("session_show", params ?? {}),
     session_title_set: (params) => call("session_title_set", params ?? {}),
