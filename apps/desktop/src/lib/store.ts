@@ -986,23 +986,50 @@ export async function respond(
   }
 }
 
-export async function undoTurn(root: string, sessionId: string): Promise<void> {
+/** Rewinds to before a prompt (the last one when `entryId` is absent). `retry` sends the prompt again; else it goes
+ *  back into the composer. */
+export async function rewind(
+  root: string,
+  sessionId: string,
+  entryId?: string,
+  opts: { force?: boolean; retry?: boolean } = {},
+): Promise<void> {
+  let resend: string | undefined;
   try {
-    const result = await host.rpc<{ undone: boolean; reason?: string }>(root, "undo_run", {
+    const result = await host.rpc<{
+      rewound: boolean;
+      conflicts: string[];
+      files?: string[];
+      prompt?: string;
+    }>(root, "session_rewind", {
       sessionId,
-      mode: "both",
+      ...(entryId ? { entryId } : {}),
+      ...(opts.force ? { force: true } : {}),
     });
-    if (!result.undone) {
-      toast(result.reason ?? "Nothing to undo.", { tone: "err" });
+    if (!result.rewound) {
+      const names = result.conflicts.map((f) => f.split(/[\\/]/).pop()).join(", ");
+      toast(`You changed ${names} after the agent. Rewinding loses that change.`, {
+        tone: "err",
+        act: {
+          label: "Rewind anyway",
+          run: () => void rewind(root, sessionId, entryId, { ...opts, force: true }),
+        },
+      });
       return;
     }
-    toast("Undid the last turn");
+    const n = result.files?.length ?? 0;
+    if (opts.retry) resend = result.prompt ?? "";
+    else {
+      setState("composer", keyOf(root, sessionId), { draft: result.prompt ?? "", attachments: [] });
+      toast(n ? `Rewound. ${n} file${n === 1 ? "" : "s"} put back.` : "Rewound.");
+    }
   } catch (error) {
     toast(errorText(error), { tone: "err" });
   }
   await loadSession(root, sessionId);
   void refreshGit(root);
   refreshSoon(root);
+  if (resend) await send(root, sessionId, resend, []);
 }
 
 /* ---------- derived ---------- */

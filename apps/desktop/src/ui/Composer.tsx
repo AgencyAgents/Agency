@@ -12,13 +12,13 @@ import {
   loadSession,
   MODES,
   project,
+  rewind,
   savePrefs,
   send,
   setState,
   state,
   stop,
   toast,
-  undoTurn,
   usageOf,
 } from "../lib/store.ts";
 import { I, P } from "./icons.tsx";
@@ -185,7 +185,7 @@ export function Composer(props: {
     const local: Record<string, () => void> = {
       clear: () => goNew(root),
       model: () => toggleMenu("model"),
-      ...(id ? { review: () => setState("view", "review"), undo: () => void undoTurn(root, id) } : {}),
+      ...(id ? { review: () => setState("view", "review"), undo: () => void rewind(root, id) } : {}),
       ...(id ? {} : { compact: () => toast("There is nothing to compact yet.", { tone: "err" }) }),
     };
     const act = local[name];

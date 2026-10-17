@@ -3,6 +3,7 @@ import {
   createMemo,
   createSignal,
   For,
+  type JSX,
   Match,
   on,
   onCleanup,
@@ -16,6 +17,7 @@ import {
   type LiveTurn,
   modelChoices,
   respond,
+  rewind,
   send,
   state,
   toast,
@@ -311,13 +313,69 @@ function Footer(props: { root: string; turn: Turn }) {
   );
 }
 
-function Prompt(props: { id: string; text: string; note?: string; anim?: boolean }) {
+/** Copy, retry and rewind under a prompt; retry and rewind wait for the running turn. */
+function PromptFoot(props: {
+  text: string;
+  hasImages: boolean;
+  busy: boolean;
+  rewind: (retry: boolean) => void;
+}) {
+  const [copied, setCopied] = createSignal(false);
+  const copy = () =>
+    void navigator.clipboard.writeText(props.text).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      },
+      () => toast("Could not copy to the clipboard.", { tone: "err" }),
+    );
+  return (
+    <div class="turn-foot pmt-foot">
+      <button
+        type="button"
+        class="ic"
+        aria-label={copied() ? "Copied" : "Copy prompt"}
+        title="Copy"
+        onClick={copy}
+      >
+        <I d={copied() ? P.check : P.copy} size={13} sw={1.7} />
+      </button>
+      <button
+        type="button"
+        class="ic"
+        aria-label="Retry"
+        title={
+          props.hasImages
+            ? "Retry sends text only: rewind to edit and attach the images again"
+            : "Retry: undo this turn and the ones after it, then send this prompt again"
+        }
+        disabled={props.busy || props.hasImages}
+        onClick={() => props.rewind(true)}
+      >
+        <I d={P.retry} size={13} sw={1.8} />
+      </button>
+      <button
+        type="button"
+        class="ic"
+        aria-label="Rewind to here"
+        title="Rewind: undo this turn and the ones after it, and edit this prompt"
+        disabled={props.busy}
+        onClick={() => props.rewind(false)}
+      >
+        <I d={P.rewind} size={13} sw={1.8} />
+      </button>
+    </div>
+  );
+}
+
+function Prompt(props: { id: string; text: string; note?: string; anim?: boolean; foot?: JSX.Element }) {
   return (
     <div id={props.id} class={props.anim ? "pmt bubble-wrap msg-in" : "pmt bubble-wrap"}>
       <div class="bubble">{props.text}</div>
       <Show when={props.note}>
         <span class="note">{props.note}</span>
       </Show>
+      {props.foot}
     </div>
   );
 }
@@ -539,6 +597,14 @@ export function Transcript(props: { root: string; id: string }) {
                   id={`prompt-${i()}`}
                   text={turn.prompt}
                   note={turn.images ? `With ${turn.images} image${turn.images > 1 ? "s" : ""}` : undefined}
+                  foot={
+                    <PromptFoot
+                      text={turn.prompt}
+                      hasImages={!!turn.images}
+                      busy={!!live()}
+                      rewind={(retry) => void rewind(props.root, props.id, turn.key, { retry })}
+                    />
+                  }
                 />
                 <div class="reply">
                   <Parts parts={turn.parts} id={turn.key} />

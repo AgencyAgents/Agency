@@ -596,6 +596,15 @@ header .ol {
 .pmt {
   scroll-margin-top: 28px;
 }
+.pmt-foot {
+  margin: 0 -6px 0 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.pmt:hover .pmt-foot,
+.pmt-foot:focus-within {
+  opacity: 1;
+}
 .card {
   border: 1px solid var(--line);
   border-radius: 14px;

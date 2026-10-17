@@ -372,6 +372,34 @@ try {
     if (written !== "hi\n") throw new Error(`hello.txt holds ${JSON.stringify(written)}`);
   });
 
+  await step("retry and rewind under a prompt put the file back, then run it again", async () => {
+    const hello = join(ws, "hello.txt");
+    const last = (label: string) =>
+      `[...document.querySelectorAll('.pmt-foot button[aria-label="${label}"]:not([disabled])')].at(-1)`;
+    const card = `document.querySelector('section[aria-label="Approval request"]')`;
+    const allow = async () => {
+      await until("approval card", card);
+      if (existsSync(hello)) throw new Error("hello.txt is still there after the rewind");
+      await click(button("Allow once", card), "Allow once");
+      await until("hello.txt again", `${bodyHas("Wrote hello.txt.")} && !${card}`);
+      if (!existsSync(hello)) throw new Error("the new turn did not write hello.txt");
+    };
+    await click(last("Retry"), "Retry");
+    await allow();
+    await click(last("Rewind to here"), "Rewind to here");
+    await until(
+      "the prompt is back in the composer",
+      `document.getElementById("composer")?.value === "write it"`,
+    );
+    if (existsSync(hello)) throw new Error("hello.txt is still there after the rewind");
+    await click(`document.querySelector('button[aria-label="Send"]:not([disabled])')`, "Send");
+    await allow();
+    const prompts = await ev(
+      `[...document.querySelectorAll(".pmt .bubble")].filter((b) => b.textContent === "write it").length`,
+    );
+    if (prompts !== 1) throw new Error(`"write it" shows ${prompts} times`);
+  });
+
   await step("the view follows a reply until you scroll up, then stop ends the turn", async () => {
     const before = fake.aborted;
     await cdp.send("Emulation.setDeviceMetricsOverride", {

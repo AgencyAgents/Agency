@@ -1,7 +1,7 @@
 import { createResource, For, Show } from "solid-js";
 import { type DiffFile, newFile, parseDiff } from "../lib/diff.ts";
 import { host } from "../lib/host.ts";
-import { project, setState, state, undoTurn } from "../lib/store.ts";
+import { project, rewind, setState, state } from "../lib/store.ts";
 import { I, P, Spinner } from "./icons.tsx";
 
 export async function loadDiff(root: string): Promise<DiffFile[]> {
@@ -64,7 +64,7 @@ export function Review(props: { root: string; id: string }) {
         <button
           type="button"
           class="gh"
-          onClick={() => void undoTurn(props.root, props.id).then(() => refetch())}
+          onClick={() => void rewind(props.root, props.id).then(() => refetch())}
         >
           Undo turn
         </button>

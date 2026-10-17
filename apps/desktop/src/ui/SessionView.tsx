@@ -4,12 +4,12 @@ import {
   newWorktree,
   project,
   refreshGit,
+  rewind,
   savePrefs,
   sessionTitle,
   setState,
   state,
   toast,
-  undoTurn,
 } from "../lib/store.ts";
 import { Composer } from "./Composer.tsx";
 import { I, P } from "./icons.tsx";
@@ -293,7 +293,7 @@ function Header(props: { root: string; id: string }) {
               class="mi"
               onClick={() => {
                 closeMenu();
-                void undoTurn(props.root, props.id);
+                void rewind(props.root, props.id);
               }}
             >
               Undo last turn
