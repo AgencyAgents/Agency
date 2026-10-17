@@ -1467,9 +1467,11 @@ describe("A5: input validation and permissions gating", () => {
     expect(handlerRan).toBe(false);
     const toolResult = result.messages[1]?.content[0];
     if (toolResult?.type === "tool_result") {
-      expect(toolResult.content).toContain("permission denied");
+      expect(toolResult.content).toContain('permission denied: bash with "rm -rf /"');
       // Without this sentence a weaker model sent the refused call again, 15 times on average in live runs.
-      expect(toolResult.content).toContain("Do not call it again");
+      expect(toolResult.content).toContain("Do not send this call again");
+      // A rule on one command must not read as a refusal of the whole tool: a model then gave up on other commands.
+      expect(toolResult.content).toContain("A bash call with another command can be permitted");
       expect(toolResult.isError).toBe(true);
     }
   });

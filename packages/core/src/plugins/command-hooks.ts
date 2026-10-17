@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { globToRegExpSource, splitCommand, unwrapCommand } from "@agency/guard";
+import { modelCommandEnv } from "@agency/tools";
 import { z } from "zod";
 import { type AgencyEvents, type EventBus, HookBlock, HookStop } from "../events.ts";
 
@@ -20,6 +21,7 @@ export const COMMAND_HOOK_EVENTS = [
   "PostCompact",
   "Notification",
   "PermissionRequest",
+  "PermissionDenied",
   "SessionStart",
   "SessionEnd",
 ] as const;
@@ -29,19 +31,73 @@ const GroupSchema = z.object({
   /** Regular expression on the subject of the event (the tool name of a tool event), no regard to case. Absent, "" and "*" match all. */
   matcher: z.string().optional(),
   hooks: z.array(
-    z.object({
-      type: z.literal("command"),
-      command: z.string().min(1),
-      /** Seconds. */
-      timeout: z.number().positive().optional(),
-      /** One permission rule on the tool call (`Bash(git *)`, `Edit(*.ts)`): the hook runs only for a call that matches. */
-      if: z.string().optional(),
-      /** Runs in the background: the event does not wait, and the hook cannot block it. */
-      async: z.boolean().optional(),
-      asyncRewake: z.boolean().optional(),
-    }),
+    z.discriminatedUnion("type", [
+      z.object({
+        type: z.literal("command"),
+        command: z.string().min(1),
+        /** Seconds. */
+        timeout: z.number().positive().optional(),
+        /** One permission rule on the tool call (`Bash(git *)`, `Edit(*.ts)`): the hook runs only for a call that matches. */
+        if: z.string().optional(),
+        /** Runs in the background: the event does not wait, and the hook cannot block it. */
+        async: z.boolean().optional(),
+        asyncRewake: z.boolean().optional(),
+        /** Variables of the process: a plugin hook gets `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA`. */
+        env: z.record(z.string(), z.string()).optional(),
+        /** A hook of Cursor: it gets the input of that event and answers in the form of Cursor. */
+        cursor: z
+          .object({
+            event: z.string(),
+            /** A shell hook of Cursor tests its matcher on the command line. */
+            matcher: z.string().optional(),
+            failClosed: z.boolean().optional(),
+          })
+          .optional(),
+      }),
+      z.object({
+        type: z.literal("http"),
+        /** Gets the event as a JSON POST; its answer has the JSON form of the stdout of a command. */
+        url: z.string().url(),
+        /** A value can name `$VAR` or `${VAR}` of `allowedEnvVars`; another variable becomes "". */
+        headers: z.record(z.string(), z.string()).optional(),
+        allowedEnvVars: z.array(z.string()).optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+      z.object({
+        type: z.literal("prompt"),
+        /** A question to a model about the event: `$ARGUMENTS` becomes the event as JSON. */
+        prompt: z.string().min(1),
+        /** provider/model. Default: `small_model`, else `model` of the config. */
+        model: z.string().optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+      z.object({
+        type: z.literal("agent"),
+        /** A task for an agent with the read tools of the session: `$ARGUMENTS` becomes the event as JSON. */
+        prompt: z.string().min(1),
+        model: z.string().optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+      z.object({
+        type: z.literal("mcp_tool"),
+        /** A configured MCP server; `plugin:<plugin>:<server>` of Claude Code is the server of an installed plugin. */
+        server: z.string().min(1),
+        tool: z.string().min(1),
+        /** The arguments of the tool: `${path}` in a string is that value of the input of the event (`${tool_input.file_path}`). */
+        input: z.record(z.string(), z.unknown()).optional(),
+        timeout: z.number().positive().optional(),
+        if: z.string().optional(),
+      }),
+    ]),
   ),
 });
+type HookEntry = z.infer<typeof GroupSchema>["hooks"][number];
+type HttpHook = Extract<HookEntry, { type: "http" }>;
+type PromptHook = Extract<HookEntry, { type: "prompt" | "agent" }>;
+type McpToolHook = Extract<HookEntry, { type: "mcp_tool" }>;
 
 /** The hook format of Claude Code settings: event name to matcher groups of shell commands. */
 export const CommandHooksSchema = z.object(
@@ -59,15 +115,105 @@ export interface HookOutcome {
   context?: string;
   /** A PermissionRequest hook answered the ask with allow. */
   allow?: true;
+  /** A PermissionDenied hook lets the model retry the call. */
+  retry?: true;
+  /** A PreToolUse hook wants the user asked, though a rule allows the call. */
+  ask?: true;
+  /** `updatedInput` of a PreToolUse hook: the call runs with this input. */
+  input?: Record<string, unknown>;
+  /** `updatedToolOutput` of a PostToolUse hook: the model gets this in place of the result. */
+  output?: string;
 }
 
 const DEFAULT_TIMEOUT_S = 60;
 const MAX_OUTPUT_CHARS = 10_000;
 
+/** The names of a tool in Claude Code, Codex, Cursor and Gemini CLI: a hook of theirs names it so. */
+const TOOL_ALIASES: Record<string, string[]> = {
+  bash: ["Shell", "run_shell_command", "local_shell"],
+  read: ["read_file", "ReadFile"],
+  write: ["write_file"],
+  edit: ["MultiEdit", "replace", "StrReplace", "apply_patch"],
+  grep: ["search_file_content", "grep_search"],
+  fetch: ["WebFetch", "web_fetch"],
+  websearch: ["google_web_search", "web_search"],
+  todo_write: ["TodoWrite", "write_todos"],
+  spawn: ["Task", "Agent"],
+  notebook_edit: ["NotebookEdit"],
+};
+const namesOf = (subject: string): string[] => [subject, ...(TOOL_ALIASES[subject] ?? [])];
+
+/** Each tool here as Claude Code names it, and the input fields that have another name there. */
+const CLAUDE_TOOLS: Record<string, [string, Record<string, string>]> = {
+  bash: ["Bash", { background: "run_in_background" }],
+  read: ["Read", { path: "file_path" }],
+  write: ["Write", { path: "file_path" }],
+  edit: [
+    "Edit",
+    { path: "file_path", oldText: "old_string", newText: "new_string", replaceAll: "replace_all" },
+  ],
+  grep: ["Grep", { caseInsensitive: "-i", context: "-C" }],
+  glob: ["Glob", {}],
+  fetch: ["WebFetch", {}],
+  websearch: ["WebSearch", {}],
+  todo_write: ["TodoWrite", {}],
+  notebook_edit: ["NotebookEdit", { path: "notebook_path", source: "new_source", mode: "edit_mode" }],
+  spawn: ["Task", {}],
+};
+
+const renamed = (value: unknown, names: Record<string, string>): unknown =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).map(([key, item]) => [names[key] ?? key, item]))
+    : value;
+
+/**
+ * A tool event in the form of Claude Code: its hooks test `tool_name == "Bash"` and read `tool_input.file_path`
+ * (hookify does). ponytail: an MCP tool keeps its name here, not `mcp__<server>__<tool>`; the event does not say which
+ * tools are MCP tools.
+ */
+function claudeShaped(input: Record<string, unknown>): Record<string, unknown> {
+  const tool = typeof input.tool_name === "string" ? CLAUDE_TOOLS[input.tool_name] : undefined;
+  const out =
+    tool === undefined
+      ? input
+      : { ...input, tool_name: tool[0], tool_input: renamed(input.tool_input, tool[1]) };
+  return Array.isArray(input.tool_calls)
+    ? {
+        ...out,
+        tool_calls: input.tool_calls.map((call) =>
+          typeof call === "object" && call !== null ? claudeShaped(call as Record<string, unknown>) : call,
+        ),
+      }
+    : out;
+}
+
+/** The `updatedInput` of a hook, which has the field names of Claude Code, as the input of the tool here. */
+function agencyInput(tool: unknown, updated: Record<string, unknown>): Record<string, unknown> {
+  const names = typeof tool === "string" ? CLAUDE_TOOLS[tool]?.[1] : undefined;
+  if (names === undefined) return updated;
+  const back = Object.fromEntries(Object.entries(names).map(([ours, theirs]) => [theirs, ours]));
+  return renamed(updated, back) as Record<string, unknown>;
+}
+
+/** The tool here that a tool name of another agent names: `Bash` is `bash`, `mcp__github__create_issue` is `github_create_issue`. */
+export function agencyToolName(name: string): string | undefined {
+  // `mcp__<server>` alone is every tool of a server: no one tool here.
+  if (name.startsWith("mcp__")) {
+    const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+    return mcp ? `${mcp[1]}_${mcp[2]}` : undefined;
+  }
+  const lower = name.toLowerCase();
+  for (const [tool, aliases] of Object.entries(TOOL_ALIASES)) {
+    if (tool === lower || aliases.some((alias) => alias.toLowerCase() === lower)) return tool;
+  }
+  return /^[a-z][a-z0-9_]*$/.test(lower) ? lower : undefined;
+}
+
 function matches(matcher: string | undefined, subject: string | undefined): boolean {
   if (matcher === undefined || matcher === "" || matcher === "*" || subject === undefined) return true;
   try {
-    return new RegExp(`^(?:${matcher})$`, "i").test(subject);
+    const re = new RegExp(`^(?:${matcher})$`, "i");
+    return namesOf(subject).some((name) => re.test(name));
   } catch {
     return false;
   }
@@ -78,6 +224,7 @@ const TOOL_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
   "PostToolUse",
   "PostToolUseFailure",
   "PermissionRequest",
+  "PermissionDenied",
 ]);
 
 /**
@@ -86,8 +233,9 @@ const TOOL_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
  */
 export function hookIfMatches(rule: string, tool: unknown, toolInput: unknown, cwd: string): boolean {
   const parsed = /^([^()]+?)(?:\(([\s\S]*)\))?$/.exec(rule.trim());
-  if (!parsed || typeof tool !== "string" || parsed[1]?.toLowerCase() !== tool.toLowerCase()) return false;
-  const pattern = parsed[2]?.replace(/:\*$/, "*");
+  const named = parsed?.[1]?.toLowerCase();
+  if (typeof tool !== "string" || !namesOf(tool).some((name) => name.toLowerCase() === named)) return false;
+  const pattern = parsed?.[2]?.replace(/:\*$/, "*");
   if (pattern === undefined || pattern === "" || pattern === "*") return true;
   const input = (toolInput ?? {}) as Record<string, unknown>;
   if (typeof input.command === "string") {
@@ -106,8 +254,31 @@ export interface HookRunOptions {
   cwd: string;
   /** The shell that runs each command: the daemon gives the shell of its bash tool. Absent means the system shell. */
   shell?: { command: string; buildArgs: (command: string) => string[] };
+  /** Added to the environment of each command. */
+  env?: Record<string, string>;
   /** Text for the model from a background hook that ended: the daemon puts it in the inbox of the session. */
   onBackgroundOutput?: (sessionId: string | undefined, text: string) => void;
+  /** The reply of a model to a prompt hook. Absent: a prompt hook fails, and does not block. */
+  askModel?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<string>;
+  /** The last reply of an agent with read tools to an agent hook. Absent: an agent hook fails, and does not block. */
+  askAgent?: (
+    prompt: string,
+    model: string | undefined,
+    signal: AbortSignal,
+    sessionId: string | undefined,
+  ) => Promise<string>;
+  /** The CLAUDE_ENV_FILE of a session: the variables that its SessionStart hooks write there reach its shell commands. */
+  envFile?: (sessionId: string) => string;
+  /** The `transcript_path` of a session: its JSONL file, whose message lines have the `role` and content blocks of Claude Code. */
+  transcriptPath?: (sessionId: string) => string;
+  /** Calls a tool of an MCP server of the session. Absent: an `mcp_tool` hook fails, and does not block. */
+  callMcpTool?: (call: {
+    sessionId: string | undefined;
+    server: string;
+    tool: string;
+    input: Record<string, unknown>;
+    signal: AbortSignal;
+  }) => Promise<{ text: string; isError: boolean }>;
 }
 
 function runOne(
@@ -115,14 +286,18 @@ function runOne(
   stdin: string,
   opts: HookRunOptions,
   timeoutS: number | undefined,
+  env?: Record<string, string>,
+  setup?: { signal?: AbortSignal },
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const { cwd, shell } = opts;
+    // A setup script runs for the user's environment, not as config of the harness: it gets no harness secret.
+    const base = setup ? modelCommandEnv() : process.env;
     const spawnOptions = {
       cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
+      env: { ...base, ...opts.env, ...env, CLAUDE_PROJECT_DIR: cwd, AGENCY_PROJECT_DIR: cwd },
     };
     const child = shell
       ? spawn(shell.command, shell.buildArgs(command), spawnOptions)
@@ -141,14 +316,23 @@ function runOne(
       }
     };
     const timer = timeoutS === undefined ? undefined : setTimeout(killTree, timeoutS * 1000);
+    setup?.signal?.addEventListener("abort", killTree, { once: true });
+    // A hook's answer is at the head of its output; the error of a failed setup script is at its tail.
+    const keep = (prev: string, d: unknown): string =>
+      setup
+        ? (prev + String(d)).slice(-MAX_OUTPUT_CHARS)
+        : prev.length < MAX_OUTPUT_CHARS
+          ? prev + String(d)
+          : prev;
     child.stdout.on("data", (d) => {
-      if (stdout.length < MAX_OUTPUT_CHARS) stdout += String(d);
+      stdout = keep(stdout, d);
     });
     child.stderr.on("data", (d) => {
-      if (stderr.length < MAX_OUTPUT_CHARS) stderr += String(d);
+      stderr = keep(stderr, d);
     });
     const done = (code: number | null) => {
       clearTimeout(timer);
+      setup?.signal?.removeEventListener("abort", killTree);
       resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
     };
     child.on("error", () => done(null));
@@ -157,6 +341,222 @@ function runOne(
     child.stdin.on("error", () => {});
     child.stdin.end(stdin);
   });
+}
+
+const SETUP_TIMEOUT_S = 600;
+const SETUP_ERROR_LINES = 20;
+const SETUP_ERROR_CHARS = 2000;
+
+/** Runs a setup script in the hook shell. Returns undefined on success, else why it failed with the last lines of its output. */
+export async function runSetupScript(
+  script: string,
+  opts: HookRunOptions,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  if (signal?.aborted) return "cancelled";
+  const out = await runOne(script, "", opts, SETUP_TIMEOUT_S, undefined, { signal });
+  if (out.code === 0) return undefined;
+  if (signal?.aborted) return "cancelled";
+  const tail = [out.stdout, out.stderr].filter(Boolean).join("\n").split("\n").slice(-SETUP_ERROR_LINES);
+  const why = out.code === null ? "did not run or timed out" : `exit code ${out.code}`;
+  return `${why}\n${tail.join("\n").slice(-SETUP_ERROR_CHARS)}`.trim();
+}
+
+/**
+ * An http hook in the form of a command result, as in Claude Code: a 2xx answer that is empty or a JSON object is
+ * stdout; another status, another body, no connection or the timeout is a failed hook, which does not block.
+ */
+async function runHttp(
+  entry: HttpHook,
+  body: string,
+  timeoutS: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const allowed = new Set(entry.allowedEnvVars ?? []);
+  const headers = Object.fromEntries(
+    Object.entries(entry.headers ?? {}).map(([name, value]) => [
+      name,
+      value.replace(/\$(?:\{(\w+)\}|(\w+))/g, (_, braced?: string, bare?: string) => {
+        const variable = braced ?? bare ?? "";
+        return allowed.has(variable) ? (process.env[variable] ?? "") : "";
+      }),
+    ]),
+  );
+  try {
+    const res = await fetch(entry.url, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(timeoutS * 1000),
+    });
+    const text = (await res.text()).trim();
+    if (!res.ok || (text !== "" && parseJson(text) === undefined)) {
+      return { code: 1, stdout: "", stderr: `${res.status}` };
+    }
+    return { code: 0, stdout: text, stderr: "" };
+  } catch {
+    return { code: null, stdout: "", stderr: "" };
+  }
+}
+
+/** The events of Claude Code that take a prompt hook, of those that run here. */
+const PROMPT_EVENTS: ReadonlySet<CommandHookEvent> = new Set([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PostToolBatch",
+  "PermissionRequest",
+  "Stop",
+  "SubagentStop",
+  "UserPromptSubmit",
+  "UserPromptExpansion",
+]);
+const PROMPT_TIMEOUT_S = 30;
+const AGENT_TIMEOUT_S = 60;
+const PROMPT_RULE =
+  'Answer with one JSON object and nothing else: {"ok": true} when the condition holds, or {"ok": false, "reason": "<what the agent must do>"} when it does not. Add "impossible": true when the condition can never hold.';
+const AGENT_RULE =
+  'Look at the files with your tools as you need. Then end with one JSON object and nothing else: {"ok": true} when the condition holds, or {"ok": false, "reason": "<what the agent must do>"} when it does not.';
+
+/**
+ * A prompt or agent hook in the form of a command result, as in Claude Code: `ok: false` blocks with the reason,
+ * except on a PermissionRequest, and on a stop that the model of a prompt hook calls impossible. Another answer, or a
+ * failed call, does not block.
+ */
+async function runPrompt(
+  entry: PromptHook,
+  input: string,
+  event: CommandHookEvent,
+  opts: HookRunOptions,
+  sessionId: string | undefined,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const agent = entry.type === "agent";
+  const { askModel, askAgent } = opts;
+  if (agent ? askAgent === undefined : askModel === undefined) {
+    return { code: null, stdout: "", stderr: `no model for a ${entry.type} hook` };
+  }
+  const question = entry.prompt.includes("$ARGUMENTS")
+    ? entry.prompt.replaceAll("$ARGUMENTS", input)
+    : `${entry.prompt}\n\n${input}`;
+  try {
+    const signal = AbortSignal.timeout(
+      (entry.timeout ?? (agent ? AGENT_TIMEOUT_S : PROMPT_TIMEOUT_S)) * 1000,
+    );
+    const reply = agent
+      ? await askAgent?.(`${question}\n\n${AGENT_RULE}`, entry.model, signal, sessionId)
+      : await askModel?.(`${question}\n\n${PROMPT_RULE}`, entry.model, signal);
+    const answer = parseJson(/\{[\s\S]*\}/.exec(reply ?? "")?.[0] ?? "");
+    if (answer?.ok === true) return { code: 0, stdout: "", stderr: "" };
+    if (answer?.ok !== false) return { code: 1, stdout: "", stderr: "the answer has no ok" };
+    const stop = event === "Stop" || event === "SubagentStop";
+    if (event === "PermissionRequest" || (stop && !agent && answer.impossible === true)) {
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    const reason = typeof answer.reason === "string" && answer.reason ? answer.reason : undefined;
+    return {
+      code: 0,
+      stdout: JSON.stringify({ decision: "block", ...(reason ? { reason } : {}) }),
+      stderr: "",
+    };
+  } catch {
+    return { code: null, stdout: "", stderr: "" };
+  }
+}
+
+/** Each `${path}` in a string of `value` becomes that value of `input`: an object or a number as JSON, nothing as "". */
+function withInputValues(value: unknown, input: Record<string, unknown>): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([\w.]+)\}/g, (_, path: string) => {
+      const found = path
+        .split(".")
+        .reduce<unknown>((at, key) => (at as Record<string, unknown> | undefined)?.[key], input);
+      return found === undefined ? "" : typeof found === "string" ? found : JSON.stringify(found);
+    });
+  }
+  if (Array.isArray(value)) return value.map((item) => withInputValues(item, input));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, withInputValues(item, input)]),
+    );
+  }
+  return value;
+}
+
+/** An `mcp_tool` hook: the text of the tool is read as the stdout of a command, and a tool error does not block. */
+async function runMcpTool(
+  entry: McpToolHook,
+  input: Record<string, unknown>,
+  opts: HookRunOptions,
+  timeoutS: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  if (opts.callMcpTool === undefined)
+    return { code: null, stdout: "", stderr: "no MCP servers for an mcp_tool hook" };
+  try {
+    const result = await opts.callMcpTool({
+      sessionId: typeof input.session_id === "string" ? input.session_id : undefined,
+      // An installed plugin keeps the bare names of its servers.
+      server: entry.server.replace(/^plugin:[^:]+:/, ""),
+      tool: entry.tool,
+      input: withInputValues(entry.input ?? {}, input) as Record<string, unknown>,
+      signal: AbortSignal.timeout(timeoutS * 1000),
+    });
+    return result.isError
+      ? { code: 1, stdout: "", stderr: result.text }
+      : { code: 0, stdout: result.text, stderr: "" };
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * A hook of Cursor in the form of a command result: it gets the input of its own event, and its answer
+ * (`permission: "deny"`, `continue: false`, `followup_message`, `additional_context`) becomes that of Claude Code.
+ */
+async function runCursor(
+  command: string,
+  cursor: NonNullable<Extract<HookEntry, { type: "command" }>["cursor"]>,
+  input: Record<string, unknown>,
+  opts: HookRunOptions,
+  timeoutS: number,
+  env?: Record<string, string>,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+  const line = typeof toolInput.command === "string" ? toolInput.command : undefined;
+  try {
+    if (cursor.matcher !== undefined && line !== undefined && !new RegExp(cursor.matcher).test(line)) {
+      return { code: 0, stdout: "", stderr: "" };
+    }
+  } catch {
+    return { code: 0, stdout: "", stderr: "" };
+  }
+  const path = toolInput.path ?? toolInput.file_path;
+  const stdin = JSON.stringify({
+    ...input,
+    hook_event_name: cursor.event,
+    conversation_id: input.session_id,
+    workspace_roots: [opts.cwd],
+    cwd: opts.cwd,
+    ...(line === undefined ? {} : { command: line }),
+    ...(typeof path === "string" ? { file_path: path } : {}),
+  });
+  const out = await runOne(command, stdin, opts, timeoutS, env);
+  if (out.code !== 0 && out.code !== 2) {
+    return cursor.failClosed
+      ? { code: 2, stdout: "", stderr: out.stderr || `a ${cursor.event} hook failed` }
+      : out;
+  }
+  if (out.code === 2) return out;
+  const answer = parseJson(out.stdout) ?? {};
+  const message = [answer.agent_message, answer.user_message].find((m): m is string => typeof m === "string");
+  const reply = (value: unknown) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
+  if (answer.permission === "deny" || answer.continue === false) {
+    return reply({ decision: "block", reason: message ?? `blocked by a ${cursor.event} hook` });
+  }
+  if (typeof answer.followup_message === "string")
+    return reply({ decision: "block", reason: answer.followup_message });
+  if (typeof answer.additional_context === "string") {
+    return reply({ hookSpecificOutput: { additionalContext: answer.additional_context } });
+  }
+  return { code: 0, stdout: "", stderr: "" };
 }
 
 /**
@@ -196,9 +596,10 @@ function parseJson(text: string): Record<string, unknown> | undefined {
 export async function runCommandHooks(
   hooks: CommandHooks,
   event: CommandHookEvent,
-  input: Record<string, unknown>,
+  eventInput: Record<string, unknown>,
   opts: HookRunOptions,
 ): Promise<HookOutcome> {
+  let input = eventInput;
   // What a matcher tests: the tool, the trigger of a compaction, the agent type, the type of a notification, the
   // typed command, or the type of a provider error.
   const subject = [
@@ -209,8 +610,30 @@ export async function runCommandHooks(
     input.command_name,
     input.error,
   ].find((value): value is string => typeof value === "string");
-  const stdin = JSON.stringify({ hook_event_name: event, cwd: opts.cwd, ...input });
+  // A turn with no session is the session "default" in the daemon; a hook of Claude Code always gets a session_id.
+  const sessionId = typeof input.session_id === "string" ? input.session_id : "default";
+  const transcript = opts.transcriptPath?.(sessionId);
+  const stdinOf = (value: Record<string, unknown>): string =>
+    JSON.stringify({
+      hook_event_name: event,
+      cwd: opts.cwd,
+      session_id: sessionId,
+      ...(transcript === undefined ? {} : { transcript_path: transcript }),
+      ...claudeShaped(value),
+    });
+  let stdin = stdinOf(input);
   const context: string[] = [];
+  let retry = false;
+  let permission: "allow" | "ask" | undefined;
+  let output: string | undefined;
+  // As in Claude Code: a SessionStart hook writes `export` lines to CLAUDE_ENV_FILE for the shell commands of the session.
+  const envFile = event === "SessionStart" ? opts.envFile?.(sessionId) : undefined;
+  if (envFile !== undefined) {
+    mkdirSync(dirname(envFile), { recursive: true });
+    writeFileSync(envFile, "");
+  }
+  const envOf = (entry: { env?: Record<string, string> }) =>
+    envFile === undefined ? entry.env : { ...entry.env, CLAUDE_ENV_FILE: envFile };
   for (const group of hooks[event] ?? []) {
     if (!matches(group.matcher, subject)) continue;
     for (const entry of group.hooks) {
@@ -220,13 +643,14 @@ export async function runCommandHooks(
       ) {
         continue;
       }
-      if (entry.async || entry.asyncRewake) {
+      if (entry.type === "command" && (entry.async || entry.asyncRewake)) {
         const rewake = entry.asyncRewake === true;
         void runOne(
           entry.command,
           stdin,
           opts,
           rewake ? (entry.timeout ?? DEFAULT_TIMEOUT_S) : entry.timeout,
+          envOf(entry),
         ).then((out) => {
           const text = backgroundOutput(out, rewake);
           const sessionId = typeof input.session_id === "string" ? input.session_id : undefined;
@@ -234,7 +658,35 @@ export async function runCommandHooks(
         });
         continue;
       }
-      const out = await runOne(entry.command, stdin, opts, entry.timeout ?? DEFAULT_TIMEOUT_S);
+      if (entry.type === "prompt" && !PROMPT_EVENTS.has(event)) continue;
+      if (entry.type === "agent" && (!PROMPT_EVENTS.has(event) || event === "PermissionRequest")) continue;
+      const timeoutS = entry.timeout ?? DEFAULT_TIMEOUT_S;
+      const out =
+        entry.type === "http"
+          ? await runHttp(entry, stdin, timeoutS)
+          : entry.type === "prompt" || entry.type === "agent"
+            ? await runPrompt(
+                entry,
+                stdin,
+                event,
+                opts,
+                typeof input.session_id === "string" ? input.session_id : undefined,
+              )
+            : entry.type === "mcp_tool"
+              ? await runMcpTool(entry, { hook_event_name: event, cwd: opts.cwd, ...input }, opts, timeoutS)
+              : entry.cursor !== undefined
+                ? await runCursor(entry.command, entry.cursor, input, opts, timeoutS, envOf(entry))
+                : await runOne(entry.command, stdin, opts, timeoutS, envOf(entry));
+      // As in Claude Code: the denial already happened, and only `retry` of the answer counts.
+      if (event === "PermissionDenied") {
+        if (
+          out.code === 0 &&
+          (parseJson(out.stdout)?.hookSpecificOutput as { retry?: unknown })?.retry === true
+        ) {
+          retry = true;
+        }
+        continue;
+      }
       if (out.code === 2) return { block: out.stderr || `blocked by a ${event} hook` };
       if (out.code !== 0) continue;
       const json = parseJson(out.stdout);
@@ -242,7 +694,14 @@ export async function runCommandHooks(
       // The answer of a PermissionRequest hook, in the form of Claude Code.
       const behavior = (specific.decision as { behavior?: unknown } | undefined)?.behavior;
       if (event === "PermissionRequest" && behavior === "allow") return { allow: true };
-      if (json?.decision === "block" || specific.permissionDecision === "deny" || behavior === "deny") {
+      // `deny` is the decision of a Gemini CLI hook.
+      const decision = json?.decision;
+      if (
+        decision === "block" ||
+        decision === "deny" ||
+        specific.permissionDecision === "deny" ||
+        behavior === "deny"
+      ) {
         const reason = json?.reason ?? specific.permissionDecisionReason;
         return { block: typeof reason === "string" && reason ? reason : `blocked by a ${event} hook` };
       }
@@ -250,9 +709,44 @@ export async function runCommandHooks(
       else if (!json && out.stdout && (event === "UserPromptSubmit" || event === "SessionStart")) {
         context.push(out.stdout);
       }
+      if (event === "PreToolUse") {
+        // As in Claude Code: `ask` wins over `allow`, and the next hook sees the input that this one gave.
+        if (specific.permissionDecision === "ask") permission = "ask";
+        else if (specific.permissionDecision === "allow" && permission === undefined) permission = "allow";
+        const updated = specific.updatedInput;
+        if (typeof updated === "object" && updated !== null && !Array.isArray(updated)) {
+          input = { ...input, tool_input: agencyInput(input.tool_name, updated as Record<string, unknown>) };
+          stdin = stdinOf(input);
+        }
+      }
+      const replaced = specific.updatedToolOutput ?? specific.updatedMCPToolOutput;
+      if (event === "PostToolUse" && replaced !== undefined) output = toolOutputText(replaced);
     }
   }
-  return context.length > 0 ? { context: context.join("\n") } : {};
+  return {
+    ...(context.length > 0 ? { context: context.join("\n") } : {}),
+    ...(retry ? { retry: true as const } : {}),
+    ...(permission === "ask"
+      ? { ask: true as const }
+      : permission === "allow"
+        ? { allow: true as const }
+        : {}),
+    ...(input !== eventInput ? { input: input.tool_input as Record<string, unknown> } : {}),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
+/** The text of an `updatedToolOutput`: a string, the `stdout` and `stderr` of a Bash result of Claude Code, or JSON. */
+function toolOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const shaped = value as { stdout?: unknown; stderr?: unknown; content?: unknown } | null;
+  if (typeof shaped?.stdout === "string") {
+    return [shaped.stdout, shaped.stderr]
+      .filter((part) => typeof part === "string" && part !== "")
+      .join("\n");
+  }
+  if (typeof shaped?.content === "string") return shaped.content;
+  return JSON.stringify(value);
 }
 
 /** Connects the tool and stop events of the bus to the command hooks. Returns the function that disconnects them. */
@@ -262,7 +756,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
   const agentTypes = new Map<string, string>();
   const offs = [
     bus.on("tool.execute.before", async (payload) => {
-      const p = payload as ToolPayload;
+      const p = payload as AgencyEvents["tool.execute.before"];
       const out = await runCommandHooks(
         hooks,
         "PreToolUse",
@@ -270,6 +764,12 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
         opts,
       );
       if (out.block !== undefined) throw new HookBlock(out.block);
+      if (out.input !== undefined) p.input = out.input;
+      // An `ask` of one hook set holds against an `allow` of another.
+      if (out.ask) p.decision = "ask";
+      else if (out.allow && p.decision === undefined) p.decision = "allow";
+      if (out.context !== undefined)
+        p.context = p.context === undefined ? out.context : `${p.context}\n${out.context}`;
     }),
     bus.on("tool.execute.after", async (payload) => {
       const p = payload as ToolPayload;
@@ -279,6 +779,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       const out = result?.isError
         ? await runCommandHooks(hooks, "PostToolUseFailure", { ...base, error: result.content }, opts)
         : await runCommandHooks(hooks, "PostToolUse", { ...base, tool_response: p.result }, opts);
+      if (out.output !== undefined) (payload as AgencyEvents["tool.execute.after"]).output = out.output;
       const text = out.block ?? out.context;
       if (text !== undefined) throw new HookBlock(text);
     }),
@@ -303,7 +804,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       if (out.context !== undefined) throw new HookBlock(out.context);
     }),
     bus.on("turn.stop", async (payload) => {
-      const p = payload as { sessionId?: string; taskDepth: number; stopHookActive: boolean };
+      const p = payload as AgencyEvents["turn.stop"];
       // A subagent is not the session: its end has its own event.
       const out = await runCommandHooks(
         hooks,
@@ -311,6 +812,7 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
         {
           session_id: p.sessionId,
           stop_hook_active: p.stopHookActive,
+          last_assistant_message: p.lastAssistantMessage,
           ...(p.taskDepth > 0 && p.sessionId ? { agent_type: agentTypes.get(p.sessionId) } : {}),
         },
         opts,
@@ -346,6 +848,22 @@ export function attachCommandHooks(bus: EventBus, hooks: CommandHooks, opts: Hoo
       // A deny of one hook set holds against an allow of another.
       if (out.block !== undefined) p.decision = "deny";
       else if (out.allow && p.decision === undefined) p.decision = "allow";
+    }),
+    bus.on("permission.denied", async (payload) => {
+      const p = payload as AgencyEvents["permission.denied"];
+      const out = await runCommandHooks(
+        hooks,
+        "PermissionDenied",
+        {
+          session_id: p.sessionId,
+          tool_name: p.tool,
+          tool_input: p.input,
+          tool_use_id: p.toolUseId,
+          reason: p.reason,
+        },
+        opts,
+      );
+      if (out.retry) p.retry = true;
     }),
     bus.on("session.compacting", async (payload) => {
       const p = payload as { sessionId: string; trigger: string };

@@ -20,3 +20,16 @@ export function compactionPrompt(): string {
     "4. Keep this chunk under 4000 tokens (the harness enforces the 20K total)."
   );
 }
+
+/** The last message of a compaction that the model writes at the end of the history it summarizes. */
+export function wholeCompactionPrompt(): string {
+  return (
+    "This message is from the harness, not the user. Write a summary of the conversation above for yourself: it " +
+    "replaces the conversation, its newest messages follow it word for word, and then you go on with the task with " +
+    "all your tools. Reply with the summary text only; a tool call in this reply is refused. The summary must not " +
+    "mention this message.\n\n" +
+    "Sections: the user's requests and rules in their own words; decisions and their reasons; files read and " +
+    "changed, with what changed; commands run and their results; errors and their fixes; the state of the work; " +
+    "the next step. Keep exact paths, names, commands and error texts. Keep the summary under 6000 tokens."
+  );
+}

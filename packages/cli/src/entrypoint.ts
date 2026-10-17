@@ -1,10 +1,14 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import {
+  agencyToolName,
   CODE_COMMAND,
   type Config,
   cacheDir,
+  configDir,
   dataDir,
   EventBus,
   getSessionTitle,
@@ -12,36 +16,69 @@ import {
   OUTPUT_CUT_NOTE,
   ownerOnlyDirs,
   parseModelRef,
+  permissionsFromRules,
   type RetentionPolicy,
   reportStorage,
   runCodeChild,
   SessionStore,
   storagePaths,
+  userPluginStore,
 } from "@agency/core";
-import { runSandboxChild, SANDBOX_COMMAND } from "@agency/guard";
+import {
+  PERMISSION_MODES,
+  type PermissionMode,
+  runSandboxChild,
+  SANDBOX_COMMAND,
+  type ToolPermissionValue,
+} from "@agency/guard";
 import { t } from "@agency/i18n";
 import {
   BUILTIN_MODELS,
+  CHATGPT_PROVIDER,
+  CHATGPT_USAGE_URL,
   createKeychain,
   defaultModelIDs,
   GATEWAY_BASE_URLS,
+  getChatgptCredential,
   type KeychainBackend,
+  listChatgptModels,
   OAUTH_PROVIDERS,
+  oauthKey,
   resolveApiKey,
   runDeviceFlow,
   runOAuthFlow,
+  signInChatgpt,
+  signOutChatgpt,
   supportsDeviceFlow,
+  ThinkingLevel,
 } from "@agency/providers";
 import { connectToDaemon, type DaemonClient, hashWorkspaceRoot, type InstanceInfo } from "@agency/rpc";
 import type { Message } from "@agency/schema";
+import { imageMimeFor, loadMcpConfigArg } from "@agency/tools";
 import { DEFAULT_SYSTEM_PROMPT, type RunTurnRpcResult, STRUCTURED_OUTPUT_TOOL } from "./daemon.ts";
 import { debugCommand } from "./debug.ts";
 import { connectHeadlessClient, DAEMON_COMMAND, type RunHeadlessOptions, runHeadless } from "./headless.ts";
-import { mcpCmd } from "./mcp-commands.ts";
+import { harnessImportCmd, scanHarnesses } from "./import-commands.ts";
+import { mcpCmd, mcpServe } from "./mcp-commands.ts";
 import { createTerminalOnboardingPrompter, readSecretLine, runOnboarding } from "./onboarding.ts";
-import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "./plugin-commands.ts";
+import {
+  claudePluginSource,
+  pluginInstallSource,
+  pluginListCmd,
+  pluginRemoveCmd,
+  pluginSyncCmd,
+  pluginUpdateCmd,
+} from "./plugin-commands.ts";
 import { runSessionTurn } from "./session-runner.ts";
-import { pruneCommand, storageCommand, whereCommand, wherePaths } from "./storage-commands.ts";
+import {
+  pruneCommand,
+  storageCommand,
+  type UsageGroup,
+  usageCommand,
+  usageReport,
+  whereCommand,
+  wherePaths,
+} from "./storage-commands.ts";
 import { runParallel, runWorkflow, type WorkflowAgentResult } from "./workflow.ts";
 
 /**
@@ -59,9 +96,16 @@ Commands:
   where                    Show every path Agency reads or writes
   storage                  Report storage sizes by category
   storage prune            Clear the cache; with retention flags, prune old sessions
+  import [--yes|--dry-run]  Find the MCP servers, hooks and plugins of other agents
+                           (Claude Code, Codex, Cursor, Gemini CLI, ...) and import them
+  usage [--by day|month|model] [--since YYYY-MM-DD] [--json]
+                           Tokens and cost of the model calls of all workspaces
   session list [query]     List sessions for this workspace (id, title, created, entries);
                            optional query filters by title (id fallback), case-insensitive
-  session show <id>        Show session details
+  session show <id>        Show session details (show, export and fork take a session's
+                           title too)
+  session export <id> [-o <file>]
+                           The conversation of a session as Markdown, to stdout or a file
   session rename <id> <title>  Rename a session
   session fork <id>        Fork (clone) a session under a new id
   session clone <id> [newId]  Clone a session file under a new id (or the given one)
@@ -69,17 +113,36 @@ Commands:
   daemon status            Show daemon status for this workspace, with the turns that run
   daemon cancel <turn>     Stop a turn that runs
   auth login <provider>    Store an API key for a provider in the OS keychain
+  auth login chatgpt       Continue with ChatGPT: use the models of your ChatGPT plan
   auth login <provider> --oauth
-                           OAuth browser flow for anthropic, openai, google, github-copilot
+                           OAuth browser flow for google, github-copilot
                            (needs provider.<id>.oauth.clientId in config)
   auth login <provider> --device
                            RFC 8628 device flow where supported (github-copilot)
   auth list                Show which providers have a resolvable key
+  auth logout <provider>   Remove the key or sign-in of a provider (a ChatGPT sign-in is revoked)
+  mcp add <name> -- <command> [args]
+                           Add an MCP server that runs as a command (--env KEY=value);
+                           --scope project writes the .mcp.json of the workspace
+  mcp add <name> <url>     Add an MCP server over HTTP (--header "Name: value")
+  mcp add-json <name> <json>  Add an MCP server from its entry of .mcp.json
+  mcp list                 Show the MCP servers and the origin of each
+  mcp get <name>           Show one MCP server, with the values of env and headers hidden
+  mcp remove <name>        Remove an MCP server that mcp add added
   mcp login <server>       Sign in to an MCP server over HTTP in the browser (OAuth)
+  mcp import <client>      Copy the MCP servers of Claude Code, Cursor, Codex, Gemini,
+                           OpenCode, Pi, VS Code, Windsurf, Zed, Claude Desktop, Copilot
+                           CLI, Amp, Crush, Goose, Qwen Code, Cline, Roo Code or Kilo Code
   mcp logout <server>      Remove the sign-in of an MCP server
-  plugin install <dir> [--overwrite]
-                           Install a Claude Code / Codex plugin
+  mcp serve                Serve Agency as an MCP server on stdio: its tool "agency" runs
+                           a turn. --permission-mode and --model of the server apply
+  plugin install <source> [plugin] [--overwrite]
+                           Install a Claude Code / Codex plugin from a folder, a git URL
+                           or owner/repo (#ref: a branch or tag)
   plugin list              Show installed skills and plugin modules
+  plugin sync              Install the enabledPlugins of .claude/settings.json from their
+                           marketplaces (extraKnownMarketplaces, or those Claude Code added)
+  plugin update <name>     Install a plugin again from the source of its install
   plugin remove <name>     Remove an installed plugin
   review [<ref>]           Review the changes of the workspace and change no file:
                            the uncommitted changes, or the changes since <ref>
@@ -99,7 +162,21 @@ Options:
   --provider <id>          Provider for the model; overrides config.model's provider
   --continue               With -p: resume the most recent session
   --session <id>           With -p: run in (creating if needed) this session
-  --permission-mode <mode> With -p: ask (default), allow-edits, allow-all, or deny
+  --permission-mode <mode> With -p: ask (default), plan, allow-edits, auto, allow-all, or deny
+  --allowed-tools <rules>  With -p: these tools run with no ask, as rules of Claude Code
+                           (Bash(git *),Read,Edit(src/**)); --disallowed-tools denies them
+  --mcp-config <file|json>  With -p: MCP servers for this run, as .mcp.json has them
+                           (repeatable); --strict-mcp-config uses only these servers
+  --thinking <level>       With -p: the reasoning effort of the model: off, minimal, low,
+                           medium, high, xhigh or max
+  --tools <names>          With -p: only these built-in tools (Bash,Read,Edit); "" is none,
+                           default is all. MCP tools stay
+  --fallback-model <provider/model>
+                           With -p: the model of the turn when its model is overloaded
+  -o, --output-last-message <file>
+                           With -p: also write the answer to this file
+  -w, --worktree <name>    With -p: run in the git worktree .agency/worktrees/<name>
+                           on branch agency/<name> (made when missing)
   --max-steps <n>          With -p: tool steps one turn may take (default: maxSteps
                            of the config, or 100)
   --max-cost <usd>         With -p: stop the turn when its cost reaches this amount
@@ -120,6 +197,14 @@ Options:
   --max-total-mb <mb>      With storage prune: delete oldest sessions until under this size
   --help, -h               Show this help
   --version, -v            Show version
+
+Flags of Claude Code, codex exec and Pi work too: -p with the prompt after the flags,
+--output-format, --max-turns, -c, -r/--resume, --session-id, --dangerously-skip-permissions,
+--settings (its permissions, model, fallbackModel and effortLevel), -n/--name, --resume <name>, --fork-session, --system-prompt-file, --append-system-prompt-file, codex exec [resume|fork],
+--json, -m, -i, --yolo (the sandbox stays), --mode json, --fork, --exclude-tools, --max-budget-usd, --effort, the permission
+modes of Claude Code, -C/--cd, --output-schema and --no-tools. --verbose, --input-format text,
+--include-partial-messages, --no-session-persistence, --ephemeral, --no-session and
+--skip-git-repo-check change nothing.
 
 No interactive client in this build. Use \`agency -p "<prompt>"\` for headless or \`agency --help\` for commands.
 `;
@@ -142,12 +227,24 @@ export interface ParsedArgv {
   device: boolean;
   overwrite: boolean;
   rollback: boolean;
+  /** `-p --no-session-persistence` (`--ephemeral`, `--no-session`): the run keeps no session. */
+  ephemeral: boolean;
+  /** `agency import --yes` imports all; `--dry-run` only shows. */
+  yes: boolean;
+  dryRun: boolean;
   images: string[];
   /** The `--arg key=value` pairs of `workflow run`, as written. */
   workflowArgs: string[];
   continueLast: boolean;
   session: string | undefined;
-  permissionMode: "ask" | "allow-edits" | "allow-all" | "deny";
+  permissionMode: PermissionMode;
+  /** Permission rules of Claude Code for this run: `--allowed-tools` allows, `--disallowed-tools` denies. */
+  allowedTools: string[];
+  disallowedTools: string[];
+  /** The `ask` rules of `--settings`: in a run with no person to ask, such a call is refused. */
+  askTools: string[];
+  /** The keys of `--settings` that a run here does not use: a warning names them. */
+  ignoredSettings: string[];
   /** Tool steps one turn may take; undefined keeps the loop's default. */
   maxSteps: number | undefined;
   goal: string | undefined;
@@ -156,10 +253,36 @@ export interface ParsedArgv {
   appendSystemPrompt: string | undefined;
   maxCost: number | undefined;
   maxTotalCost: number | undefined;
+  /** `--mcp-config <file|json>` of `-p`: MCP servers of this run; `--strict-mcp-config` drops the others. */
+  mcpConfig: string[];
+  strictMcpConfig: boolean;
+  /** `-o, --output-last-message <file>` of `-p`: the file gets the answer too, as in `codex exec`. */
+  outputLastMessage: string | undefined;
+  /** `-n, --name <name>` of `-p` with a session: the title of that session, as Claude Code and Pi name one. */
+  name: string | undefined;
+  /** `--fork-session` of `-p` with `--continue` or `--session`: the turn runs in a copy of the session. */
+  forkSession: boolean;
+  /** `--thinking <level>` of `-p`, as in Pi: the reasoning effort of the model. */
+  thinking: ThinkingLevel | undefined;
+  /** `--tools <names>` of `-p`: the built-in tools of the run, as Claude Code names them; `default` is all. */
+  tools: string | undefined;
+  /** `--fallback-model <provider/model>` of `-p`: the model of the turn when the model is overloaded. */
+  fallbackModel: string | undefined;
+  /** `-w, --worktree <name>` of `-p`: the turn runs in a git worktree of this name. */
+  worktree: string | undefined;
+  /** The flags of `mcp add`: `--env KEY=value`, `--header "Name: value"`, `--transport`, `--scope`. */
+  serverEnv: string[];
+  headers: string[];
+  transport: string | undefined;
+  scope: string | undefined;
   /** `--format stream-json`: `format` is then json, so every other command prints JSON. */
   streamJson: boolean;
   format: "text" | "json";
   retention: RetentionPolicy | undefined;
+  /** `agency usage --by`: day, month or model. */
+  usageBy: UsageGroup | undefined;
+  /** `agency usage --since YYYY-MM-DD`. */
+  since: string | undefined;
   help: boolean;
   version: boolean;
 }
@@ -186,6 +309,8 @@ export interface EntrypointDeps {
   ensureClient?: (options: { workspaceRoot: string; instanceDir?: string }) => Promise<DaemonClient>;
   /** Overrides the workspace the command runs in (tests). */
   cwd?: string;
+  /** The fetch of the ChatGPT sign-in, its model list and its sign-out (tests). */
+  chatgptFetch?: typeof fetch;
   /** Overrides the OAuth browser flow for `auth login --oauth` (tests). */
   oauthFlow?: (provider: string, keychain: KeychainBackend) => Promise<unknown>;
   /** Overrides the device flow for `auth login --device` (tests). */
@@ -194,6 +319,8 @@ export interface EntrypointDeps {
    *  interactive session emits session.compacted instead of firing into the
    *  void. Defaults to a fresh bus per invocation. */
   bus?: EventBus;
+  /** The request lines of `mcp serve` (tests); default: stdin. */
+  mcpInput?: AsyncIterable<string>;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -223,11 +350,31 @@ export function parseArgv(argv: string[]): ParsedArgv {
     device: false,
     images: [],
     workflowArgs: [],
+    mcpConfig: [],
+    strictMcpConfig: false,
+    worktree: undefined,
+    fallbackModel: undefined,
+    tools: undefined,
+    thinking: undefined,
+    forkSession: false,
+    name: undefined,
+    outputLastMessage: undefined,
+    serverEnv: [],
+    headers: [],
+    transport: undefined,
+    scope: undefined,
     overwrite: false,
     rollback: false,
+    ephemeral: false,
+    yes: false,
+    dryRun: false,
     continueLast: false,
     session: undefined,
     permissionMode: "ask",
+    allowedTools: [],
+    disallowedTools: [],
+    askTools: [],
+    ignoredSettings: [],
     maxSteps: undefined,
     goal: undefined,
     systemPrompt: undefined,
@@ -238,10 +385,24 @@ export function parseArgv(argv: string[]): ParsedArgv {
     streamJson: false,
     format: "text",
     retention: undefined,
+    usageBy: undefined,
+    since: undefined,
     help: false,
     version: false,
   };
   const positionals: string[] = [];
+  // `claude -p --output-format json "query"`: the `-p` of Claude Code takes no value, and the prompt comes later.
+  let promptLater = false;
+  let settingsArg: string | undefined;
+  let modeSet = false;
+  let appendFileText: string | undefined;
+  const fileText = (flag: string, path: string): string => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch (error) {
+      throw new Error(t("cli.error.read_file", { flag, path, detail: (error as Error).message }));
+    }
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -272,6 +433,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.version = true;
         break;
       case "--continue":
+      case "-c":
         parsed.continueLast = true;
         break;
       case "--oauth":
@@ -281,22 +443,97 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.device = true;
         break;
       case "--workspace":
+      case "-C":
+      case "--cd":
         parsed.workspace = value();
         break;
       case "--model":
+      case "-m":
         parsed.model = value();
         break;
       case "--provider":
         parsed.provider = value();
         break;
       case "--session":
+      case "--session-id":
+      case "--resume":
+      case "-r":
         parsed.session = value();
         break;
       case "-p":
-      case "--print":
-        parsed.print = value();
+      case "--print": {
+        const next = argv[i + 1];
+        if (inline === undefined && (next === undefined || (next.startsWith("-") && next !== "-")))
+          promptLater = true;
+        else parsed.print = value();
         break;
-      case "--format": {
+      }
+      // Claude Code asks for `--verbose` with stream-json, and `codex exec` for a git check flag outside a repository.
+      case "--verbose":
+      case "--include-partial-messages":
+      case "--skip-git-repo-check":
+        break;
+      case "--no-session-persistence":
+      case "--ephemeral":
+      case "--no-session":
+        parsed.ephemeral = true;
+        break;
+      // `codex exec resume --last`.
+      case "--last":
+        parsed.continueLast = true;
+        break;
+      // The JSON lines of `codex exec --json` and `pi --mode json` are the events of the turn: here, those of Agency.
+      case "--json":
+        parsed.streamJson = true;
+        parsed.format = "json";
+        break;
+      case "--mode": {
+        const mode = value();
+        if (mode !== "text" && mode !== "json") throw new Error(t("cli.error.invalid_format"));
+        parsed.streamJson = mode === "json";
+        parsed.format = mode;
+        break;
+      }
+      // The sandbox stays: Agency runs no command outside it.
+      case "--yolo":
+      case "--dangerously-bypass-approvals-and-sandbox":
+        parsed.permissionMode = "allow-all";
+        break;
+      // `pi --fork <id>`.
+      case "--fork":
+        parsed.session = value();
+        parsed.forkSession = true;
+        break;
+      case "--exclude-tools":
+      case "-xt":
+        parsed.disallowedTools.push(
+          ...value()
+            .split(",")
+            .map((rule) => rule.trim())
+            .filter(Boolean),
+        );
+        break;
+      case "--input-format":
+        if (value() !== "text") throw new Error(t("cli.error.input_format"));
+        break;
+      case "--dangerously-skip-permissions":
+        modeSet = true;
+        parsed.permissionMode = "allow-all";
+        break;
+      case "-n":
+      case "--name":
+        parsed.name = value();
+        break;
+      case "--fork-session":
+        parsed.forkSession = true;
+        break;
+      // Pi's `--no-tools` turns off the MCP tools too, those of `--mcp-config` with them: a deny of `*`.
+      case "--no-tools":
+      case "-nt":
+        parsed.disallowedTools.push("*");
+        break;
+      case "--format":
+      case "--output-format": {
         const format = value();
         if (format !== "text" && format !== "json" && format !== "stream-json") {
           throw new Error(t("cli.error.invalid_format"));
@@ -305,15 +542,35 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.format = format === "text" ? "text" : "json";
         break;
       }
+      case "--settings":
+        settingsArg = value();
+        break;
       case "--permission-mode": {
-        const mode = value();
-        if (mode !== "ask" && mode !== "allow-edits" && mode !== "allow-all" && mode !== "deny") {
+        modeSet = true;
+        const raw = value();
+        const mode = CLAUDE_PERMISSION_MODES[raw] ?? raw;
+        if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
           throw new Error(t("cli.error.invalid_permission_mode"));
         }
-        parsed.permissionMode = mode;
+        parsed.permissionMode = mode as PermissionMode;
         break;
       }
-      case "--max-steps": {
+      // Claude Code spells them `--allowedTools` and `--disallowedTools`. A value holds rules split by commas.
+      case "--allowed-tools":
+      case "--allowedTools":
+      case "--disallowed-tools":
+      case "--disallowedTools": {
+        const rules = value()
+          .split(/,(?![^(]*\))/)
+          .map((rule) => rule.trim())
+          .filter(Boolean);
+        (name.toLowerCase().startsWith("--allowed") ? parsed.allowedTools : parsed.disallowedTools).push(
+          ...rules,
+        );
+        break;
+      }
+      case "--max-steps":
+      case "--max-turns": {
         const steps = Number(value());
         if (!Number.isInteger(steps) || steps < 1) throw new Error(t("cli.error.invalid_max_steps"));
         parsed.maxSteps = steps;
@@ -323,20 +580,41 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.goal = value();
         break;
       case "--json-schema":
+      case "--output-schema":
         parsed.jsonSchema = value();
         break;
       case "--system-prompt":
         parsed.systemPrompt = value();
         break;
+      case "--system-prompt-file":
+        parsed.systemPrompt = fileText(name, value());
+        break;
       case "--append-system-prompt":
         parsed.appendSystemPrompt = value();
         break;
+      case "--append-system-prompt-file":
+        appendFileText = fileText(name, value());
+        break;
       case "--max-cost":
+      case "--max-budget-usd":
       case "--max-total-cost": {
         const cost = Number(value());
         if (!(cost > 0)) throw new Error(t("cli.error.invalid_max_cost"));
-        if (name === "--max-cost") parsed.maxCost = cost;
+        if (name !== "--max-total-cost") parsed.maxCost = cost;
         else parsed.maxTotalCost = cost;
+        break;
+      }
+      case "--by": {
+        const by = value();
+        if (by !== "day" && by !== "month" && by !== "model")
+          throw new Error(t("cli.error.invalid_usage_by"));
+        parsed.usageBy = by;
+        break;
+      }
+      case "--since": {
+        const since = value();
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(since)) throw new Error(t("cli.error.invalid_since"));
+        parsed.since = since;
         break;
       }
       case "--max-age-days":
@@ -348,10 +626,59 @@ export function parseArgv(argv: string[]): ParsedArgv {
         parsed.retention.maxTotalBytes = numberValue(name, value()) * 1024 * 1024;
         break;
       case "--image":
+      case "-i":
         parsed.images.push(value());
         break;
       case "--arg":
         parsed.workflowArgs.push(value());
+        break;
+      case "--mcp-config":
+        parsed.mcpConfig.push(value());
+        break;
+      case "--strict-mcp-config":
+        parsed.strictMcpConfig = true;
+        break;
+      case "-o":
+      case "--output-last-message":
+        parsed.outputLastMessage = value();
+        break;
+      case "--thinking":
+      case "--effort": {
+        const raw = value();
+        // `ultracode` of Claude Code is `xhigh` with its workflows on: here, `xhigh`.
+        const level = raw === "ultracode" ? "xhigh" : raw;
+        if (!(ThinkingLevel as readonly string[]).includes(level))
+          throw new Error(t("cli.error.invalid_thinking", { levels: ThinkingLevel.join(", ") }));
+        parsed.thinking = level as ThinkingLevel;
+        break;
+      }
+      case "--tools":
+        parsed.tools = value();
+        break;
+      // ponytail: Claude Code tries a comma list in order; here the first model only, as `fallback_model` has one.
+      case "--fallback-model":
+        parsed.fallbackModel = value().split(",")[0]?.trim();
+        break;
+      case "-w":
+      case "--worktree":
+        parsed.worktree = value();
+        break;
+      // The flags of `mcp add`, as `claude mcp add` spells them.
+      case "-e":
+      case "--env":
+        parsed.serverEnv.push(value());
+        break;
+      case "-H":
+      case "--header":
+        parsed.headers.push(value());
+        break;
+      case "-t":
+      case "--transport":
+        parsed.transport = value();
+        break;
+      case "-s":
+      case "--scope":
+        parsed.scope = value();
         break;
       case "--overwrite":
         parsed.overwrite = true;
@@ -359,11 +686,37 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case "--rollback":
         parsed.rollback = true;
         break;
+      case "--yes":
+      case "-y":
+        parsed.yes = true;
+        break;
+      case "--dry-run":
+        parsed.dryRun = true;
+        break;
       default:
         throw new Error(t("cli.error.unknown_option", { flag: name }));
     }
   }
 
+  // `codex exec [resume <id> | resume --last | fork <id>] <prompt>` runs as `-p`.
+  if (positionals[0] === "exec" && parsed.print === undefined && !promptLater) {
+    const next = positionals[1];
+    const verb = next === "resume" || next === "fork" ? next : undefined;
+    positionals.splice(0, verb === undefined ? 1 : 2);
+    if (verb === "fork" || (verb === "resume" && !parsed.continueLast)) {
+      parsed.session = positionals.shift();
+      if (parsed.session === undefined) throw new Error(t("cli.error.exec_session", { verb }));
+      parsed.forkSession ||= verb === "fork";
+    }
+    promptLater = true;
+  }
+  if (promptLater) parsed.print = positionals.shift() ?? "-";
+  if (settingsArg !== undefined) applyClaudeSettings(parsed, settingsArg, modeSet);
+  // Claude Code puts the file before the text of `--append-system-prompt`, whatever the order of the flags.
+  if (appendFileText !== undefined)
+    parsed.appendSystemPrompt = [appendFileText, parsed.appendSystemPrompt]
+      .filter((part) => part !== undefined)
+      .join("\n\n");
   parsed.command = positionals[0];
   parsed.subcommand = positionals[1];
   parsed.args = positionals.slice(2);
@@ -371,6 +724,50 @@ export function parseArgv(argv: string[]): ParsedArgv {
 }
 
 type LineSink = (line: string) => void;
+
+/** `--settings <file|json>` of Claude Code: the keys that a run here has a flag for. A flag of the command wins. */
+function applyClaudeSettings(parsed: ParsedArgv, raw: string, modeSet: boolean): void {
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(raw.trimStart().startsWith("{") ? raw : readFileSync(raw, "utf8"));
+  } catch (error) {
+    throw new Error(t("cli.error.invalid_settings", { detail: (error as Error).message }));
+  }
+  const strings = (list: unknown): string[] =>
+    Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : [];
+  const permissions = (typeof settings.permissions === "object" ? settings.permissions : {}) as Record<
+    string,
+    unknown
+  >;
+  parsed.allowedTools.push(...strings(permissions.allow));
+  parsed.disallowedTools.push(...strings(permissions.deny));
+  parsed.askTools.push(...strings(permissions.ask));
+  const mode = String(permissions.defaultMode);
+  const agencyMode = Object.hasOwn(CLAUDE_PERMISSION_MODES, mode) ? CLAUDE_PERMISSION_MODES[mode] : mode;
+  if (!modeSet && PERMISSION_MODES.includes(agencyMode as PermissionMode))
+    parsed.permissionMode = agencyMode as PermissionMode;
+  if (typeof settings.model === "string") parsed.model ??= settings.model;
+  const fallback = Array.isArray(settings.fallbackModel) ? settings.fallbackModel[0] : settings.fallbackModel;
+  if (typeof fallback === "string") parsed.fallbackModel ??= fallback;
+  const effort = settings.effortLevel === "ultracode" ? "xhigh" : String(settings.effortLevel);
+  if ((ThinkingLevel as readonly string[]).includes(effort)) parsed.thinking ??= effort as ThinkingLevel;
+  const used = ["$schema", "permissions", "model", "fallbackModel", "effortLevel"];
+  parsed.ignoredSettings = [
+    ...Object.keys(settings).filter((key) => !used.includes(key)),
+    ...Object.keys(permissions)
+      .filter((key) => !["allow", "deny", "ask", "defaultMode"].includes(key))
+      .map((key) => `permissions.${key}`),
+  ];
+}
+
+/** The modes of `claude --permission-mode` that have another name here; `plan` has the same one. */
+const CLAUDE_PERMISSION_MODES: Record<string, PermissionMode> = {
+  default: "ask",
+  manual: "ask",
+  dontAsk: "ask",
+  acceptEdits: "allow-edits",
+  bypassPermissions: "allow-all",
+};
 
 function workspaceRootOf(parsed: ParsedArgv, deps: EntrypointDeps): string {
   return resolve(deps.cwd ?? process.cwd(), parsed.workspace ?? ".");
@@ -445,7 +842,7 @@ async function providerConnections(
   env: NodeJS.ProcessEnv,
   keychain: KeychainBackend,
 ): Promise<Array<{ provider: string; connected: boolean }>> {
-  const builtin = ["anthropic", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
+  const builtin = ["anthropic", "chatgpt", "google", "openai", ...Object.keys(GATEWAY_BASE_URLS)];
   const ids = [...new Set([...builtin, ...Object.keys(config.provider)])].sort();
   const rows: Array<{ provider: string; connected: boolean }> = [];
   for (const id of ids) {
@@ -458,7 +855,8 @@ async function providerConnections(
       config: providerConfig?.apiKey,
       oauthClientId: providerConfig?.oauth?.clientId,
       oauthBaseUrl: providerConfig?.oauth?.baseUrl,
-    });
+      // A sign-in whose refresh fails is not connected: the list does not fail for it.
+    }).catch(() => undefined);
     rows.push({ provider: id, connected: key !== undefined });
   }
   return rows;
@@ -520,16 +918,82 @@ function printJsonOrText(out: LineSink, format: "text" | "json", payload: unknow
 function reportTurn<T extends RunTurnRpcResult>(
   out: LineSink,
   err: LineSink,
-  parsed: Pick<ParsedArgv, "format" | "streamJson">,
+  parsed: Pick<ParsedArgv, "format" | "streamJson" | "outputLastMessage">,
   result: T,
 ): number {
-  // The last line of a stream: one line, like each event before it.
-  if (parsed.streamJson) out(JSON.stringify({ type: "result", ...result }));
-  else printJsonOrText(out, parsed.format, result, assistantText(result.messages));
-  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
+  if (parsed.outputLastMessage !== undefined) {
+    const answer =
+      "structuredOutput" in result ? JSON.stringify(result.structuredOutput) : assistantText(result.messages);
+    writeFileSync(resolve(parsed.outputLastMessage), `${answer}\n`);
+  }
   // A run that the cost limit cut is not finished: a script must not read it as success.
+  const failed = result.stopReason === "error" || result.error !== undefined || result.budgetExceeded;
+  const text = assistantText(result.messages);
+  // The fields of `claude -p --output-format json` come first: a script for Claude Code reads `.result`.
+  const payload = {
+    type: "result",
+    subtype: !failed
+      ? "success"
+      : result.error?.code === "iteration_limit"
+        ? "error_max_turns"
+        : "error_during_execution",
+    is_error: failed,
+    result: text,
+    num_turns: result.messages.filter((message) => message.role === "assistant").length,
+    ...("sessionId" in result ? { session_id: result.sessionId } : {}),
+    ...(result.usage?.costUsd === undefined ? {} : { total_cost_usd: result.usage.costUsd }),
+    ...result,
+  };
+  // The last line of a stream: one line, like each event before it.
+  if (parsed.streamJson) out(JSON.stringify(payload));
+  else printJsonOrText(out, parsed.format, payload, text);
+  if (result.error && parsed.format === "text") err(`${result.error.code}: ${result.error.message}`);
   if (result.budgetExceeded && parsed.format === "text") err(t("cli.error.budget_exceeded"));
-  return result.stopReason === "error" || result.error || result.budgetExceeded ? 1 : 0;
+  return failed ? 1 : 0;
+}
+
+/** A session as Markdown, as `/export` of Claude Code writes one: the text, each tool call and its result. */
+function sessionMarkdown(title: string, messages: Message[]): string {
+  // A fence longer than any run of backticks in the text, so the text cannot close it.
+  const fenced = (text: string, lang = ""): string => {
+    const fence = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+    return `${fence}${lang}\n${text}\n${fence}`;
+  };
+  const parts = [`# ${title}`];
+  for (const message of messages) {
+    const lines: string[] = [];
+    for (const block of message.content) {
+      if (block.type === "text" && block.text.trim() !== "") lines.push(block.text);
+      else if (block.type === "image") lines.push(`[${block.mimeType}]`);
+      else if (block.type === "tool_call")
+        lines.push(`Tool call \`${block.name}\`:\n\n${fenced(JSON.stringify(block.input, null, 2), "json")}`);
+      else if (block.type === "tool_result")
+        lines.push(`Result${block.isError ? " (error)" : ""}:\n\n${fenced(block.content)}`);
+    }
+    if (lines.length === 0) continue;
+    const role = message.content.every((block) => block.type === "tool_result")
+      ? "Tool results"
+      : message.role === "user"
+        ? "User"
+        : "Assistant";
+    parts.push(`## ${role}\n\n${lines.join("\n\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+/** `--resume <name>`, as in Claude Code: a value that is no session id is the title of one. */
+function sessionIdOrName(store: SessionStore, value: string): string {
+  const ids = store.list();
+  if (ids.includes(value)) return value;
+  return ids.find((id) => getSessionTitle(store.load(id)) === value) ?? value;
+}
+
+/** Copies a session to a new id and returns the id: `session fork`, and `-p --fork-session`. */
+async function forkSession(store: SessionStore, id: string): Promise<string> {
+  const forkId = `${id}-fork-${Date.now()}`;
+  store.create(forkId);
+  for (const entry of store.load(id)) await store.append(forkId, entry);
+  return forkId;
 }
 
 /** Most recently appended session: the one `--continue` resumes. Ties break
@@ -554,16 +1018,8 @@ function loadImageBlocks(paths: string[]): import("@agency/schema").ImageBlock[]
       // A prompt that goes out with no image gets an answer about some other thing.
       throw new Error(t("cli.error.image_unreadable", { path: p }));
     }
-    const ext = p.split(".").pop()?.toLowerCase() ?? "";
-    const mime =
-      ext === "png"
-        ? "image/png"
-        : ext === "jpg" || ext === "jpeg"
-          ? "image/jpeg"
-          : ext === "webp"
-            ? "image/webp"
-            : "image/png";
-    blocks.push({ type: "image", mimeType: mime, data: data.toString("base64") });
+    // A PDF goes as a document, as the `read` tool attaches one.
+    blocks.push({ type: "image", mimeType: imageMimeFor(p) ?? "image/png", data: data.toString("base64") });
   }
   return blocks;
 }
@@ -583,11 +1039,57 @@ async function runPrintMode(
     throw new Error(t("cli.error.session_conflict"));
   }
 
-  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const workspaceRoot =
+    parsed.worktree === undefined
+      ? workspaceRootOf(parsed, deps)
+      : worktreeRoot(parsed.worktree, workspaceRootOf(parsed, deps), err);
   const env = envOf(deps);
   const config = loadConfig({ globalDir: deps.configDir, env, flags: flagsFor(parsed) });
   const { provider, model } = resolveModelRef(config, parsed);
   await validateTurnKey(provider, config, deps);
+  // Each rule of a run must hold: a rule that maps to nothing here would let through a call that the user denied.
+  let permissions: Record<string, ToolPermissionValue> | undefined;
+  // As in Claude Code, a deny of `*` takes every tool away, and of `mcp__*` every MCP tool.
+  const denyAll = parsed.disallowedTools.includes("*");
+  const denyMcp = denyAll || parsed.disallowedTools.includes("mcp__*");
+  const denyRules = parsed.disallowedTools.filter((rule) => rule !== "*" && rule !== "mcp__*");
+  if (parsed.ignoredSettings.length > 0)
+    err(t("cli.progress.settings_ignored", { keys: parsed.ignoredSettings.join(", ") }));
+  if (parsed.allowedTools.length > 0 || parsed.askTools.length > 0 || denyRules.length > 0) {
+    const rules = permissionsFromRules({ allow: parsed.allowedTools, ask: parsed.askTools, deny: denyRules });
+    if (rules.skipped.length > 0)
+      throw new Error(t("cli.error.unknown_rules", { rules: rules.skipped.join(", ") }));
+    permissions = rules.permissions;
+  }
+  let tools: string[] | undefined;
+  if (parsed.tools !== undefined && parsed.tools.trim() !== "default") {
+    const names = parsed.tools.split(/[\s,]+/).filter(Boolean);
+    const unknown = names.filter((name) => agencyToolName(name) === undefined);
+    if (unknown.length > 0) throw new Error(t("cli.error.unknown_rules", { rules: unknown.join(", ") }));
+    tools = names.map((name) => agencyToolName(name) as string);
+  }
+  if (denyAll) tools = [];
+  let mcp: { servers: Record<string, unknown>; strict: boolean } | undefined;
+  if (parsed.mcpConfig.length > 0 || parsed.strictMcpConfig) {
+    const servers: Record<string, unknown> = {};
+    for (const value of parsed.mcpConfig) {
+      try {
+        Object.assign(servers, loadMcpConfigArg(value, deps.cwd ?? process.cwd(), env));
+      } catch (error) {
+        throw new Error(
+          t("cli.error.invalid_mcp_config", {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    mcp = { servers, strict: parsed.strictMcpConfig };
+  }
+  if (denyMcp) mcp = { servers: {}, strict: true };
+  // OpenAI asks an app to show while the plan pays.
+  if (provider === CHATGPT_PROVIDER && parsed.format !== "json" && !parsed.streamJson) {
+    err(t("cli.progress.chatgpt_plan", { url: CHATGPT_USAGE_URL }));
+  }
 
   let outputSchema: Record<string, unknown> | undefined;
   if (parsed.jsonSchema !== undefined) {
@@ -647,6 +1149,9 @@ async function runPrintMode(
   if (parsed.goal !== undefined && !parsed.continueLast && parsed.session === undefined) {
     throw new Error(t("cli.error.goal_needs_session"));
   }
+  if (parsed.forkSession && !parsed.continueLast && parsed.session === undefined) {
+    throw new Error(t("cli.error.fork_needs_session"));
+  }
   if (parsed.continueLast || parsed.session !== undefined) {
     const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
       bus: deps.bus ?? new EventBus(),
@@ -655,6 +1160,16 @@ async function runPrintMode(
     if (sessionId === undefined) {
       sessionId = latestSessionId(store);
       if (sessionId === undefined) throw new Error(t("cli.error.no_sessions"));
+    }
+    sessionId = sessionIdOrName(store, sessionId);
+    const ids = store.list();
+    if (parsed.forkSession) {
+      if (!ids.includes(sessionId)) throw new Error(t("cli.error.unknown_session", { id: sessionId }));
+      sessionId = await forkSession(store, sessionId);
+    }
+    if (parsed.name !== undefined && parsed.name.trim() !== "") {
+      const tip = store.latestTip(store.load(sessionId)) ?? null;
+      await store.append(sessionId, { type: "session_title", parentId: tip, title: parsed.name.trim() });
     }
 
     const client = deps.ensureClient
@@ -671,7 +1186,12 @@ async function runPrintMode(
         images,
         onEvent,
         permissionMode: parsed.permissionMode,
+        ...(permissions === undefined ? {} : { permissions }),
+        ...(mcp === undefined ? {} : { mcp }),
+        ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
+        ...(tools === undefined ? {} : { tools }),
         maxToolIterations: parsed.maxSteps,
+        ...(parsed.thinking === undefined ? {} : { thinkingLevel: parsed.thinking }),
         ...(parsed.goal === undefined ? {} : { goal: parsed.goal }),
         ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
         nonInteractive: true,
@@ -682,8 +1202,17 @@ async function runPrintMode(
     }
   }
 
+  // As `claude -p`, `codex exec` and `pi -p` do, the run keeps a session that `-r <id>` goes on from.
+  const sessionId = parsed.ephemeral || outputSchema !== undefined ? undefined : randomUUID();
+  if (sessionId !== undefined && parsed.name !== undefined && parsed.name.trim() !== "") {
+    const store = new SessionStore(deps.sessionsDir ?? storagePaths(workspaceRoot, env).sessionsDir, {
+      bus: deps.bus ?? new EventBus(),
+    });
+    await store.append(sessionId, { type: "session_title", parentId: null, title: parsed.name.trim() });
+  }
   const images = parsed.images.length ? loadImageBlocks(parsed.images) : undefined;
   const result = await (deps.runHeadless ?? runHeadless)({
+    ...(sessionId === undefined ? {} : { sessionId }),
     workspaceRoot,
     instanceDir: deps.instanceDir,
     provider,
@@ -694,10 +1223,16 @@ async function runPrintMode(
     images,
     onEvent,
     permissionMode: parsed.permissionMode,
+    ...(permissions === undefined ? {} : { permissions }),
+    ...(mcp === undefined ? {} : { mcp }),
+    ...(parsed.fallbackModel === undefined ? {} : { fallbackModel: parsed.fallbackModel }),
+    ...(tools === undefined ? {} : { tools }),
     maxToolIterations: parsed.maxSteps,
+    ...(parsed.thinking === undefined ? {} : { thinkingLevel: parsed.thinking }),
     ...(parsed.maxCost === undefined ? {} : { budget: { maxCostUsd: parsed.maxCost } }),
   });
-  if (outputSchema === undefined) return reportTurn(out, err, parsed, result);
+  if (outputSchema === undefined)
+    return reportTurn(out, err, parsed, sessionId === undefined ? result : { sessionId, ...result });
   const answer = result.messages
     .flatMap((m) => m.content)
     .findLast((b) => b.type === "tool_call" && b.name === STRUCTURED_OUTPUT_TOOL);
@@ -708,9 +1243,73 @@ async function runPrintMode(
   }
   if (parsed.format === "text" && !parsed.streamJson) {
     out(JSON.stringify(answer.input));
-    return reportTurn(() => {}, err, parsed, result);
+    return reportTurn(() => {}, err, parsed, { ...result, structuredOutput: answer.input });
   }
   return reportTurn(out, err, parsed, { ...result, structuredOutput: answer.input });
+}
+
+/** `-p --worktree <name>`: the turn runs in `.agency/worktrees/<name>` of the repository, on the branch `agency/<name>`,
+ *  as `claude --worktree` does. A later run with the same name uses the same worktree. */
+function worktreeRoot(name: string, workspaceRoot: string, err: LineSink): string {
+  if (!/^\w[\w.-]*$/.test(name)) throw new Error(t("cli.error.worktree_name", { name }));
+  const git = (...args: string[]): Bun.SyncSubprocess<"pipe", "pipe"> =>
+    Bun.spawnSync(["git", ...args], { windowsHide: true, cwd: workspaceRoot });
+  const top = git("rev-parse", "--show-toplevel");
+  if (top.exitCode !== 0)
+    throw new Error(t("cli.error.worktree_git", { detail: top.stderr.toString().trim() }));
+  const dir = join(top.stdout.toString().trim(), ".agency", "worktrees", name);
+  if (existsSync(dir)) return dir;
+  mkdirSync(dirname(dir), { recursive: true });
+  writeFileSync(join(dirname(dir), ".gitignore"), "*\n");
+  const branch = `agency/${name}`;
+  const known = git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0;
+  const add = known ? git("worktree", "add", dir, branch) : git("worktree", "add", "-b", branch, dir, "HEAD");
+  if (add.exitCode !== 0)
+    throw new Error(t("cli.error.worktree_git", { detail: add.stderr.toString().trim() }));
+  err(t("cli.progress.worktree", { path: dir, branch }));
+  return dir;
+}
+
+/** `mcp serve`: each call of the `agency` tool is a `-p --session` turn. The permission mode comes from the flags of
+ *  the server only: the caller is a model, and must not choose its own permissions. */
+function mcpServeCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  if (deps.mcpInput === undefined) {
+    // ponytail: the protocol owns stdout, so a stray console.log goes to stderr. Process-wide, as a real server is.
+    console.log = console.error;
+  }
+  return mcpServe({
+    version: VERSION,
+    input: deps.mcpInput ?? createInterface({ input: process.stdin }),
+    out,
+    turn: async (call) => {
+      let payload = "";
+      const run: ParsedArgv = {
+        ...parsed,
+        format: "json",
+        streamJson: false,
+        session: call.session,
+        ...(call.cwd === undefined ? {} : { workspace: call.cwd }),
+        ...(call.model === undefined ? {} : { model: call.model, provider: undefined }),
+      };
+      try {
+        await runPrintMode(run, call.prompt, deps, (line) => (payload = line), err);
+        const result = JSON.parse(payload) as RunTurnRpcResult;
+        const text = assistantText(result.messages);
+        const failure =
+          result.error?.message ?? (result.budgetExceeded ? t("cli.error.budget_exceeded") : undefined);
+        return failure === undefined
+          ? { text, isError: false }
+          : { text: [text, failure].filter(Boolean).join("\n"), isError: true };
+      } catch (error) {
+        return { text: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    },
+  });
 }
 
 const STRUCTURED_OUTPUT_NOTE = `When the work is done, call the ${STRUCTURED_OUTPUT_TOOL} tool one time with the final answer.`;
@@ -726,7 +1325,7 @@ async function reviewCmd(
   const cwd = workspaceRootOf(parsed, deps);
   const ref = parsed.subcommand;
   const git = (...args: string[]): string => {
-    const done = Bun.spawnSync(["git", ...args], { cwd });
+    const done = Bun.spawnSync(["git", ...args], { windowsHide: true, cwd });
     if (done.exitCode !== 0)
       throw new Error(t("cli.error.review_git", { detail: done.stderr.toString().trim() }));
     return done.stdout.toString();
@@ -892,7 +1491,7 @@ async function runSessionCmd(
   }
 
   if (parsed.subcommand === "show") {
-    const id = parsed.args[0];
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
     if (id === undefined) {
       err(t("cli.session.show_usage"));
       return 1;
@@ -909,6 +1508,30 @@ async function runSessionCmd(
     } else {
       out(t("cli.session.shown", { id, entries: String(entries.length), createdAt }));
       if (title) out(`  title: ${title}`);
+    }
+    return 0;
+  }
+
+  if (parsed.subcommand === "export") {
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
+    if (id === undefined) {
+      err(t("cli.session.export_usage"));
+      return 1;
+    }
+    if (!store.list().includes(id)) {
+      err(t("cli.error.unknown_session", { id }));
+      return 1;
+    }
+    const entries = store.load(id);
+    const tip = store.latestTip(entries);
+    const markdown = sessionMarkdown(
+      getSessionTitle(entries) ?? id,
+      tip === undefined ? [] : store.messagesFor(entries, tip),
+    );
+    if (parsed.outputLastMessage === undefined) out(markdown);
+    else {
+      writeFileSync(resolve(deps.cwd ?? process.cwd(), parsed.outputLastMessage), `${markdown}\n`);
+      out(t("cli.session.exported", { id, path: parsed.outputLastMessage }));
     }
     return 0;
   }
@@ -940,7 +1563,7 @@ async function runSessionCmd(
   }
 
   if (parsed.subcommand === "fork") {
-    const id = parsed.args[0];
+    const id = parsed.args[0] === undefined ? undefined : sessionIdOrName(store, parsed.args[0]);
     if (id === undefined) {
       err(t("cli.session.fork_usage"));
       return 1;
@@ -949,12 +1572,7 @@ async function runSessionCmd(
       err(t("cli.error.unknown_session", { id }));
       return 1;
     }
-    const forkId = `${id}-fork-${Date.now()}`;
-    const entries = store.load(id);
-    store.create(forkId);
-    for (const entry of entries) {
-      await store.append(forkId, entry);
-    }
+    const forkId = await forkSession(store, id);
     out(
       parsed.format === "json"
         ? JSON.stringify({ forkId, sourceId: id }, null, 2)
@@ -1041,6 +1659,16 @@ async function authCmd(
       err(t("cli.error.auth_login_usage"));
       return 1;
     }
+    if (provider === CHATGPT_PROVIDER) return chatgptLogin(keychain, deps, out, err);
+    // Anthropic's terms do not permit a Claude sign-in in another app: there is no flow to offer.
+    if (parsed.oauth && provider === "anthropic") {
+      err(t("cli.error.auth_anthropic_subscription"));
+      return 1;
+    }
+    if (parsed.oauth && provider === "openai") {
+      err(t("cli.error.auth_openai_oauth"));
+      return 1;
+    }
     if (parsed.device) {
       if (!OAUTH_PROVIDERS[provider]) {
         err(t("cli.error.auth_oauth_unsupported", { provider }));
@@ -1094,6 +1722,23 @@ async function authCmd(
     return 0;
   }
 
+  if (parsed.subcommand === "logout") {
+    const provider = parsed.args[0];
+    if (provider === undefined) {
+      err(t("cli.error.auth_logout_usage"));
+      return 1;
+    }
+    if (provider === CHATGPT_PROVIDER) {
+      const revoked = await signOutChatgpt(keychain, deps.chatgptFetch);
+      out(t(revoked ? "cli.auth.chatgpt_signed_out" : "cli.auth.chatgpt_revoke_unconfirmed"));
+      return 0;
+    }
+    await keychain.delete(provider);
+    await keychain.delete(oauthKey(provider));
+    out(t("cli.auth.removed", { provider, backend: keychain.name }));
+    return 0;
+  }
+
   if (parsed.subcommand === "list") {
     const rows = await providerConnections(loadConfig({ globalDir: deps.configDir, env }), env, keychain);
     if (parsed.format === "json") {
@@ -1111,6 +1756,33 @@ async function authCmd(
   }
 
   throw subcommandError("auth", parsed.subcommand);
+}
+
+/** `auth login chatgpt`: Sign in with ChatGPT, in the words that OpenAI asks a CLI to use. */
+async function chatgptLogin(
+  keychain: KeychainBackend,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const first = (await getChatgptCredential(keychain)) === undefined;
+  out(t("cli.auth.chatgpt_continue"));
+  try {
+    const credential = await signInChatgpt(keychain, {
+      ...(deps.openUrl ? { openUrl: deps.openUrl } : {}),
+      ...(deps.chatgptFetch ? { fetchFn: deps.chatgptFetch } : {}),
+    });
+    if (first) out(t("cli.auth.chatgpt_plan_notice", { url: CHATGPT_USAGE_URL }));
+    out(t("cli.auth.chatgpt_signed_in", { account: credential.email ?? credential.subject }));
+    const models = await listChatgptModels(credential.accessToken, deps.chatgptFetch).catch(() => []);
+    if (models.length > 0) {
+      out(t("cli.auth.chatgpt_models", { models: models.map((m) => `chatgpt/${m.slug}`).join(", ") }));
+    }
+    return 0;
+  } catch (error) {
+    err(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
 }
 
 /** One row of `turns_list`: a turn that runs in the daemon. */
@@ -1144,6 +1816,38 @@ async function daemonCancelCmd(parsed: ParsedArgv, deps: EntrypointDeps, out: Li
   } finally {
     await client.close();
   }
+}
+
+/** `daemon start`: finds or starts the daemon of the workspace and exits. The desktop app reads the token from `instanceFile`. */
+async function daemonStartCmd(
+  parsed: ParsedArgv,
+  deps: EntrypointDeps,
+  out: LineSink,
+  err: LineSink,
+): Promise<number> {
+  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const { defaultInstanceDir } = await import("./headless.ts");
+  const instanceDir = deps.instanceDir ?? defaultInstanceDir(envOf(deps));
+  const client = deps.ensureClient
+    ? await deps.ensureClient({ workspaceRoot, instanceDir })
+    : (await connectHeadlessClient({ workspaceRoot, instanceDir, log: err })).client;
+  await client.close();
+  const instanceFile = join(instanceDir, `${hashWorkspaceRoot(workspaceRoot)}.json`);
+  const info = JSON.parse(readFileSync(instanceFile, "utf8")) as InstanceInfo;
+  if (parsed.format === "json") {
+    out(
+      JSON.stringify({
+        status: "running",
+        port: info.port,
+        httpPort: info.httpPort ?? null,
+        pid: info.pid,
+        instanceFile,
+      }),
+    );
+  } else {
+    out(t("cli.daemon.status", { status: "running", port: String(info.port), pid: String(info.pid) }));
+  }
+  return 0;
 }
 
 async function daemonStatusCmd(
@@ -1202,16 +1906,34 @@ async function pluginCmd(
   out: LineSink,
   err: LineSink,
 ): Promise<number> {
-  const workspaceRoot = workspaceRootOf(parsed, deps);
+  const workspace = workspaceRootOf(parsed, deps);
+  if (parsed.scope !== undefined && parsed.scope !== "project" && parsed.scope !== "user") {
+    throw new Error(t("cli.plugin.bad_scope", { scope: parsed.scope }));
+  }
+  // `--scope user`: the plugin goes to the store of the user, and its files hold in every workspace.
+  const store = userPluginStore(deps.configDir);
+  const workspaceRoot = parsed.scope === "user" ? store : workspace;
 
   // Subcommand help
   if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
     out(`Usage: agency plugin <subcommand> [args]
 
 Subcommands:
-  install <dir> [--overwrite]  Install a Claude Code / Codex plugin
+  install <source> [plugin] [--overwrite]
+                               Install a Claude Code / Codex plugin from a folder, a git URL or
+                               owner/repo (#ref for a branch or tag). [plugin] picks one of a marketplace
   list                         Show installed skills and plugin modules
-  remove <name>                Remove an installed plugin`);
+  install <plugin>@<marketplace>
+                               Install a plugin of a marketplace that the Claude Code settings name
+  sync [--overwrite]           Install the enabledPlugins of .claude/settings.json of the workspace,
+                               and those of ~/.claude/settings.json for the user, from the copy
+                               that Claude Code installed
+  update <name>                Install a plugin again from the source of its install
+  remove <name>                Remove an installed plugin
+
+Options:
+  --scope user                 install, update and remove act on the plugins of the user, which load
+                               in every workspace; the default is the workspace`);
     return 0;
   }
 
@@ -1222,8 +1944,20 @@ Subcommands:
       return 1;
     }
     try {
-      const report = pluginInstallCmd(sourceDir, workspaceRoot, parsed.overwrite, err);
+      // `plugin@marketplace`, as Claude Code names a plugin: the marketplace comes from its settings.
+      const byId =
+        parsed.args[1] === undefined && /^[\w.-]+@[\w.-]+$/.test(sourceDir) && !existsSync(sourceDir)
+          ? claudePluginSource(sourceDir, workspace)
+          : undefined;
+      const report = pluginInstallSource(
+        byId?.source ?? sourceDir,
+        byId?.plugin ?? parsed.args[1],
+        workspaceRoot,
+        parsed.overwrite,
+        err,
+      );
       out(report);
+      if (parsed.scope === "user") return 0;
       const { createFileTrustStore } = await import("@agency/guard");
       const trustStore = createFileTrustStore(join(dataDir(envOf(deps)), "trust.json"));
       if (!trustStore.isTrusted(workspaceRoot)) err(t("cli.plugin.untrusted"));
@@ -1235,8 +1969,30 @@ Subcommands:
   }
 
   if (parsed.subcommand === "list") {
-    out(pluginListCmd(workspaceRoot));
+    out(pluginListCmd(workspace));
+    if (existsSync(join(store, ".agency"))) out(`\nFor the user (every workspace):\n${pluginListCmd(store)}`);
     return 0;
+  }
+
+  if (parsed.subcommand === "sync") {
+    const { text, failed } = pluginSyncCmd(workspace, parsed.overwrite, err, store);
+    out(text);
+    return failed ? 1 : 0;
+  }
+
+  if (parsed.subcommand === "update") {
+    const name = parsed.args[0];
+    if (name === undefined) {
+      err("Usage: agency plugin update <name>");
+      return 1;
+    }
+    try {
+      out(pluginUpdateCmd(name, workspaceRoot, err));
+      return 0;
+    } catch (error) {
+      err(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
   }
 
   if (parsed.subcommand === "remove") {
@@ -1306,10 +2062,29 @@ async function dispatch(
       out(t("cli.health.providers", { connected: String(connectedCount), total: String(providerCount) }));
       out(t("cli.health.sessions", { count: String(sessionCount) }));
       out(t("cli.health.hint"));
+      if (scanHarnesses(deps.configDir ?? configDir(env), env).length > 0)
+        out("Other agents have MCP servers, hooks or plugins that Agency can use: run agency import.");
       return 0;
     }
     case "where":
       return whereCmd(parsed, deps, out);
+    case "import": {
+      const prompter = process.stdin.isTTY ? createTerminalOnboardingPrompter() : undefined;
+      return harnessImportCmd({
+        configDir: deps.configDir ?? configDir(envOf(deps)),
+        env: envOf(deps),
+        yes: parsed.yes,
+        dryRun: parsed.dryRun,
+        confirm: prompter?.confirm,
+        out,
+      });
+    }
+    case "usage": {
+      const by = parsed.usageBy ?? "day";
+      const report = usageReport(envOf(deps), by, parsed.since);
+      out(parsed.format === "json" ? JSON.stringify(report, null, 2) : usageCommand(report, by));
+      return 0;
+    }
     case "storage":
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency storage [subcommand]
@@ -1332,7 +2107,9 @@ Options:
 
 Subcommands:
   login <provider>     Store an API key for a provider in the OS keychain
-  list                 Show which providers have a resolvable key`);
+  login chatgpt        Continue with ChatGPT: use the models of your ChatGPT plan
+  list                 Show which providers have a resolvable key
+  logout <provider>    Remove the key or sign-in of a provider`);
         return 0;
       }
       return authCmd(parsed, deps, out, err);
@@ -1341,11 +2118,13 @@ Subcommands:
         return daemonStatusCmd(parsed, deps, out, err);
       }
       if (parsed.subcommand === "cancel") return daemonCancelCmd(parsed, deps, out);
+      if (parsed.subcommand === "start") return daemonStartCmd(parsed, deps, out, err);
       if (parsed.subcommand === "--help" || parsed.subcommand === "-h") {
         out(`Usage: agency daemon <subcommand>
 
 Subcommands:
   status               Show daemon status for this workspace, with the turns that run
+  start                Start the daemon of this workspace if none runs, then exit
   cancel <turn>        Stop a turn that runs`);
         return 0;
       }
@@ -1390,9 +2169,17 @@ Subcommands:
     case "plugin":
       return pluginCmd(parsed, deps, out, err);
     case "mcp":
+      if (parsed.subcommand === "serve") return mcpServeCmd(parsed, deps, out, err);
       return mcpCmd({
         action: parsed.subcommand,
         name: parsed.args[0],
+        rest: parsed.args.slice(1),
+        serverEnv: parsed.serverEnv,
+        headers: parsed.headers,
+        transport: parsed.transport,
+        scope: parsed.scope,
+        overwrite: parsed.overwrite,
+        json: parsed.format === "json",
         workspaceRoot: workspaceRootOf(parsed, deps),
         ...(deps.configDir ? { configDir: deps.configDir } : {}),
         env: envOf(deps),
@@ -1422,12 +2209,24 @@ export async function runEntrypoint(
     const message = error instanceof Error ? error.message : String(error);
     err(message);
     // A script that parses stdout gets the failure there too, in the `error` shape of a turn result.
-    const flag = argv.indexOf("--format");
-    if (flag >= 0 && argv[flag + 1] === "json") {
+    const format = argv.flatMap((arg, i) =>
+      arg === "--format" || arg === "--output-format"
+        ? [argv[i + 1]]
+        : /^--(output-)?format=/.test(arg)
+          ? [arg.slice(arg.indexOf("=") + 1)]
+          : [],
+    );
+    const stream = format.includes("stream-json") || argv.includes("--json");
+    if (stream || format.includes("json")) {
       const code = (error as { code?: unknown } | null)?.code;
-      out(
-        JSON.stringify({ error: { code: typeof code === "string" ? code : "internal", message } }, null, 2),
-      );
+      const failure = {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        result: message,
+        error: { code: typeof code === "string" ? code : "internal", message },
+      };
+      out(stream ? JSON.stringify(failure) : JSON.stringify(failure, null, 2));
     }
     return 1;
   }

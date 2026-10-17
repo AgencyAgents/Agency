@@ -221,3 +221,47 @@ describe("SnapshotStore", () => {
     expect(() => store.read({ hash: hashB, path: "/x", capturedAt: "" })).toThrow();
   });
 });
+
+describe("rewind", () => {
+  /** One agent write as the tools journal it: the before state, the write, then the after state. */
+  const agentWrite = (store: SnapshotStore, path: string, text: string, ref: string) => {
+    let existed = true;
+    try {
+      store.capture(path, readFileSync(path, "utf8"), ref);
+    } catch {
+      existed = false;
+      store.captureCreated(path, ref);
+    }
+    writeFileSync(path, text);
+    store.recordAfter(path);
+    return existed;
+  };
+
+  test("puts back the files of the given turns, newest write first, and removes a file a turn made", () => {
+    const { store, file } = tempStore();
+    writeFileSync(file("a.ts"), "v0");
+    agentWrite(store, file("a.ts"), "v1", "t1");
+    agentWrite(store, file("a.ts"), "v2", "t2");
+    agentWrite(store, file("new.ts"), "made", "t2");
+    expect(store.rewind(new Set(["t2"]))).toEqual({ files: [file("a.ts"), file("new.ts")], conflicts: [] });
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("v1");
+    expect(() => readFileSync(file("new.ts"))).toThrow();
+    expect(store.rewind(new Set(["t1"])).files).toEqual([file("a.ts")]);
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("v0");
+  });
+
+  test("a file the user changed after the agent stops the whole rewind, and force goes on", () => {
+    const { store, file } = tempStore();
+    writeFileSync(file("a.ts"), "v0");
+    writeFileSync(file("b.ts"), "b0");
+    agentWrite(store, file("a.ts"), "v1", "t1");
+    agentWrite(store, file("b.ts"), "b1", "t1");
+    writeFileSync(file("a.ts"), "user edit");
+    expect(store.rewind(new Set(["t1"]))).toEqual({ files: [], conflicts: [file("a.ts")] });
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("user edit");
+    expect(readFileSync(file("b.ts"), "utf8")).toBe("b1");
+    expect(store.rewind(new Set(["t1"]), true).conflicts).toEqual([file("a.ts")]);
+    expect(readFileSync(file("a.ts"), "utf8")).toBe("v0");
+    expect(readFileSync(file("b.ts"), "utf8")).toBe("b0");
+  });
+});

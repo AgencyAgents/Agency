@@ -55,7 +55,8 @@ This is the body.`;
     const text = "# Just a heading\n\nNo frontmatter here.";
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBeUndefined();
-    expect(result.description).toBeUndefined();
+    // As in Claude Code: with no description, the first line of the body.
+    expect(result.description).toBe("Just a heading");
     expect(result.body).toBe(text);
   });
 
@@ -70,7 +71,7 @@ This is the body.`;
     const text = "---\n---\nBody content";
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBeUndefined();
-    expect(result.description).toBeUndefined();
+    expect(result.description).toBe("Body content");
     expect(result.body.trim()).toBe("Body content");
   });
 
@@ -96,7 +97,7 @@ author: me
 Body`;
     const result = parseSkillFrontmatter(text);
     expect(result.name).toBe("test");
-    expect(result.description).toBeUndefined();
+    expect(result.description).toBe("Body");
   });
 });
 
@@ -207,6 +208,8 @@ describe("skillToPlugin", () => {
       description: "A demo",
       body: "# Demo\n\nBody content",
       tier: "project" as const,
+      modelInvocable: true,
+      userInvocable: true,
     };
     const def = skillToPlugin(skill);
     expect(def.id).toBe("demo");
@@ -222,6 +225,8 @@ describe("skillToPlugin", () => {
       path: "/fake/skills/empty/SKILL.md",
       body: "",
       tier: "user" as const,
+      modelInvocable: true,
+      userInvocable: true,
     };
     const def = skillToPlugin(skill);
     expect(def.id).toBe("empty");
@@ -237,13 +242,28 @@ describe("resolveSkillDirs", () => {
   test("returns dirs in priority order with correct tiers", () => {
     const ws = "/tmp/test";
     const dirs = resolveSkillDirs(ws, "/custom/config");
-    expect(dirs.length).toBe(3);
-    expect(dirs[0]!.dir).toBe(join(ws, ".agency", "skills"));
-    expect(dirs[0]!.tier).toBe("project");
-    expect(dirs[1]!.dir).toBe(join(ws, "skills"));
-    expect(dirs[1]!.tier).toBe("project");
-    expect(dirs[2]!.dir).toContain("skills");
-    expect(dirs[2]!.tier).toBe("user");
+    const agents = [".claude", ".agents", ".cursor", ".codex", ".pi", ".opencode", ".gemini", ".github"];
+    expect(dirs).toEqual([
+      { dir: join(ws, ".agency", "skills"), tier: "project" },
+      { dir: join(ws, "skills"), tier: "project" },
+      ...agents.map((agent) => ({ dir: join(ws, agent, "skills"), tier: "project" as const })),
+      { dir: join("/custom/config", "skills"), tier: "user" },
+      // The skills of the plugins installed for the user.
+      { dir: join("/custom/config", "plugin-store", ".agency", "skills"), tier: "user" },
+      // The user folders of other agents, under the home that the test preload gives.
+      ...[
+        ".claude",
+        ".agents",
+        ".codex",
+        ".cursor",
+        join(".pi", "agent"),
+        join(".config", "opencode"),
+        ".gemini",
+      ].map((agent) => ({
+        dir: join(process.env.AGENCY_AGENTS_HOME ?? "", agent, "skills"),
+        tier: "user" as const,
+      })),
+    ]);
   });
 });
 
@@ -371,9 +391,9 @@ describe("skills on demand", () => {
       const prompt = result.instructions.join("\n");
       expect(prompt).toContain("- deploy: Use when the user asks for a release");
       expect(prompt).not.toContain("DEPLOY-BODY");
-      // No description: the model has no way to choose it, so the body stays in the prompt.
-      expect(prompt).toContain("PLAIN-BODY always here");
-      expect(result.skills.map((skill) => skill.name)).toEqual(["deploy"]);
+      // No description: as in Claude Code, the first line of the body is its line in the listing.
+      expect(prompt).toContain("- plain: PLAIN-BODY always here");
+      expect(result.skills.map((skill) => skill.name)).toEqual(["deploy", "plain"]);
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }
@@ -402,13 +422,27 @@ describe("skills on demand", () => {
     }
   });
 
-  test("a workspace with no described skill has no listing", async () => {
+  test("a skill that only the user may load has no listing, and its body is not in the prompt", async () => {
     const ws = makeWs("none");
     try {
-      writeSkill(ws, "plain", "name: plain", "PLAIN-BODY");
+      writeSkill(ws, "plain", "name: plain\ndisable-model-invocation: yes", "PLAIN-BODY");
       const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus() });
       expect(result.skills).toEqual([]);
       expect(result.instructions.join("\n")).not.toContain("skill tool");
+      expect(result.instructions.join("\n")).not.toContain("PLAIN-BODY");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("a skill named in disabledSkills does not load", async () => {
+    const ws = makeWs("off");
+    try {
+      writeSkill(ws, "keep", "name: keep\ndescription: Stays", "KEEP");
+      writeSkill(ws, "drop", "name: drop\ndescription: Goes", "DROP");
+      const result = await loadPlugins({ workspaceRoot: ws, bus: new EventBus(), disabledSkills: ["drop"] });
+      expect(result.skills.map((skill) => skill.name)).toEqual(["keep"]);
+      expect(result.plugins.map((plugin) => plugin.id)).not.toContain("drop");
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

@@ -45,7 +45,9 @@ export interface HttpGatewayOptions {
   token?: string;
   /** A client dropped its request before the call ended. The daemon cancels that client's turns. */
   onClientDisconnect?: (clientId: string) => void;
-  /** Interval between SSE keepalive comments; 0 disables. Default 15s. */
+  /** The number of attached SSE clients changed: the daemon counts them as clients for idle shutdown. */
+  onSubscriberCount?: (count: number) => void;
+  /** Interval between SSE keepalive comments; 0 disables. Default SSE_KEEPALIVE_MS. */
   keepAliveMs?: number;
   /** Emit CORS headers; the allowlist decides which origins get them. */
   cors?: boolean;
@@ -121,6 +123,9 @@ function errorPayload(error: unknown): { message: string; code?: string } {
 const QUERY_BEARER_GONE =
   "query-string bearer was removed in protocol v2: send Authorization: Bearer or mint a scoped token via POST /auth/mint";
 
+/** Default interval between SSE keepalive comments. */
+export const SSE_KEEPALIVE_MS = 15_000;
+
 /** Default cap for one POST body on /rpc and /auth/mint (4 MiB). */
 export const RPC_MAX_BODY_BYTES = 4 * 1024 * 1024;
 /** Default fixed-window rate limit over POST /rpc and /auth/mint. */
@@ -128,7 +133,7 @@ export const RPC_RATE_LIMIT_WINDOW_MS = 60_000;
 export const RPC_RATE_LIMIT_MAX = 300;
 
 export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
-  const keepAliveMs = options.keepAliveMs ?? 15_000;
+  const keepAliveMs = options.keepAliveMs ?? SSE_KEEPALIVE_MS;
   const cors = options.cors ?? true;
   const allowedOrigins = options.allowedOrigins ?? [];
   const retryMs = options.retryMs ?? EVENT_RETRY_MS;
@@ -362,7 +367,7 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
           if (closed) return;
           closed = true;
           if (timer) clearInterval(timer);
-          if (client) subscribers.delete(client);
+          if (client && subscribers.delete(client)) options.onSubscriberCount?.(subscribers.size);
           try {
             controller.close();
           } catch {
@@ -372,6 +377,7 @@ export function createHttpGateway(options: HttpGatewayOptions): HttpGateway {
 
         client = { streams, write, close: cleanup };
         subscribers.add(client);
+        options.onSubscriberCount?.(subscribers.size);
         write(`retry: ${retryMs}\n\n`);
         write(`event: state\ndata: ${JSON.stringify(snapshot)}\n\n`);
         for (const entry of backlog) {
@@ -568,6 +574,8 @@ export function startHttpGateway(serverOptions: HttpGatewayServerOptions): HttpG
   const server = Bun.serve({
     port: serverOptions.port ?? 0,
     hostname: serverOptions.hostname ?? "127.0.0.1",
+    // Bun cuts a response that sends nothing for idleTimeout seconds (default 10): an idle SSE stream died before its first keepalive.
+    idleTimeout: Math.min(255, Math.ceil((2 * (serverOptions.keepAliveMs || SSE_KEEPALIVE_MS)) / 1000)),
     fetch: (request) => gateway.fetch(request),
   });
 

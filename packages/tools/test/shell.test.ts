@@ -7,6 +7,7 @@ import {
   resolveConfiguredShell,
   resolveShell,
   setDeniedCommandEnv,
+  setShellEnv,
 } from "../src/shell.ts";
 
 describe("resolveShell", () => {
@@ -149,5 +150,18 @@ describe("modelCommandEnv", () => {
     } finally {
       setDeniedCommandEnv([]);
     }
+  });
+
+  test("shellEnv is added after the filter and wins over the host value, even for a secret name", () => {
+    const env = { GITHUB_TOKEN: "host", FOO: "host", PATH: "/bin" };
+    setDeniedCommandEnv(["NPM_*"]);
+    setShellEnv({ GITHUB_TOKEN: "set", NPM_TOKEN: "n", FOO: "bar" });
+    try {
+      expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", GITHUB_TOKEN: "set", NPM_TOKEN: "n", FOO: "bar" });
+    } finally {
+      setDeniedCommandEnv([]);
+      setShellEnv();
+    }
+    expect(modelCommandEnv(env)).toEqual({ PATH: "/bin", FOO: "host" });
   });
 });

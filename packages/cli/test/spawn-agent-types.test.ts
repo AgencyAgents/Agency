@@ -49,14 +49,16 @@ async function setup(
   spawnInput: Record<string, unknown>,
   workerCall?: Iterable<StreamEvent>,
   project?: { agentsMd: string; trusted: boolean },
+  withReviewer = true,
 ) {
   const configDir = tmp("cfg");
   mkdirSync(join(configDir, "agents"), { recursive: true });
   // The frontmatter of a Claude Code agent file: name, description, its tool names, a model alias, a color.
-  writeFileSync(
-    join(configDir, "agents", "reviewer.md"),
-    "---\nname: reviewer\ndescription: Reviews a diff for defects\ntools: Read, Grep\nmodel: inherit\ncolor: blue\n---\nREVIEWER-PROMPT: report defects with file and line.\n",
-  );
+  if (withReviewer)
+    writeFileSync(
+      join(configDir, "agents", "reviewer.md"),
+      "---\nname: reviewer\ndescription: Reviews a diff for defects\ntools: Read, Grep\nmodel: inherit\ncolor: blue\n---\nREVIEWER-PROMPT: report defects with file and line.\n",
+    );
   const main: ProviderRequest[] = [];
   const worker: ProviderRequest[] = [];
   const adapter: ProviderAdapter = {
@@ -124,6 +126,18 @@ describe("agent types of the spawn tool", () => {
     expect(worker).toHaveLength(0);
     expect(JSON.stringify(main[1]?.messages)).toContain("unknown agent type: nobody");
     expect(JSON.stringify(main[1]?.messages)).toContain("reviewer");
+  }, 30000);
+
+  test("with no agents defined the unknown-type error tells the user to add one", async () => {
+    const { run, main, worker } = await setup(
+      { prompt: "check", agent: "nobody" },
+      undefined,
+      undefined,
+      false,
+    );
+    await run();
+    expect(worker).toHaveLength(0);
+    expect(JSON.stringify(main[1]?.messages)).toContain(".agency/agents/<name>.md");
   }, 30000);
 });
 

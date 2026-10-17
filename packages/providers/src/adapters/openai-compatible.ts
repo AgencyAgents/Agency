@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { HttpClient } from "@agency/net";
-import { AgencyError, type ContentBlock, ErrorCode, type Message, type StopReason } from "@agency/schema";
+import {
+  AgencyError,
+  type ContentBlock,
+  ErrorCode,
+  type Message,
+  PDF_MIME,
+  type StopReason,
+} from "@agency/schema";
 import { parseRetryAfterMs } from "../retry-after.ts";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usage } from "../types.ts";
@@ -10,7 +17,7 @@ import type { ProviderAdapter, ProviderRequest, StreamEvent, ThinkingLevel, Usag
  * seven-level scale. The extra levels compress onto the nearest tier rather
  * than erroring: losing precision here is better than refusing to run.
  */
-const REASONING_EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
+export const REASONING_EFFORT: Record<Exclude<ThinkingLevel, "off">, string> = {
   minimal: "minimal",
   low: "low",
   medium: "medium",
@@ -28,11 +35,23 @@ const FINISH_REASON: Record<string, StopReason> = {
   error: "error",
 };
 
-function toOpenAiContent(content: ContentBlock[]): string | Record<string, unknown>[] {
+/** OpenRouter reads a PDF for any model, with its free engine; another OpenAI-shaped endpoint takes no file part. */
+const PDF_PLUGINS = [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }];
+
+function toOpenAiContent(content: ContentBlock[], files = false): string | Record<string, unknown>[] {
   const parts: Record<string, unknown>[] = [];
   for (const block of content) {
     if (block.type === "text") {
       parts.push({ type: "text", text: block.text });
+    } else if (block.type === "image" && block.mimeType === PDF_MIME) {
+      parts.push(
+        files
+          ? {
+              type: "file",
+              file: { filename: "document.pdf", file_data: `data:${PDF_MIME};base64,${block.data}` },
+            }
+          : { type: "text", text: "[A PDF was left out: this provider takes no PDF.]" },
+      );
     } else if (block.type === "image") {
       parts.push({
         type: "image_url",
@@ -52,7 +71,12 @@ function textOf(content: ContentBlock[]): string {
     .join("");
 }
 
-function toOpenAiMessages(messages: Message[], system?: string, vision = false): Record<string, unknown>[] {
+function toOpenAiMessages(
+  messages: Message[],
+  system?: string,
+  vision = false,
+  files = false,
+): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   if (system) out.push({ role: "system", content: system });
 
@@ -76,23 +100,31 @@ function toOpenAiMessages(messages: Message[], system?: string, vision = false):
     for (const tr of toolResults) {
       out.push({ role: "tool", tool_call_id: tr.toolCallId, content: tr.content });
     }
-    // A tool message holds text only, so images that a tool returned follow in a user message.
-    const images = vision ? toolResults.flatMap((tr) => tr.images ?? []) : [];
+    // A tool message holds text only, so images that a tool returned follow in a user message. A PDF needs no vision.
+    const images = toolResults
+      .flatMap((tr) => tr.images ?? [])
+      .filter((image) => vision || image.mimeType === PDF_MIME);
     if (images.length > 0) {
       out.push({
         role: "user",
-        content: toOpenAiContent([{ type: "text", text: "Images from the tool results above." }, ...images]),
+        content: toOpenAiContent(
+          [{ type: "text", text: "Attachments of the tool results above." }, ...images],
+          files,
+        ),
       });
     }
-    if (toolResults.length > 0) continue;
+    // A text of the harness next to the results (a compaction prompt, a note) follows them as a user message.
+    const rest = toolResults.length > 0 ? m.content.filter((b) => b.type !== "tool_result") : m.content;
+    if (rest.length === 0) continue;
 
-    out.push({ role: m.role, content: toOpenAiContent(m.content) });
+    out.push({ role: m.role, content: toOpenAiContent(rest, files) });
   }
 
   return out;
 }
 
-function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
+function buildRequestBody(request: ProviderRequest, family: string): Record<string, unknown> {
+  const files = family === "openrouter";
   // No explicit cache markers: OpenAI's prompt caching is automatic (and
   // chat-completions has no cache_control parameter), so keeping the system
   // prompt and tool definitions as a stable request prefix is what earns
@@ -100,11 +132,17 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
   // marks explicitly.
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: toOpenAiMessages(request.messages, request.system, request.vision),
+    messages: toOpenAiMessages(request.messages, request.system, request.vision, files),
     max_completion_tokens: request.maxTokens,
     stream: true,
     stream_options: { include_usage: true },
   };
+  // Claude caches only with a marker. OpenRouter's top-level one sets the breakpoint on the last block, so each request
+  // of a turn reads the cache up to the request before it.
+  if (family === "openrouter" && request.model.startsWith("anthropic/"))
+    body.cache_control = { type: "ephemeral" };
+  // Other servers of this format may refuse a field they do not know.
+  if (family === "openai" && request.cacheKey !== undefined) body.prompt_cache_key = request.cacheKey;
 
   if (request.tools?.length) {
     body.tools = request.tools.map((t) => ({
@@ -113,15 +151,29 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
     }));
   }
 
+  const hasPdf = request.messages.some((m) =>
+    m.content.some(
+      (block) =>
+        (block.type === "image" && block.mimeType === PDF_MIME) ||
+        (block.type === "tool_result" && block.images?.some((image) => image.mimeType === PDF_MIME)),
+    ),
+  );
+  if (files && hasPdf) body.plugins = PDF_PLUGINS;
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  if (request.thinkingLevel && request.thinkingLevel !== "off") {
-    body.reasoning_effort = REASONING_EFFORT[request.thinkingLevel];
-  }
+  const effort = reasoningEffort(request);
+  if (effort) body.reasoning_effort = effort;
 
   return body;
 }
 
-async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
+/** A level the model lists goes out unchanged: the catalog knows models past high that the scale above lowers. */
+export function reasoningEffort(request: ProviderRequest): string | undefined {
+  const level = request.thinkingLevel;
+  if (!level || level === "off") return undefined;
+  return request.efforts?.includes(level) ? level : REASONING_EFFORT[level];
+}
+
+export async function toAgencyError(res: Response, family: string): Promise<AgencyError> {
   const body = (await res.json().catch(() => undefined)) as
     | {
         error?: {
@@ -187,7 +239,7 @@ async function* streamRaw(
       authorization: `Bearer ${request.apiKey}`,
       ...request.headers,
     },
-    body: JSON.stringify(buildRequestBody(request)),
+    body: JSON.stringify(buildRequestBody(request, family)),
     signal: request.signal,
   });
 

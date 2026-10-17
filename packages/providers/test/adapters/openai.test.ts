@@ -96,4 +96,36 @@ describe("openaiAdapter", () => {
     const body = JSON.parse(capturedBody!);
     expect(body.reasoning_effort).toBe("high");
   });
+
+  test("sends a level the model lists unchanged", async () => {
+    const bodies: { reasoning_effort?: string }[] = [];
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(init?.body as string));
+        return sseResponse("data: [DONE]\n\n");
+      },
+    };
+    const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
+    await collect(openaiAdapter.stream({ ...baseRequest, thinkingLevel: "max", efforts }, http));
+    await collect(openaiAdapter.stream({ ...baseRequest, thinkingLevel: "minimal", efforts }, http));
+
+    expect(bodies.map((b) => b.reasoning_effort)).toEqual(["max", "minimal"]);
+  });
+});
+
+test("the session goes to OpenAI as prompt_cache_key, and not to other servers of the format", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const http: HttpClient = {
+    fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return sseResponse("data: [DONE]\n\n");
+    },
+  };
+  const { createOpenAiCompatibleAdapter } = await import("../../src/adapters/openai-compatible.ts");
+  await collect(openaiAdapter.stream({ ...baseRequest, cacheKey: "s1" }, http));
+  await collect(
+    createOpenAiCompatibleAdapter("deepseek", "http://x").stream({ ...baseRequest, cacheKey: "s1" }, http),
+  );
+  expect(bodies[0]?.prompt_cache_key).toBe("s1");
+  expect(bodies[1]?.prompt_cache_key).toBeUndefined();
 });

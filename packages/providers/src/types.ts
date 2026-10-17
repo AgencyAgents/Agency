@@ -28,10 +28,14 @@ export interface ProviderRequest {
   /** The model takes image input, so images that a tool returned go with the request.
    *  Absent means no: an image sent to a model with no vision fails that request and every later one. */
   vision?: boolean;
+  /** The reasoning levels the model lists: a listed level goes out unchanged, not lowered to the API family's scale. */
+  efforts?: readonly ThinkingLevel[];
   /** Overrides the adapter's native endpoint: gateways, proxies, self-hosted. */
   baseUrl?: string;
   /** Extra headers merged over the adapter's own (auth headers stay). */
   headers?: Record<string, string>;
+  /** Groups requests that share a prefix (a session): OpenAI routes them to the same cache with `prompt_cache_key`. */
+  cacheKey?: string;
   signal?: AbortSignal;
 }
 

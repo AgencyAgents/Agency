@@ -14,7 +14,8 @@
     "@agency/providers": "workspace:*",
     "@agency/rpc": "workspace:*",
     "@agency/telemetry": "workspace:*",
-    "@agency/tools": "workspace:*"
+    "@agency/tools": "workspace:*",
+    "jsonc-parser": "^3"
   },
   "scripts": {
     "typecheck": "tsc --build",

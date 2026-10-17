@@ -69,6 +69,18 @@ export async function runDaemonEntry(argv: string[]): Promise<never> {
     });
   }
 
+  // The desktop app binds its daemons to its own life: once it is gone, also by a crash, the daemon leaves.
+  const parent = Number(process.env.AGENCY_PARENT_PID);
+  if (parent > 0) {
+    setInterval(() => {
+      try {
+        process.kill(parent, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") void shutdown();
+      }
+    }, 2_000);
+  }
+
   // Keep the process alive; startDaemonServer's socket listener does that on
   // its own, but state this explicitly rather than relying on an implicit
   // side effect if the transport ever changes.

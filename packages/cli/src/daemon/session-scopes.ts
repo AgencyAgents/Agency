@@ -1,13 +1,20 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   type AgentRegistry,
   type BoardStore,
   type Config,
   isTeamLive,
+  memoryFile,
   storagePaths,
   type ToolSpec,
 } from "@agency/core";
-import type { CallerIdentity, PermissionsGate, SandboxBackend } from "@agency/guard";
+import {
+  type CallerIdentity,
+  type PermissionsGate,
+  type SandboxBackend,
+  sandboxNetwork,
+} from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { GATEWAY_BASE_URLS, resolveApiKey } from "@agency/providers";
 import {
@@ -27,7 +34,7 @@ import { buildDispatchTool } from "./handlers/dispatch.ts";
 import { buildSpawnTool } from "./handlers/session.ts";
 import { attachTeamMcpPool, teamMcpDedicatedServers } from "./handlers/team-run.ts";
 import type { TeamContext } from "./team-context.ts";
-import { type AgentDaemonOptions, type DaemonContext, keySourcesFor } from "./types.ts";
+import { type AgentDaemonOptions, type DaemonContext, keySourcesFor, type RunTurnParams } from "./types.ts";
 
 /** The search endpoint of the config, or else OpenRouter's web search when the openrouter provider has a key. */
 export async function webSearchFor(config: Config, ctx: DaemonContext): Promise<WebSearchConfig | undefined> {
@@ -80,7 +87,7 @@ export interface SessionScopeFactoryDeps {
 export function createSessionScopes(deps: SessionScopeFactoryDeps): {
   sessionScopes: Map<string, SessionScope>;
   scopePromises: Map<string, Promise<SessionScope>>;
-  getOrCreateScope: (sessionId: string, handle?: string) => Promise<SessionScope>;
+  getOrCreateScope: (sessionId: string, handle?: string, mcp?: RunTurnParams["mcp"]) => Promise<SessionScope>;
 } {
   const {
     options,
@@ -103,10 +110,20 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
   const snapshotDir = storagePaths(options.workspaceRoot).snapshotsDir;
   const sessionScopes = new Map<string, SessionScope>();
   const scopePromises = new Map<string, Promise<SessionScope>>();
-  async function getOrCreateScope(sessionId: string, handle?: string): Promise<SessionScope> {
-    const existing = sessionScopes.get(sessionId);
+  async function getOrCreateScope(
+    sessionId: string,
+    handle?: string,
+    mcp?: RunTurnParams["mcp"],
+  ): Promise<SessionScope> {
+    // ponytail: a scope for each `--mcp-config` lives, with its servers, as long as the daemon.
+    const key =
+      mcp === undefined
+        ? sessionId
+        : `${sessionId}.mcp-${createHash("sha256").update(JSON.stringify(mcp)).digest("hex").slice(0, 16)}`;
+    const servers = mcp === undefined ? mcpServers : { ...(mcp.strict ? {} : mcpServers), ...mcp.servers };
+    const existing = sessionScopes.get(key);
     if (existing) return existing;
-    const pending = scopePromises.get(sessionId);
+    const pending = scopePromises.get(key);
     if (pending) return pending;
     const promise = (async () => {
       let teamParent: string | undefined;
@@ -118,7 +135,11 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
       }
       const websearch = await webSearchFor(config, getCtx());
       const scope = await createSessionScope({
-        deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
+        deps: {
+          identity,
+          capabilities: { tools: "*", pathScopes: "*", network: sandboxNetwork(config.sandbox) },
+          sandbox,
+        },
         http,
         workspaceRoot: options.workspaceRoot,
         snapshotDir,
@@ -127,12 +148,13 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         windowsShell: sandboxWindowsShell(config),
         ...(websearch ? { websearch } : {}),
         todoPersistence,
-        mcpServers: teamMcpDedicatedServers(mcpServers, teamParent),
+        mcpServers: teamMcpDedicatedServers(servers, teamParent),
         lspServers: config.lspServers,
         mcpTokens,
+        ...(config.memory === false ? {} : { memoryFile: memoryFile(options.workspaceRoot) }),
         identityFor: (_serverName, h) => ({ type: "agent", name: h ?? handle ?? "main" }),
       });
-      await attachTeamMcpPool(teamMcpPools, mcpServers, scope, {
+      await attachTeamMcpPool(teamMcpPools, servers, scope, {
         teamParent,
         ...(handle ? { handle } : {}),
         tokens: mcpTokens,
@@ -164,13 +186,17 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
         }
       }
       ownerHandle ??= teamRegistry.list().find((a) => a.sessionId === sessionId)?.handle;
-      try {
-        await registerBoardToolsForScope(scope, getCtx(), ownerHandle, handle);
-      } catch {}
-      try {
-        await registerCoordToolsForScope(scope, getCtx(), ownerHandle ?? handle ?? "lead");
-        (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
-      } catch {}
+      // Each tool is sent with every request: a session with no team to coordinate does not pay for the team's tools.
+      const inTeam = ownerHandle !== undefined || handle !== undefined || teamRegistry.list().length > 0;
+      if (inTeam) {
+        try {
+          await registerBoardToolsForScope(scope, getCtx(), ownerHandle, handle);
+        } catch {}
+        try {
+          await registerCoordToolsForScope(scope, getCtx(), ownerHandle ?? handle ?? "lead");
+          (scope as { tools: ToolSpec[] }).tools = scope.registry.list();
+        } catch {}
+      }
       if (ownerHandle) {
         const ownerGate = gateForAgent(ownerHandle);
         if (ownerGate !== gate) {
@@ -187,13 +213,13 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
       );
       return scope;
     })();
-    scopePromises.set(sessionId, promise);
+    scopePromises.set(key, promise);
     try {
       const scope = await promise;
-      sessionScopes.set(sessionId, scope);
+      sessionScopes.set(key, scope);
       return scope;
     } finally {
-      scopePromises.delete(sessionId);
+      scopePromises.delete(key);
     }
   }
   return { sessionScopes, scopePromises, getOrCreateScope };

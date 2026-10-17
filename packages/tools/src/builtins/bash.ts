@@ -1,3 +1,4 @@
+import { isReadOnlyCommand } from "@agency/guard";
 import { t } from "@agency/i18n";
 import { AgencyError, ErrorCode } from "@agency/schema";
 import { asContainerExecBackend, type SandboxWithExec } from "../container-exec.ts";
@@ -5,7 +6,7 @@ import type { ToolContext, ToolDeps, ToolResult, ToolSpec } from "../contract.ts
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
 import { CWD_MARKER, EXIT_MARKER, modelCommandEnv, parseShellOutput, type ShellConfig } from "../shell.ts";
-import { truncateWithSpill } from "../truncate.ts";
+import { compactOutput, truncateWithSpill } from "../truncate.ts";
 import { trackJob } from "../win-job.ts";
 
 /**
@@ -23,6 +24,9 @@ const MAX_OUTPUT_BYTES = 30_000;
  * cancellation.
  */
 const ABORT_DRAIN_MS = 1_000;
+
+/** A command with no timeout that runs longer moves to the background, so a server in the foreground cannot hold the turn. */
+const DETACH_MS = 120_000;
 
 /** How often a long-running foreground command emits a progress notice. */
 const PROGRESS_TICK_MS = 2_000;
@@ -71,6 +75,7 @@ async function runContainerExec(
     timedOut: boolean,
     normalizeCwd?: (cwd: string) => string,
   ) => ToolResult,
+  network = false,
 ): Promise<ToolResult> {
   let abortFired = false;
   const onAbort = (): void => {
@@ -105,7 +110,8 @@ async function runContainerExec(
         cwd,
         timeoutMs: timeout,
         signal: ctx.signal,
-        env: modelCommandEnv(),
+        env: { ...modelCommandEnv(), ...ctx.env },
+        ...(network ? { network } : {}),
       });
     } catch (e) {
       if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
@@ -149,8 +155,12 @@ export function createBashTool(
   shell: ShellConfig,
   state: BashState,
   processManager: ProcessManager,
+  detachMs = DETACH_MS,
 ): ToolSpec {
-  const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number }> = {
+  // Under an OS sandbox with no network, a command can ask for it: the user decides each time, as the escalation
+  // of Codex and the unsandboxed retry of Claude Code. Else a command that needs the network has no way on.
+  const offline = (deps.sandbox as { offline?: boolean }).offline === true;
+  const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number; network?: boolean }> = {
     name: "bash",
     description:
       `Runs a shell command in ${shell.label}. ` +
@@ -160,17 +170,32 @@ export function createBashTool(
       "Working directory persists " +
       "across calls within this session; environment variables do not. Pass background: true for " +
       "long-running processes (dev servers, watchers) instead of waiting for them to exit. Pass " +
-      "timeout (milliseconds) to kill a command that may hang.",
+      "timeout (milliseconds) to kill a command that may hang. A command with no timeout that runs " +
+      `over ${Math.round(detachMs / 1000)} seconds moves to the background and keeps running.` +
+      (offline
+        ? " Commands run in a sandbox with no network. Pass network: true only for a command that needs it (an install, a fetch): the user is asked first."
+        : ""),
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
         background: { type: "boolean" },
         timeout: { type: "number", description: "Kill the command after this many milliseconds." },
+        ...(offline
+          ? {
+              network: {
+                type: "boolean",
+                description: "Run this command with the network. The user is asked each time.",
+              },
+            }
+          : {}),
       },
       required: ["command"],
     },
     riskTier: "dangerous",
+    // `cd` is read-only but moves the cwd that the next call starts in.
+    readOnly: (input) =>
+      !input.background && isReadOnlyCommand(input.command) && !/\bcd\b/.test(input.command),
     renderCall: (input) => `bash ${summarize(str(input.command))}`,
     renderResult: (result) =>
       result.isError
@@ -179,16 +204,33 @@ export function createBashTool(
 
     async handler(input, ctx) {
       deps.sandbox.checkCommand(input.command);
+      const network = offline && input.network === true;
+      if (network) {
+        // Asked in every mode, as a rule or a mode allows the command and not its way out of the sandbox.
+        const answer = await ctx.requestApproval?.({
+          tool: "bash",
+          title: t("tool.bash.network_ask", { command: input.command }),
+          command: input.command,
+          riskTier: "dangerous",
+          source: "sandbox:network",
+        });
+        if (answer !== "once" && answer !== "always") {
+          return { content: t("tool.bash.network_refused"), isError: true as const };
+        }
+      }
 
       if (input.background) {
         const argv = [shell.command, ...shell.buildArgs(input.command)];
-        const wrap = (deps.sandbox as { wrap?: (argv: string[], cwd?: string) => string[] }).wrap;
+        const wrap = (
+          deps.sandbox as { wrap?: (argv: string[], cwd?: string, network?: boolean) => string[] }
+        ).wrap;
         // A backend that runs commands elsewhere must hold this one too: on the host it has the user's rights.
         if (wrap === undefined && asContainerExecBackend(deps.sandbox) !== undefined) {
           return { content: t("tool.bash.background_refused"), isError: true as const };
         }
-        const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd) : argv, {
+        const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd, network) : argv, {
           cwd: state.cwd,
+          ...(ctx.env === undefined ? {} : { env: ctx.env }),
         });
         return { content: t("tool.bash.background_started", { id: info.id, pid: info.pid }) };
       }
@@ -231,7 +273,9 @@ export function createBashTool(
           }
         }
 
-        let combined = outcome.stderr ? `${output}\n[stderr]\n${outcome.stderr}` : output;
+        let combined = outcome.stderr
+          ? `${compactOutput(output)}\n[stderr]\n${compactOutput(outcome.stderr)}`
+          : compactOutput(output);
         if (cwdNotice) combined += cwdNotice;
         if (outcome.aborted) {
           // Cancellation must not read as a silent success with exit code 0.
@@ -252,12 +296,13 @@ export function createBashTool(
 
       const container = asContainerExecBackend(deps.sandbox);
       if (container !== undefined) {
-        return runContainerExec(container, argv, state.cwd, ctx, timeout, finish);
+        return runContainerExec(container, argv, state.cwd, ctx, timeout, finish, network);
       }
 
       const proc = Bun.spawn(argv, {
+        windowsHide: true,
         cwd: state.cwd,
-        env: modelCommandEnv(),
+        env: { ...modelCommandEnv(), ...ctx.env },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -267,8 +312,22 @@ export function createBashTool(
       // when the kill lands the pipes close and they settle with whatever
       // the process produced before it died, so an aborted call returns its
       // partial output instead of a fabricated empty success.
-      const stdoutText = new Response(proc.stdout).text();
-      const stderrText = new Response(proc.stderr).text();
+      const soFar = { stdout: "", stderr: "" };
+      let forward: ((text: string) => void) | undefined;
+      const collect = async (
+        stream: ReadableStream<Uint8Array>,
+        key: keyof typeof soFar,
+      ): Promise<string> => {
+        const decoder = new TextDecoder();
+        for await (const chunk of stream) {
+          const text = decoder.decode(chunk, { stream: true });
+          soFar[key] += text;
+          forward?.(text);
+        }
+        return soFar[key];
+      };
+      const stdoutText = collect(proc.stdout, "stdout");
+      const stderrText = collect(proc.stderr, "stderr");
 
       const killTree = (): void => {
         // The foreground one-shot subprocess is not tracked by the
@@ -351,6 +410,11 @@ export function createBashTool(
               void killProc().then(settleAborted, settleAborted);
             }, timeout)
           : undefined;
+      let settleDetached: () => void = () => {};
+      const detachSettled = new Promise<void>((resolve) => {
+        settleDetached = resolve;
+      });
+      const detachTimer = timeout === undefined ? setTimeout(() => settleDetached(), detachMs) : undefined;
 
       const startedAt = Date.now();
       const progressTimer = ctx.onProgress
@@ -361,29 +425,44 @@ export function createBashTool(
         : undefined;
 
       try {
-        let outcome: { aborted: boolean; stdout: string; stderr: string; exitCode?: number } =
-          await Promise.race([
-            Promise.all([stdoutText, stderrText, proc.exited]).then(([stdout, stderr, exitCode]) => ({
-              aborted: false as const,
-              stdout,
-              stderr,
-              exitCode,
-            })),
-            abortSettled.then(async () => {
-              // onAbort already killed the process tree; the dying processes
-              // close the pipes and the in-flight reads settle with whatever
-              // was captured before the kill.
-              let timer: ReturnType<typeof setTimeout> | undefined;
-              const [stdout, stderr] = await Promise.race([
-                Promise.all([stdoutText, stderrText]),
-                new Promise<[string, string]>((resolve) => {
-                  timer = setTimeout(() => resolve(["", ""]), ABORT_DRAIN_MS);
-                }),
-              ]);
-              clearTimeout(timer);
-              return { aborted: true as const, stdout, stderr };
-            }),
-          ]);
+        const settled = await Promise.race([
+          detachSettled.then(() => "detached" as const),
+          Promise.all([stdoutText, stderrText, proc.exited]).then(([stdout, stderr, exitCode]) => ({
+            aborted: false as const,
+            stdout,
+            stderr,
+            exitCode,
+          })),
+          abortSettled.then(async () => {
+            // onAbort already killed the process tree; the dying processes
+            // close the pipes and the in-flight reads settle with whatever
+            // was captured before the kill.
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const [stdout, stderr] = await Promise.race([
+              Promise.all([stdoutText, stderrText]),
+              new Promise<[string, string]>((resolve) => {
+                timer = setTimeout(() => resolve(["", ""]), ABORT_DRAIN_MS);
+              }),
+            ]);
+            clearTimeout(timer);
+            return { aborted: true as const, stdout, stderr };
+          }),
+        ]);
+        if (settled === "detached") {
+          const id = processManager.take(proc, input.command, soFar.stdout + soFar.stderr);
+          forward = (text) => processManager.append(id, text);
+          const notice = t("tool.bash.detached", { seconds: Math.round(detachMs / 1000), id });
+          const output = compactOutput(soFar.stdout + soFar.stderr);
+          return {
+            content: truncateResult(
+              output
+                ? `${output}
+${notice}`
+                : notice,
+            ),
+          };
+        }
+        let outcome: { aborted: boolean; stdout: string; stderr: string; exitCode?: number } = settled;
         // Abort intent wins over a simultaneous clean exit. On Linux the
         // killed shell's wrapper tail can beat SIGKILL to a marker-printed
         // exit 0 (or the abort signal can land just as the pipes close), so
@@ -400,6 +479,7 @@ export function createBashTool(
         ctx.signal.removeEventListener("abort", onAbort);
         if (progressTimer !== undefined) clearInterval(progressTimer);
         if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+        clearTimeout(detachTimer);
       }
     },
   };

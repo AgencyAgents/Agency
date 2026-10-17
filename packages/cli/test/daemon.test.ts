@@ -617,6 +617,80 @@ describe("createAgentDaemon", () => {
     }
   }, 60_000);
 
+  test("the fallback model of a turn wins over the config, and can be another model of the same provider", async () => {
+    const seen: string[] = [];
+    const adapterFor = (provider: string): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        seen.push(`${provider}/${request.model}`);
+        if (request.model === "test-model")
+          throw new AgencyError(ErrorCode.OVERLOAD, "overloaded", { source: "fake" });
+        yield { type: "text_delta", text: "served" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const saved = process.env.AGENCY_ANTHROPIC_API_KEY;
+    process.env.AGENCY_ANTHROPIC_API_KEY = "same-provider-key";
+    try {
+      const { client } = await startFakeDaemon({
+        adapterFor,
+        configDir: writeConfigDir({ fallback_model: "openai/gpt-x" }),
+      });
+      const result = (await client.call("run_turn", {
+        turnId: "t-fallback-flag",
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "primary-key",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        fallbackModel: "anthropic/small-model",
+      })) as RunTurnRpcResult;
+
+      expect(result.stopReason).toBe("end_turn");
+      // The primary retries before the fallback, and the model of the config is never asked.
+      expect([...new Set(seen)]).toEqual(["anthropic/test-model", "anthropic/small-model"]);
+    } finally {
+      if (saved === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
+      else process.env.AGENCY_ANTHROPIC_API_KEY = saved;
+    }
+  }, 60_000);
+
+  test("the tools of a turn offer only the listed built-in tools, and an allow rule does not bring one back", async () => {
+    const offered: string[][] = [];
+    const adapterFor = (): ProviderAdapter => ({
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        offered.push((request.tools ?? []).map((tool) => tool.name).sort());
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    });
+    const spec = (name: string): ToolSpec => ({
+      name,
+      description: name,
+      inputSchema: {},
+      riskTier: "safe",
+      handler: async () => ({ content: "" }),
+    });
+    const mcpTool = { ...spec("docs_search"), origin: "mcp" as const };
+    const { client } = await startFakeDaemon({ adapterFor, tools: [spec("read"), spec("grep"), mcpTool] });
+    const turn = (turnId: string, extra: Record<string, unknown>) =>
+      client.call("run_turn", {
+        turnId,
+        provider: "anthropic",
+        model: "test-model",
+        apiKey: "k",
+        systemPrompt: "sys",
+        session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        ...extra,
+      });
+    await turn("t-tools-all", {});
+    await turn("t-tools-read", { tools: ["read"], permissions: { grep: "allow" } });
+    await turn("t-tools-none", { tools: [] });
+
+    expect(offered).toEqual([["docs_search", "grep", "read"], ["docs_search", "read"], ["docs_search"]]);
+  }, 60_000);
+
   test("a key that a tool result holds does not reach the model or the result of the turn", async () => {
     const envKey = "env-key-value-9d2c";
     const turnKey = "turn-key-value-41aa";
@@ -989,6 +1063,38 @@ describe("createAgentDaemon", () => {
     expect(status.prompts).toEqual([
       { command: "/mcp__srv__review", description: "Reviews an issue.", arguments: ["id"] },
     ]);
+  }, 60_000);
+
+  test("the MCP server of a Codex config.toml in the workspace gives its tools to a turn", async () => {
+    const { workspaceRoot, trustStorePath } = trustedWorkspaceWithMcpServer();
+    // The same server, named by the project config of Codex instead of .mcp.json.
+    rmSync(join(workspaceRoot, ".mcp.json"));
+    mkdirSync(join(workspaceRoot, ".codex"));
+    const toml = (value: string) => JSON.stringify(value);
+    writeFileSync(
+      join(workspaceRoot, ".codex", "config.toml"),
+      `[mcp_servers.cdx]\ncommand = ${toml(process.execPath)}\nargs = [${toml(join(workspaceRoot, "server.js"))}]\n`,
+    );
+    let tools: string[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        tools = (request.tools ?? []).map((t) => t.name);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const { client } = await startFakeDaemon({ workspaceRoot, trustStorePath, adapterFor: () => adapter });
+    await client.call("run_turn", {
+      turnId: "t-mcp-codex",
+      sessionId: "s-mcp-codex",
+      provider: "anthropic",
+      model: "test-model",
+      apiKey: "key",
+      systemPrompt: "sys",
+      session: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(tools).toContain("cdx_ping");
   }, 60_000);
 
   test("a daemon that stops does not delete the instance file of the daemon that took its place", async () => {
@@ -1520,6 +1626,22 @@ describe("resolveSystemPrompt", () => {
     expect(system).not.toContain("<system-reminder>");
   });
 
+  test("the user instructions of other agents join only with userAgentInstructions", () => {
+    const home = tempRoot();
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "the user rule of claude");
+    const before = process.env.AGENCY_AGENTS_HOME;
+    process.env.AGENCY_AGENTS_HOME = home;
+    try {
+      const prompt = (userAgentInstructions: boolean) =>
+        resolveSystemPrompt(params(), { workspaceRoot: tempRoot(), git: () => null, userAgentInstructions });
+      expect(prompt(true)).toContain("the user rule of claude");
+      expect(prompt(false)).not.toContain("the user rule of claude");
+    } finally {
+      process.env.AGENCY_AGENTS_HOME = before;
+    }
+  });
+
   test("mcp start failures become mcp_server_down reminders", () => {
     const system = resolveSystemPrompt(params(), {
       workspaceRoot: tempRoot(),
@@ -1853,7 +1975,10 @@ describe("dispatch cost forecast wiring", () => {
       session: [],
     }) as Promise<RunTurnRpcResult>;
 
-    await new Promise((r) => setTimeout(r, 200));
+    // A fixed wait of 200 ms missed the request under the load of the full suite on Linux.
+    for (let i = 0; i < 100 && !events.some((e) => e.type === "approval_requested"); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const ask = events.find((e) => e.type === "approval_requested");
     expect(ask?.requestId).toBeTruthy();
     await client.call("approval_respond", { requestId: ask?.requestId, decision: "reject" });

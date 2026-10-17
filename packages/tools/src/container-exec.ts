@@ -14,6 +14,8 @@ export interface ContainerExecOptions {
   signal?: AbortSignal;
   /** The environment of the command, for a backend that runs it on the host. A container ignores it. */
   env?: Record<string, string | undefined>;
+  /** The network for this command alone, which the user allowed. A backend with no such switch ignores it. */
+  network?: boolean;
 }
 
 /**

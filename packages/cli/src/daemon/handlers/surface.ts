@@ -2,7 +2,9 @@ import { join } from "node:path";
 import {
   announceHook,
   getSessionTitle,
+  isReminderText,
   loadTraceSpansSync,
+  type MessageEntry,
   restoreIntegrationCheckpoint,
   storagePaths,
 } from "@agency/core";
@@ -31,6 +33,8 @@ const RUNTIME_CONFIG_KEYS = [
   "small_model",
   "theme",
 ];
+
+const MAX_TITLE_CHARS = 200;
 
 function requireSessionId(rawParams: unknown, method: string): string {
   const { sessionId } = rawParams as { sessionId?: string };
@@ -165,6 +169,18 @@ async function restoreWithMode(
   };
 }
 
+/** The first prompt stands in for a title until the small model names the session, or when none is set. */
+function firstPrompt(entries: readonly Record<string, unknown>[]): string | undefined {
+  for (const entry of entries) {
+    const message = entry.message as Message | undefined;
+    if (entry.type !== "message" || message?.role !== "user") continue;
+    const block = message.content.find((b) => b.type === "text") as { text?: string } | undefined;
+    const line = block?.text?.trim().split("\n")[0]?.trim().slice(0, 80);
+    if (line) return line;
+  }
+  return undefined;
+}
+
 export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
   const {
     config,
@@ -184,7 +200,7 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       const last = entries[entries.length - 1];
       return {
         id,
-        title: getSessionTitle(entries),
+        title: getSessionTitle(entries) ?? firstPrompt(entries),
         tipId: todoStore.latestTip(entries) ?? last?.id ?? null,
         entries: entries.length,
         updatedAt: last?.createdAt ?? null,
@@ -240,6 +256,29 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     turnCheckpoints.delete(sessionId);
     if (stack) turnCheckpoints.set(meta.id, stack);
     return { sessionId: meta.id, renamedFrom: sessionId };
+  };
+
+  handlers.session_title_set = async (rawParams) => {
+    const sessionId = requireSessionId(rawParams, "session_title_set");
+    const raw = (rawParams as { title?: unknown }).title;
+    const title = typeof raw === "string" ? raw.trim() : "";
+    if (title === "" || title.length > MAX_TITLE_CHARS)
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        `session_title_set title must be 1 to ${MAX_TITLE_CHARS} characters`,
+        { source: "surface" },
+      );
+    const entries = todoStore.load(sessionId);
+    if (entries.length === 0)
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, `unknown session: ${sessionId}`, {
+        source: "surface",
+      });
+    await todoStore.append(sessionId, {
+      type: "session_title",
+      parentId: todoStore.latestTip(entries) ?? null,
+      title,
+    });
+    return { sessionId, title };
   };
 
   handlers.models_list = async (rawParams) => {
@@ -355,6 +394,40 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
     };
   };
 
+  /**
+   * Rewinds a session to just before one of its prompts: the files that the turns from that prompt on wrote go back,
+   * and the session ends where the prompt began. A file edited since the agent wrote it stops it unless `force`.
+   */
+  handlers.session_rewind = async (rawParams) => {
+    const sessionId = requireSessionId(rawParams, "session_rewind");
+    const { entryId, force } = (rawParams ?? {}) as { entryId?: unknown; force?: unknown };
+    const invalid = (message: string) =>
+      new AgencyError(ErrorCode.INVALID_REQUEST, message, { source: "surface" });
+    if ([...ctx.activeTurnMeta.values()].some((t) => t.sessionId === sessionId))
+      throw invalid("session_rewind: a turn runs in this session; stop it first");
+    const entries = todoStore.load(sessionId);
+    const tip = todoStore.latestTip(entries);
+    const chain = tip === undefined ? [] : todoStore.chainFor(entries, tip);
+    // No entry: the last prompt, which undoes the last turn.
+    const at =
+      entryId === undefined
+        ? chain.findLastIndex((e) => typeof e.turnId === "string")
+        : chain.findIndex((e) => e.id === entryId);
+    const prompt = chain[at] as MessageEntry | undefined;
+    if (prompt?.type !== "message" || typeof prompt.turnId !== "string")
+      throw invalid(`session_rewind: ${String(entryId)} is not a prompt of this session`);
+    const turns = new Set(chain.slice(at).flatMap((e) => (typeof e.turnId === "string" ? [e.turnId] : [])));
+    const outcome = snapshotStoreForSession(ctx, sessionId).rewind(turns, force === true);
+    if (outcome.conflicts.length > 0 && force !== true)
+      return { rewound: false, conflicts: outcome.conflicts };
+    await todoStore.rollback(sessionId, prompt.parentId);
+    turnCheckpoints.delete(sessionId);
+    const text = prompt.message.content
+      .flatMap((c) => (c.type === "text" && !isReminderText(c.text) ? [c.text] : []))
+      .join("\n");
+    return { rewound: true, files: outcome.files, conflicts: outcome.conflicts, prompt: text };
+  };
+
   handlers.undo_run = async (rawParams) => {
     const sessionId = requireSessionId(rawParams, "undo_run");
     const { mode } = (rawParams ?? {}) as { mode?: string };
@@ -402,6 +475,8 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       workspaceRoot: ctx.options.workspaceRoot,
       trustStore: ctx.trustStore,
       pluginInstructions: ctx.pluginInstructions,
+      memoryFile: ctx.memoryFile,
+      userAgentInstructions: ctx.userAgentInstructions,
     });
     return { prompt: resolved.text, segments: resolved.segments };
   };

@@ -1,8 +1,10 @@
-import { existsSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   AgentRegistry,
   attachCommandHooks,
+  attachVerifyGate,
   BoardStore,
   ChannelStore,
   ChoiceLog,
@@ -16,19 +18,30 @@ import {
   DispatchStateStore,
   dataDir,
   EventBus,
+  foreignHome,
+  foreignHookPaths,
+  HookBlock,
   type HookRunOptions,
   hasBoardItemShape,
   InboxStore,
   Logger,
+  loadClaudePermissions,
+  loadClaudeSettingsEnv,
   loadCommands,
   loadConfig,
+  loadForeignHooks,
   loadHookFiles,
   loadPlugins,
+  memoryFile,
   mergeCommandHooks,
+  nestedInstructions,
+  outputStyleInstructions,
+  parseEnvFile,
   SessionStore,
   storagePaths,
   type ToolSpec,
   TraceRecorder,
+  userPluginStore,
   WakeRegistry,
 } from "@agency/core";
 import {
@@ -39,22 +52,19 @@ import {
   DockerSandboxBackend,
   type ExternalDirectoryDecision,
   ensureSandboxAvailable,
+  mergePermissions,
   OsSandboxBackend,
   PermissionsGate,
   Redactor,
   type SandboxBackend,
   SandboxBoundary,
+  sandboxNetwork,
   type ToolPermissionValue,
   type TrustStore,
 } from "@agency/guard";
 
 import { createHttpClient } from "@agency/net";
-import {
-  BUILTIN_PROVIDER_METADATA,
-  createKeychain,
-  type KeychainBackend,
-  Scheduler,
-} from "@agency/providers";
+import { createKeychain, type KeychainBackend, Scheduler } from "@agency/providers";
 import {
   type DaemonServer,
   type HttpGatewayServer,
@@ -67,15 +77,20 @@ import {
 } from "@agency/rpc";
 import { createFileTelemetrySink, SpendLedger, Telemetry } from "@agency/telemetry";
 import {
+  clientProjectPaths,
   keychainTokenStore,
+  loadProjectLspServers,
   loadProjectMcpServers,
+  loadUserMcpServers,
   resolveConfiguredShell,
   setDeniedCommandEnv,
+  setShellEnv,
   type TeamMcpPool,
 } from "@agency/tools";
 import { createConfigFingerprint } from "./config-fingerprint.ts";
 import { registerCommandHandlers } from "./handlers/commands.ts";
 import { registerCommandRunHandler } from "./handlers/commands-run.ts";
+import { registerDesktopHandlers } from "./handlers/desktop.ts";
 import {
   installDetachHook,
   projectBoardFile,
@@ -106,9 +121,11 @@ import {
   type ActiveTurnMeta,
   type AgentDaemon,
   type AgentDaemonOptions,
+  agentHookModel,
   commandPolicyFromPermissions,
   type DaemonContext,
   DEFAULT_IDLE_LINGER_MS,
+  promptHookModel,
   resolveAdapter,
   sessionEnvironmentStore,
 } from "./types.ts";
@@ -141,15 +158,59 @@ export function createSandboxBackend(
   if (sandboxConfig?.backend === "os") {
     return new OsSandboxBackend(workspaceRoot, commandPolicy, externalDecision, {
       allowNetwork: sandboxConfig.allowNetwork,
+      ...(sandboxConfig.allowedDomains ? { allowedDomains: sandboxConfig.allowedDomains } : {}),
       ...(windowsShell ? { windowsShell } : {}),
       // The keys, sessions and daemon tokens: a command that reads a token can drive the daemon.
-      hidden: [dataDir(), configDir()],
+      // The overlay folder holds the environments of every project, with their variables.
+      hidden: [
+        dataDir(),
+        configDir(),
+        ...(process.env.AGENCY_CONFIG_OVERLAY ? [dirname(process.env.AGENCY_CONFIG_OVERLAY)] : []),
+      ],
     });
   }
   return new SandboxBoundary(workspaceRoot, commandPolicy, externalDecision);
 }
+/** The values of `shellEnv` that the model must not see: a secret by its name, or a URL with a password in it. */
+export function secretShellValues(shellEnv: Record<string, string> | undefined): string[] {
+  return Object.entries(shellEnv ?? {}).flatMap(([name, value]) =>
+    value &&
+    (/KEY|SECRET|TOKEN|PASS|PWD|AUTH(?!OR)|CREDENTIAL|PRIVATE/i.test(name) ||
+      /:\/\/[^/\s:@]+:[^/\s@]+@/.test(value))
+      ? [value]
+      : [],
+  );
+}
+
+/**
+ * Sets the backend that the config leaves unset: the sandbox of the OS on Linux and macOS, as Codex runs one, when
+ * its program works there; else software. A backend that the config names fails closed at boot instead. Returns
+ * why the default fell back, for the log.
+ */
+export async function chooseSandboxBackend(
+  config: { sandbox?: { backend?: "software" | "docker" | "os"; allowNetwork?: boolean } },
+  workspaceRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | undefined> {
+  const sandbox = config.sandbox ?? {};
+  config.sandbox = sandbox;
+  if (sandbox.backend !== undefined) return undefined;
+  if (platform !== "linux" && platform !== "darwin") {
+    sandbox.backend = "software";
+    return undefined;
+  }
+  const probe = new OsSandboxBackend(workspaceRoot, {}, undefined, { platform });
+  sandbox.backend = (await probe.isAvailable()) ? "os" : "software";
+  return sandbox.backend === "os"
+    ? undefined
+    : `the sandbox of the operating system does not work here, so shell commands run with your rights: ${probe.unavailableReason()}`;
+}
+
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
+  const sandboxFallback = await chooseSandboxBackend(config, options.workspaceRoot);
+  // fetch, websearch and the browser get the network limit of shell commands.
+  const network = sandboxNetwork(config.sandbox);
   const providers = config.provider;
 
   // R11 wiring: every key that resolves anywhere in this process is registered
@@ -165,6 +226,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   for (const [envKey, value] of Object.entries(process.env)) {
     if (envKey.endsWith("_API_KEY") && value) redactor.registerSecret(value);
   }
+  for (const value of secretShellValues(config.shellEnv)) redactor.registerSecret(value);
 
   const eventBus = new EventBus();
   const rotatingSink = options.logsDir ? createRotatingFileSink({ dir: options.logsDir }) : undefined;
@@ -202,15 +264,23 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const trustStore: TrustStore = createFileTrustStore(
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   );
+  // The permission rules of Claude Code settings come first: those of the config win on a call.
+  const permissions = mergePermissions(
+    loadClaudePermissions(options.workspaceRoot, trustStore.isTrusted(options.workspaceRoot), (message) =>
+      logger.warn(message),
+    ),
+    config.permissions,
+  );
   const gate = new PermissionsGate({
-    permissions: config.permissions,
+    permissions,
     workspaceRoot: options.workspaceRoot,
     trust: { store: trustStore, root: options.workspaceRoot, required: config.trust.required },
   });
-  const commandPolicy = commandPolicyFromPermissions(config.permissions);
+  const commandPolicy = commandPolicyFromPermissions(permissions);
   // A key in a variable that `provider.<id>.env` names is a key of the harness too, whatever its name.
   const providerEnv = Object.values(providers ?? {}).flatMap((provider) => provider.env ?? []);
   setDeniedCommandEnv([...(config.sandbox?.denyEnv ?? []), ...providerEnv], config.sandbox?.allowEnv);
+  setShellEnv(config.shellEnv);
   const shell = resolveConfiguredShell(process.platform, sandboxWindowsShell(config));
   const shellLabel = shell.label;
   const sandbox = createSandboxBackend(
@@ -253,7 +323,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return {
       tools: offered.length === tools.length ? ("*" as const) : offered.map((t) => t.name),
       pathScopes: "*" as const,
-      network: "*" as const,
+      network,
     };
   }
 
@@ -274,12 +344,19 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // the keychain is created lazily on the first keyless run_turn and reused.
   let keychainPromise: Promise<KeychainBackend> | undefined;
   const getKeychain = () => {
-    keychainPromise ??= createKeychain(process.platform, join(dataDir(), "keys"));
+    keychainPromise ??= options.keychain
+      ? Promise.resolve(options.keychain)
+      : createKeychain(process.platform, join(dataDir(), "keys"));
     return keychainPromise;
   };
 
   const hooksDir = join(options.workspaceRoot, ".agency", "hooks");
+  // The plugins installed for the user: their hooks, MCP and LSP servers hold in every workspace.
+  const store = userPluginStore(options.configDir);
+  const storeDirs = ["hooks", "mcp", "lsp"].map((part) => join(store, ".agency", part));
   const mcpDir = join(options.workspaceRoot, ".agency", "mcp");
+  const lspDir = join(options.workspaceRoot, ".agency", "lsp");
+  const userMcpDir = join(options.configDir ?? configDir(), "mcp");
   const filesOf = (dir: string): string[] =>
     existsSync(dir) ? readdirSync(dir).map((file) => join(dir, file)) : [];
   const configFingerprint = createConfigFingerprint([
@@ -292,12 +369,24 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...filesOf(hooksDir),
     mcpDir,
     ...filesOf(mcpDir),
+    lspDir,
+    ...filesOf(lspDir),
+    ...storeDirs.flatMap((dir) => [dir, ...filesOf(dir)]),
     join(options.workspaceRoot, ".mcp.json"),
+    ...clientProjectPaths(options.workspaceRoot),
+    ...foreignHookPaths(options.workspaceRoot),
+    // The permission rules of the user's Claude Code settings.
+    ...[foreignHome()].flatMap((home) =>
+      home === undefined ? [] : [join(home, ".claude", "settings.json")],
+    ),
+    userMcpDir,
+    ...filesOf(userMcpDir),
     // The trust list too: plugins load at start, so a trust change must start a new daemon.
     options.trustStorePath ?? join(dataDir(), "trust.json"),
   ]);
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
+  if (sandboxFallback !== undefined) logger.warn(sandboxFallback);
 
   // Todo persistence: todo_write/execute_plan append a todo_state entry to the
   // session's JSONL (daemon-owned), and each run_turn rehydrates from the
@@ -348,12 +437,43 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   // The hooks of the user's config, then those that `plugin install` put into a trusted workspace.
   const commandHooks: CommandHooks = mergeCommandHooks(
     config.hooks ?? {},
+    loadHookFiles(join(store, ".agency", "hooks"), (message) => logger.warn(message)),
     projectTrusted ? loadHookFiles(hooksDir, (message) => logger.warn(message)) : {},
+    // The hooks that Claude Code, Codex, Cursor and Gemini CLI keep in the workspace.
+    projectTrusted ? loadForeignHooks(options.workspaceRoot, (message) => logger.warn(message)) : {},
   );
+  // The CLAUDE_ENV_FILE of a session, named by a hash: a session id is not a safe file name.
+  const envFileOf = (sessionId: string): string =>
+    join(dataDir(), "session-env", `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.sh`);
   // A hook command runs in the shell of the bash tool: a hook that is a shell script then works on Windows too.
   const hookRun: HookRunOptions = {
     cwd: options.workspaceRoot,
     shell,
+    envFile: envFileOf,
+    transcriptPath: (sessionId) => join(todoSessionsDir, `${sessionId}.jsonl`),
+    askModel: promptHookModel({ config, providers, adapterFor, http, getKeychain }),
+    askAgent: agentHookModel({
+      config,
+      providers,
+      adapterFor,
+      http,
+      getKeychain,
+      schedulerFor: (provider) => schedulerFor(provider),
+      toolsFor: async (sessionId) => {
+        const scope = await getOrCreateScope(sessionId ?? "default");
+        return ["read", "grep", "glob"].flatMap((name) => scope.registry.get(name) ?? []) as ToolSpec[];
+      },
+    }),
+    // The tool of an MCP server of the session, started if it waits for its first use.
+    callMcpTool: async ({ sessionId, server, tool, input, signal }) => {
+      const scope = await getOrCreateScope(sessionId ?? "default");
+      await scope.promoteMcp();
+      const spec = scope.registry.get(`${server}_${tool}`);
+      if (spec === undefined) throw new Error(`no tool ${tool} on the MCP server ${server}`);
+      const result = await spec.handler(input, { signal, ...(sessionId === undefined ? {} : { sessionId }) });
+      return { text: result.content, isError: result.isError === true };
+    },
+    env: config.shellEnv,
     // The loop reads the inbox before each request: the text reaches the model in this turn or the next.
     onBackgroundOutput: (sessionId, text) => {
       const id = sessionId ?? "default";
@@ -366,6 +486,42 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     },
   };
   attachCommandHooks(eventBus, commandHooks, hookRun);
+  if (config.verifyGate !== false) attachVerifyGate(eventBus);
+  // The `env` of the Claude Code settings of a trusted workspace reaches each shell command, before CLAUDE_ENV_FILE.
+  const claudeEnv = projectTrusted ? loadClaudeSettingsEnv(options.workspaceRoot) : {};
+  if (Object.keys(claudeEnv).length > 0) {
+    eventBus.on(
+      "shell.env",
+      (payload) => void Object.assign((payload as { env: Record<string, string> }).env, claudeEnv),
+    );
+  }
+  // The variables that the SessionStart hooks of a session wrote to its CLAUDE_ENV_FILE reach each of its shell commands.
+  eventBus.on("shell.env", (payload) => {
+    const { env, sessionId } = payload as { env: Record<string, string>; sessionId?: string };
+    // As Claude Code sets it: a plugin script keys its state by the session (ralph-loop does).
+    if (sessionId !== undefined) env.CLAUDE_CODE_SESSION_ID ??= sessionId;
+    // A turn with no session runs its hooks as the session "default" (handlers/turn.ts).
+    const file = envFileOf(sessionId ?? "default");
+    if (!existsSync(file)) return;
+    Object.assign(env, parseEnvFile(readFileSync(file, "utf8"), { ...process.env, ...env }));
+  });
+  // The AGENTS.md or CLAUDE.md of a subfolder reaches the model with the result of the first file tool there.
+  // ponytail: the folders seen live in memory, so a new daemon gives an old session such a file once more.
+  const nestedSeen = new Map<string, Set<string>>();
+  eventBus.on("tool.execute.after", (payload) => {
+    const { tool, input, sessionId } = payload as { tool: string; input: unknown; sessionId?: string };
+    const path = (input as { path?: unknown } | undefined)?.path;
+    if (
+      !projectTrusted ||
+      !["read", "edit", "write", "notebook_edit"].includes(tool) ||
+      typeof path !== "string"
+    )
+      return;
+    const seen = nestedSeen.get(sessionId ?? "default") ?? new Set<string>();
+    nestedSeen.set(sessionId ?? "default", seen);
+    const text = nestedInstructions(options.workspaceRoot, path, seen);
+    if (text !== undefined) throw new HookBlock(text);
+  });
   let pluginInstructions: string[] = [];
   let tools: ToolSpec[] = [];
   let sharedPluginTools: ToolSpec[] = [];
@@ -379,6 +535,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      userAgentPlugins: config.userAgentPlugins === true,
+      disabledSkills: config.skills?.disabled,
       projectTrusted,
       bus: eventBus,
       logger,
@@ -404,6 +562,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       workspaceRoot: options.workspaceRoot,
       configDirOverride: options.configDir,
       configPlugins: (config as { plugins?: string[] }).plugins,
+      userAgentPlugins: config.userAgentPlugins === true,
+      disabledSkills: config.skills?.disabled,
       projectTrusted,
       bus: eventBus,
       logger,
@@ -420,6 +580,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginCommands = collectPluginCommands(pluginResult.plugins);
     pluginInstructions = pluginResult.instructions;
   }
+  pluginInstructions.push(
+    ...outputStyleInstructions({
+      name: config.outputStyle,
+      workspaceRoot: options.workspaceRoot,
+      ...(options.configDir === undefined ? {} : { configDirOverride: options.configDir }),
+      projectTrusted,
+      warn: (message) => logger.warn(message),
+    }),
+  );
 
   const activeTurnMeta = new Map<string, ActiveTurnMeta>();
 
@@ -427,13 +596,14 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     workspaceRoot: options.workspaceRoot,
     configDirOverride: options.configDir,
     projectTrusted,
+    disabledSkills: config.skills?.disabled,
   });
 
   const defaultCapabilitiesSync: Capabilities =
     options.capabilities ??
     (builtinsMode
-      ? { tools: "*", pathScopes: "*", network: "*" }
-      : { tools: sessionToolsFor(tools, gate), pathScopes: "*", network: "*" });
+      ? { tools: "*", pathScopes: "*", network }
+      : { tools: sessionToolsFor(tools, gate), pathScopes: "*", network });
 
   const teamRegistry = new AgentRegistry();
   const boardStore: BoardStore = new BoardStore({
@@ -478,11 +648,26 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     ...(projectTrusted
       ? loadProjectMcpServers(options.workspaceRoot, (message) => logger.warn(message))
       : {}),
+    ...loadProjectMcpServers(store, (message) => logger.warn(message)),
+    ...loadUserMcpServers(
+      options.configDir ?? configDir(),
+      (message) => logger.warn(message),
+      process.env,
+      options.workspaceRoot,
+    ),
     ...config.mcpServers,
+  };
+  // The LSP servers that `plugin install` put into a trusted workspace; those of the user's config win on a name.
+  const lspServers = {
+    ...(projectTrusted
+      ? loadProjectLspServers(options.workspaceRoot, (message) => logger.warn(message))
+      : {}),
+    ...loadProjectLspServers(store, (message) => logger.warn(message)),
+    ...(config.lspServers as Record<string, unknown> | undefined),
   };
   const { sessionScopes, scopePromises, getOrCreateScope } = createSessionScopes({
     options,
-    config,
+    config: Object.keys(lspServers).length > 0 ? { ...config, lspServers } : config,
     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     http,
     identity,
@@ -509,6 +694,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     warnPersistence("dispatch-state restore", error);
   }
   const sessionInboxes = new Map<string, import("@agency/schema").Message[]>();
+  const steerableSessions = new Set<string>();
+  const setupDone = new Set<string>();
 
   // Session-scoped "always allow" grants: one manager per session id, persisted
   // to disk so grants survive daemon restart.
@@ -532,10 +719,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const schedulerFor = (provider: string): Scheduler => {
     let scheduler = schedulers.get(provider);
     if (!scheduler) {
-      // The rate of a known API: at the 60 of an unknown provider, a turn of fast steps waited 1 s for each request.
-      const requestsPerMinute =
-        providers[provider]?.requestsPerMinute ??
-        BUILTIN_PROVIDER_METADATA.find((meta) => meta.id === provider)?.rateLimit?.requestsPerMinute;
+      // Only a rate that the user sets: the limit of an account is not known here, and a 429 says it with its wait.
+      const requestsPerMinute = providers[provider]?.requestsPerMinute;
       scheduler = new Scheduler({
         maxConcurrent: 8,
         ...(requestsPerMinute === undefined ? {} : { requestsPerMinute }),
@@ -579,11 +764,15 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     pluginCommands,
     trustStore,
     pluginInstructions,
+    ...(config.memory === false ? {} : { memoryFile: memoryFile(options.workspaceRoot) }),
+    userAgentInstructions: config.userAgentInstructions === true,
     commandHooks,
     hookRun,
     teamContexts,
     teamFor,
     sessionInboxes,
+    steerableSessions,
+    setupDone,
     gate,
     gateForAgent,
     isReadOnlyAgent,
@@ -663,20 +852,30 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     options.onIdleShutdown?.();
   };
 
+  const disposeDesktop = registerDesktopHandlers(handlers, ctx, { leave });
+
+  // An SSE subscriber of the HTTP gateway is a client too: a desktop window holds no TCP connection.
+  const clients = { tcp: 0, sse: 0 };
+  const onClientCount = (): void => {
+    clearTimeout(idleTimer);
+    clearInterval(staleConfigTimer);
+    idleTimer = undefined;
+    // stop() closes the SSE streams, and their count drops to 0 after the daemon stopped.
+    if (stopped || clients.tcp + clients.sse > 0) return;
+    idleTimer = setTimeout(leave, idleLingerMs);
+    // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
+    staleConfigTimer = setInterval(() => {
+      if (configFingerprint.check()) leave();
+    }, 1_000);
+    staleConfigTimer.unref?.();
+  };
+
   server = await startDaemonServer({
     token: authToken,
     handlers,
     onClientCount(count) {
-      clearTimeout(idleTimer);
-      clearInterval(staleConfigTimer);
-      idleTimer = undefined;
-      if (count > 0) return;
-      idleTimer = setTimeout(leave, idleLingerMs);
-      // A daemon keeps the config it started with, so an idle one leaves as soon as that config changes.
-      staleConfigTimer = setInterval(() => {
-        if (configFingerprint.check()) leave();
-      }, 1_000);
-      staleConfigTimer.unref?.();
+      clients.tcp = count;
+      onClientCount();
     },
 
     onClientDisconnect: cancelTurnsOf,
@@ -698,6 +897,10 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   httpGateway = startHttpGateway({
     handlers,
     onClientDisconnect: cancelTurnsOf,
+    onSubscriberCount(count) {
+      clients.sse = count;
+      onClientCount();
+    },
     token: authToken,
     store: todoStore,
     sessionForEvent: (event) => sessionKeyForEvent(ctx, event),
@@ -729,6 +932,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
       clearTimeout(idleTimer);
       clearInterval(staleConfigTimer);
       stopBoardSync();
+      disposeDesktop();
       if (builtinsMode) {
         for (const scope of sessionScopes.values()) {
           try {

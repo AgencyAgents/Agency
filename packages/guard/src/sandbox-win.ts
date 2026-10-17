@@ -107,6 +107,7 @@ async function addAccessRules(sid: string, lines: string[]): Promise<boolean> {
   );
   try {
     const child = Bun.spawn([powershell, "-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",

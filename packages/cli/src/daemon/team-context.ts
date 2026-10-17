@@ -10,6 +10,10 @@ import {
 import { AgencyError, ErrorCode, type Message } from "@agency/schema";
 import type { DaemonContext } from "./types.ts";
 
+/** Shown when a team feature runs with no registered agent. */
+export const NO_AGENTS_MESSAGE =
+  "no agents defined: add one under `agents` in config or as .agency/agents/<name>.md";
+
 export type ChildState = "idle" | "working" | "blocked" | "failed";
 
 export interface ChildSessionMeta {

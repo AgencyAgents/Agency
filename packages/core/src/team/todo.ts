@@ -103,7 +103,14 @@ export interface FilerGrants {
   budgetTurns?: number;
 }
 
-const WRITE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash", "spawn", "dispatch"]);
+const WRITE_TOOLS: ReadonlySet<string> = new Set([
+  "write",
+  "edit",
+  "notebook_edit",
+  "bash",
+  "spawn",
+  "dispatch",
+]);
 
 export class BoardStore {
   private items: BoardItem[] = [];

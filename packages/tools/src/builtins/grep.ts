@@ -4,13 +4,15 @@ import type { ToolDeps, ToolSpec } from "../contract.ts";
 import { clip, lineCount, str, summarize } from "../render.ts";
 
 const MAX_MATCHES = 200;
+/** A longer line keeps its start: one match in a minified file would fill the whole result. */
+const MAX_LINE_CHARS = 1_000;
 
 /** rg and grep -rn both print matches as `path:line:content`; context lines use `-` separators. */
 const MATCH_LINE = /^(.+):(\d+):/;
 
 function trySpawn(args: string[]) {
   try {
-    return Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    return Bun.spawn(args, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
   } catch {
     return undefined;
   }
@@ -19,7 +21,11 @@ function trySpawn(args: string[]) {
 function searchBinaryAvailable(): boolean {
   for (const binary of ["rg", "grep"]) {
     try {
-      const result = Bun.spawnSync([binary, "--version"], { stdout: "ignore", stderr: "ignore" });
+      const result = Bun.spawnSync([binary, "--version"], {
+        windowsHide: true,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
       if (result.exitCode === 0) return true;
     } catch {
       // not on PATH
@@ -215,7 +221,15 @@ export function createGrepTool(deps: ToolDeps): ToolSpec {
           return { content: stderr || `search exited with code ${proc.exitCode}`, isError: true };
         }
 
-        const trimmed = stdout.trim();
+        const trimmed = stdout
+          .trim()
+          .split("\n")
+          .map((line) =>
+            line.length > MAX_LINE_CHARS
+              ? `${line.slice(0, MAX_LINE_CHARS)}… [${line.length - MAX_LINE_CHARS} more characters on this line]`
+              : line,
+          )
+          .join("\n");
         if (trimmed === "") return { content: t("tool.grep.no_matches") };
         const notice = capped
           ? `\n${filesOnly ? t("tool.grep.truncated_files", { count: MAX_MATCHES }) : t("tool.grep.truncated", { count: MAX_MATCHES })}`

@@ -85,4 +85,18 @@ describe("createGrepTool", () => {
       (Bun as unknown as { spawnSync: unknown }).spawnSync = original;
     }
   });
+
+  test("a long matching line keeps its start, so one minified file cannot fill the result", async () => {
+    const { deps, root } = setup();
+    writeFileSync(join(root, "bundle.min.js"), `var target=1;${"x".repeat(50_000)}\n`);
+    writeFileSync(join(root, "b.ts"), "const target = 2;\n");
+
+    const result = await createGrepTool(deps).handler({ pattern: "target" }, { signal });
+    if (isMissingBinary(result.content)) return;
+
+    expect(result.content.length).toBeLessThan(2_000);
+    expect(result.content).toContain("var target=1;");
+    expect(result.content).toContain("more characters on this line");
+    expect(result.content).toContain("const target = 2;");
+  });
 });

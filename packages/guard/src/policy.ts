@@ -1,6 +1,6 @@
 import { relative, resolve } from "node:path";
 import { scopeMatchesPattern } from "./capabilities.ts";
-import { fromMsysPath } from "./sandbox.ts";
+import { fromMsysPath, PROTECTED_PATHS } from "./sandbox.ts";
 import type { TrustStore } from "./trust.ts";
 
 /**
@@ -15,11 +15,15 @@ export type Decision = "allow" | "ask" | "deny";
 export type RiskTier = "safe" | "moderate" | "dangerous";
 
 /** Non-interactive permission mode. `ask` is the default; the others are
- *  chosen only via the explicit `--permission-mode` flag, never silently. */
-export type PermissionMode = "ask" | "allow-edits" | "allow-all" | "deny";
+ *  chosen only via the explicit `--permission-mode` flag, never silently.
+ *  `auto` allows edits as `allow-edits` does, and a reviewer model answers the other asks of a default rule. */
+export const PERMISSION_MODES = ["ask", "plan", "allow-edits", "auto", "allow-all", "deny"] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/** Tools `allow-edits` auto-allows: file mutations, not command execution. */
-const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
+/** Tools `allow-edits` and `auto` auto-allow: file mutations, not command execution. */
+const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "notebook_edit"]);
+/** The ask source of a write to a file that runs outside the sandbox later: only the user answers it, never a reviewer. */
+export const PROTECTED_SOURCE = "protected:";
 
 export interface PolicyRequest {
   tool: string;
@@ -78,6 +82,8 @@ export interface ToolPolicy {
     request: ToolCallPolicyRequest,
     ask: ((request: ApprovalRequestLike) => Promise<"once" | "always" | "reject">) | undefined,
   ): Promise<"allow" | "deny">;
+  /** The tool result for a refused call, when the refusal has a cause the model can act on. */
+  denyReason?(request: ToolCallPolicyRequest): string | undefined;
 }
 
 /** Structural stand-in for the approval callback type (avoids an import cycle). */
@@ -88,11 +94,13 @@ export interface ApprovalRequestLike {
   path?: string;
   riskTier?: RiskTier;
   source?: string;
+  /** Why a shell command is not read-only (`readOnlyRefusal`). */
+  reason?: string;
   metadata?: Record<string, unknown>;
 }
 
 /** Tools whose pattern maps match path arguments (workspace-relative). */
-const PATH_PATTERN_TOOLS = new Set(["write", "edit", "read", "execute_plan"]);
+const PATH_PATTERN_TOOLS = new Set(["write", "edit", "notebook_edit", "read", "execute_plan"]);
 /** Tools whose pattern maps match command strings. */
 const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
 
@@ -105,6 +113,12 @@ const COMMAND_PATTERN_TOOLS = new Set(["bash"]);
  *  workspaces; this allow is unreachable there.
  */
 const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(["dispatch", "spawn"]);
+
+/** Moderate-tier tools that only read: plan mode keeps them, still asking as `ask` does. */
+const PLAN_WEB_TOOLS: ReadonlySet<string> = new Set(["fetch", "websearch"]);
+
+/** Safe-tier tools that write state a later session reads: plan mode refuses them with the writes. */
+const PLAN_REFUSED_SAFE: ReadonlySet<string> = new Set(["memory"]);
 
 const DECISION_RANK: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };
 
@@ -268,6 +282,8 @@ const WRAPPERS: ReadonlySet<string> = new Set([
   "exec",
   "nice",
   "xargs",
+  "builtin",
+  "noglob",
 ]);
 /** Options of a wrapper that take a value in the next word. */
 const VALUE_OPTIONS: ReadonlySet<string> = new Set([
@@ -314,6 +330,13 @@ export function unwrapCommand(command: string, depth = 0): string[] {
     while (i < rest.length && (rest[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i] ?? "")))
       i += VALUE_OPTIONS.has(rest[i] ?? "") ? 2 : 1;
     forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
+  } else if (program === "timeout" || program === "stdbuf") {
+    // `timeout -k 2 30 cmd`, `stdbuf -o L cmd`: the command comes after the options, and after the duration of timeout.
+    const valued = program === "timeout" ? ["-s", "-k", "--signal", "--kill-after"] : ["-i", "-o", "-e"];
+    let i = 0;
+    while (i < rest.length && rest[i]?.startsWith("-")) i += valued.includes(rest[i] ?? "") ? 2 : 1;
+    if (program === "timeout") i += 1;
+    forms.push(...unwrapCommand(rest.slice(i).join(" "), depth + 1));
   } else if (program === "find") {
     // `-exec cmd {} ;`: the words after the option are a command.
     rest.forEach((word, i) => {
@@ -337,6 +360,425 @@ export function unwrapCommand(command: string, depth = 0): string[] {
     }
   }
   return forms.filter((form) => form.trim() !== "");
+}
+
+/** Programs that read the files that their words name. */
+const READ_COMMANDS: ReadonlySet<string> = new Set([
+  "cat",
+  "tac",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "nl",
+  "wc",
+  "sort",
+  "uniq",
+  "cut",
+  "diff",
+  "strings",
+  "xxd",
+  "od",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "sed",
+  "awk",
+  "type",
+  "get-content",
+  "gc",
+]);
+/** Of these, the first word that is no option is a pattern or a script, unless an option gave it. */
+const PATTERN_FIRST: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "rg", "sed", "awk"]);
+const PATTERN_OPTIONS: ReadonlySet<string> = new Set(["-e", "-f", "--regexp", "--expression", "--file"]);
+/** Options of a read program that take a value in the next word: the value is no file. */
+const VALUE_OPTIONS_OF: Record<string, readonly string[]> = {
+  head: ["-n", "-c"],
+  tail: ["-n", "-c"],
+  grep: ["-e", "-f", "-m", "-A", "-B", "-C", "--regexp", "--file"],
+  egrep: ["-e", "-f", "-m", "-A", "-B", "-C"],
+  fgrep: ["-e", "-f", "-m", "-A", "-B", "-C"],
+  rg: ["-e", "-f", "-m", "-A", "-B", "-C", "-g", "-t", "--regexp", "--file"],
+  sed: ["-e", "-f", "--expression", "--file"],
+  awk: ["-f", "-v"],
+  cut: ["-d", "-f", "-c", "-b"],
+  sort: ["-k", "-t", "-o"],
+};
+
+/** The words of one simple command, with its quotes taken away. */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (ch === "\\" && i + 1 < command.length) {
+      current += command[i + 1];
+      started = true;
+      i += 1;
+    } else if (/\s/.test(ch)) {
+      if (started) words.push(current);
+      current = "";
+      started = false;
+    } else {
+      current += ch;
+      started = true;
+    }
+  }
+  if (started) words.push(current);
+  return words;
+}
+
+/**
+ * The files that a shell command line names to read or to write, best effort, so that Read and Edit deny rules hold
+ * for them as in Claude Code: the files of `cat`, `head`, `grep`... and of `< file`; of `tee`, `sed -i`, `> file`.
+ * A path is taken as the command wrote it: a `cd` earlier in the line is not followed.
+ */
+export function shellFileTargets(command: string): { reads: string[]; writes: string[] } {
+  const reads: string[] = [];
+  const writes: string[] = [];
+  for (const part of splitCommand(command).parts) {
+    for (const form of unwrapCommand(part)) {
+      const words = shellWords(form);
+      const argv: string[] = [];
+      for (let i = 0; i < words.length; i++) {
+        const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(words[i] as string);
+        if (redirect === null) {
+          argv.push(words[i] as string);
+          continue;
+        }
+        const target = redirect[3] || words[++i] || "";
+        if (target === "" || target.startsWith("&") || /^(\/dev\/null|nul)$/i.test(target)) continue;
+        (redirect[2] === "<" ? reads : writes).push(target);
+      }
+      const program = (argv[0] ?? "")
+        .replace(/^.*[\\/]/, "")
+        .replace(/\.exe$/i, "")
+        .toLowerCase();
+      const files: string[] = [];
+      let patternGiven = !PATTERN_FIRST.has(program);
+      for (let i = 1; i < argv.length; i++) {
+        const word = argv[i] as string;
+        if (PATTERN_OPTIONS.has(word)) patternGiven = true;
+        if (VALUE_OPTIONS_OF[program]?.includes(word)) i += 1;
+        else if (word.startsWith("-")) continue;
+        else if (!patternGiven) patternGiven = true;
+        else files.push(word);
+      }
+      if (program === "tee") writes.push(...files);
+      else if (READ_COMMANDS.has(program)) {
+        reads.push(...files);
+        if (program === "sed" && argv.some((word) => /^-i/.test(word) || word === "--in-place"))
+          writes.push(...files);
+      }
+    }
+  }
+  return { reads: [...new Set(reads)], writes: [...new Set(writes)] };
+}
+
+/**
+ * Programs that only read and print, after the read-only set of Claude Code. Each one with a way to write, run a
+ * program or reach a hidden file has a rule below.
+ */
+const READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  ..."ls dir cat echo printf pwd head tail grep egrep fgrep rg find wc which diff stat du cd file tree sort".split(
+    " ",
+  ),
+  ..."cut uniq tr nl tac basename dirname realpath strings od xxd true false test date whoami id uname".split(
+    " ",
+  ),
+  ..."hostname sha1sum sha256sum sha512sum md5sum cksum jq git sed awk rev fold comm paste column expr seq".split(
+    " ",
+  ),
+  ..."readlink df ps tasklist type".split(" "),
+  // PowerShell's own read-only commands; `ls`, `cat` and `dir` are its aliases of the first two.
+  ..."get-childitem gci get-content gc select-string sls get-location test-path resolve-path get-item".split(
+    " ",
+  ),
+  ..."measure-object write-output".split(" "),
+]);
+/** Programs that are read-only only as `--version` and the like. */
+const VERSION_ONLY: ReadonlySet<string> = new Set(
+  "node bun deno python python3 py npm pnpm yarn npx cargo rustc go java dotnet tsc biome".split(" "),
+);
+/** Short options with which a program writes a file, runs a command, waits forever or reads hidden files. */
+const UNSAFE_SHORT: Record<string, RegExp> = {
+  find: /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/,
+  sort: /^-[a-zA-Z]*o/,
+  rg: /^-[a-zA-Z]*[uz.]/,
+  grep: /^-[a-zA-Z]*[rRd]/,
+  egrep: /^-[a-zA-Z]*[rRd]/,
+  fgrep: /^-[a-zA-Z]*[rRd]/,
+  diff: /^-[a-zA-Z]*r/,
+  file: /^-[a-zA-Z]*[mfC]/,
+  tree: /^-[a-zA-Z]*o/,
+  git: /^-[a-zA-Z]*O/,
+  sed: /^-[a-zA-Z]*[ifs]/,
+  tail: /^-[a-zA-Z0-9]*[fF]/,
+  xxd: /^-[a-zA-Z]*r/,
+  date: /^-[a-zA-Z]*s/,
+};
+/** The same as long options. GNU programs take any unambiguous prefix (`--in` for `--in-place`), so a prefix counts. */
+const UNSAFE_LONG: Record<string, string[]> = {
+  sort: ["output", "compress-program"],
+  rg: [
+    "pre",
+    "pre-glob",
+    "hidden",
+    "no-ignore",
+    "no-ignore-vcs",
+    "unrestricted",
+    "search-zip",
+    "hostname-bin",
+  ],
+  grep: ["recursive", "dereference-recursive", "directories"],
+  egrep: ["recursive", "dereference-recursive", "directories"],
+  fgrep: ["recursive", "dereference-recursive", "directories"],
+  diff: ["recursive"],
+  file: ["magic-file", "files-from", "compile"],
+  git: ["output", "ext-diff", "open-files-in-pager", "textconv", "exec"],
+  sed: ["in-place", "file", "separate"],
+  tail: ["follow"],
+  xxd: ["revert"],
+  date: ["set"],
+};
+/** Files that hold keys or tokens: the read tool does not give them by default either. */
+const SECRET_FILE =
+  /(^|[/:\\])(\.env|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.aws[/\\]|\.ssh[/\\]|id_(rsa|dsa|ecdsa|ed25519))/i;
+const SECRET_NAMES = [
+  ".env",
+  ".env.local",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  ".git-credentials",
+  "id_rsa",
+  "id_ed25519",
+];
+/** Options of grep and rg whose value is the next word, so that word is not the pattern. */
+const VALUE_OPTION =
+  /^-[gtTmABCMj]$|^--(glob|iglob|type|type-not|max-count|context|after-context|before-context)$/;
+/** Programs whose first word is a pattern or a program text, not a file. */
+const PATTERN_PROGRAMS: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "rg", "sed", "awk", "jq"]);
+/** Programs whose second file argument is an output file (`uniq in out`), with their options that take a value. */
+const ONE_FILE: Record<string, string[]> = {
+  uniq: ["-f", "-s", "-w"],
+  xxd: ["-s", "-l", "-c", "-g", "-o", "-n"],
+};
+/** A sed command that only prints, deletes from the output or substitutes, after an optional address. The `w`, `e`, `r`
+ *  and `R` commands of GNU sed write, run and read other files. */
+const SED_COMMAND =
+  /^(?:(?:\d+|\$|\/(?:\\.|[^/])*\/)(?:,(?:\d+|\$|\/(?:\\.|[^/])*\/))?)?\s*(?:[pdq=]|s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[gIip0-9]*|y(.)(?:\\.|(?!\2).)*\2(?:\\.|(?!\2).)*\2)$/;
+const READ_ONLY_GIT: ReadonlySet<string> = new Set(
+  "status diff log show rev-parse ls-files blame describe shortlog grep branch rev-list ls-tree cat-file merge-base".split(
+    " ",
+  ),
+);
+const GIT_BRANCH_LIST =
+  /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current|--merged|--no-merged|--sort=.+|--format=.+)$/;
+/** git's own options before the subcommand that change nothing. */
+const GIT_QUIET = /^(--no-pager|-P|--no-optional-locks)$/;
+
+/** An absolute path of the workspace, in Windows or MSYS form (`/c/...`): the shell reads both. */
+function inWorkspace(word: string, workspaceRoot: string | undefined): boolean {
+  if (!workspaceRoot) return false;
+  const norm = (path: string) =>
+    path
+      .replace(/^\/([a-zA-Z])(\/|$)/, "$1:/")
+      .replace(/\\/g, "/")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  const root = norm(workspaceRoot);
+  const path = norm(word);
+  return path === root || path.startsWith(`${root}/`);
+}
+
+/**
+ * The first character the shell would not read as plain text, outside single quotes. Single quotes hold text only;
+ * double quotes still expand `$`, a backquote and `\`. Unquoted, `~` expands only at the start of a word.
+ */
+function shellSyntax(command: string): string | undefined {
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+    } else if (quote === '"') {
+      if (ch === '"') quote = undefined;
+      else if ("$`\\".includes(ch)) return ch;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if ("$`\\(){}!#@".includes(ch)) return ch;
+    else if (ch === "~" && (i === 0 || /[\s=:]/.test(command[i - 1] as string))) return ch;
+  }
+  return undefined;
+}
+
+/** True when `arg` is a long option that names one of `options`, whole or as the prefix the program accepts. */
+function longOption(arg: string, options: string[] | undefined): boolean {
+  if (!options || !arg.startsWith("--")) return false;
+  const name = arg.slice(2).split("=")[0] ?? "";
+  // `--no-ignore-dot` is one of the `--no-ignore` family.
+  return name !== "" && options.some((option) => option.startsWith(name) || name.startsWith(option));
+}
+
+/**
+ * Why a command line is not read-only, or undefined when it only reads files of the workspace and can run without a
+ * prompt as in Claude Code. Text this check cannot read for sure asks: `$`, a path out of `workspaceRoot`, `..`, a
+ * `.env` file, a PowerShell drive such as `env:`.
+ */
+export function readOnlyRefusal(command: string, workspaceRoot?: string): string | undefined {
+  if (command.length > 10_000) return "the command is too long to check";
+  const syntax = shellSyntax(command);
+  if (syntax !== undefined) return `it uses \`${syntax}\`, which the shell expands`;
+  const { parts, dynamic } = splitCommand(command);
+  if (dynamic || parts.length === 0) return "it runs a nested command";
+  const programs = new Set<string>();
+  for (const part of parts) {
+    const argv: string[] = [];
+    const words = shellWords(part);
+    // A quoted `<` or `>` is text: only a part with an unquoted one has redirects.
+    const redirects = /[<>]/.test(part.replace(/'[^']*'|"[^"]*"/g, ""));
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i] as string;
+      if (!redirects) {
+        argv.push(word);
+        continue;
+      }
+      // `<>file` opens the file for writing too.
+      if (/^\d*<>/.test(word)) return "it opens a file for writing";
+      const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(word);
+      // A redirect inside a word (`echo x>a.txt`) writes as well: only the ones read above are known.
+      if (redirect === null && /[<>]/.test(word)) return "it writes a file";
+      if (redirect === null) argv.push(word);
+      else {
+        const target = redirect[3] || words[++i] || "";
+        if (redirect[2] === "<") argv.push(target);
+        else if (!/^(&\d|\/dev\/(null|stdout|stderr)|nul)$/i.test(target)) return "it writes a file";
+      }
+    }
+    // `LC_ALL=C sort`, `time ls`, `timeout 5 ls`: the command after them runs. Other assignments (`PATH=.`) ask.
+    while (argv.length > 1) {
+      const head = argv[0] as string;
+      if (/^(LC_\w+|LANG|TZ|NO_COLOR|COLUMNS|TERM)=/.test(head) || head === "time") argv.shift();
+      else if (head === "timeout" && /^\d+(\.\d+)?[smhd]?$/.test(argv[1] as string)) argv.splice(0, 2);
+      else break;
+    }
+    const program = (argv[0] ?? "").toLowerCase();
+    const args = argv.slice(1);
+    if (program === "command" && /^-[vV]$/.test(args[0] ?? "")) continue;
+    if (VERSION_ONLY.has(program)) {
+      if (args.length === 1 && /^(--version|-v|-V|version)$/.test(args[0] as string)) continue;
+      return `\`${program}\` runs code`;
+    }
+    if (!READ_ONLY_PROGRAMS.has(program)) return `\`${program}\` is not on the read-only list`;
+    programs.add(program);
+    if (args.some((arg) => UNSAFE_SHORT[program]?.test(arg) || longOption(arg, UNSAFE_LONG[program])))
+      return `this option of \`${program}\` can write, run a program or read hidden files`;
+    if (program === "cd" && (args.length === 0 || args[0] === "-"))
+      return "`cd` with no folder leaves the project";
+    // A path out of the workspace, a secret file (also as `HEAD:.env`), or a PowerShell drive such as `env:`.
+    const outside = (word: string): boolean =>
+      (/^([/~]|[A-Za-z]:)/.test(word) && !inWorkspace(word, workspaceRoot)) ||
+      /^(env|variable|function|alias|cert|wsman|hk[a-z]+):/i.test(word) ||
+      // Windows devices: reading CON waits for the console.
+      (program !== "ps" && /^(con|prn|aux|com\d|lpt\d)(\.|$)/i.test(word)) ||
+      /(^|\/)\.\.(\/|$)/.test(word) ||
+      SECRET_FILE.test(word);
+    // The first word of grep, rg, sed, awk and jq is a pattern or a program, not a path: `sed -n '/foo/p'`.
+    const patternAt =
+      PATTERN_PROGRAMS.has(program) && !args.some((arg) => /^-[ef]$|^--(regexp|file)/.test(arg))
+        ? args.findIndex((arg, i) => !arg.startsWith("-") && !VALUE_OPTION.test(args[i - 1] ?? ""))
+        : -1;
+    // The value of an option counts too: `--file=/etc/passwd`, `-f/etc/passwd`.
+    const values = (arg: string) => [
+      arg,
+      arg.slice(arg.indexOf("=") + 1),
+      /^-[^-]./.test(arg) ? arg.slice(2) : "",
+    ];
+    if (args.some((arg, i) => i !== patternAt && values(arg).some((word) => word !== "" && outside(word))))
+      return "it names a path outside the project or a secret file";
+    // An unquoted glob can expand to an option such as `-delete`.
+    if (
+      /[*?[]/.test(part.replace(/'[^']*'|"[^"]*"/g, "")) &&
+      (UNSAFE_SHORT[program] || UNSAFE_LONG[program] || program === "cd")
+    )
+      return "an unquoted wildcard can expand to an option of this program";
+    // A wildcard that can match a secret file, quoted too: PowerShell and `rg -g` expand quoted ones.
+    // A `[...]` class matches one character, as `?` does.
+    const matches = (glob: string) =>
+      new RegExp(
+        globToRegExpSource((glob.split(/[/\\]/).at(-1) ?? glob).replace(/\[[^\]]*\]/g, "?"), "path"),
+      );
+    // find only prints the names its patterns match.
+    if (
+      program !== "find" &&
+      args.some((arg) => /[*?[]/.test(arg) && SECRET_NAMES.some((name) => matches(arg).test(name)))
+    )
+      return "a wildcard can match a secret file";
+    if (program === "ps" && args.some((arg) => !arg.startsWith("-") && arg.includes("e")))
+      return "`ps e` prints the environment of each process";
+    const valued = ONE_FILE[program];
+    if (valued) {
+      const files = args.filter((arg, i) => !arg.startsWith("-") && !valued.includes(args[i - 1] ?? ""));
+      if (files.length > 1) return `\`${program}\` writes its second file`;
+    }
+    if (program === "hostname" && args.some((arg) => !arg.startsWith("-")))
+      return "`hostname NAME` renames the computer";
+    if (program === "jq" && args.some((arg) => /\benv\b|\$ENV|--rawfile|--slurpfile/.test(arg)))
+      return "this jq filter reads the environment or other files";
+    // awk writes with `>` and `|`, runs programs with system() and getline, and reads the environment from ENVIRON.
+    if (
+      program === "awk" &&
+      args.some((arg) => /system|getline|ENVIRON|PROCINFO|[|>@]|^-f|^--file/.test(arg))
+    )
+      return "this awk program can write, run a program or read the environment";
+    if (program === "sed") {
+      const scripts = args.flatMap((arg, i) => (args[i - 1] === "-e" ? [arg] : []));
+      const script = scripts.length > 0 ? scripts : args.filter((arg) => !arg.startsWith("-")).slice(0, 1);
+      if (!script.every((text) => text.split(";").every((cmd) => SED_COMMAND.test(cmd.trim()))))
+        return "this sed script can write or run files";
+    }
+    if (program === "git") {
+      const start = args.findIndex((arg) => !GIT_QUIET.test(arg));
+      const rest = start === -1 ? [] : args.slice(start);
+      const sub = rest[0] ?? "";
+      const more = rest.slice(1);
+      const listing =
+        sub === "--version" ||
+        READ_ONLY_GIT.has(sub) ||
+        (sub === "remote" && more.every((arg) => arg === "-v")) ||
+        (sub === "tag" && (more.length === 0 || more.some((arg) => arg === "-l" || arg === "--list"))) ||
+        (sub === "stash" && (more[0] === "list" || more[0] === "show")) ||
+        (sub === "reflog" &&
+          (more.length === 0 || more[0] === "show" || more[0]?.startsWith("-") === true)) ||
+        (sub === "config" &&
+          more.some((arg) => /^(--get|--get-all|--get-regexp|--list|-l)$/.test(arg)) &&
+          !more.some((arg) =>
+            /^(--add|--unset|--unset-all|--replace-all|--edit|-e|--rename-section|--remove-section)$/.test(
+              arg,
+            ),
+          ));
+      if (!listing) return `\`git ${sub}\` can change the repository`;
+      if (sub === "branch" && !more.every((arg) => GIT_BRANCH_LIST.test(arg)))
+        return "`git branch NAME` makes a branch";
+    }
+  }
+  // git in another folder can run the hooks of that folder.
+  if (programs.has("cd") && programs.has("git")) return "git in another folder can run that folder's hooks";
+  return undefined;
+}
+
+/** True for a command line that only reads files of the workspace (`readOnlyRefusal` finds no reason to ask). */
+export function isReadOnlyCommand(command: string, workspaceRoot?: string): boolean {
+  return readOnlyRefusal(command, workspaceRoot) === undefined;
 }
 
 /**
@@ -529,6 +971,25 @@ export function relativeWorkspacePath(root: string, candidate: string): string {
  * available an `ask` fails closed (deny); a headless run must never silently
  * approve itself.
  */
+/** `over` on top of `base`: the rules of `over` come after those of `base` for a tool, so they win on a call. */
+export function mergePermissions(
+  base: Record<string, ToolPermissionValue>,
+  over: Record<string, ToolPermissionValue>,
+): Record<string, ToolPermissionValue> {
+  const merged = { ...base };
+  for (const [tool, value] of Object.entries(over)) {
+    const under = merged[tool];
+    if (under === undefined || typeof value === "string") merged[tool] = value;
+    else {
+      const all = isPathPatternTool(tool) ? "**" : "*";
+      const first: Record<string, Decision> = typeof under === "string" ? { [all]: under } : { ...under };
+      for (const key of Object.keys(value)) delete first[key];
+      merged[tool] = { ...first, ...value };
+    }
+  }
+  return merged;
+}
+
 export class PermissionsGate implements ToolPolicy {
   private readonly engine: PolicyEngine;
   private readonly permissions: Record<string, ToolPermissionValue>;
@@ -536,7 +997,7 @@ export class PermissionsGate implements ToolPolicy {
   private ceiling: PermissionsGate | undefined;
 
   constructor(
-    private readonly options: {
+    private options: {
       permissions?: Record<string, ToolPermissionValue>;
       workspaceRoot: string;
       /** Per-agent policy mode: tools absent from the map are filtered entirely. */
@@ -551,9 +1012,26 @@ export class PermissionsGate implements ToolPolicy {
     this.engine = new PolicyEngine(rulesFromPermissions(this.permissions), "ask");
   }
 
+  /** Switches this gate's mode in place: a turn whose plan the user approved goes on in the new mode. */
+  setMode(mode: PermissionMode): void {
+    this.options = { ...this.options, permissionMode: mode };
+  }
+
   /** Derives a gate with `mode` applied over the same policy and trust inputs. */
   withMode(mode: PermissionMode): PermissionsGate {
     const next = new PermissionsGate({ ...this.options, permissionMode: mode });
+    if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
+    next.ceiling = this.ceiling;
+    return next;
+  }
+
+  /** Derives a gate whose rules for this run come after those of the config, so they win on a call. */
+  withRules(rules: Record<string, ToolPermissionValue> | undefined): PermissionsGate {
+    if (rules === undefined) return this;
+    const next = new PermissionsGate({
+      ...this.options,
+      permissions: mergePermissions(this.permissions, rules),
+    });
     if (this.itemScopes !== undefined) next.itemScopes = [...this.itemScopes];
     next.ceiling = this.ceiling;
     return next;
@@ -605,12 +1083,19 @@ export class PermissionsGate implements ToolPolicy {
 
   private ownDecisionFor(request: ToolCallPolicyRequest): Decision {
     if (this.outsideItemScope(request)) return "deny";
+    if (
+      request.command !== undefined &&
+      isCommandPatternTool(request.tool) &&
+      this.deniesShellFiles(request.command)
+    )
+      return "deny";
     const entry = this.permissions[request.tool];
     if (entry === undefined) {
       if (this.options.absentToolsDenied) return "deny";
       if (ORCHESTRATION_TOOLS.has(request.tool) && this.workspaceAllowsOrchestration()) return "allow";
       const decision = this.defaultFor(request.riskTier);
       if (decision === "allow" && this.isEnvRead(request)) return "deny";
+      if (decision === "ask" && this.readOnlyShell(request)) return "allow";
       return decision;
     }
     if (typeof entry === "string") {
@@ -628,7 +1113,18 @@ export class PermissionsGate implements ToolPolicy {
     }
     const decision = this.engine.evaluate(subject);
     if (decision === "allow" && this.isEnvRead(request)) return "deny";
+    if (decision === "ask" && this.readOnlyShell(request)) return "allow";
     return decision;
+  }
+
+  /** A read-only command (`isReadOnlyCommand`) with no part that an ask or deny pattern names, as in Claude Code. */
+  private readOnlyShell(request: ToolCallPolicyRequest): boolean {
+    if (request.command === undefined || !isCommandPatternTool(request.tool)) return false;
+    if (!isReadOnlyCommand(request.command, this.options.workspaceRoot)) return false;
+    return splitCommand(request.command).parts.every((part) => {
+      const verdict = this.engine.evaluateWithMatch({ tool: request.tool, command: part });
+      return verdict.decision === "allow" || verdict.matched?.commandPattern === undefined;
+    });
   }
 
   private outsideItemScope(request: ToolCallPolicyRequest): boolean {
@@ -697,16 +1193,21 @@ export class PermissionsGate implements ToolPolicy {
     if (this.options.permissionMode === "deny" && (request.riskTier ?? "dangerous") !== "safe") {
       return "deny";
     }
+    if (this.planRefuses(request)) return "deny";
 
     const decision = this.decisionFor(request);
-    if (decision === "allow") return "allow";
     if (decision === "deny") return "deny";
-    // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
-    if (this.options.permissionMode === "allow-all") return "allow";
-    if (this.options.permissionMode === "allow-edits" && EDIT_TOOLS.has(request.tool)) return "allow";
+    const harness = this.harnessFileWritten(request);
+    if (harness === undefined) {
+      if (decision === "allow") return "allow";
+      // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
+      if (this.options.permissionMode === "allow-all") return "allow";
+      const mode = this.options.permissionMode;
+      if ((mode === "allow-edits" || mode === "auto") && EDIT_TOOLS.has(request.tool)) return "allow";
+    }
     if (!ask) return "deny"; // no approval surface: fail closed
 
-    const source = this.askSource(request);
+    const source = harness === undefined ? this.askSource(request) : `${PROTECTED_SOURCE}${harness}`;
     const response = await ask({
       tool: request.tool,
       title: request.command ?? request.path ?? request.title ?? request.tool,
@@ -714,9 +1215,62 @@ export class PermissionsGate implements ToolPolicy {
       path: request.path,
       riskTier: request.riskTier,
       source,
+      ...(request.command !== undefined && isCommandPatternTool(request.tool)
+        ? { reason: readOnlyRefusal(request.command, this.options.workspaceRoot) }
+        : {}),
       metadata: { riskTier: request.riskTier, source },
     });
     return response === "reject" ? "deny" : "allow";
+  }
+
+  /**
+   * A file of `PROTECTED_PATHS` that the request writes, as the workspace names it. Its hooks, MCP servers and plugins
+   * run later outside the sandbox, so no mode or rule writes one without the user. Plans are files of the plan agent.
+   */
+  private harnessFileWritten(request: ToolCallPolicyRequest): string | undefined {
+    const targets =
+      EDIT_TOOLS.has(request.tool) && request.path !== undefined
+        ? [request.path]
+        : isCommandPatternTool(request.tool) && request.command !== undefined
+          ? shellFileTargets(request.command).writes
+          : [];
+    for (const target of targets) {
+      const rel = relativeWorkspacePath(this.options.workspaceRoot, target);
+      const key = process.platform === "win32" ? rel.toLowerCase() : rel;
+      const under = (dir: string) => key === dir || key.startsWith(`${dir}/`);
+      if ([...PROTECTED_PATHS.writable, ".agency/plans"].some(under)) continue;
+      if (PROTECTED_PATHS.readOnly.some(under)) return rel;
+    }
+    return undefined;
+  }
+
+  /** A read or edit deny rule that holds for a file that a shell command names. */
+  private deniesShellFiles(command: string): boolean {
+    const denied = (tool: string, path: string): boolean =>
+      this.engine.evaluate({ tool, path: relativeWorkspacePath(this.options.workspaceRoot, path) }) ===
+      "deny";
+    const { reads, writes } = shellFileTargets(command);
+    return (
+      reads.some((path) => denied("read", path)) ||
+      writes.some((path) => denied("edit", path) || denied("write", path))
+    );
+  }
+
+  /** Plan mode is read-only: tools above `safe` and spawning agents are refused, except web reads and read-only shell commands. */
+  private planRefuses(request: ToolCallPolicyRequest): boolean {
+    if (this.options.permissionMode !== "plan") return false;
+    if (ORCHESTRATION_TOOLS.has(request.tool) || PLAN_REFUSED_SAFE.has(request.tool)) return true;
+    if ((request.riskTier ?? "dangerous") === "safe" || PLAN_WEB_TOOLS.has(request.tool)) return false;
+    return !(
+      isCommandPatternTool(request.tool) &&
+      request.command !== undefined &&
+      isReadOnlyCommand(request.command, this.options.workspaceRoot)
+    );
+  }
+
+  denyReason(request: ToolCallPolicyRequest): string | undefined {
+    if (!this.planRefuses(request)) return undefined;
+    return `plan mode: ${request.tool} is refused. This session is in plan mode, which is read-only. Do not call it again. Explore with read-only tools, then present your plan: call plan_exit with the full plan in markdown so the user can approve it.`;
   }
 
   /**

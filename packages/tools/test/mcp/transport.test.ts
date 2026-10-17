@@ -137,6 +137,23 @@ describe("McpTransport HTTP Streamable", () => {
     await transport.close();
   });
 
+  test("stdio skips a blank line of the server and reads the next message", async () => {
+    const received: Record<string, unknown>[] = [];
+    const transport = createMcpTransport("stdio", {
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write('note\\n\\n' + JSON.stringify({ jsonrpc: "2.0", method: "ping" }) + '\\n\\n'); setTimeout(()=>{}, 500)`,
+      ],
+    });
+    transport.onMessage((msg) => received.push(msg));
+    await transport.start();
+    const deadline = Date.now() + 3_000;
+    while (received.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(received).toEqual([{ jsonrpc: "2.0", method: "ping" }]);
+    await transport.close();
+  });
+
   test("per-server timeoutMs aborts a hanging POST", async () => {
     globalThis.fetch = ((_url: string | URL, _init?: RequestInit) =>
       new Promise(() => {})) as unknown as typeof fetch;

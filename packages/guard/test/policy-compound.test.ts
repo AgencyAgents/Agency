@@ -152,4 +152,19 @@ describe("a compound shell command", () => {
     expect(splitCommand("echo a\\;b").parts).toEqual(["echo a\\;b"]);
     expect(decide("git status 2>&1")).toBe("allow");
   });
+
+  test("a rule sees the command behind timeout, stdbuf, builtin and noglob, as Claude Code strips them", () => {
+    for (const command of [
+      "timeout 5 rm -rf build",
+      "timeout -s KILL -k 2 30 rm -rf build",
+      "stdbuf -oL rm -rf build",
+      "stdbuf -o L rm -rf build",
+      "builtin rm build",
+      "noglob rm build",
+    ]) {
+      expect(`${command} -> ${decide(command)}`).toBe(`${command} -> deny`);
+    }
+    // The whole command is judged too, and the strictest verdict wins: an allow of `git status` does not allow it.
+    expect(decide("timeout 30 git status")).toBe("ask");
+  });
 });

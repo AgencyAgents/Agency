@@ -31,7 +31,16 @@ interface JournalRecord {
   afterHash?: string;
   /** Association with the conversation: the turn that caused the write. */
   ref?: string;
+  /** The write made the file: undoing it removes the file. */
+  created?: boolean;
   undone: boolean;
+}
+
+export interface RewindOutcome {
+  /** The files put back. Empty when a conflict stopped the rewind. */
+  files: string[];
+  /** The files that differ from the last write of the agent: an edit since then that a rewind would lose. */
+  conflicts: string[];
 }
 
 export interface UndoOutcome {
@@ -175,6 +184,7 @@ interface PersistedJournalRecord {
   before: SnapshotEntry;
   afterHash?: string;
   ref?: string;
+  created?: boolean;
   undone: boolean;
 }
 
@@ -190,6 +200,7 @@ function isJournalRecord(value: unknown): value is PersistedJournalRecord {
     typeof before.capturedAt === "string" &&
     (r.afterHash === undefined || typeof r.afterHash === "string") &&
     (r.ref === undefined || typeof r.ref === "string") &&
+    (r.created === undefined || typeof r.created === "boolean") &&
     typeof r.undone === "boolean"
   );
 }
@@ -232,6 +243,14 @@ export class SnapshotStore {
     return entry;
   }
 
+  /** Journals a write that makes `path`, so that undo and rewind remove the file again. */
+  captureCreated(path: string, ref?: string): void {
+    const before: SnapshotEntry = { hash: this.storeBlob(""), path, capturedAt: new Date().toISOString() };
+    this.journal.push({ before, ...(ref === undefined ? {} : { ref }), created: true, undone: false });
+    if (this.journal.length > MAX_JOURNAL_RECORDS) this.journal.shift();
+    this.persistJournal();
+  }
+
   /** Returns the exact content captured under `entry`, for restoring a file. */
   read(entry: SnapshotEntry): string {
     const blob = blobPath(this.storeDir, entry.hash);
@@ -265,13 +284,31 @@ export class SnapshotStore {
     for (let i = this.journal.length - 1; i >= 0; i--) {
       const record = this.journal[i];
       if (record && !record.undone) {
-        this.restore(record.before);
+        this.putBack(record);
         record.undone = true;
         this.persistJournal();
         return { path: record.before.path };
       }
     }
     return undefined;
+  }
+
+  /**
+   * Puts back the files that the turns of `refs` wrote, newest write first. A file that differs from the agent's
+   * last write to it stops the whole rewind unless `force`: the user changed it since, and the rewind would lose that.
+   */
+  rewind(refs: ReadonlySet<string>, force = false): RewindOutcome {
+    const records = this.journal.filter((r) => !r.undone && r.ref !== undefined && refs.has(r.ref));
+    const last = new Map<string, JournalRecord>();
+    for (const record of records) last.set(record.before.path, record);
+    const conflicts = [...last.values()].filter((r) => !this.isAsWritten(r)).map((r) => r.before.path);
+    if (conflicts.length > 0 && !force) return { files: [], conflicts };
+    for (const record of records.reverse()) {
+      this.putBack(record);
+      record.undone = true;
+    }
+    if (records.length > 0) this.persistJournal();
+    return { files: [...last.keys()], conflicts };
   }
 
   /** Re-applies the most recently undone write (whose post-state is known). */
@@ -646,6 +683,7 @@ export class SnapshotStore {
         before: parsed.before,
         ...(parsed.ref === undefined ? {} : { ref: parsed.ref }),
         ...(parsed.afterHash === undefined ? {} : { afterHash: parsed.afterHash }),
+        ...(parsed.created ? { created: true } : {}),
         undone: parsed.undone,
       });
     }
@@ -664,6 +702,7 @@ export class SnapshotStore {
               before: r.before,
               ...(r.afterHash === undefined ? {} : { afterHash: r.afterHash }),
               ...(r.ref === undefined ? {} : { ref: r.ref }),
+              ...(r.created ? { created: true } : {}),
               undone: r.undone,
             }),
           )
@@ -707,6 +746,21 @@ export class SnapshotStore {
       }
     }
     return out;
+  }
+
+  /** True when the file is as the record's write left it. A write that never settled has no known state. */
+  private isAsWritten(record: JournalRecord): boolean {
+    const path = record.before.path;
+    return (
+      record.afterHash !== undefined &&
+      existsSync(path) &&
+      contentHash(readFileSync(path, "utf8")) === record.afterHash
+    );
+  }
+
+  private putBack(record: JournalRecord): void {
+    if (record.created) rmSync(record.before.path, { force: true });
+    else this.restore(record.before);
   }
 
   private restore(entry: SnapshotEntry): void {

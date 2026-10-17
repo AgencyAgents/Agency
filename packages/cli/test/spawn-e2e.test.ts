@@ -22,7 +22,7 @@ function tempDir(): string {
   return dir;
 }
 
-function spawnDaemonEntry(workspaceRoot: string, instanceFile: string) {
+function spawnDaemonEntry(workspaceRoot: string, instanceFile: string, env: Record<string, string> = {}) {
   const proc = Bun.spawn(
     [
       "bun",
@@ -36,9 +36,10 @@ function spawnDaemonEntry(workspaceRoot: string, instanceFile: string) {
       "60000",
     ],
     // Bun.spawn's default env misses variables set after startup, such as the preload's AGENCY_HOME.
-    { stdio: ["ignore", "ignore", "ignore"], env: process.env },
+    { stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ...env } },
   );
   spawned.push(proc);
+  return proc;
 }
 
 // Real child-process spawns via Bun.spawn; slower than the in-process
@@ -142,3 +143,25 @@ describe("daemon-entry.ts as a real spawned process", () => {
     expect(await client.call("cancel_turn", { turnId: "x" })).toEqual({ cancelled: false });
   }, 20_000);
 });
+
+test("a daemon bound to the app leaves when the app's process ends", async () => {
+  const instanceDir = tempDir();
+  const root = tempDir();
+  const app = Bun.spawn(["bun", "-e", "setTimeout(() => {}, 60000)"], {
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  spawned.push(app);
+  let daemon: ReturnType<typeof spawnDaemonEntry> | undefined;
+  const { client } = await ensureDaemon({
+    workspaceRoot: root,
+    instanceDir,
+    spawnDaemon: (file) => {
+      daemon = spawnDaemonEntry(root, file, { AGENCY_PARENT_PID: String(app.pid) });
+    },
+    spawnTimeoutMs: 15_000,
+  });
+  await client.close();
+  app.kill();
+  const code = await Promise.race([daemon?.exited, Bun.sleep(15_000).then(() => "still running")]);
+  expect(code).toBe(0);
+}, 30_000);

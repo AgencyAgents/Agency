@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Config } from "@agency/core";
-import { dataDir } from "@agency/core";
+import { dataDir, parseModelRef } from "@agency/core";
 import type { HttpClient } from "@agency/net";
 import {
   createKeychain,
@@ -27,6 +27,7 @@ export interface ProviderListModel {
   releaseDate?: string;
   /** Provider API base URL from the catalog, for gateway-style providers. */
   apiBaseURL?: string;
+  efforts?: ModelInfo["efforts"];
 }
 
 export interface ProviderListEntry {
@@ -52,6 +53,7 @@ function toListModel(model: ModelInfo): ProviderListModel {
     status: model.status,
     releaseDate: model.releaseDate,
     apiBaseURL: model.apiBaseURL,
+    ...(model.efforts ? { efforts: model.efforts } : {}),
   };
 }
 
@@ -91,6 +93,8 @@ export async function listProviders(options: {
   /** Pre-loaded catalog models; skips the models.dev fetch (tests, warm daemon). */
   catalog?: readonly ModelInfo[];
   keychain?: KeychainBackend;
+  /** "connected": providers neither connected nor defined in config list no models (the full list is ~9k). */
+  models?: "all" | "connected";
 }): Promise<ProviderListResult> {
   const env = options.env ?? process.env;
   const catalog =
@@ -127,9 +131,16 @@ export async function listProviders(options: {
 
   const keychain = options.keychain ?? (await createKeychain(process.platform, join(dataDir(env), "keys")));
 
+  const connected = await connectedProviderIds([...byFamily.keys()], options.config, env, keychain);
+  const defaultProvider = parseModelRef(options.config.model ?? "")?.provider;
+  const listed = new Set([...connected, ...Object.keys(options.config.provider)]);
+  if (defaultProvider) listed.add(defaultProvider);
   return {
-    all: entries,
+    all:
+      options.models === "connected"
+        ? entries.map((entry) => (listed.has(entry.id) ? entry : { ...entry, models: [] }))
+        : entries,
     default: defaultModelIDs(filtered),
-    connected: await connectedProviderIds([...byFamily.keys()], options.config, env, keychain),
+    connected,
   };
 }

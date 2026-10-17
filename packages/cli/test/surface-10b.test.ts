@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolSpec } from "@agency/core";
@@ -34,8 +34,15 @@ function echoAdapter(): ProviderAdapter {
 
 async function startDaemon() {
   const workspaceRoot = tempDir("agency-10b-ws-");
+  const configDir = tempDir("agency-10b-cfg-");
+  mkdirSync(join(configDir, "agents"));
+  writeFileSync(
+    join(configDir, "agents", "coder.md"),
+    "---\nrole: coder\nprovider: anthropic\nmodel: claude-sonnet-5\neffort: high\n---\nYou are the coder.\n",
+  );
   const daemon = await createAgentDaemon({
     workspaceRoot,
+    configDir,
     instanceFile: join(workspaceRoot, ".agency", "instance.json"),
     sessionsDir: tempDir("agency-10b-sess-"),
     approvalsDir: tempDir("agency-10b-appr-"),
@@ -223,6 +230,20 @@ describe("Phase 10b team surface", () => {
     expect(partial.registered).toBe(false);
     const bad = await rpcCall(base, token, "agents_upsert", { handle: "Bad Handle" });
     expect(bad.status).toBe(400);
+
+    const removed = (await rpcOk(base, token, "agents_remove", { handle: "scout" })) as {
+      file: string;
+      removed: boolean;
+    };
+    expect(removed.removed).toBe(true);
+    expect(existsSync(removed.file)).toBe(false);
+    const config = (await rpcOk(base, token, "config_get")) as {
+      config: { agents?: Record<string, unknown> };
+    };
+    expect(config.config.agents?.scout).toBeUndefined();
+    expect(
+      ((await rpcOk(base, token, "agents_remove", { handle: "scout" })) as { removed: boolean }).removed,
+    ).toBe(false);
   });
 
   test("team_status, agents_list, activity_graph agree on agents plus tasks plus zero-cost sums", async () => {

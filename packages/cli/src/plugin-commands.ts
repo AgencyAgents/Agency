@@ -1,6 +1,29 @@
-﻿import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { importClaudePlugin, Logger, pluginHooksFile, pluginMcpFile, pluginRootDir } from "@agency/core";
+﻿import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  claudeEnabledPlugins,
+  claudeMarketplaceSource,
+  claudeUserPlugins,
+  hasPluginManifest,
+  importClaudePlugin,
+  Logger,
+  pluginDataDir,
+  pluginHooksFile,
+  pluginLspFile,
+  pluginMcpFile,
+  pluginRootDir,
+} from "@agency/core";
 
 // ---------------------------------------------------------------------------
 // Install receipt shape
@@ -14,6 +37,15 @@ export interface InstallReceipt {
   agentsInstalled: string[];
   /** Absent in a receipt from before hooks were installed. */
   hooksInstalled?: string[];
+  /** Absent in a receipt from before rules were installed. */
+  rulesInstalled?: string[];
+  /** The module files in .agency/plugins/ (the Pi extensions of a Pi package). */
+  modulesInstalled?: string[];
+  /** The output styles in .agency/output-styles/. */
+  outputStylesInstalled?: string[];
+  /** What `plugin install` was given, for `plugin update`: a folder, a git URL or owner/repo, and the marketplace entry. */
+  source?: string;
+  plugin?: string;
   installedAt: string;
 }
 
@@ -26,13 +58,21 @@ export function pluginInstallCmd(
   workspaceRoot: string,
   overwrite: boolean,
   errSink: (line: string) => void,
+  origin?: { source: string; plugin?: string },
+  marketplaceEntry?: Record<string, unknown>,
 ): string {
   // The importer logs JSON lines for a daemon. A person at the CLI gets the text and the CLI flag.
   const logger = new Logger({
     level: "warn",
     sink: (line) => errSink(String(JSON.parse(line).message).replace("overwrite: true", "--overwrite")),
   });
-  const report = importClaudePlugin(sourceDir, { sourceDir, workspaceRoot, overwrite, logger });
+  const report = importClaudePlugin(sourceDir, {
+    sourceDir,
+    workspaceRoot,
+    overwrite,
+    logger,
+    ...(marketplaceEntry === undefined ? {} : { marketplaceEntry }),
+  });
 
   // Write install receipt into .agency/skills/<pluginName>/receipt.json
   const receipt: InstallReceipt = {
@@ -42,6 +82,10 @@ export function pluginInstallCmd(
     commandsInstalled: report.commandsInstalled,
     agentsInstalled: report.agentsInstalled,
     hooksInstalled: report.hooksInstalled,
+    rulesInstalled: report.rulesInstalled,
+    modulesInstalled: report.modulesInstalled,
+    outputStylesInstalled: report.outputStylesInstalled,
+    ...origin,
     installedAt: new Date().toISOString(),
   };
   const receiptDir = join(workspaceRoot, ".agency", "skills", report.pluginName);
@@ -58,6 +102,47 @@ export function pluginInstallCmd(
     lines.push("");
     lines.push("Skills installed:");
     for (const s of report.skillsInstalled) lines.push(`  - ${s}`);
+  }
+
+  if (report.rulesInstalled.length > 0) {
+    lines.push("");
+    lines.push("Rules installed (.agency/rules/, added to the instructions):");
+    for (const rule of report.rulesInstalled) lines.push(`  - ${rule}`);
+  }
+
+  if (report.outputStylesInstalled.length > 0) {
+    lines.push("");
+    lines.push('Output styles installed (.agency/output-styles/, chosen with "outputStyle" of the config):');
+    for (const style of report.outputStylesInstalled) lines.push(`  - ${style}`);
+  }
+
+  if (report.modulesInstalled.length > 0) {
+    lines.push("");
+    lines.push("Pi extensions installed (.agency/plugins/, they run code in the daemon):");
+    for (const module of report.modulesInstalled) lines.push(`  - ${module}`);
+  }
+
+  if (report.lspServers.length > 0) {
+    lines.push("");
+    lines.push(`LSP servers installed (.agency/lsp/${report.pluginName}.json, each starts a program):`);
+    for (const name of report.lspServers) lines.push(`  - ${name}`);
+  }
+
+  if (report.binDir !== undefined) {
+    lines.push("");
+    lines.push(`Commands of ${report.binDir} are on the PATH of shell commands.`);
+  }
+
+  if (report.optionVariables.length > 0) {
+    lines.push("");
+    lines.push("Its settings (userConfig) come from these variables of the environment of Agency:");
+    for (const variable of report.optionVariables) lines.push(`  - ${variable}`);
+  }
+
+  if (report.partsSkipped.length > 0) {
+    lines.push("");
+    lines.push("Not installed:");
+    for (const part of report.partsSkipped) lines.push(`  - ${part}`);
   }
 
   if (report.hooksInstalled.length > 0) {
@@ -94,6 +179,230 @@ export function pluginInstallCmd(
   lines.push("");
   lines.push(`Install receipt written to: .agency/skills/${report.pluginName}/receipt.json`);
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// plugin install <git url | owner/repo>[#ref] [plugin]
+// ---------------------------------------------------------------------------
+
+export interface GitSource {
+  url: string;
+  ref?: string;
+}
+
+const GIT_URL = /^(?:(?:https?|ssh|git|file):\/\/|[\w.-]+@[\w.-]+:)/;
+const GITHUB_REPO = /^[\w.-]+\/[\w.-]+$/;
+
+/** A git URL, `git@host:path`, or `owner/repo` of GitHub, each with an optional `#ref`. A folder that exists is not one. */
+export function gitSource(source: string): GitSource | undefined {
+  if (existsSync(source)) return undefined;
+  const [base = "", ref] = source.split("#", 2);
+  const url = GIT_URL.test(base)
+    ? base
+    : GITHUB_REPO.test(base)
+      ? `https://github.com/${base}.git`
+      : undefined;
+  return url === undefined ? undefined : { url, ...(ref ? { ref } : {}) };
+}
+
+/** Runs `use` on a shallow clone, then deletes the clone: the importer keeps a copy of the plugin. */
+function withClone<T>(git: GitSource, use: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "agency-plugin-"));
+  try {
+    const ref = git.ref === undefined ? [] : ["--branch", git.ref];
+    const result = spawnSync("git", ["clone", "--quiet", "--depth", "1", ...ref, "--", git.url, dir], {
+      windowsHide: true,
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `git clone of ${git.url} failed: ${(result.stderr || result.error?.message || "").trim()}`,
+      );
+    }
+    return use(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+type MarketplaceSource =
+  | string
+  | { source?: string; repo?: string; url?: string; ref?: string; path?: string };
+
+/** The marketplace files of Claude Code, Cursor and Codex. */
+const MARKETPLACE_FILES = [
+  [".claude-plugin", "marketplace.json"],
+  [".cursor-plugin", "marketplace.json"],
+  [".agents", "plugins", "marketplace.json"],
+];
+
+/**
+ * The plugin of a marketplace file that `name` names, or its only plugin. Undefined when the folder is a plugin
+ * itself, or no marketplace.
+ */
+function marketplacePlugin(
+  root: string,
+  name: string | undefined,
+):
+  | (({ dir: string } | { git: GitSource; subdir?: string }) & { entry?: Record<string, unknown> })
+  | undefined {
+  const file = MARKETPLACE_FILES.map((parts) => join(root, ...parts)).find((path) => existsSync(path));
+  if (file === undefined || hasPluginManifest(root)) return undefined;
+  const market = JSON.parse(readFileSync(file, "utf8")) as {
+    plugins?: ({ name: string; source: MarketplaceSource } & Record<string, unknown>)[];
+    metadata?: { pluginRoot?: string };
+  };
+  const plugins = market.plugins ?? [];
+  const names = plugins.map((p) => p.name).join(", ");
+  const entry =
+    name === undefined && plugins.length === 1 ? plugins[0] : plugins.find((p) => p.name === name);
+  if (entry === undefined) {
+    throw new Error(
+      name === undefined
+        ? `This marketplace has more than one plugin. Name one: ${names}`
+        : `The marketplace has no plugin "${name}". Its plugins: ${names}`,
+    );
+  }
+  const source = entry.source;
+  if (typeof source === "string") {
+    const dir = resolve(root, market.metadata?.pluginRoot ?? "", source);
+    const inside = relative(root, dir);
+    if (inside.startsWith("..") || isAbsolute(inside)) {
+      throw new Error(`The source of "${entry.name}" is outside the marketplace: ${source}`);
+    }
+    return { dir, entry };
+  }
+  const ref = source.ref === undefined ? {} : { ref: source.ref };
+  if (source.source === "github" && GITHUB_REPO.test(source.repo ?? "")) {
+    return { git: { url: `https://github.com/${source.repo}.git`, ...ref }, entry };
+  }
+  if (source.source === "url" && GIT_URL.test(source.url ?? ""))
+    return { git: { url: source.url ?? "", ...ref }, entry };
+  // A plugin in a folder of another repository, a monorepo: `url` is a git URL or owner/repo.
+  if (source.source === "git-subdir" && source.url !== undefined && source.path !== undefined) {
+    const git = gitSource(`${source.url}${source.ref === undefined ? "" : `#${source.ref}`}`);
+    if (git !== undefined) return { git, subdir: source.path, entry };
+  }
+  throw new Error(`The source of "${entry.name}" has a form that Agency cannot install`);
+}
+
+/**
+ * `plugin install` of a folder or a git source; a marketplace in it gives the plugin that `name` names.
+ * `beforeInstall` runs once the plugin is at hand, after a clone that can fail.
+ */
+export function pluginInstallSource(
+  source: string,
+  name: string | undefined,
+  workspaceRoot: string,
+  overwrite: boolean,
+  errSink: (line: string) => void,
+  beforeInstall?: () => void,
+): string {
+  const git = gitSource(source);
+  const origin = {
+    source: git === undefined ? resolve(source) : source,
+    ...(name === undefined ? {} : { plugin: name }),
+  };
+  const run = (dir: string, entry?: Record<string, unknown>): string => {
+    beforeInstall?.();
+    return pluginInstallCmd(dir, workspaceRoot, overwrite, errSink, origin, entry);
+  };
+  const install = (root: string): string => {
+    const picked = marketplacePlugin(root, name);
+    if (picked === undefined) return run(root);
+    if ("dir" in picked) return run(picked.dir, picked.entry);
+    return withClone(picked.git, (dir) => {
+      const plugin = resolve(dir, picked.subdir ?? "");
+      const inside = relative(dir, plugin);
+      if (inside.startsWith("..") || isAbsolute(inside)) {
+        throw new Error(`The plugin folder ${picked.subdir} is outside its repository`);
+      }
+      return run(plugin);
+    });
+  };
+  return git === undefined ? install(source) : withClone(git, install);
+}
+
+/** `plugin install <plugin>@<marketplace>`: the marketplace that the settings of Claude Code name, as Claude Code finds it. */
+export function claudePluginSource(id: string, workspaceRoot: string): { source: string; plugin: string } {
+  const [plugin = "", market = ""] = id.split("@");
+  const source = claudeMarketplaceSource(market, workspaceRoot);
+  if (source === undefined) {
+    throw new Error(
+      `The marketplace "${market}" is not known: name it in extraKnownMarketplaces of .claude/settings.json, or add it in Claude Code`,
+    );
+  }
+  return { source, plugin };
+}
+
+/**
+ * `plugin sync`: installs the plugins that `enabledPlugins` of the Claude Code settings of the workspace names, from
+ * their marketplaces. An installed one stays unless `overwrite`. ponytail: each plugin clones its marketplace again.
+ */
+export function pluginSyncCmd(
+  workspaceRoot: string,
+  overwrite: boolean,
+  errSink: (line: string) => void,
+  userStore?: string,
+): { text: string; failed: boolean } {
+  const ids = claudeEnabledPlugins(workspaceRoot);
+  // The plugins that Claude Code installed for the user: copied from its own copy, with no download.
+  const userPlugins = userStore === undefined ? [] : claudeUserPlugins();
+  if (ids.length === 0 && userPlugins.length === 0)
+    return { text: "The Claude Code settings enable no plugin.", failed: false };
+  let failed = false;
+  const userLines = userPlugins.map(({ id, dir, entry }) => {
+    const [name = ""] = id.split("@");
+    if (!overwrite && existsSync(join(userStore ?? "", ".agency", "skills", name, "receipt.json"))) {
+      return `${id}: installed for the user already`;
+    }
+    try {
+      pluginInstallCmd(dir, userStore ?? "", overwrite, errSink, { source: dir }, entry);
+      return `${id}: installed for the user from ${dir}`;
+    } catch (error) {
+      failed = true;
+      return `${id}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+  const lines = ids.map((id) => {
+    const [name = ""] = id.split("@");
+    if (!overwrite && existsSync(join(workspaceRoot, ".agency", "skills", name, "receipt.json"))) {
+      return `${id}: installed already`;
+    }
+    try {
+      const { source, plugin } = claudePluginSource(id, workspaceRoot);
+      pluginInstallSource(source, plugin, workspaceRoot, overwrite, errSink);
+      return `${id}: installed from ${source}`;
+    } catch (error) {
+      failed = true;
+      return `${id}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+  return { text: [...userLines, ...lines].join("\n"), failed };
+}
+
+/** `plugin update <name>`: the plugin again from the source of its install. Its data folder stays. */
+export function pluginUpdateCmd(
+  name: string,
+  workspaceRoot: string,
+  errSink: (line: string) => void,
+): string {
+  if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
+  const receiptPath = join(workspaceRoot, ".agency", "skills", name, "receipt.json");
+  if (!existsSync(receiptPath)) throw new Error(`Plugin "${name}" is not installed`);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as InstallReceipt;
+  if (receipt.source === undefined) {
+    throw new Error(
+      `Plugin "${name}" has no source in its receipt: run agency plugin install <source> --overwrite`,
+    );
+  }
+  // ponytail: the old files go before the new ones come, so a new version that fails to install leaves none.
+  const report = pluginInstallSource(receipt.source, receipt.plugin, workspaceRoot, true, errSink, () =>
+    pluginRemoveCmd(name, workspaceRoot, { keepData: true }),
+  );
+  return `Updated "${name}" from ${receipt.source}.\n${report}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +466,11 @@ function owningPlugin(workspaceRoot: string, skill: string): string | undefined 
 /** A name from the command line or from a receipt is one path part: a path would delete outside `.agency`. */
 const isFileName = (name: string): boolean => !/^\.*$|[\\/:]/.test(name);
 
-export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
+export function pluginRemoveCmd(
+  name: string,
+  workspaceRoot: string,
+  opts: { keepData?: boolean } = {},
+): string {
   if (!isFileName(name)) throw new Error(`"${name}" is not a plugin name`);
   const skillDir = join(workspaceRoot, ".agency", "skills", name);
   if (!existsSync(skillDir)) {
@@ -176,6 +489,9 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
   let commandsToDelete: string[] = [];
   let skillsToDelete: string[] = [];
   let agentsToDelete: string[] = [];
+  let rulesToDelete: string[] = [];
+  let stylesToDelete: string[] = [];
+  let modulesToDelete: string[] = [];
   let pluginName = name;
 
   if (existsSync(receiptPath)) {
@@ -184,6 +500,9 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
       commandsToDelete = receipt.commandsInstalled.filter(isFileName);
       skillsToDelete = receipt.skillsInstalled.filter(isFileName);
       agentsToDelete = (receipt.agentsInstalled ?? []).filter(isFileName);
+      rulesToDelete = (receipt.rulesInstalled ?? []).filter(isFileName);
+      stylesToDelete = (receipt.outputStylesInstalled ?? []).filter(isFileName);
+      modulesToDelete = (receipt.modulesInstalled ?? []).filter(isFileName);
       if (isFileName(receipt.pluginName)) pluginName = receipt.pluginName;
     } catch {
       // Corrupt receipt -- still proceed with removing the skill dir
@@ -225,6 +544,25 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     }
   }
   if (deletedAgents.length > 0) lines.push(`Deleted agent files: ${deletedAgents.join(", ")}`);
+  const deletedRules = rulesToDelete.filter((rule) => {
+    const rulePath = join(workspaceRoot, ".agency", "rules", rule);
+    if (!existsSync(rulePath)) return false;
+    rmSync(rulePath);
+    return true;
+  });
+  if (deletedRules.length > 0) lines.push(`Deleted rule files: ${deletedRules.join(", ")}`);
+  for (const style of stylesToDelete) {
+    const stylePath = join(workspaceRoot, ".agency", "output-styles", style);
+    if (!existsSync(stylePath)) continue;
+    rmSync(stylePath);
+    lines.push(`Deleted the output style ${style}.`);
+  }
+  for (const module of modulesToDelete) {
+    const modulePath = join(workspaceRoot, ".agency", "plugins", module);
+    if (!existsSync(modulePath)) continue;
+    rmSync(modulePath);
+    lines.push(`Deleted the module ${module}.`);
+  }
   const hooksFile = pluginHooksFile(workspaceRoot, pluginName);
   if (existsSync(hooksFile)) {
     rmSync(hooksFile);
@@ -235,7 +573,13 @@ export function pluginRemoveCmd(name: string, workspaceRoot: string): string {
     rmSync(mcpFile);
     lines.push("Deleted its MCP servers.");
   }
+  const lspFile = pluginLspFile(workspaceRoot, pluginName);
+  if (existsSync(lspFile)) {
+    rmSync(lspFile);
+    lines.push("Deleted its LSP servers.");
+  }
   rmSync(pluginRootDir(workspaceRoot, pluginName), { recursive: true, force: true });
+  if (!opts.keepData) rmSync(pluginDataDir(workspaceRoot, pluginName), { recursive: true, force: true });
 
   return lines.join("\n");
 }

@@ -2,14 +2,16 @@ import { type CommandTemplate, expandCommand, parseSlashInput } from "@agency/co
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
-import type { McpManager } from "@agency/tools";
+import type { McpManager, ShellConfig } from "@agency/tools";
 import { listProviders } from "../../providers-list.ts";
 import type { DaemonContext } from "../types.ts";
 
+/** `shell` runs the `!` blocks of the command, as Claude Code does for a command that the user types. */
 export function applySlashCommand(
   commands: CommandTemplate[],
   workspaceRoot: string,
   session: Message[],
+  shell?: { command: ShellConfig; env: Record<string, string> },
 ): void {
   if (session.length > 0) {
     const lastMsg = session[session.length - 1];
@@ -21,7 +23,12 @@ export function applySlashCommand(
     if (parsed) {
       const tmpl = commands.find((c) => c.name === parsed.name);
       if (tmpl) {
-        const expanded = expandCommand(tmpl.content, parsed.args, workspaceRoot);
+        const expanded = expandCommand(
+          tmpl.content,
+          parsed.args,
+          workspaceRoot,
+          shell === undefined ? undefined : { shell: true, shellCommand: shell.command, env: shell.env },
+        );
         const userMsg = session[session.length - 1] as unknown as {
           role: string;
           content: { text: string }[];
@@ -46,9 +53,22 @@ export async function applyMcpPrompt(mcp: McpManager | undefined, session: Messa
 }
 
 export function registerCommandHandlers(handlers: Record<string, MethodHandler>, ctx: DaemonContext): void {
-  const { builtinsMode, commands, config, http, options, sessionScopes } = ctx;
-  handlers.providers_list = async () => {
-    const base = await listProviders({ config, http, catalog: options.catalog });
+  const { builtinsMode, commands, config, getKeychain, http, options, sessionScopes } = ctx;
+  handlers.providers_list = async (rawParams) => {
+    const { models } = (rawParams ?? {}) as { models?: unknown };
+    if (models !== undefined && models !== "all" && models !== "connected") {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, 'models must be "all" or "connected"', {
+        source: "providers_list",
+      });
+    }
+    const keychain = await getKeychain().catch(() => undefined);
+    const base = await listProviders({
+      config,
+      http,
+      catalog: options.catalog,
+      ...(keychain === undefined ? {} : { keychain }),
+      ...(models === undefined ? {} : { models }),
+    });
     let mcpFailures: Record<string, string> = {};
     let lspStatuses: Record<string, string> = {};
     if (builtinsMode) {

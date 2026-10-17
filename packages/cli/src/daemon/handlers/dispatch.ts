@@ -27,10 +27,11 @@ import {
   costUsdForHandle,
   drainDigest,
   drainParentInbox,
+  NO_AGENTS_MESSAGE,
   worktreeBranchFor,
   worktreePathFor,
 } from "../team-context.ts";
-import { checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
+import { autoReviewerFor, checkTeamBudgets, type DaemonContext, type TeamBudgets } from "../types.ts";
 import { childPromptFor } from "./coords.ts";
 import { abortWorktreePeer, isOwnWorktree } from "./dispatch-worktrees.ts";
 import { routeAgent } from "./team-run.ts";
@@ -66,10 +67,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
   return createDispatchTool({
     dispatch: async (input, ctx) => {
       if (teamRegistry.list().length === 0) {
-        return {
-          content: "no agents enabled: enable at least one agent (leader is required)",
-          isError: true,
-        };
+        return { content: NO_AGENTS_MESSAGE, isError: true };
       }
 
       // Hard budget caps: throw before spawning any peer.
@@ -270,7 +268,9 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
           // The folder where this agent's shell and file tools work. A writable worktree replaces the workspace.
           let agentRoot = options.workspaceRoot;
           const caps = agent.capabilities;
-          const writeCapable = caps ? caps.some((c) => ["write", "edit", "bash"].includes(c)) : true;
+          const writeCapable = caps
+            ? caps.some((c) => ["write", "edit", "notebook_edit", "bash"].includes(c))
+            : true;
           if (writeCapable) {
             const wtPath = worktreePathFor(options.workspaceRoot, parentSessionId, a.handle);
             const wtBranch = worktreeBranchFor(parentSessionId, a.handle, batchId);
@@ -416,6 +416,7 @@ export function buildDispatchTool(daemon: DaemonContext, parentSessionId: string
                 identity: { type: "agent", name: a.handle },
                 capabilities: agentCaps,
                 toolPolicy: agentGate,
+                reviewApproval: autoReviewerFor(daemon, runMode),
                 ...modelRunOptions(childModelInfo),
                 turnId: childTurnId,
                 sessionId: childSessionId,

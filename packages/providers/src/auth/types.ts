@@ -15,6 +15,7 @@ export type SpawnFn = (
 
 export const defaultSpawn: SpawnFn = async (command, options) => {
   const proc = Bun.spawn(command as string[], {
+    windowsHide: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

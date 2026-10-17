@@ -61,9 +61,14 @@ export const hooks = {
 };
 `;
 
-async function boot(opts: { seed?: (ws: string) => void; trusted?: boolean } = {}) {
+async function boot(
+  opts: { seed?: (ws: string) => void; trusted?: boolean; config?: Record<string, unknown> } = {},
+) {
   const ws = tempDir("agency-cmd-ws-");
   opts.seed?.(ws);
+  const configDir = tempDir("agency-cmd-cfg-");
+  if (opts.config)
+    writeFileSync(join(configDir, "config.jsonc"), JSON.stringify({ schemaVersion: 2, ...opts.config }));
   // A workspace plugin file runs only in a trusted workspace.
   const trustStorePath = join(tempDir("agency-cmd-trust-"), "trust.json");
   if (opts.trusted) createFileTrustStore(trustStorePath).trust(ws);
@@ -73,6 +78,7 @@ async function boot(opts: { seed?: (ws: string) => void; trusted?: boolean } = {
     sessionsDir: tempDir("agency-cmd-sess-"),
     approvalsDir: tempDir("agency-cmd-appr-"),
     trustStorePath,
+    ...(opts.config ? { configDir } : {}),
     adapterFor: () => echoAdapter(),
     http: noopHttp,
     tools: [],
@@ -292,7 +298,7 @@ describe("command_run Tier 3 goldens", () => {
   });
 
   test("/replay re-runs a recorded turn", async () => {
-    const { base, token } = await boot();
+    const { base, token } = await boot({ config: { trace: { cassettes: true } } });
     const sent = await seedSession(base, token, "rp1");
     const out = await run(base, token, "replay", `rp1 ${sent.turnId}`);
     expect(typeof out.data.equal).toBe("boolean");

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   agentFileName,
@@ -330,5 +330,16 @@ export function registerTeamSurfaceHandlers(
       );
     }
     return { handle, file, registered };
+  };
+
+  /** Deletes the project's file of the agent. The team changes when the daemon restarts and reads the roster again. */
+  handlers.agents_remove = async (rawParams) => {
+    const handle = str(((rawParams ?? {}) as Record<string, unknown>).handle);
+    if (!isValidAgentHandle(handle)) fail(`invalid handle: ${handle || "(empty)"}`);
+    const file = join(ctx.options.workspaceRoot, ".agency", "agents", agentFileName(handle));
+    const removed = existsSync(file);
+    rmSync(file, { force: true });
+    delete (ctx.config as unknown as { agents?: Record<string, unknown> }).agents?.[handle];
+    return { handle, file, removed };
   };
 }

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { dataDir } from "@agency/core";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { dataDir, resolveSkillDirs } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { runEntrypoint } from "../src/entrypoint.ts";
-import { pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
+import { gitSource, pluginInstallCmd, pluginListCmd, pluginRemoveCmd } from "../src/plugin-commands.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -151,6 +153,164 @@ describe("plugin install", () => {
   });
 });
 
+/** A git repository with `files`, committed: the remote of an install. */
+function gitRepo(files: Record<string, string>, copyFixtureTo?: string): string {
+  const repo = tempDir("agency-plugin-repo-");
+  if (copyFixtureTo !== undefined) cpSync(FIXTURE_DIR, join(repo, copyFixtureTo), { recursive: true });
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo, stdio: "ignore" });
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "plugin");
+  return pathToFileURL(repo).href;
+}
+
+describe("plugins of the Claude Code settings", () => {
+  test("sync installs the enabledPlugins from the marketplaces of the settings, and plugin@marketplace installs one", async () => {
+    const market = tempDir("agency-plugin-mk-");
+    cpSync(FIXTURE_DIR, join(market, "plugins", "test-plugin"), { recursive: true });
+    mkdirSync(join(market, ".claude-plugin"));
+    writeFileSync(
+      join(market, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        name: "mk",
+        owner: { name: "o" },
+        plugins: [{ name: "test-plugin", source: "./plugins/test-plugin" }],
+      }),
+    );
+    // A plugin in a folder of another repository.
+    const repo = gitRepo({}, "tools/p");
+    const subMarket = tempDir("agency-plugin-mk2-");
+    mkdirSync(join(subMarket, ".claude-plugin"));
+    writeFileSync(
+      join(subMarket, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        name: "mk2",
+        owner: { name: "o" },
+        plugins: [{ name: "test-plugin", source: { source: "git-subdir", url: repo, path: "tools/p" } }],
+      }),
+    );
+    const settings = {
+      extraKnownMarketplaces: {
+        mk: { source: { source: "directory", path: market } },
+        mk2: { source: { source: "directory", path: subMarket } },
+      },
+      enabledPlugins: { "test-plugin@mk": true, "gone@nowhere": true, "off@mk": false },
+    };
+    const ws = tempDir("agency-plugin-sync-ws-");
+    mkdirSync(join(ws, ".claude"));
+    writeFileSync(join(ws, ".claude", "settings.json"), JSON.stringify(settings));
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "sync"], c.deps)).toBe(1);
+    expect(c.out.at(-1)).toContain(`test-plugin@mk: installed from ${market}`);
+    expect(c.out.at(-1)).toContain('gone@nowhere: The marketplace "nowhere" is not known');
+    expect(c.out.at(-1)).not.toContain("off@mk");
+    expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
+    await runEntrypoint(["plugin", "sync"], c.deps);
+    expect(c.out.at(-1)).toContain("test-plugin@mk: installed already");
+
+    const other = tempDir("agency-plugin-sub-ws-");
+    mkdirSync(join(other, ".claude"));
+    writeFileSync(join(other, ".claude", "settings.json"), JSON.stringify(settings));
+    c.deps.cwd = other;
+    expect(await runEntrypoint(["plugin", "install", "test-plugin@mk2"], c.deps)).toBe(0);
+    expect(existsSync(join(other, ".agency", "commands", "help.md"))).toBe(true);
+  });
+});
+
+describe("plugin install from git", () => {
+  test("a git URL, owner/repo and #ref are sources; a folder that exists is not", () => {
+    const here = tempDir("agency-plugin-local-");
+    expect(gitSource(here)).toBeUndefined();
+    expect(gitSource("anthropics/claude-plugins")).toEqual({
+      url: "https://github.com/anthropics/claude-plugins.git",
+    });
+    expect(gitSource("https://gitlab.com/a/b.git#v2")).toEqual({
+      url: "https://gitlab.com/a/b.git",
+      ref: "v2",
+    });
+    expect(gitSource("git@github.com:a/b.git")).toEqual({ url: "git@github.com:a/b.git" });
+    expect(gitSource("/nonexistent/path")).toBeUndefined();
+  });
+
+  test("installs the plugin at the root of a repository, and its files stay without .git", async () => {
+    const url = gitRepo({}, ".");
+    const ws = tempDir("agency-plugin-git-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", url], c.deps)).toBe(0);
+    expect(c.out.join("\n")).toContain("Plugin: test-plugin v1.2.3");
+    expect(existsSync(join(ws, ".agency", "skills", "my-skill", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin", ".git"))).toBe(false);
+  });
+
+  test("a marketplace installs the named plugin, needs a name for more than one, and keeps a source inside it", async () => {
+    const market = (plugins: unknown[]) =>
+      JSON.stringify({ name: "m", owner: { name: "o" }, metadata: { pluginRoot: "./plugins" }, plugins });
+    const url = gitRepo(
+      {
+        ".claude-plugin/marketplace.json": market([
+          { name: "test-plugin", source: "./test-plugin" },
+          { name: "other", source: "./other" },
+          { name: "escape", source: "../../outside" },
+        ]),
+      },
+      "plugins/test-plugin",
+    );
+    const install = async (...args: string[]) => {
+      const ws = tempDir("agency-plugin-market-ws-");
+      const c = capture();
+      c.deps.cwd = ws;
+      const code = await runEntrypoint(["plugin", "install", url, ...args], c.deps);
+      return { code, out: c.out.join("\n"), err: c.err.join("\n") };
+    };
+    const named = await install("test-plugin");
+    expect(named.code).toBe(0);
+    expect(named.out).toContain("Plugin: test-plugin v1.2.3");
+
+    const unnamed = await install();
+    expect(unnamed.code).toBe(1);
+    expect(unnamed.err).toContain("test-plugin, other, escape");
+
+    const outside = await install("escape");
+    expect(outside.code).toBe(1);
+    expect(outside.err).toContain("outside the marketplace");
+  });
+
+  test("a Cursor marketplace installs a Cursor plugin with its rule, and remove deletes the rule", async () => {
+    const url = gitRepo({
+      ".cursor-plugin/marketplace.json": JSON.stringify({
+        name: "m",
+        plugins: [{ name: "kit", source: "./plugins/kit" }],
+      }),
+      "plugins/kit/.cursor-plugin/plugin.json": JSON.stringify({ name: "kit" }),
+      "plugins/kit/rules/style.mdc": "---\nalwaysApply: true\n---\nUse tabs.",
+    });
+    const ws = tempDir("agency-plugin-cursor-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", url], c.deps)).toBe(0);
+    expect(c.out.join("\n")).toContain("Rules installed");
+    const rule = join(ws, ".agency", "rules", "kit-style.md");
+    expect(existsSync(rule)).toBe(true);
+    expect(await runEntrypoint(["plugin", "remove", "kit"], c.deps)).toBe(0);
+    expect(existsSync(rule)).toBe(false);
+  });
+
+  test("a clone that fails says why", async () => {
+    const c = capture();
+    c.deps.cwd = tempDir("agency-plugin-badurl-ws-");
+    const missing = pathToFileURL(join(tempDir("agency-plugin-none-"), "missing")).href;
+    expect(await runEntrypoint(["plugin", "install", missing], c.deps)).toBe(1);
+    expect(c.err.join("\n")).toContain("git clone of");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // plugin list
 // ---------------------------------------------------------------------------
@@ -218,6 +378,29 @@ describe("plugin remove", () => {
     // Its hook commands and the copy of its files go too: a removed plugin must not run a command.
     expect(existsSync(join(ws, ".agency", "hooks", "test-plugin.json"))).toBe(false);
     expect(existsSync(join(ws, ".agency", "plugin-roots", "test-plugin"))).toBe(false);
+  });
+
+  test("update installs the plugin again from its source, drops the files it lost, and keeps its data", async () => {
+    const source = tempDir("agency-plugin-src-");
+    cpSync(FIXTURE_DIR, source, { recursive: true });
+    const ws = tempDir("agency-plugin-update-");
+    const c = capture();
+    c.deps.cwd = ws;
+    expect(await runEntrypoint(["plugin", "install", source], c.deps)).toBe(0);
+    const data = join(ws, ".agency", "plugin-data", "test-plugin");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, "state.json"), "{}");
+    rmSync(join(source, "commands", "help.md"));
+    writeFileSync(join(source, "commands", "fresh.md"), "Fresh command");
+    expect(await runEntrypoint(["plugin", "update", "test-plugin"], c.deps)).toBe(0);
+    expect(c.out.at(-1)).toContain(`Updated "test-plugin" from ${source}`);
+    expect(existsSync(join(ws, ".agency", "commands", "fresh.md"))).toBe(true);
+    expect(existsSync(join(ws, ".agency", "commands", "help.md"))).toBe(false);
+    expect(existsSync(join(data, "state.json"))).toBe(true);
+    // A receipt from before sources were kept names the way out.
+    pluginInstallCmd(FIXTURE_DIR, ws, true, () => {});
+    expect(await runEntrypoint(["plugin", "update", "test-plugin"], c.deps)).toBe(1);
+    expect(c.err.at(-1)).toContain("--overwrite");
   });
 
   test("refuses to remove one skill of a plugin, and names the plugin", () => {
@@ -319,4 +502,78 @@ describe("top-level --help", () => {
     expect(text).toContain("plugin list");
     expect(text).toContain("plugin remove");
   });
+});
+
+test("plugin sync copies the plugins that Claude Code installed for the user, and they load in every workspace", async () => {
+  const home = tempDir("agency-cc-home-");
+  const config = tempDir("agency-cc-config-");
+  const write = (path: string, value: unknown) => {
+    mkdirSync(dirname(join(home, path)), { recursive: true });
+    writeFileSync(join(home, path), typeof value === "string" ? value : JSON.stringify(value));
+  };
+  const plugins = join(home, ".claude", "plugins");
+  // A plugin with its manifest, and one whose manifest is its marketplace entry (`strict: false`), as the LSP plugins are.
+  write(".claude/plugins/cache/m/kit/1.0.0/.claude-plugin/plugin.json", { name: "kit" });
+  write(
+    ".claude/plugins/cache/m/kit/1.0.0/skills/hello/SKILL.md",
+    "---\ndescription: Says hello\n---\nHello.",
+  );
+  write(".claude/plugins/cache/m/kit/1.0.0/.mcp.json", {
+    mcpServers: { docs: { url: "https://d.test/mcp" } },
+  });
+  write(".claude/plugins/cache/m/lsp/1.0.0/README.md", "LSP");
+  write(".claude/plugins/marketplaces/m/.claude-plugin/marketplace.json", {
+    name: "m",
+    plugins: [
+      { name: "kit", source: "./kit" },
+      {
+        name: "lsp",
+        source: "./lsp",
+        strict: false,
+        lspServers: { "rust-analyzer": { command: "rust-analyzer", extensionToLanguage: { ".rs": "rust" } } },
+      },
+    ],
+  });
+  write(".claude/plugins/known_marketplaces.json", {
+    m: { installLocation: join(plugins, "marketplaces", "m") },
+  });
+  write(".claude/plugins/installed_plugins.json", {
+    version: 2,
+    plugins: {
+      "kit@m": [{ installPath: join(plugins, "cache", "m", "kit", "1.0.0") }],
+      "lsp@m": [{ installPath: join(plugins, "cache", "m", "lsp", "1.0.0") }],
+      "off@m": [{ installPath: join(plugins, "cache", "m", "kit", "1.0.0") }],
+    },
+  });
+  write(".claude/settings.json", { enabledPlugins: { "kit@m": true, "lsp@m": true, "off@m": false } });
+  const before = process.env.AGENCY_AGENTS_HOME;
+  process.env.AGENCY_AGENTS_HOME = home;
+  try {
+    const ws = tempDir("agency-cc-ws-");
+    const c = capture();
+    c.deps.cwd = ws;
+    const deps = { ...c.deps, configDir: config };
+    expect(await runEntrypoint(["plugin", "sync"], deps)).toBe(0);
+    expect(c.out.at(-1)).toContain("kit@m: installed for the user from");
+    expect(c.out.at(-1)).toContain("lsp@m: installed for the user from");
+    expect(c.out.at(-1)).not.toContain("off@m");
+    const store = join(config, "plugin-store", ".agency");
+    expect(existsSync(join(store, "skills", "hello", "SKILL.md"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(store, "lsp", "lsp.json"), "utf8")).lspServers).toHaveProperty(
+      "rust-analyzer",
+    );
+    // The plugins of the user hold in another workspace too: its skill and its MCP server.
+    const other = tempDir("agency-cc-ws2-");
+    expect(resolveSkillDirs(other, config).map((entry) => entry.dir)).toContain(join(store, "skills"));
+    const listed = capture();
+    listed.deps.cwd = other;
+    expect(await runEntrypoint(["mcp", "list"], { ...listed.deps, configDir: config })).toBe(0);
+    expect(listed.out.join("\n")).toContain("docs (user): https://d.test/mcp");
+    await runEntrypoint(["plugin", "sync"], deps);
+    expect(c.out.at(-1)).toContain("kit@m: installed for the user already");
+    expect(await runEntrypoint(["plugin", "remove", "kit", "--scope", "user"], deps)).toBe(0);
+    expect(existsSync(join(store, "skills", "hello"))).toBe(false);
+  } finally {
+    process.env.AGENCY_AGENTS_HOME = before;
+  }
 });

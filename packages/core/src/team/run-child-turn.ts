@@ -2,6 +2,7 @@ import type { CallerIdentity, Capabilities, RequestApproval, ToolPolicy } from "
 import type { HttpClient } from "@agency/net";
 import type { CacheSegment, ProviderAdapter, Scheduler } from "@agency/providers";
 import type { Message } from "@agency/schema";
+import type { AutoReviewer } from "../auto-review.ts";
 import {
   type Budget,
   type LoopEvent,
@@ -36,6 +37,7 @@ export interface ChildTurnSpec {
   toolPolicy: ToolPolicy;
   /** The approval surface of the turn that started the child. Absent means each ask of the child is refused. */
   requestApproval?: RequestApproval;
+  reviewApproval?: AutoReviewer;
   budget?: Budget;
   pricePerMTok?: PricePerMTok;
   maxTokensPerRequest?: number;
@@ -80,6 +82,7 @@ export async function runChildTurn(deps: ChildTurnDeps, spec: ChildTurnSpec): Pr
       capabilities: spec.capabilities,
       toolPolicy: spec.toolPolicy,
       ...(spec.requestApproval !== undefined ? { requestApproval: spec.requestApproval } : {}),
+      ...(spec.reviewApproval !== undefined ? { reviewApproval: spec.reviewApproval } : {}),
       eventBus: deps.eventBus,
       ...(deps.redactToolResult !== undefined ? { redactToolResult: deps.redactToolResult } : {}),
       systemPrompt: spec.systemPrompt,

@@ -256,6 +256,8 @@ export function clearRefreshInflight(): void {
 export interface CallbackResult {
   code: string;
   state: string;
+  /** All query parameters of the callback: a provider can add its own, such as an issued client id. */
+  params: Record<string, string>;
 }
 
 export function startCallbackServer(options: {
@@ -294,7 +296,7 @@ export function startCallbackServer(options: {
     }
     res.writeHead(200, { "content-type": "text/html" });
     res.end("<html><body><h1>Authorized: you can close this tab.</h1></body></html>");
-    resolveCb({ code, state });
+    resolveCb({ code, state, params: Object.fromEntries(url.searchParams) });
   });
 
   return new Promise((resolve, reject) => {

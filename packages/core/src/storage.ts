@@ -86,6 +86,11 @@ export function storagePaths(
   };
 }
 
+/** The notes file of the `memory` tool for a workspace: in the data folder of the user, not in the repository. */
+export function memoryFile(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(dataDir(env), "memory", `${workspaceId(workspaceRoot)}.md`);
+}
+
 /**
  * Recursive size walk, async (A3: this can traverse tens of thousands of
  * files under dataDir; statSync-per-entry stalls whichever loop runs it).

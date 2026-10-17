@@ -22,6 +22,7 @@ import {
   costUsdForHandle,
   latestChildAnywhere,
   latestChildSession,
+  NO_AGENTS_MESSAGE,
 } from "../team-context.ts";
 import { type DaemonContext, keySourcesFor } from "../types.ts";
 import { type AgentRoute, type CompareChildResult, runCompareChildTurn } from "./team-run.ts";
@@ -32,6 +33,8 @@ type FileBackedAgent = AgentConfig & {
   tools?: string[];
   pathScope?: string[];
   description?: string;
+  /** The agent file that defines it: Settings edits the agent there, since a file wins over the config. */
+  file?: string;
 };
 
 export function initTeamFromConfig(ctx: DaemonContext): void {
@@ -68,6 +71,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         ...(def.tools !== undefined ? { tools: def.tools } : {}),
         ...(def.pathScope !== undefined ? { pathScope: def.pathScope } : {}),
         ...(def.description !== undefined ? { description: def.description } : {}),
+        ...(def.file !== undefined ? { file: def.file } : {}),
       };
     }
     cfg.agents = merged;
@@ -99,7 +103,7 @@ export function initTeamFromConfig(ctx: DaemonContext): void {
         : {}),
     };
   }
-  if (!cfg.agents) return;
+  if (!cfg.agents || Object.keys(cfg.agents).length === 0) return;
   for (const [handle, a] of Object.entries(cfg.agents)) {
     // Skip disabled agents: they are not registered in the team
     if (a.enabled === false) continue;
@@ -274,6 +278,9 @@ export function registerTeamHandlers(handlers: Record<string, MethodHandler>, ct
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "dispatch_compare requires prompt", {
         source: "team",
       });
+    }
+    if (teamRegistry.list().length === 0) {
+      throw new AgencyError(ErrorCode.INVALID_REQUEST, NO_AGENTS_MESSAGE, { source: "team" });
     }
     const parentSessionId = sessionId ?? "default";
     const team = teamFor(parentSessionId);

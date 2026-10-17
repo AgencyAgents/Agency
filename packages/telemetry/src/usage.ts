@@ -10,11 +10,21 @@ import type { ModelPricing, Usage } from "@agency/providers";
  * instead of pretending zero.
  */
 
+/** Speed of one turn: first request's time to first token, stream time of all requests, and their output tokens. */
+export interface TurnTiming {
+  ttftMs: number;
+  streamMs: number;
+  outputTokens: number;
+}
+
 export interface UsageTurn {
   usage: Usage;
   /** Model id, for pricing lookup and display. */
   model: string;
   pricing?: ModelPricing;
+  timing?: TurnTiming;
+  /** Tokens of the turn's last request: the context size, which `usage` (a sum of all requests) is not. */
+  contextTokens?: number;
 }
 
 export interface SessionUsageTotals {
@@ -59,6 +69,8 @@ export interface UsageSessionEntry {
   usage: Usage;
   costUsd: number;
   cacheHitRate: number | undefined;
+  timing?: TurnTiming;
+  contextTokens?: number;
 }
 
 export function usageEntry(turn: UsageTurn): UsageSessionEntry {
@@ -68,6 +80,8 @@ export function usageEntry(turn: UsageTurn): UsageSessionEntry {
     usage: turn.usage,
     costUsd: turnCostUsd(turn.usage, turn.pricing),
     cacheHitRate: cacheHitRate(turn.usage),
+    ...(turn.timing === undefined ? {} : { timing: turn.timing }),
+    ...(turn.contextTokens === undefined ? {} : { contextTokens: turn.contextTokens }),
   };
 }
 

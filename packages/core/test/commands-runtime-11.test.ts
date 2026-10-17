@@ -65,6 +65,20 @@ describe("shell blocks", () => {
     expect(runShellBlocks("v: !`echo hello`", { cwd: tmpdir() })).toBe("v: hello");
   });
 
+  test("a fenced ```! block runs as one script, in the given shell, with the given variables", () => {
+    const body = 'before\n```!\necho one\necho "$RALPH_TEST"\n```\nafter';
+    const shell = {
+      command: process.execPath,
+      buildArgs: (script: string) => [
+        "-e",
+        `console.log(${JSON.stringify(script)}.split("\\n").length, process.env.RALPH_TEST)`,
+      ],
+    };
+    expect(runShellBlocks(body, { cwd: tmpdir(), shell, env: { RALPH_TEST: "x1" } })).toBe(
+      "before\n2 x1\nafter",
+    );
+  });
+
   test("failing shell degrades to a marker", () => {
     const out = runShellBlocks("v: !`exit-99-no-such-cmd`", { cwd: tmpdir() });
     expect(out).toContain("[[shell failed:");

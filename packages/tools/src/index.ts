@@ -20,6 +20,13 @@ export { createFetchTool } from "./builtins/fetch.ts";
 export { createGlobTool } from "./builtins/glob.ts";
 export { createGrepTool } from "./builtins/grep.ts";
 export {
+  createMemoryTool,
+  MAX_MEMORY_NOTES,
+  readMemoryNotes,
+  writeMemoryNotes,
+} from "./builtins/memory.ts";
+export { createNotebookEditTool, renderNotebook } from "./builtins/notebook.ts";
+export {
   approvalRecordPath,
   assertActTransitionAllowed,
   assertPlanAgentWriteAllowed,
@@ -54,7 +61,7 @@ export {
 } from "./builtins/plan.ts";
 export { createProcessKillTool, createProcessListTool, createProcessOutputTool } from "./builtins/process.ts";
 export { createQuestionTool } from "./builtins/question.ts";
-export { createReadTool } from "./builtins/read.ts";
+export { createReadTool, imageMimeFor } from "./builtins/read.ts";
 export { createSpawnTool, extractFinalText } from "./builtins/spawn.ts";
 export {
   createAgentInspectTool,

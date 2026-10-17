@@ -70,7 +70,7 @@ function makePonytailFixture(sourceDir: string): void {
   // commands/ponytail.md
   writeText(
     join(sourceDir, "commands", "ponytail.md"),
-    "# /ponytail\n\nActivate ponytail mode.\n\nUsage: `/ponytail lite|full|ultra`",
+    '# /ponytail\n\nActivate ponytail mode.\n\nUsage: `/ponytail lite|full|ultra`\n\n```!\n"${CLAUDE_PLUGIN_ROOT}/scripts/on.sh"\n```',
   );
 
   // agents/reviewer.md
@@ -227,13 +227,21 @@ describe("what an install makes runnable", () => {
             },
           ],
           Stop: [{ hooks: [{ type: "prompt", prompt: "is the work done?" }] }],
+          SubagentStop: [{ hooks: [{ type: "agent", prompt: "check the work" }] }],
+          Notification: [{ hooks: [{ type: "websocket", url: "ws://x" }] }],
         },
       });
       const report = importClaudePlugin(src, { sourceDir: src, workspaceRoot: ws });
-      expect(report.hooksInstalled).toEqual(["PreToolUse"]);
-      expect(report.hooksSkipped).toEqual([{ event: "Stop", reason: "its entries are not command hooks" }]);
+      expect(report.hooksInstalled).toEqual(["PreToolUse", "Stop", "SubagentStop"]);
+      expect(report.hooksSkipped).toEqual([
+        {
+          event: "Notification",
+          reason: "its entries are not command, http, prompt, agent or mcp_tool hooks",
+        },
+      ]);
       const installed = loadHookFiles(join(ws, ".agency", "hooks"));
-      const command = installed.PreToolUse?.[0]?.hooks[0]?.command ?? "";
+      const entry = installed.PreToolUse?.[0]?.hooks[0];
+      const command = entry?.type === "command" ? entry.command : "";
       expect(command).not.toContain("CLAUDE_PLUGIN_ROOT");
       expect(command.endsWith("/hooks/check.sh")).toBe(true);
       // The script that the command names is in the workspace: the source folder can go away.
@@ -299,7 +307,7 @@ describe("what an install makes runnable", () => {
       });
       const warnings: string[] = [];
       const hooks = loadHookFiles(dir, (message) => warnings.push(message));
-      expect(hooks.Stop?.[0]?.hooks[0]?.command).toBe("true");
+      expect(hooks.Stop?.[0]?.hooks[0]).toEqual({ type: "command", command: "true" });
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("a.json");
     } finally {
@@ -371,6 +379,11 @@ describe("importClaudePlugin", () => {
       // Commands
       expect(report.commandsInstalled).toEqual(["ponytail.md"]);
       expect(existsSync(join(ws, ".agency", "commands", "ponytail.md"))).toBe(true);
+      // A command names the scripts of its plugin by the root variable, as a hook does.
+      const command = readFileSync(join(ws, ".agency", "commands", "ponytail.md"), "utf8");
+      expect(command).toContain(
+        `"${join(ws, ".agency", "plugin-roots", "ponytail").replaceAll("\\", "/")}/scripts/on.sh"`,
+      );
     } finally {
       rmSync(src, { recursive: true, force: true });
       rmSync(ws, { recursive: true, force: true });

@@ -176,6 +176,13 @@ describe("Scheduler rate limiting", () => {
     // 60 rpm = 1 token/sec; the 7th request needs to wait a meaningful amount.
     expect(Date.now() - start).toBeGreaterThan(50);
   });
+
+  test("with no rate set, requests go at once: the 429 of the provider sets the pace", async () => {
+    const scheduler = new Scheduler({ maxConcurrent: 10 });
+    const start = Date.now();
+    for (let i = 0; i < 20; i++) await scheduler.schedule(async () => "x");
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });
 
 describe("Scheduler per-call retry observer", () => {

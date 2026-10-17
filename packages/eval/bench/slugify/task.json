@@ -1,0 +1,4 @@
+{
+  "prompt": "Add a maxLength option to slugify so that the tests pass. Do not change the tests.",
+  "check": "bun test ./test/slugify.check.ts"
+}

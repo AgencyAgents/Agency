@@ -31,6 +31,10 @@ export interface ApprovalRequest {
   source?: string;
   /** Redacted one-line summary of the parsed args (never raw secrets). */
   argsSummary?: string;
+  /** Why a shell command is not read-only, in plain words (`readOnlyRefusal`). */
+  reason?: string;
+  /** An ask that "always" must not answer again, such as a plan: the answer counts once and grants nothing. */
+  oneTime?: boolean;
 }
 
 /** One-line summary of the parsed args; callers redact values first. */
@@ -54,6 +58,8 @@ function grantKey(request: ApprovalRequest): string {
   // Doom-loop grants include the looping tool so one loop cannot approve all future loops.
   if (request.tool === "doom-loop" && typeof request.metadata?.toolName === "string")
     return `tool\u0000doom-loop\u0000${request.metadata.toolName}`;
+  // A way out of the sandbox is its own grant: allowing a command does not give it the network.
+  if (request.source === "sandbox:network") return `net\u0000${request.command ?? ""}`;
   if (request.command !== undefined) {
     // A compound command, or one that the shell builds at run time, is granted as its exact text only.
     const { parts, dynamic } = splitCommand(request.command);
@@ -147,7 +153,7 @@ export class ApprovalManager {
 
   /** Whether this exact subject already carries a session "always" grant. */
   hasAlways(request: ApprovalRequest): boolean {
-    return this.grants.has(grantKey(request));
+    return request.oneTime !== true && this.grants.has(grantKey(request));
   }
 
   grantAlways(request: ApprovalRequest): void {
@@ -210,7 +216,7 @@ export class ApprovalManager {
     this.closeReasons.set(id, "answered");
     entry.resolve(decision);
 
-    if (decision !== "always") return { resolved: true, retroactive: 0 };
+    if (decision !== "always" || entry.request.oneTime === true) return { resolved: true, retroactive: 0 };
 
     this.grantAlways(entry.request);
     const key = grantKey(entry.request);

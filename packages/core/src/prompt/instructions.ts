@@ -1,7 +1,31 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TrustStore } from "@agency/guard";
 import { requireTrust } from "@agency/guard";
+import { openCodeConfig } from "../config/opencode.ts";
+import { foreignHome } from "../paths.ts";
+import { splitFrontmatter } from "../plugins/skill.ts";
+
+/**
+ * The instruction files of a folder, in this order: those of Codex and Pi, Claude Code (`CLAUDE.md`, or
+ * `.claude/CLAUDE.md`, and the personal `CLAUDE.local.md`), and Gemini CLI.
+ */
+const INSTRUCTION_NAMES = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  join(".claude", "CLAUDE.md"),
+  "CLAUDE.local.md",
+  "GEMINI.md",
+];
+
+/** The instruction files of a folder that exist; Codex reads an `AGENTS.override.md` in place of AGENTS.md. */
+function instructionFilesIn(dir: string): string[] {
+  const override = existsSync(join(dir, "AGENTS.override.md"));
+  return INSTRUCTION_NAMES.map((name) =>
+    join(dir, override && name === "AGENTS.md" ? "AGENTS.override.md" : name),
+  ).filter((file) => existsSync(file) && statSync(file).isFile());
+}
 
 /** Per-instruction-file read cap. AGENTS.md / CLAUDE.md is repo-controlled
  *  content, so a multi-gigabyte file (malicious or accidental) would otherwise
@@ -24,33 +48,103 @@ export function collectAgentsFiles(fromDir: string, workspaceRoot: string): stri
   const found: string[] = [];
   let dir = fromDir;
   for (;;) {
-    const agents = join(dir, "AGENTS.md");
-    if (existsSync(agents)) found.push(agents);
-    const claude = join(dir, "CLAUDE.md");
-    if (existsSync(claude)) found.push(claude);
+    found.push(...instructionFilesIn(dir));
     if (dir === workspaceRoot) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     if (dir.length < workspaceRoot.length && !workspaceRoot.startsWith(dir)) break;
     dir = parent;
     if (dir.length < workspaceRoot.length) {
-      const agents2 = join(workspaceRoot, "AGENTS.md");
-      if (existsSync(agents2) && !found.includes(agents2)) found.push(agents2);
-      const claude2 = join(workspaceRoot, "CLAUDE.md");
-      if (existsSync(claude2) && !found.includes(claude2)) found.push(claude2);
+      found.push(...instructionFilesIn(workspaceRoot).filter((file) => !found.includes(file)));
       break;
     }
   }
   return found;
 }
 
-export function collectRuleFiles(workspaceRoot: string): string[] {
-  const rulesDir = join(workspaceRoot, ".agency", "rules");
-  if (!existsSync(rulesDir)) return [];
-  return readdirSync(rulesDir)
-    .filter((f) => f.endsWith(".md"))
+/** The files of `dir` and its subfolders that end with `ext`, sorted. */
+function filesIn(dir: string, ext: string): string[] {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(ext))
     .sort()
-    .map((f) => join(rulesDir, f));
+    .map((f) => join(dir, f));
+}
+
+/** The rule files of other agents (Cursor, Windsurf, Cline, Copilot), then `.agency/rules/*.md`. */
+export function collectRuleFiles(workspaceRoot: string): string[] {
+  const single = [
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".roorules",
+    ".augment-guidelines",
+    // Zed and Trae.
+    ".rules",
+    join(".trae", "rules", "project_rules.md"),
+    join(".github", "copilot-instructions.md"),
+    join(".junie", "guidelines.md"),
+  ]
+    .map((name) => join(workspaceRoot, name))
+    .filter((file) => existsSync(file) && statSync(file).isFile());
+  return [
+    ...single,
+    ...filesIn(join(workspaceRoot, ".clinerules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".roo", "rules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".kilocode", "rules"), ".md"),
+    ...scopedRuleFiles(workspaceRoot),
+    ...filesIn(join(workspaceRoot, ".claude", "rules"), ".md"),
+    ...filesIn(join(workspaceRoot, ".cursor", "rules"), ".mdc"),
+    ...filesIn(join(workspaceRoot, ".github", "instructions"), ".instructions.md"),
+    ...filesIn(join(workspaceRoot, ".agency", "rules"), ".md"),
+    ...openCodeInstructionFiles(workspaceRoot),
+  ];
+}
+
+/** The rules of Kiro, Augment, Continue and Windsurf, whose frontmatter says when each applies, as that of a Cursor rule does. */
+function scopedRuleFiles(workspaceRoot: string): string[] {
+  return [
+    [".kiro", "steering"],
+    [".augment", "rules"],
+    [".continue", "rules"],
+    [".windsurf", "rules"],
+  ].flatMap((parts) => filesIn(join(workspaceRoot, ...parts), ".md"));
+}
+
+/**
+ * A rule as instruction text: its frontmatter says when it applies (`alwaysApply`, `globs` and `description` of Cursor
+ * and Continue, `inclusion` and `fileMatchPattern` of Kiro, `type` of Augment, `applyTo` of Copilot). A rule that only a mention calls is
+ * left out; a rule with none of these keys is too in Cursor, and applies always in the others.
+ */
+export function scopedRuleText(text: string, manualByDefault = true): string {
+  const { fields, body } = splitFrontmatter(text);
+  const field = (name: string) => fields[name]?.replace(/^["']|["']$/g, "");
+  if (field("inclusion") === "manual" || field("type") === "manual" || field("trigger") === "manual")
+    return "";
+  const globs = field("globs") ?? field("fileMatchPattern") ?? field("applyTo");
+  const always =
+    field("alwaysApply") === "true" ||
+    field("inclusion") === "always" ||
+    field("type") === "always_apply" ||
+    field("trigger") === "always_on" ||
+    globs === "**" ||
+    globs === "**/*";
+  if (always) return body.trim();
+  if (globs) return `Files that match ${globs}:\n${body.trim()}`;
+  if (field("description")) return `When the task is about: ${field("description")}\n${body.trim()}`;
+  return manualByDefault ? "" : body.trim();
+}
+
+/** A rule of `.claude/rules`: its `paths` (a YAML list or one glob) say which files it is for; with none it applies always. */
+export function claudeRuleText(text: string): string {
+  const { body } = splitFrontmatter(text);
+  const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text.trimStart())?.[1];
+  let paths: unknown;
+  try {
+    paths = block === undefined ? undefined : (Bun.YAML.parse(block) as { paths?: unknown } | null)?.paths;
+  } catch {}
+  const globs = Array.isArray(paths) ? paths.map(String).join(", ") : typeof paths === "string" ? paths : "";
+  return globs === "" ? body.trim() : `Files that match ${globs}:\n${body.trim()}`;
 }
 
 /**
@@ -72,6 +166,140 @@ function readTextCapped(file: string, maxBytes: number): string {
   } finally {
     closeSync(fd);
   }
+}
+
+/** True for a file inside `root`, links followed: a workspace must not name a file outside it. */
+export function isFileInside(root: string, file: string): boolean {
+  try {
+    const rel = relative(realpathSync(root), realpathSync(file));
+    return statSync(file).isFile() && rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/** The files that `instructions` of the `opencode.json` of a workspace names, as paths or globs inside it. */
+function openCodeInstructionFiles(workspaceRoot: string): string[] {
+  const patterns = openCodeConfig(workspaceRoot).instructions;
+  if (!Array.isArray(patterns)) return [];
+  const out: string[] = [];
+  for (const pattern of patterns) {
+    // ponytail: a URL of OpenCode is not fetched.
+    if (typeof pattern !== "string" || /^https?:/.test(pattern)) continue;
+    for (const rel of new Bun.Glob(pattern).scanSync({ cwd: workspaceRoot, onlyFiles: true, dot: true })) {
+      const file = resolve(workspaceRoot, rel);
+      if (isFileInside(workspaceRoot, file) && !out.includes(file)) out.push(file);
+    }
+  }
+  return out;
+}
+
+/**
+ * The `@path` imports of a CLAUDE.md or GEMINI.md: the text of the file in place of the import, as Claude Code and
+ * Gemini CLI take it, five levels deep. A path that is not a file inside `root` stays as it is: a workspace must not
+ * put `@~/.ssh/id_rsa` into the prompt. Code blocks and code spans are left alone.
+ */
+export function expandImports(
+  text: string,
+  dir: string,
+  root: string,
+  maxFileBytes: number,
+  depth = 0,
+): string {
+  if (depth >= 5) return text;
+  const inside = (file: string): boolean => isFileInside(root, file);
+  const load = (match: string, lead: string, ref: string): string => {
+    // A sentence can end on the path: its stop is not part of it.
+    const [, path = ref, stop = ""] = /^(.*?)([.,;:!?)]*)$/.exec(ref) ?? [];
+    const file = path.startsWith("~/") ? join(homedir(), path.slice(2)) : resolve(dir, path);
+    if (!inside(file)) return match;
+    return `${lead}${expandImports(readTextCapped(file, maxFileBytes), dirname(file), root, maxFileBytes, depth + 1)}${stop}`;
+  };
+  let fenced = false;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+      if (fenced) return line;
+      // The odd parts of a split on backticks are code spans.
+      return line
+        .split("`")
+        .map((part, index) => (index % 2 === 1 ? part : part.replace(/(^|\s)@(\S+)/g, load)))
+        .join("`");
+    })
+    .join("\n");
+}
+
+/**
+ * The AGENTS.md, CLAUDE.md and GEMINI.md of the folders between the workspace root and `file` that `seen` does not
+ * hold, as Claude Code loads a nested CLAUDE.md when the model reaches its folder. Adds the folders to `seen`.
+ */
+export function nestedInstructions(
+  workspaceRoot: string,
+  file: string,
+  seen: Set<string>,
+  maxFileBytes = DEFAULT_MAX_INSTRUCTION_BYTES,
+): string | undefined {
+  const rel = relative(workspaceRoot, resolve(workspaceRoot, file));
+  if (rel.startsWith("..") || isAbsolute(rel) || dirname(rel) === ".") return undefined;
+  const out: string[] = [];
+  let dir = workspaceRoot;
+  for (const part of dirname(rel).split(sep)) {
+    dir = join(dir, part);
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    const texts: string[] = [];
+    for (const path of instructionFilesIn(dir)) {
+      const raw = readTextCapped(path, maxFileBytes);
+      const text = basename(path).startsWith("AGENTS")
+        ? raw
+        : expandImports(raw, dirname(path), workspaceRoot, maxFileBytes);
+      // A CLAUDE.md that repeats AGENTS.md (a copy, a link or an import) counts once.
+      if (text.trim() === "" || texts.some((t) => t.trim() === text.trim())) continue;
+      texts.push(text);
+      out.push(
+        `Instructions of ${relative(workspaceRoot, path)}, for the files of its folder:\n${text.trim()}`,
+      );
+    }
+  }
+  return out.length > 0 ? out.join("\n\n") : undefined;
+}
+
+/** The instruction files that other agents load in every project. Codex reads its override in place of AGENTS.md. */
+const FOREIGN_USER_INSTRUCTIONS = [
+  [".claude", "CLAUDE.md"],
+  [".codex", "AGENTS.override.md"],
+  [".codex", "AGENTS.md"],
+  [".gemini", "GEMINI.md"],
+  [".config", "opencode", "AGENTS.md"],
+  [".pi", "agent", "AGENTS.md"],
+];
+
+/** The user instructions of other agents (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); a copy of another counts once. */
+export function loadUserAgentInstructions(
+  home: string | undefined = foreignHome(),
+  maxFileBytes = DEFAULT_MAX_INSTRUCTION_BYTES,
+): string[] {
+  if (home === undefined) return [];
+  const files = FOREIGN_USER_INSTRUCTIONS.map((parts) => join(home, ...parts)).filter(
+    (file) => existsSync(file) && statSync(file).isFile(),
+  );
+  const override = join(home, ".codex", "AGENTS.override.md");
+  const texts = files
+    .filter((file) => !(files.includes(override) && file === join(home, ".codex", "AGENTS.md")))
+    .map((file) =>
+      /(CLAUDE(\.local)?|GEMINI)\.md$/.test(file)
+        ? expandImports(readTextCapped(file, maxFileBytes), dirname(file), home, maxFileBytes)
+        : readTextCapped(file, maxFileBytes),
+    )
+    .concat(
+      filesIn(join(home, ".claude", "rules"), ".md").map((file) =>
+        claudeRuleText(readTextCapped(file, maxFileBytes)),
+      ),
+    );
+  return texts.filter(
+    (text, index) => text.trim() !== "" && texts.findIndex((t) => t.trim() === text.trim()) === index,
+  );
 }
 
 /**
@@ -100,5 +328,18 @@ export function loadInstructions(
       }
     })();
   const files = [...collectAgentsFiles(effectiveFromDir, workspaceRoot), ...collectRuleFiles(workspaceRoot)];
-  return files.map((f) => readTextCapped(f, maxFileBytes));
+  const scoped = new Set(scopedRuleFiles(workspaceRoot));
+  const texts = files.map((f) => {
+    const raw = readTextCapped(f, maxFileBytes);
+    const text = /(CLAUDE(\.local)?|GEMINI)\.md$/.test(f)
+      ? expandImports(raw, dirname(f), workspaceRoot, maxFileBytes)
+      : raw;
+    if (f.endsWith(".mdc") || f.endsWith(".instructions.md")) return scopedRuleText(text);
+    if (f.startsWith(join(workspaceRoot, ".claude", "rules"))) return claudeRuleText(text);
+    return scoped.has(f) ? scopedRuleText(text, false) : text;
+  });
+  // A CLAUDE.md that repeats AGENTS.md (a copy or a link) counts once.
+  return texts.filter(
+    (text, index) => text.trim() !== "" && texts.findIndex((t) => t.trim() === text.trim()) === index,
+  );
 }

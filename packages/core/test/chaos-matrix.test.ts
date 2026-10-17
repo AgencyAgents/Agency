@@ -82,9 +82,11 @@ describe("Chaos: scheduler failover mid-rotation", () => {
         },
         {
           quarantineMs: 200,
-          // Read the set when the scheduler waits. Read after the call, k1's window had 7 ms left and load ate it.
+          // Read the set at the first wait, when both windows have about 200 ms left: at the last wait k1 is at its
+          // end, and load let it expire before the read (seen on Linux).
           onRetry: (_attempt, reason) => {
-            if (reason === "all keys quarantined") quarantinedAtWait = scheduler.getQuarantinedKeys().sort();
+            if (reason === "all keys quarantined" && quarantinedAtWait.length === 0)
+              quarantinedAtWait = scheduler.getQuarantinedKeys().sort();
           },
         },
       )

@@ -25,6 +25,17 @@ const many = (count: number): ToolSpec[] =>
   );
 
 describe("deferTools", () => {
+  test("a built-in tool marked deferred waits for a search in every mode", () => {
+    const tools = [
+      tool("read", "Reads a file."),
+      { ...tool("process_kill", "Kills a process."), deferred: true },
+    ];
+    for (const mode of ["auto", "always", "never"] as const) {
+      const sent = deferTools(tools, mode).filter((t) => !t.hidden?.());
+      expect(sent.map((t) => t.name)).toEqual(["read", TOOL_SEARCH, CALL_TOOL]);
+    }
+  });
+
   test("a small set of MCP tools stays as it is, and so does a set in the never mode", () => {
     const tools = [tool("read", "Reads a file."), ...many(3)];
     expect(deferTools(tools, "auto")).toBe(tools);
@@ -59,7 +70,7 @@ describe("deferTools", () => {
 });
 
 describe("hidden tools in the loop", () => {
-  test("a hidden tool is never in a request; a direct call is refused and a call through call_tool runs", async () => {
+  test("a hidden tool is never in a request; a call by name and a call through call_tool both run", async () => {
     const tools = deferTools([tool("read", "Reads a file."), ...many(12)], "auto");
     const requests: ProviderRequest[] = [];
     const calls = [
@@ -104,12 +115,11 @@ describe("hidden tools in the loop", () => {
     // The same tool list in each request.
     for (let i = 0; i < requests.length; i++) expect(names(i)).toEqual(["read", TOOL_SEARCH, CALL_TOOL]);
     const text = JSON.stringify(result.messages);
-    expect(text).toContain("is not loaded");
+    expect(text).toContain('tracker_tool_3 ran with {\\"id\\":\\"a\\"}');
     // The inner call meets the schema check of the tool, and call_tool is only for the hidden tools.
     expect(text).toContain("id");
     expect(text).not.toContain('ran with {\\"id\\":5}');
     expect(text).toContain("is not a tool of tool_search");
     expect(text).toContain('tracker_tool_3 ran with {\\"id\\":\\"b\\"}');
-    expect(text).not.toContain('ran with {\\"id\\":\\"a\\"}');
   });
 });

@@ -1,0 +1,4 @@
+{
+  "prompt": "bun test fails. Fix the bug in src without changing the tests.",
+  "check": "bun test ./test/args.check.ts"
+}

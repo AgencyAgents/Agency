@@ -1,0 +1,4 @@
+{
+  "prompt": "The pagination tests fail. Find the bug and fix it. Do not change the tests.",
+  "check": "bun test ./test/paginate.check.ts"
+}

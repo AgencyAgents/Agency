@@ -190,7 +190,7 @@ export function buildTeamReport(args: {
 
 // Coordinator demotion: while a team is live the lead keeps
 // coordination tools only; write, edit, and bash are withheld.
-export const LEAD_WITHHELD_TOOLS: readonly string[] = ["write", "edit", "bash"];
+export const LEAD_WITHHELD_TOOLS: readonly string[] = ["write", "edit", "notebook_edit", "bash"];
 
 export function isTeamLive(items: ReadonlyArray<{ status: string }>): boolean {
   return items.some((item) => item.status === "pending" || item.status === "in_progress");

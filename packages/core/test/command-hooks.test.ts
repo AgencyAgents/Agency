@@ -1,17 +1,26 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FULL_CAPABILITIES } from "@agency/guard";
+import { FULL_CAPABILITIES, PermissionsGate } from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import type { ProviderAdapter, StreamEvent } from "@agency/providers";
 import { createApproximateTokenizer, Scheduler } from "@agency/providers";
 import { EventBus, HookBlock } from "../src/events.ts";
 import { runTurn, type ToolSpec } from "../src/loop.ts";
-import { attachCommandHooks, type CommandHooks, runCommandHooks } from "../src/plugins/command-hooks.ts";
+import {
+  attachCommandHooks,
+  type CommandHooks,
+  CommandHooksSchema,
+  runCommandHooks,
+} from "../src/plugins/command-hooks.ts";
+import { parseEnvFile } from "../src/plugins/env-file.ts";
 import { loadPlugins, unloadPlugins } from "../src/plugins/loader.ts";
 import { compact } from "../src/sessions/compaction.ts";
 import { SessionStore } from "../src/sessions/store.ts";
+
+// Each test starts node processes in turn: under the load of the full CI run, two passed 5 s.
+setDefaultTimeout(20_000);
 
 const dir = mkdtempSync(join(tmpdir(), "agency-cmdhooks-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -74,7 +83,7 @@ describe("runCommandHooks", () => {
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({
       hook_event_name: "PreToolUse",
       cwd: dir,
-      tool_name: "bash",
+      tool_name: "Bash",
       tool_input: { command: "ls" },
     });
   });
@@ -177,6 +186,143 @@ describe("runCommandHooks", () => {
     ]);
   }, 20_000);
 
+  test("an http hook gets the event as a JSON POST, its JSON answer blocks, and a header takes only an allowed variable", async () => {
+    const seen: {
+      method: string;
+      type: string | null;
+      auth: string | null;
+      other: string | null;
+      body: unknown;
+    }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        seen.push({
+          method: req.method,
+          type: req.headers.get("content-type"),
+          auth: req.headers.get("authorization"),
+          other: req.headers.get("x-other"),
+          body: await req.json(),
+        });
+        return Response.json({ decision: "block", reason: "no deploys today" });
+      },
+    });
+    process.env.AGENCY_TEST_HOOK_TOKEN = "t1";
+    process.env.AGENCY_TEST_HOOK_OTHER = "secret";
+    try {
+      const hooks = CommandHooksSchema.parse({
+        PreToolUse: [
+          {
+            matcher: "bash",
+            hooks: [
+              {
+                type: "http",
+                url: `http://127.0.0.1:${server.port}/hook`,
+                headers: {
+                  Authorization: "Bearer $AGENCY_TEST_HOOK_TOKEN",
+                  "X-Other": "${AGENCY_TEST_HOOK_OTHER}",
+                },
+                allowedEnvVars: ["AGENCY_TEST_HOOK_TOKEN"],
+              },
+            ],
+          },
+        ],
+      });
+      const out = await run(hooks, "PreToolUse", { tool_name: "bash", tool_input: { command: "deploy" } });
+      expect(out).toEqual({ block: "no deploys today" });
+      expect(seen).toEqual([
+        {
+          method: "POST",
+          type: "application/json",
+          auth: "Bearer t1",
+          other: "",
+          body: {
+            hook_event_name: "PreToolUse",
+            cwd: dir,
+            session_id: "default",
+            tool_name: "Bash",
+            tool_input: { command: "deploy" },
+          },
+        },
+      ]);
+    } finally {
+      delete process.env.AGENCY_TEST_HOOK_TOKEN;
+      delete process.env.AGENCY_TEST_HOOK_OTHER;
+      server.stop(true);
+    }
+  });
+
+  test("an http hook that fails does not block: an error status, a text body, or no server", async () => {
+    let reply: () => Response = () => new Response("down", { status: 500 });
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => reply() });
+    const at = (url: string): CommandHooks => ({ UserPromptSubmit: [{ hooks: [{ type: "http", url }] }] });
+    const url = `http://127.0.0.1:${server.port}/`;
+    try {
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+      reply = () => new Response("plain text is not context");
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+      reply = () => Response.json({ hookSpecificOutput: { additionalContext: "from the hook" } });
+      expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({ context: "from the hook" });
+    } finally {
+      server.stop(true);
+    }
+    expect(await run(at(url), "UserPromptSubmit", { prompt: "p" })).toEqual({});
+  });
+
+  test("a prompt hook asks the model with the event in place of $ARGUMENTS, and ok false blocks with the reason", async () => {
+    const asked: { prompt: string; model: string | undefined }[] = [];
+    let reply = '{"ok": false, "reason": "the tests did not run"}';
+    const opts = {
+      cwd: dir,
+      askModel: async (prompt: string, model: string | undefined) => {
+        asked.push({ prompt, model });
+        return reply;
+      },
+    };
+    const hooks = CommandHooksSchema.parse({
+      Stop: [
+        { hooks: [{ type: "prompt", prompt: "Did the agent run the tests? $ARGUMENTS", model: "or/small" }] },
+      ],
+    });
+    const stop = () => runCommandHooks(hooks, "Stop", { session_id: "s1", stop_hook_active: false }, opts);
+    expect(await stop()).toEqual({ block: "the tests did not run" });
+    expect(asked[0]?.model).toBe("or/small");
+    expect(asked[0]?.prompt).toStartWith(
+      `Did the agent run the tests? {"hook_event_name":"Stop","cwd":${JSON.stringify(dir)},"session_id":"s1"`,
+    );
+    expect(asked[0]?.prompt).toContain('{"ok": true}');
+
+    // The model says the condition can never hold: the stop goes on.
+    reply = 'Sure: {"ok": false, "reason": "no tests exist", "impossible": true}';
+    expect(await stop()).toEqual({});
+    reply = '{"ok": true}';
+    expect(await stop()).toEqual({});
+    reply = "I think it is fine";
+    expect(await stop()).toEqual({});
+    // A failed model call, or no model at all, does not block.
+    expect(await runCommandHooks(hooks, "Stop", {}, { cwd: dir })).toEqual({});
+    expect(
+      await runCommandHooks(
+        hooks,
+        "Stop",
+        {},
+        { cwd: dir, askModel: () => Promise.reject(new Error("down")) },
+      ),
+    ).toEqual({});
+
+    // As in Claude Code: no effect on a PermissionRequest, and no run on an event without prompt hooks.
+    reply = '{"ok": false, "reason": "no"}';
+    const on = (event: keyof CommandHooks) =>
+      CommandHooksSchema.parse({ [event]: [{ hooks: [{ type: "prompt", prompt: "x" }] }] });
+    expect(
+      await runCommandHooks(on("PermissionRequest"), "PermissionRequest", { tool_name: "bash" }, opts),
+    ).toEqual({});
+    const before = asked.length;
+    expect(await runCommandHooks(on("SessionStart"), "SessionStart", {}, opts)).toEqual({});
+    expect(asked.length).toBe(before);
+  });
+
   test("the matcher of a compaction hook tests the trigger, and that of a notification hook its type", async () => {
     const cmd = hook("deny3", 'console.error("blocked"); process.exit(2);');
     const compaction = on("PreCompact", cmd, "manual");
@@ -209,7 +355,7 @@ const noopHttp: HttpClient = { fetch: async () => new Response() };
 const usage = { inputTokens: 1, outputTokens: 1 };
 
 /** Calls the tool `calls` times, then answers with text for each later request. */
-function scripted(calls: number): { adapter: ProviderAdapter; requests: () => number } {
+function scripted(calls: number, command = "ls"): { adapter: ProviderAdapter; requests: () => number } {
   let n = 0;
   return {
     requests: () => n,
@@ -219,7 +365,7 @@ function scripted(calls: number): { adapter: ProviderAdapter; requests: () => nu
         n += 1;
         if (n <= calls) {
           yield { type: "tool_call_start", id: `c${n}`, name: "bash" };
-          yield { type: "tool_call_delta", id: `c${n}`, inputJsonDelta: '{"command":"ls"}' };
+          yield { type: "tool_call_delta", id: `c${n}`, inputJsonDelta: JSON.stringify({ command }) };
           yield { type: "tool_call_end", id: `c${n}` };
           yield { type: "message_stop", stopReason: "tool_use", usage };
         } else {
@@ -294,6 +440,14 @@ describe("hooks in the loop", () => {
     expect(result.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(result.messages[2]?.content).toEqual([{ type: "text", text: "the tests did not run" }]);
     expect(result.stopReason).toBe("end_turn");
+  });
+
+  test("a stop hook gets the text of the last reply as last_assistant_message", async () => {
+    const bus = new EventBus();
+    const { cmd, read } = capture("stop-last");
+    attachCommandHooks(bus, on("Stop", cmd), { cwd: dir });
+    await turn(scripted(0).adapter, bus, []);
+    expect(await read()).toMatchObject({ hook_event_name: "Stop", last_assistant_message: "answer 1" });
   });
 
   test("a stop hook does not run for a subagent", async () => {
@@ -382,12 +536,12 @@ describe("hooks in the loop", () => {
       session_id: "s1",
       tool_calls: [
         {
-          tool_name: "bash",
+          tool_name: "Bash",
           tool_input: { command: "ls c1" },
           tool_use_id: "c1",
           tool_response: { content: "listing", isError: false },
         },
-        { tool_name: "bash", tool_input: { command: "ls c2" }, tool_use_id: "c2" },
+        { tool_name: "Bash", tool_input: { command: "ls c2" }, tool_use_id: "c2" },
       ],
     });
   });
@@ -540,10 +694,202 @@ describe("hooks in the loop", () => {
       expect(await seen.read()).toMatchObject({
         hook_event_name: "PermissionRequest",
         session_id: "s1",
-        tool_name: "bash",
+        tool_name: "Bash",
         tool_input: { command: "ls" },
       });
     }
+  });
+
+  test("auto mode: the reviewer answers a default ask, a block gives the reason and runs PermissionDenied", async () => {
+    const cases: Array<{
+      verdict: { allow: boolean; reason?: string } | undefined;
+      permissions?: Record<string, "ask">;
+      ran: string[];
+      reviewed: number;
+      asked: number;
+    }> = [
+      { verdict: { allow: true }, ran: ["bash"], reviewed: 1, asked: 0 },
+      { verdict: { allow: false, reason: "the user said no shell" }, ran: [], reviewed: 1, asked: 0 },
+      // No verdict: the user answers. An ask rule of the config also goes to the user, not to the reviewer.
+      { verdict: undefined, ran: ["bash"], reviewed: 1, asked: 1 },
+      { verdict: { allow: true }, permissions: { bash: "ask" }, ran: ["bash"], reviewed: 0, asked: 1 },
+    ];
+    for (const [index, c] of cases.entries()) {
+      const bus = new EventBus();
+      const denied = capture(`auto-denied-${index}`);
+      const retry = hook(
+        `auto-retry-${index}`,
+        'console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true } }));',
+      );
+      attachCommandHooks(
+        bus,
+        {
+          PermissionDenied: [
+            {
+              matcher: "Bash",
+              hooks: [
+                { type: "command", command: denied.cmd },
+                { type: "command", command: retry },
+              ],
+            },
+          ],
+        },
+        { cwd: dir },
+      );
+      const ran: string[] = [];
+      let reviewed = 0;
+      let asked = 0;
+      const result = await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [{ ...bashTool(ran), riskTier: "dangerous" }],
+        model: "m",
+        apiKey: "k",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        eventBus: bus,
+        sessionId: "s1",
+        toolPolicy: new PermissionsGate({
+          workspaceRoot: dir,
+          permissionMode: "auto",
+          ...(c.permissions ? { permissions: c.permissions } : {}),
+        }),
+        reviewApproval: async (request, transcript) => {
+          reviewed += 1;
+          expect(request).toMatchObject({ tool: "bash", command: "npm test" });
+          expect(transcript?.[0]).toMatchObject({ role: "user" });
+          return c.verdict;
+        },
+        requestApproval: async () => {
+          asked += 1;
+          return "once";
+        },
+      });
+      expect({ ran, reviewed, asked }).toEqual({ ran: c.ran, reviewed: c.reviewed, asked: c.asked });
+      if (c.verdict?.allow !== false) {
+        expect(existsSync(join(dir, `auto-denied-${index}.json`))).toBe(false);
+        continue;
+      }
+      const [text = ""] = resultText(result.messages);
+      expect(text).toContain("the user said no shell");
+      expect(text).toContain("may retry");
+      expect(await denied.read()).toMatchObject({
+        hook_event_name: "PermissionDenied",
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+        tool_use_id: "c1",
+        reason: "the user said no shell",
+      });
+    }
+  });
+
+  test("auto mode allows edits without the reviewer, and a run with no approval surface still gets the reviewer", async () => {
+    const gate = new PermissionsGate({ workspaceRoot: dir, permissionMode: "auto" });
+    let reviewed = 0;
+    const review = async () => {
+      reviewed += 1;
+      return { allow: true };
+    };
+    expect(await gate.check({ tool: "write", riskTier: "moderate", path: "a.txt" }, undefined)).toBe("allow");
+    const ran: string[] = [];
+    await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [{ ...bashTool(ran), riskTier: "dangerous" }],
+      model: "m",
+      apiKey: "k",
+      session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+      toolPolicy: gate,
+      reviewApproval: review,
+    });
+    expect({ ran, reviewed }).toEqual({ ran: ["bash"], reviewed: 1 });
+  });
+
+  test("PreToolUse and PostToolUse hooks change the input and the result, as in Claude Code; the rules judge the new input", async () => {
+    let n = 0;
+    const run = async (c: {
+      pre?: object;
+      post?: object;
+      permissions?: ConstructorParameters<typeof PermissionsGate>[0]["permissions"];
+      answer?: "once" | "reject";
+    }) => {
+      n += 1;
+      const reply = (output: object) =>
+        `console.log(${JSON.stringify(JSON.stringify({ hookSpecificOutput: output }))});`;
+      const hooks: Parameters<typeof attachCommandHooks>[1] = {};
+      if (c.pre)
+        hooks.PreToolUse = [{ hooks: [{ type: "command", command: hook(`rw-pre-${n}`, reply(c.pre)) }] }];
+      if (c.post)
+        hooks.PostToolUse = [{ hooks: [{ type: "command", command: hook(`rw-post-${n}`, reply(c.post)) }] }];
+      const bus = new EventBus();
+      attachCommandHooks(bus, hooks, { cwd: dir });
+      const ran: string[] = [];
+      let asked = 0;
+      const result = await runTurn(scripted(1, "npm test").adapter, new Scheduler(), noopHttp, {
+        identity: { type: "user" },
+        capabilities: FULL_CAPABILITIES,
+        systemPrompt: "sys",
+        tools: [
+          {
+            name: "bash",
+            description: "runs a command",
+            inputSchema: {},
+            riskTier: "dangerous",
+            handler: async (input) => {
+              ran.push(String(input.command));
+              return { content: `ran ${String(input.command)}` };
+            },
+          },
+        ],
+        model: "m",
+        apiKey: "k",
+        session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+        eventBus: bus,
+        sessionId: "s1",
+        toolPolicy: new PermissionsGate({
+          workspaceRoot: dir,
+          ...(c.permissions ? { permissions: c.permissions } : {}),
+        }),
+        ...(c.answer
+          ? {
+              requestApproval: async () => {
+                asked += 1;
+                return c.answer as "once" | "reject";
+              },
+            }
+          : {}),
+      });
+      return { ran, asked, text: resultText(result.messages)[0] };
+    };
+    // `allow` answers the default ask of a run with no one to ask, and the tool gets the new input.
+    expect(
+      await run({ pre: { permissionDecision: "allow", updatedInput: { command: "rtk npm test" } } }),
+    ).toMatchObject({
+      ran: ["rtk npm test"],
+    });
+    // A deny rule judges the input of the hook; an ask rule still asks.
+    const rewrite = { permissionDecision: "allow", updatedInput: { command: "rm -rf build" } };
+    expect((await run({ pre: rewrite, permissions: { bash: { "rm *": "deny" } } })).ran).toEqual([]);
+    expect(
+      (await run({ pre: { permissionDecision: "allow" }, permissions: { bash: { "npm *": "ask" } } })).ran,
+    ).toEqual([]);
+    // `ask` goes to the user though a rule allows.
+    expect(
+      await run({ pre: { permissionDecision: "ask" }, permissions: { bash: "allow" }, answer: "reject" }),
+    ).toMatchObject({
+      ran: [],
+      asked: 1,
+    });
+    // The model gets the output of the PostToolUse hook, and the context of the PreToolUse hook.
+    expect(
+      await run({
+        pre: { additionalContext: "on branch dev" },
+        post: { updatedToolOutput: { stdout: "2 passed", stderr: "", interrupted: false, isImage: false } },
+        permissions: { bash: "allow" },
+      }),
+    ).toEqual({ ran: ["npm test"], asked: 0, text: "2 passed\n\non branch dev" });
   });
 
   test("a SubagentStop hook gets the type of the agent, and its matcher tests it", async () => {
@@ -600,6 +946,212 @@ describe("the SessionEnd hook", () => {
       hook_event_name: "SessionEnd",
       session_id: "s9",
       reason: "other",
+    });
+  });
+});
+
+describe("mcp_tool hooks", () => {
+  const scan = (input?: Record<string, unknown>): CommandHooks =>
+    CommandHooksSchema.parse({
+      PreToolUse: [
+        {
+          matcher: "write",
+          hooks: [
+            { type: "mcp_tool", server: "plugin:kit:scanner", tool: "scan", ...(input ? { input } : {}) },
+          ],
+        },
+      ],
+    });
+  const event = { session_id: "s1", tool_name: "write", tool_input: { file_path: "a.ts", content: "x" } };
+
+  test("the tool gets the values of the event, and its text answers as the stdout of a command", async () => {
+    const calls: unknown[] = [];
+    const outcome = await runCommandHooks(
+      scan({
+        file: "${tool_input.file_path}",
+        what: "${hook_event_name} of ${tool_input}",
+        none: "${nope.x}",
+        n: 3,
+      }),
+      "PreToolUse",
+      event,
+      {
+        cwd: ".",
+        callMcpTool: async (call) => {
+          calls.push({ ...call, signal: undefined });
+          return { text: JSON.stringify({ decision: "block", reason: "secret in a.ts" }), isError: false };
+        },
+      },
+    );
+    expect(outcome.block).toBe("secret in a.ts");
+    expect(calls).toEqual([
+      {
+        sessionId: "s1",
+        server: "scanner",
+        tool: "scan",
+        input: { file: "a.ts", what: 'PreToolUse of {"file_path":"a.ts","content":"x"}', none: "", n: 3 },
+        signal: undefined,
+      },
+    ]);
+  });
+
+  test("a tool error, a failed call or no MCP servers do not block", async () => {
+    const block = { text: JSON.stringify({ decision: "block", reason: "no" }) };
+    for (const callMcpTool of [
+      async () => ({ ...block, isError: true }),
+      async (): Promise<never> => {
+        throw new Error("server down");
+      },
+      undefined,
+    ]) {
+      const outcome = await runCommandHooks(scan(), "PreToolUse", event, {
+        cwd: ".",
+        ...(callMcpTool ? { callMcpTool } : {}),
+      });
+      expect(outcome.block).toBeUndefined();
+    }
+  });
+});
+
+describe("agent hooks", () => {
+  const stopHook = (type: "agent" | "prompt"): CommandHooks =>
+    CommandHooksSchema.parse({ Stop: [{ hooks: [{ type, prompt: "Do the tests pass? $ARGUMENTS" }] }] });
+
+  test("ok false blocks with the reason, also with impossible, and the agent gets the session", async () => {
+    const asked: unknown[] = [];
+    const outcome = await runCommandHooks(
+      stopHook("agent"),
+      "Stop",
+      { session_id: "s4" },
+      {
+        cwd: ".",
+        askAgent: async (prompt, _model, _signal, sessionId) => {
+          asked.push({ sessionId, event: prompt.includes('"hook_event_name":"Stop"') });
+          return 'I read the log.\n{"ok": false, "reason": "2 tests fail", "impossible": true}';
+        },
+      },
+    );
+    expect(outcome.block).toBe("2 tests fail");
+    expect(asked).toEqual([{ sessionId: "s4", event: true }]);
+    // A prompt hook has no tools: it never reaches the agent.
+    const prompt = await runCommandHooks(
+      stopHook("prompt"),
+      "Stop",
+      { session_id: "s4" },
+      {
+        cwd: ".",
+        askAgent: async () => '{"ok": false, "reason": "x"}',
+      },
+    );
+    expect(prompt.block).toBeUndefined();
+  });
+
+  test("an agent hook does not run on PermissionRequest, and with no agent it does not block", async () => {
+    let calls = 0;
+    const hooks = CommandHooksSchema.parse({
+      PermissionRequest: [{ hooks: [{ type: "agent", prompt: "ok?" }] }],
+    });
+    await runCommandHooks(
+      hooks,
+      "PermissionRequest",
+      { tool_name: "bash" },
+      {
+        cwd: ".",
+        askAgent: async () => {
+          calls += 1;
+          return '{"ok": false, "reason": "no"}';
+        },
+      },
+    );
+    expect(calls).toBe(0);
+    expect((await runCommandHooks(stopHook("agent"), "Stop", {}, { cwd: "." })).block).toBeUndefined();
+  });
+});
+
+test("a hook gets the tool and fields of Claude Code, and its updatedInput comes back in the fields here", async () => {
+  // As hookify reads it: `tool_name == "Edit"` and `tool_input.file_path`; it answers with the same fields.
+  const body = [
+    'const i = JSON.parse(require("fs").readFileSync(0, "utf8"));',
+    'if (i.tool_name !== "Edit" || i.tool_input.file_path !== "a.txt" || i.tool_input.old_string !== "x") process.exit(0);',
+    'console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...i.tool_input, file_path: "b.txt" } } }));',
+  ].join("\n");
+  const out = await runCommandHooks(
+    on("PreToolUse", hook("cc-shape", body)),
+    "PreToolUse",
+    { tool_name: "edit", tool_input: { path: "a.txt", oldText: "x", newText: "y" } },
+    { cwd: dir },
+  );
+  expect(out.input).toEqual({ path: "b.txt", oldText: "x", newText: "y" });
+});
+
+test("a hook gets the transcript_path of its session, and session_id default for a turn with none", async () => {
+  const echo = on(
+    "Stop",
+    hook(
+      "echo-input",
+      'console.log(JSON.stringify({ decision: "block", reason: require("fs").readFileSync(0, "utf8") }));',
+    ),
+  );
+  const opts = { cwd: dir, transcriptPath: (id: string) => join(dir, `${id}.jsonl`) };
+  const named = JSON.parse((await runCommandHooks(echo, "Stop", { session_id: "s1" }, opts)).block ?? "{}");
+  expect(named.transcript_path).toBe(join(dir, "s1.jsonl"));
+  const none = JSON.parse((await runCommandHooks(echo, "Stop", {}, opts)).block ?? "{}");
+  expect(none.session_id).toBe("default");
+  expect(none.transcript_path).toBe(join(dir, "default.jsonl"));
+});
+
+describe("CLAUDE_ENV_FILE", () => {
+  test("a SessionStart hook writes variables there, and a new start empties the file first", async () => {
+    const file = join(dir, "env", "s1.sh");
+    const hooks = on(
+      "SessionStart",
+      hook(
+        "env-file",
+        'require("fs").appendFileSync(process.env.CLAUDE_ENV_FILE, "export FROM_HOOK=yes\\n");',
+      ),
+    );
+    const opts = {
+      cwd: dir,
+      envFile: (sessionId: string) => (sessionId === "s1" ? file : join(dir, "other.sh")),
+    };
+    await runCommandHooks(hooks, "SessionStart", { session_id: "s1" }, opts);
+    await runCommandHooks(hooks, "SessionStart", { session_id: "s1" }, opts);
+    expect(readFileSync(file, "utf8")).toBe("export FROM_HOOK=yes\n");
+    // Another event has no CLAUDE_ENV_FILE.
+    const stop = await runCommandHooks(
+      on(
+        "Stop",
+        hook(
+          "env-none",
+          'console.log(JSON.stringify({ decision: "block", reason: String(process.env.CLAUDE_ENV_FILE) }));',
+        ),
+      ),
+      "Stop",
+      { session_id: "s1" },
+      opts,
+    );
+    expect(stop.block).toBe("undefined");
+  });
+
+  test("the lines of the file become variables, with $NAME taken from the environment and the lines before", () => {
+    const text = [
+      "export NODE_ENV=production",
+      'export PATH="$PATH:./node_modules/.bin"',
+      'declare -x NVM_BIN="/n/bin"',
+      "export NVM_PATH=${NVM_BIN}/node",
+      "LITERAL='no $EXPANSION here'",
+      'export PRICE="\\$5 \\"each\\""',
+      "source ~/.nvm/nvm.sh",
+      "# a comment",
+    ].join("\n");
+    const env = parseEnvFile(text, { PATH: "/usr/bin" });
+    expect(env).toEqual({
+      NODE_ENV: "production",
+      PATH: "/usr/bin:./node_modules/.bin",
+      NVM_BIN: "/n/bin",
+      NVM_PATH: "/n/bin/node",
+      LITERAL: "no $EXPANSION here",
+      PRICE: '$5 "each"',
     });
   });
 });

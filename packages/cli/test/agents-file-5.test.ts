@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AgentRegistry, DEFAULT_ROSTER } from "@agency/core";
+import { type AgentConfig, AgentRegistry } from "@agency/core";
 import { initTeamFromConfig } from "../src/daemon/handlers/team.ts";
 import { agentsListPayload } from "../src/daemon/team-context.ts";
 import type { DaemonContext } from "../src/daemon/types.ts";
@@ -13,6 +13,18 @@ function tempDir(prefix: string): string {
   dirs.push(dir);
   return dir;
 }
+
+const CONFIG_AGENTS: Record<string, AgentConfig> = {
+  leader: { role: "leader", provider: "anthropic", model: "claude-sonnet-5", effort: "high", enabled: true },
+  coder: {
+    role: "coder",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    effort: "high",
+    enabled: true,
+    permissions: { read: "allow", bash: "allow" },
+  },
+};
 
 function writeText(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -27,7 +39,7 @@ function stubCtx(
   return {
     options: { workspaceRoot: ws, configDir: tempDir("agents-file-5-cfg-") },
     trustStore: { isTrusted: () => trusted },
-    config: { agents: { ...DEFAULT_ROSTER } },
+    config: { agents: { ...CONFIG_AGENTS } },
     catalogModel: () => undefined,
     resolveAgentModel: (_provider: string, model?: string) => model ?? "test-default",
     logger: { warn: () => {} },
@@ -85,9 +97,9 @@ describe("phase 5 agents_list from files", () => {
         coderPermissions: agents.coder?.permissions,
         helper: ctx.teamRegistry.has("helper"),
       }).toEqual({
-        coderModel: DEFAULT_ROSTER.coder?.model,
+        coderModel: CONFIG_AGENTS.coder?.model,
         coderPrompt: undefined,
-        coderPermissions: DEFAULT_ROSTER.coder?.permissions,
+        coderPermissions: CONFIG_AGENTS.coder?.permissions,
         helper: false,
       });
     } finally {

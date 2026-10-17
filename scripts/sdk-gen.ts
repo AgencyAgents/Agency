@@ -25,7 +25,7 @@ const EVENT_TYPES: Record<string, string> = {
   tool_result:
     "export interface ToolResultEvent { type: string; id: string; content: string; isError: boolean; }",
   turn_complete:
-    "export interface TurnCompleteEvent { type: string; stopReason: string; usage: EventUsage; }",
+    "export interface TurnCompleteEvent { type: string; stopReason: string; usage: EventUsage; timing?: Record<string, number>; }",
   cost_meter:
     "export interface CostMeterEvent { type: string; sessionId: string; turnCostUsd: number; runTotalUsd: number; runCacheHitRate: number; perAgent: Record<string, number>; }",
   cost_report:

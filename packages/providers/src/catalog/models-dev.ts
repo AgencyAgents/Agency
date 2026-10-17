@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import {
   type ModelStatus,
   normalizeCachedCatalog,
 } from "../registry.ts";
+import { ThinkingLevel } from "../types.ts";
 
 /**
  * The models.dev catalog (mirrored at models.opencode.ai) as a single blob:
@@ -65,6 +66,9 @@ const ModelsDevModelSchema = z.object({
   release_date: z.string().optional(),
   attachment: z.boolean().optional(),
   reasoning: z.boolean().optional(),
+  reasoning_options: z
+    .array(z.object({ type: z.string(), values: z.array(z.string().nullable()).optional() }))
+    .optional(),
   temperature: z.boolean().optional(),
   tool_call: z.boolean().optional(),
   cost: ModelsDevCostSchema.optional(),
@@ -100,6 +104,13 @@ const PER_MTOK = 1_000_000;
 /** The generic client package that makes any OpenAI-compatible endpoint work. */
 const DEFAULT_NPM = "@ai-sdk/openai-compatible";
 
+/** Effort values as listed, in ThinkingLevel order. "none" and unknown words drop out. */
+function effortsOf(options: ModelsDevModel["reasoning_options"]): ThinkingLevel[] | undefined {
+  const listed = options?.find((o) => o.type === "effort")?.values;
+  if (listed) return ThinkingLevel.filter((level) => level !== "off" && listed.includes(level));
+  return options?.length && options.every((o) => o.type === "toggle") ? [] : undefined;
+}
+
 /**
  * Maps one validated wire model onto Agency's flat ModelInfo. Shared by the
  * strict converter and the lenient one below, so both agree on pricing math.
@@ -114,6 +125,7 @@ function mapModel(
 ): ModelInfo {
   const id = model.id ?? modelKey;
   const inputModalities = model.modalities?.input;
+  const efforts = model.reasoning ? effortsOf(model.reasoning_options) : undefined;
   return {
     id,
     family: providerId,
@@ -136,6 +148,7 @@ function mapModel(
     inputModalities,
     apiBaseURL: model.provider?.api ?? providerApi,
     apiNpm: model.provider?.npm ?? providerNpm ?? DEFAULT_NPM,
+    ...(efforts ? { efforts } : {}),
   };
 }
 
@@ -205,11 +218,18 @@ function catalogPath(cacheDir: string): string {
   return join(cacheDir, MODELS_DEV_CACHE_FILE);
 }
 
+/** Parsed cache by path; the file is ~5 MB, so re-parse only when its mtime or size changed. */
+const parsedCache = new Map<string, { mtimeMs: number; size: number; value: CachedCatalog | undefined }>();
+
 export function loadCachedModelsDevCatalog(cacheDir: string): CachedCatalog | undefined {
   const path = catalogPath(cacheDir);
-  if (!existsSync(path)) return undefined;
   try {
-    return normalizeCachedCatalog(JSON.parse(readFileSync(path, "utf8"))) ?? undefined;
+    const { mtimeMs, size } = statSync(path);
+    const hit = parsedCache.get(path);
+    if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return hit.value;
+    const value = normalizeCachedCatalog(JSON.parse(readFileSync(path, "utf8"))) ?? undefined;
+    parsedCache.set(path, { mtimeMs, size, value });
+    return value;
   } catch {
     return undefined;
   }
@@ -289,7 +309,11 @@ export async function loadModelsDevCatalog(options: {
   // module's CATALOG_FRESH_TTL_MS at its own top level, so a static back-edge
   // would deadlock evaluation order (TDZ) depending on entry point.
   const { isStale } = await import("../catalog-cache.ts");
-  const fresh = !options.force && cached !== undefined && !isStale(cached, ttlMs);
+  const fresh =
+    !options.force &&
+    cached !== undefined &&
+    (cached.version ?? 1) >= CATALOG_CACHE_VERSION &&
+    !isStale(cached, ttlMs);
   const cachedModels = cached !== undefined && cached.models.length > 0 ? cached.models : undefined;
   if (offline || fresh) {
     return { models: cachedModels ?? BUILTIN_MODELS, source: cachedModels ? "cache" : "builtin" };

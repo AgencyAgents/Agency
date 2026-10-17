@@ -15,6 +15,8 @@ import {
 import { tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import { AgencyError, ErrorCode } from "@agency/schema";
+import { resolveConfiguredShell } from "@agency/tools";
+import { sandboxWindowsShell } from "../session-scopes.ts";
 import type { DaemonContext } from "../types.ts";
 import { setSessionGoal } from "./goal.ts";
 import { sessionSummarizer } from "./session.ts";
@@ -422,7 +424,12 @@ export async function runCommand(
     return { name, kind: "builtin", ...out };
   }
   const template = resolved.kind === "template" ? resolved.template.content : resolved.command.template;
-  const expanded = expandCommand(template, argsText, ctx.options.workspaceRoot, { shell: true });
+  // The blocks of a command run in the shell of the bash tool: a plugin's `.sh` script does not run in cmd.exe.
+  const shellCommand = resolveConfiguredShell(process.platform, sandboxWindowsShell(ctx.config));
+  const expanded = expandCommand(template, argsText, ctx.options.workspaceRoot, {
+    shell: true,
+    shellCommand,
+  });
   if (resolved.kind === "plugin") {
     return { name, kind: "plugin", text: expanded, pluginId: resolved.pluginId };
   }

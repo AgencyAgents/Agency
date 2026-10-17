@@ -8,6 +8,285 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **The sandbox of the OS is the default on Linux and macOS**, as Codex runs its sandbox by default: with no
+  `sandbox.backend`, shell commands run under bubblewrap or Seatbelt, with no network and writes only in the
+  workspace, when the program works there. A command that needs the network asks for it (`network: true`), or set
+  `sandbox.allowNetwork`. Where it does not work, and on Windows, commands run with your rights as before, and the
+  daemon log says why. `sandbox.backend: "software"` keeps the old behavior.
+- **A sandboxed command can ask for the network**, as the escalation of Codex and the unsandboxed retry of Claude
+  Code: under `sandbox.backend: "os"` with no network, `bash` takes `network: true` for one command (an install, a
+  fetch). You are asked each time, in every permission mode; the command then runs in the same sandbox with the
+  network. Before, such a command had no way on. A network error in a sandboxed command names this way.
+- **A sandboxed command that fails names the rule it can come from**, as Cursor found agents need: under
+  `sandbox.backend: "os"`, "Read-only file system" or "Could not resolve host" in the output of a command gets a
+  line that says the command can write only in the workspace, or has no network (or only the hosts of
+  `allowedDomains`), and not to retry it in another way. Before, a model read these as faults to work around.
+- **An out-of-date read leaves the requests sooner**: a `read` of a file that a later read shows again (the
+  whole file, or the same slice) is due at once, not 10 model calls later, in the same cache-friendly 20,000-token
+  batches. The model no longer reads old text of a file it changed, and each request is smaller. An edit alone
+  does not count: the model anchors its next edits on the text it read.
+- **Read-only calls run together, and start while the reply streams**, as in Claude Code: `fetch`,
+  `websearch`, a read-only shell command with no `cd` (`git status`, `ls`, `cat`) and an MCP tool with
+  `readOnlyHint` now run beside the other read-only calls of a reply, where before each ran alone. A read-only
+  call before the first write of a reply starts as soon as its arguments are complete, while the model still
+  writes the rest; a call whose result the turn does not use is cancelled. A call that asks waits until the
+  reply is whole, so you and the auto reviewer see all of it.
+- **Claude caches a short system prompt and the first messages**: the minimum size of a cache mark counts
+  the tools, the system prompt and the messages before it, as the API does. Before, each part had to pass
+  1,024 tokens alone, so with the default prompt (about 500 tokens) the system prompt and the messages of
+  a new session were sent again uncached at each step until the messages alone passed that size.
+- **`prompt_cache_key` for OpenAI**: each request of a session names the session, so OpenAI sends it to
+  the machine that holds its cached prefix, as Codex does. Other servers of the format do not get the field.
+- **More rule files**: `.windsurf/rules/` (by `trigger`), `.kilocode/rules/`, Zed's `.rules`,
+  `.trae/rules/project_rules.md`, and the `AGENTS.override.md` of Codex in place of `AGENTS.md`.
+- **`opencode.json` of a workspace**: its `instructions` files, its `command` map and its
+  `agent` map (subagents, with the `tools` it turns off) load in a trusted workspace.
+- **`.claude/CLAUDE.md` and `CLAUDE.local.md`**: the other project instruction files of
+  Claude Code load beside `CLAUDE.md`.
+- **Plugins of the Claude Code settings**: `agency plugin sync` installs the `enabledPlugins`
+  of `.claude/settings.json` from the marketplaces of `extraKnownMarketplaces` or those
+  Claude Code added; `agency plugin install <plugin>@<marketplace>` installs one; a marketplace
+  entry can be a `git-subdir` source.
+- **`env` of `.claude/settings.json`**: in a trusted workspace its variables reach each
+  shell command, as Claude Code sets them for each session.
+- **`agency plugin update <plugin>`**: installs a plugin again from the source of its
+  install; its data folder stays.
+- **Instructions of subfolders**: the `AGENTS.md` or `CLAUDE.md` of a subfolder reaches the
+  model with the result of the first file tool call in that folder, once in a session.
+- **Rules of Claude Code**: `.claude/rules/**/*.md` join the instructions of a trusted
+  workspace, a rule with `paths` for the files that match them.
+- **`@path` imports of `CLAUDE.md` and `GEMINI.md`**: the imported file takes the place of
+  the import, five levels deep, from inside the workspace only. A `CLAUDE.md` that only
+  imports `AGENTS.md` counts once.
+- **User instructions of other agents**: with `"userAgentInstructions": true`, the
+  `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, OpenCode and Pi user
+  instruction files join the instructions of every workspace.
+- **Flags of other agents**: a script for `claude -p`, `codex exec` or `pi -p` runs with `agency`:
+  `-p` with the prompt after the flags, `--output-format`, `--max-turns`, `-c`, `-r`, the
+  permission modes of Claude Code, `--settings` (permissions, model, fallback, effort), `-n`,
+  `--resume <name>`, `--fork-session`, `--system-prompt-file`, `--max-budget-usd`, `--effort`, `-C`,
+  `--output-schema`, `--no-tools` and others; `agency exec [resume|fork] <prompt>` as `codex exec`.
+- **The JSON result of `-p` has the fields of Claude Code**: `result`, `is_error`, `subtype`,
+  `num_turns`, `session_id` and `total_cost_usd`, so `jq -r .result` works.
+- **`--thinking <level>`**: the reasoning effort of a `-p` run, as in Pi.
+- **`--tools <names>`**: `-p` offers only these built-in tools, as in Claude Code. A
+  `--disallowed-tools` of `*` takes every tool away, and of `mcp__*` every MCP tool.
+- **`-o, --output-last-message <file>`**: `-p` writes the answer to a file too, as `codex exec`
+  does.
+- **`--fallback-model <provider/model>`**: `-p` goes on with this model when its model stays
+  overloaded, as in Claude Code. A fallback can now be another model of the same provider.
+- **`-p --worktree <name>`**: the turn runs in the git worktree `.agency/worktrees/<name>`
+  on the branch `agency/<name>`, made when missing, as `claude --worktree` does.
+- **`--mcp-config` and `--strict-mcp-config`**: `-p` takes the MCP servers of a JSON file
+  or of JSON text for one run, as Claude Code does in CI.
+- **MCP files of more clients**: the project files of Copilot CLI (`.github/mcp.json`),
+  Amp, Crush, Qwen Code and Kilo Code give MCP servers, and `agency mcp import` reads the
+  user files of Copilot CLI, Amp, Crush, Goose, Qwen Code, Cline, Roo Code and Kilo Code.
+- **GitHub Copilot files**: the `.github/instructions/*.instructions.md` files (by
+  `applyTo`), the prompt files of `.github/prompts/` as commands, the skills of
+  `.github/skills/`, and the custom agents of `.github/agents/` and `.github/chatmodes/`
+  load in a trusted workspace.
+- **`agency mcp add`, `add-json`, `list`, `get` and `remove`**: add an MCP server with
+  the flags of `claude mcp add` (`--env`, `--header`, `--transport`, `--scope`), to a file
+  of the user config or to the `.mcp.json` of the workspace, and show where each server
+  comes from.
+- **`agency session export <id> [-o <file>]`**: the conversation of a session as Markdown,
+  as `/export` of Claude Code writes it.
+- **Verify before done, built in (`verifyGate`)**: a turn that changed code and ran no passing test, type
+  check, lint or build after is sent back once, as the verification skills and Stop hooks of plugins
+  (superpowers, Gauntlet, hookify rules) do. A/B on DeepSeek V4 Flash, a change that breaks a test: with
+  the gate off, 0 of 8 runs ran the tests and all 8 ended with a failing test; with it on, 8 of 8 ran them
+  and ended green, at $0.0026 a run instead of $0.0010. `"verifyGate": false` turns it off.
+- **A syntax check on each edit**: `edit` and `write` parse a TypeScript, JavaScript, JSON or Python file
+  that they change, and when the change broke a file that parsed before, the result names the error (as
+  the linter on edit of SWE-agent, measured there at +3 points of SWE-bench Lite).
+- **Hook scripts of Claude Code read tool calls as there**: a hook gets `tool_name` `Bash`, `Edit`, `Write`
+  (not `bash`, `edit`) and `tool_input.file_path`, `old_string`, `new_string`; its `updatedInput` comes back
+  in the fields here. Before, a file rule of hookify (official marketplace) never matched: an edit of
+  `secrets.txt` passed a rule on `file_path`; now it is refused (live, with the real plugin).
+- **`-p` keeps a session, as `claude -p`, `codex exec` and `pi -p` do**: the JSON result names it in
+  `session_id`, and `-r <id>` goes on from it; `-n` names it. Before, the `session_id` of a run was null, and
+  `-r` with it began an empty session (seen live). `--no-session-persistence`, `--ephemeral` and
+  `--no-session` keep none. A hook of such a run gets a `transcript_path` that exists.
+- **Plugins that loop or read the transcript, such as ralph-loop, work**: a command that you type runs its
+  fenced ```` ```! ```` blocks as Claude Code does (before, only `` !`cmd` `` ran, and only through
+  `command_run`, never for a command typed as a prompt), in the shell of the `bash` tool rather than cmd.exe;
+  `plugin install` expands `${CLAUDE_PLUGIN_ROOT}` in commands; a hook gets `transcript_path`, and
+  `session_id: default` for a turn with no session (before, a Stop or tool hook of such a turn had none);
+  shell commands get `CLAUDE_CODE_SESSION_ID`. Live: `/ralph-loop` of the official marketplace wrote its
+  state file; before, the model got the script as text and searched the repository for minutes.
+- **`agency import`: what you set up in other agents, with one question per set**. It finds
+  the MCP servers of the user files of 19 clients, the user hooks of Claude Code, Codex, Cursor
+  and Gemini CLI (with the `env` of the Claude Code settings, which those hooks get), the plugins
+  that Claude Code installed, and the user instructions and code plugins of other agents, and
+  shows each set (each hook with its command) before it asks. `--yes` imports all, `--dry-run`
+  only shows; a set that is imported already is not asked again. `agency onboard` asks the same
+  questions, and bare `agency` names the command when it finds something. Before, the user hooks
+  of `~/.claude/settings.json` did not load at all. Settings with no counterpart here (`model`,
+  `permissions.defaultMode`) are named.
+- **The plugins of a Claude Code user come over in one command**: `agency plugin sync` installs
+  each plugin that `enabledPlugins` of `~/.claude/settings.json` turns on, from the copy that
+  Claude Code installed, with no download, and `--scope user` installs any plugin for the user.
+  Plugins of the user load in every workspace (skills, commands, agents, hooks, MCP and LSP
+  servers, modules, output styles). Before, a plugin installed per workspace only, and the
+  plugins of Claude Code did not come over: on a real setup, `plugin list` and `mcp list` showed
+  nothing for 7 enabled plugins; now all 7 install. A plugin with no `plugin.json` (`strict:
+  false`, as the LSP plugins of `claude-plugins-official`) takes its marketplace entry as its
+  manifest.
+- **`context: fork` of a skill**: the skill runs in a subagent of its `agent` type and `model`, and
+  the model gets only the answer, as in Claude Code.
+- **`allowed-tools` of a skill**: its rules run with no prompt for the rest of the turn that loads
+  the skill, by the model or by `/<name>`, as in Claude Code; a deny rule or an ask pattern still
+  holds. `${CLAUDE_SKILL_DIR}` works in a rule.
+- **Old tool results leave the requests**: a result over 2,000 characters of a tool that can run
+  again (`read`, `bash`, `grep`, `glob`, `fetch`, `websearch`, `lsp_*`) that is over 10 model
+  calls old becomes a one-line note, in batches of 20,000 tokens decided by a replay of the
+  history, so the prompt cache holds between two batches. Replayed on a long recorded session
+  (6,354 requests): 25% fewer input tokens and 19% lower cost with cache prices. The session keeps
+  the whole results; `keepToolResults: true` turns it off.
+- **MCP servers over SSE**, the older HTTP transport that many servers still use: `type: "sse"`,
+  a url that ends in `/sse`, the `url` of Gemini CLI and `agency mcp add --transport sse` connect,
+  where before they were refused or failed. The endpoint that the stream names must have its origin.
+- **Shorter shell output with nothing lost**: colour codes go, a line that a progress bar redrew
+  keeps its last text, and a run of the same line is one line and its count.
+- **`agency usage [--by day|month|model] [--since YYYY-MM-DD] [--json]`**: the calls, tokens
+  and cost of the model calls of all workspaces, from the traces of the sessions, as ccusage
+  reports them for Claude Code.
+- **Skills as Claude Code reads them**: a skill is also the command `/<name> [arguments]`;
+  `disable-model-invocation`, `user-invocable`, `when_to_use`, `${CLAUDE_SKILL_DIR}`,
+  `$ARGUMENTS` and `$ARGUMENTS[N]` work; frontmatter takes quotes, `>` and `|` blocks and lists.
+  A skill with no `description` is listed by the first line of its body, where before its whole
+  body went into every system prompt.
+- **Hooks change a tool call and its result**, as in Claude Code: `PreToolUse` runs before the
+  permission check, and its `updatedInput` replaces the input that the rules judge and the tool
+  gets; `permissionDecision` `allow` answers a default prompt and `ask` asks though a rule
+  allows; its `additionalContext` reaches the model. `updatedToolOutput` of `PostToolUse`
+  replaces the result. OpenCode plugins (`output.args`, `output.output`) and Pi extensions
+  (`event.input`, `content` of `tool_result`) do the same. A command-rewriting hook such as that
+  of rtk now works.
+- **Read-only shell commands run without a prompt**, as in Claude Code: `ls`, `cat`, `head`,
+  `grep`, `find`, `wc`, `diff`, `cd`, `git status`, `git diff`, `git log` and similar, on
+  files of the workspace. Before, `-p` in `ask` mode refused even `ls`. An absolute path, `..`,
+  `~`, `$`, an unquoted glob, a `.env` file, a redirect to a file, recursive `grep`, `git` after
+  `cd`, or an `ask` or `deny` pattern for the command still asks.
+- **PDFs**: `read` attaches a PDF, as Claude Code reads one: a document for Anthropic, a file
+  for the Responses API, and a file for OpenRouter, parsed to text with its free engine for
+  any model. `-p --image <file>.pdf` sends one with the prompt.
+- **Jupyter notebooks**: `read` shows a `.ipynb` as its cells and the text of their
+  outputs, and a new `notebook_edit` tool replaces, inserts or deletes a cell, as the
+  NotebookEdit tool of Claude Code does.
+- **`CLAUDE_ENV_FILE`**: a `SessionStart` hook gets it, as in Claude Code, and the
+  `export` lines that it writes there become variables of the later shell commands of
+  the session.
+- **Permission rules of Claude Code**: the `permissions` of `~/.claude/settings.json`
+  and, in a trusted workspace, of `.claude/settings.json` and `.claude/settings.local.json`
+  apply (`Bash(git push *)`, `Edit(src/**)`, MCP tools), with deny winning, under
+  those of the config. `-p` takes `--allowed-tools` and `--disallowed-tools` (also
+  `--allowedTools`, `--disallowedTools`) for one run.
+- **Output styles**: `"outputStyle"` names a Markdown style of `.agency/output-styles/`,
+  `.claude/output-styles/`, the config folder or `~/.claude/output-styles/`, whose text
+  joins the instructions. A plugin installs its `output-styles/`.
+- **Memory**: a `memory` tool keeps notes for the later sessions of a workspace, in a file
+  of the user's data folder, and each turn has them in its instructions, as the auto
+  memory of Claude Code. `"memory": false` turns it off. The notes come as background,
+  for a request that is about them: a note "remember 4172" made DeepSeek V4 Flash answer
+  4172 to "What is 17 * 23?" in 8 of 50 runs before that line, and in 4 of 50 after it.
+- **npm plugins of OpenCode**: a trusted workspace loads the plugins of the `plugin`
+  key of `opencode.json` from where npm or OpenCode installed them (the workspace, or
+  the cache of OpenCode). Agency installs no package. With `userAgentPlugins: true`,
+  the user plugins of OpenCode and the user extensions of Pi load too.
+- **`agent` hooks**: a hook can give its question to an agent with the read tools of the
+  session (`read`, `grep`, `glob`, at most 50 steps), which answers `{"ok", "reason"}`
+  as a prompt hook does.
+- **`mcp_tool` hooks**: a hook can call a tool of an MCP server of the session, as in
+  Claude Code. `${path}` in its `input` takes values of the event, and the text of the
+  tool answers as the stdout of a command.
+- **More of a Claude Code plugin**: `agency plugin install` puts the `bin/` folder of a
+  plugin on the PATH of shell commands, gives `${CLAUDE_PLUGIN_DATA}` a data folder,
+  gives a hook `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA` in its environment, maps
+  `${user_config.KEY}` to the variable `${CLAUDE_PLUGIN_OPTION_KEY}`, installs a root
+  `SKILL.md` and commands that the manifest maps by name, and names the parts that do
+  not install (themes, monitors, workflows, `settings.json`).
+- **LSP servers of plugins**: the `.lsp.json` and `lspServers` of a Claude Code plugin
+  install to `.agency/lsp/<plugin>.json`, and a trusted workspace starts them as the
+  `lspServers` of the config.
+- **`agency mcp serve`**: Agency is an MCP server on stdio with one tool, `agency`, that
+  runs a turn of a session, so that Claude Code, Codex or Cursor can give it a task. The
+  permission mode comes from the flags of the server, never from a call.
+- **Rules and MCP files of Roo Code, Kiro, Junie, Augment and Continue**: their rule
+  files join the instructions of a trusted workspace, with the `inclusion` of Kiro and
+  the `type` of Augment mapped, and `.roo/mcp.json` and `.kiro/settings/mcp.json` give
+  MCP servers.
+- **User files of other agents**: the user skills, commands and agent files of Claude
+  Code, Codex, Cursor, Pi, OpenCode, Gemini CLI and the shared `~/.agents` load in every
+  workspace, below those of Agency. `AGENCY_AGENTS_HOME=off` turns this off.
+- **Code plugins of OpenCode and Pi**: the plugins of `.opencode/plugins/` and the
+  extensions of `.pi/extensions/` run in a trusted workspace through a shim of their
+  API: tools, the tool-call hooks that block, `shell.env`, events, and Pi's `exec`.
+  Agency gives the imports `@opencode-ai/plugin`, `typebox` and the Pi packages. A Pi
+  package that `agency plugin install` installs now runs its extensions too.
+- **Hooks of other agents**: a trusted workspace runs the hooks of
+  `.claude/settings.json`, `.claude/settings.local.json`, `.codex/hooks.json`,
+  `.cursor/hooks.json` and `.gemini/settings.json`. Cursor and Gemini events map to the
+  events here, and a Cursor hook gets its own input and answers as in Cursor. A
+  matcher can name a tool by its name in another agent (`Shell`, `run_shell_command`,
+  `WebFetch`). The hooks of a Cursor plugin or a Gemini extension install converted.
+- **Plugins of Cursor, Codex, Gemini CLI and Pi**: `agency plugin install` now takes a
+  Cursor plugin (rules, skills, agents, commands, `mcp.json`), a Gemini CLI extension
+  (context file, TOML commands, MCP servers), the portable `plugin.json` of Codex, and
+  a Pi package (skills and prompts; its TypeScript extensions are named as not
+  installed). Plugin agents of any format are written as agent files of Agency, so a
+  Claude Code agent with keys such as maxTurns or memory no longer fails. The marketplace files
+  of Cursor and Codex work as that of Claude Code.
+- **Projects of other agents work as they are**: a trusted workspace now gives the
+  instructions of `GEMINI.md`, `.cursorrules`, `.cursor/rules/*.mdc` (with
+  `alwaysApply`, `globs` and `description`), `.windsurfrules`, `.clinerules` and
+  `.github/copilot-instructions.md`; the skills of `.claude/`, `.agents/`, `.cursor/`,
+  `.codex/`, `.pi/`, `.opencode/` and `.gemini/`; the commands of `.claude/`,
+  `.cursor/`, `.opencode/`, `.pi/prompts` and the TOML commands of Gemini CLI; and
+  the agent files of `.claude/`, `.cursor/`, `.codex/` and `.opencode/`.
+- **MCP servers of other clients**: a trusted workspace now also gives the MCP servers
+  of `.cursor/mcp.json`, `.vscode/mcp.json`, `.gemini/settings.json`, `opencode.json`,
+  `.codex/config.toml`, `.pi/mcp.json` and `.zed/settings.json`, with their keys and
+  variables mapped. `agency mcp import <client>` copies the user-level servers of
+  Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI, OpenCode, Pi, VS Code,
+  Windsurf or Zed into the user config of Agency.
+- **Plugins from git and marketplaces**: `agency plugin install` takes a git URL or
+  `owner/repo` of GitHub (`#ref` for a branch or tag) as well as a folder. A repository
+  with `.claude-plugin/marketplace.json` is a Claude Code marketplace:
+  `agency plugin install owner/repo <plugin>` installs one of its plugins, also one
+  that the marketplace names by its own git source.
+- **Auto permission mode**: `--permission-mode auto` (and `permissionMode: "auto"`
+  of `run_turn`) lets a reviewer model answer the asks, as the auto mode of Claude
+  Code does. Edits run; another ask of a default rule goes to `auto_review_model`
+  (default `small_model`). It sees your messages and the agent's tool calls, never a
+  tool result. A block gives the model the reason; after 3 blocks in a row or 20 in a
+  turn, or with no verdict, you are asked (with `-p`, the call is refused). A new
+  `PermissionDenied` hook runs on a block, and `retry: true` lets the model try again.
+- **Use your ChatGPT plan**: `agency auth login chatgpt` signs in with ChatGPT as
+  OpenAI documents it for open-source apps, and `chatgpt/<model>` then runs on the
+  plan through a new Responses API adapter. `agency auth logout <provider>` removes
+  a key or revokes the ChatGPT sign-in. Tested against a local server only. A Claude
+  plan cannot be used: Anthropic's terms do not permit it in another app, and
+  `auth login anthropic --oauth` now says so.
+- **Prompt hooks**: a hook of `"type": "prompt"` asks a model (`small_model` by
+  default) whether the event meets a condition, and `{"ok": false, "reason"}`
+  blocks, as in Claude Code. Live: a `Stop` hook made DeepSeek V4 Flash add a word it
+  had left out, then let the turn end. `agency plugin install` now installs the
+  prompt hooks of a plugin; it skipped them before. `Stop` and `SubagentStop` hooks
+  get `last_assistant_message`, the text of the last reply.
+- **HTTP hooks**: a hook of `"type": "http"` sends the event as a JSON POST to its
+  `url`, and its JSON answer blocks or adds context as the stdout of a command does.
+  Headers can hold the environment variables of `allowedEnvVars`, as in Claude
+  Code. Before, a config with an http hook was not valid, and the daemon did not
+  start. A plugin with http hooks now installs them.
+- **Shell commands can reach a list of hosts**: `sandbox.allowedDomains` with the `os`
+  backend gives a command only the hosts in the list (`github.com`, `*.npmjs.org`),
+  through a proxy of the daemon, as in Claude Code. Before, a command had all of the
+  network or none of it. Linux needs `socat`; Windows refuses the list.
+- **The OS sandbox ran on Linux**: real commands under bubblewrap (WSL 2, Ubuntu):
+  a write outside the workspace and a direct connection are denied. Before, only
+  the arguments had tests. The same test runs on macOS in CI.
 - **`PostToolBatch` hook**: runs once after all tool calls of one reply, with
   each call and its result, before the next request. A block ends the turn
   with the reason; `additionalContext` reaches the model once. For example, one
@@ -179,6 +458,55 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **MCP servers over stdio did not start with `sandbox.backend: "os"`**: the backend was taken for a container, so
+  each local server failed with "needs container stdio". They start on this machine again, outside the sandbox,
+  as the docs say.
+- **A sandboxed command on Linux could run a program outside the sandbox** (security): bubblewrap left the
+  sockets of the disk open, so `systemd-run` over the system bus or the user bus, or `docker run`, started a
+  program with no sandbox (seen in WSL 2: a command wrote `/root` through the system bus). The system bus, the
+  runtime folder of the user and the sockets of Docker, containerd, Podman and snapd are now gone in the
+  sandbox, as the seccomp filter of Claude Code's sandbox keeps a command off them.
+- **A sandboxed command could change the files of other agents that Agency runs outside the sandbox**
+  (security): with `sandbox.backend: "os"`, a command could write `.mcp.json`, `.claude/settings.json` (hooks),
+  `opencode.json`, `.cursor/hooks.json` and the other files that Agency loads hooks, MCP servers or plugins
+  from, and these ran with your rights at the next start. They are now read-only to a command, as `.agency`
+  is, and so are `.gitmodules`, `.vscode` and `.idea`, as in the sandbox of Claude Code. A new one that a command
+  makes on Linux or Windows is removed when the command ends (tested with bubblewrap in WSL 2 and with the
+  token of Windows). `edit` and `write` ask before they change one, in every mode.
+- **The sandbox proxy refuses a host that resolves to a private address** (security), as the proxy of Claude
+  Code does: an allowed name whose DNS gives 127.0.0.1, a private network or 169.254.169.254 (cloud metadata)
+  reached this machine or the metadata of the cloud. The proxy now connects to the address it checked, and a
+  host with a byte that no host name has (`evil .github.com`) never matches a pattern. `localhost` and an
+  address in `allowedDomains` itself still pass.
+- **`fetch` does not follow a redirect to another host** (security): it checked the host of the first URL only,
+  so an allowed host could redirect to any other, `localhost` and the cloud metadata included. A redirect on
+  the same host is followed; one to another host comes back as a note with its URL, and a fetch of that URL
+  goes through the permission and network checks of its own, as WebFetch of Claude Code does.
+- **`*.` entries of `sandbox.allowedDomains` for `fetch`, `websearch` and the browser**: these tools matched the
+  list by exact name, so `*.npmjs.org` refused `registry.npmjs.org` there while shell commands reached it.
+- **The `allowed-tools` of a skill in auto mode**: with the auto reviewer on, a call that the grant of a
+  skill or of `/name` allows went to the reviewer, which could block it.
+- **A deny rule behind `timeout`, `stdbuf`, `builtin` or `noglob`**: a deny of `rm *` let
+  `timeout 5 rm -rf build` run. These wrappers are now taken away before the rules, as Claude
+  Code does.
+- **A Read or Edit deny rule and the shell**: with a deny of `Read(secret.txt)`, the model
+  printed the file with `cat secret.txt` (seen live). The rule now holds for the files that a
+  shell command names (`cat`, `head`, `grep`, `sed`, `< file`; `tee`, `sed -i`, `> file`), as
+  in Claude Code.
+- **An `Edit` rule of Claude Code** held for `edit` only: a deny of `Edit(secrets/**)` let `write`
+  and `notebook_edit` change those files. It now holds for each tool that edits files, and a bare
+  `Read` rule for `grep` and `glob` too, as in Claude Code.
+- **A blank line on the stdout of a stdio MCP server**: the reader of its messages
+  looped on it for ever, and the daemon stopped answering every run of the workspace.
+  Seen with a server that printed a help text and exited.
+- **A deny rule on one command**: the refusal said that the whole tool was not
+  permitted and not to call it again, so a model gave up on the other commands of the
+  task. A refusal of a command or a path now names that call and says that another call
+  of the tool can be permitted.
+- **`shell.env` hooks**: the variables that a `shell.env` hook of a plugin set did not
+  reach the shell command, and an async hook ran after the command started. The loop
+  now waits for the hooks and gives their variables to the command, also to a command
+  in the background.
 - **MCP lists in pages**: the client read only the first page of the
   tools, resources and prompts of a server, so a server that gives
   its lists in pages lost the rest with no error. It now reads all

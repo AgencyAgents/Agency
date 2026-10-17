@@ -34,6 +34,18 @@ export function createMcpTransport(
     // An authorization header of the config wins over a sign-in.
     const own = Object.keys(config.headers ?? {}).some((name) => name.toLowerCase() === "authorization");
     const bearer = options.tokens && !own ? mcpBearer(config.url, options.tokens) : undefined;
+    // As Claude Code: `type: "sse"`; and a url whose path ends in /sse, the name that SSE servers give it.
+    const sse =
+      config.type === "sse" || (config.type === undefined && /\/sse\/?$/.test(new URL(config.url).pathname));
+    if (sse) {
+      return createSseTransport(
+        serverName,
+        config.url,
+        config.headers,
+        config.timeoutMs ?? config.requestTimeoutMs,
+        bearer,
+      );
+    }
     return createHttpTransport(
       serverName,
       config.url,
@@ -66,7 +78,9 @@ export function transportForWithContainerSandbox(
       return createContainerStdioTransport(stdio, config, options);
     };
   }
-  if (asContainerExecBackend(sandbox) !== undefined) {
+  // A backend that wraps commands on this host (the sandbox of the OS) runs no container: MCP servers start here,
+  // outside it, as hooks do.
+  if (asContainerExecBackend(sandbox) !== undefined && !("wrap" in sandbox)) {
     return (serverName, config) => {
       if (config.url) return createMcpTransport(serverName, config, options);
       throw new AgencyError(
@@ -118,6 +132,151 @@ function parseSseBlock(block: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The event name and data of one SSE block. */
+function sseEvent(block: string): { event: string; data: string } {
+  let event = "message";
+  const data: string[] = [];
+  for (const raw of block.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  return { event, data: data.join("\n") };
+}
+
+/**
+ * The older HTTP transport of MCP (2024-11-05), which servers still use: a GET stream whose `endpoint` event names
+ * the url to POST each message to, and the replies come on the stream. The endpoint must have the origin of the
+ * stream, so that a server cannot send the headers of the config elsewhere.
+ */
+function createSseTransport(
+  serverName: string,
+  url: string,
+  headers?: Record<string, string>,
+  timeoutMs?: number,
+  bearer?: McpBearer,
+): McpTransport {
+  let handler: ((msg: Record<string, unknown>) => void) | undefined;
+  let closeHandler: (() => void) | undefined;
+  const abortController = new AbortController();
+  let setEndpoint: (value: string) => void = () => {};
+  let failEndpoint: (error: Error) => void = () => {};
+  const endpoint = new Promise<string>((resolve, reject) => {
+    setEndpoint = resolve;
+    failEndpoint = reject;
+  });
+  // A send before the stream fails must not leave an unhandled rejection.
+  endpoint.catch(() => {});
+  const auth = async (): Promise<Record<string, string>> => {
+    const token = await bearer?.token();
+    return token ? { authorization: `Bearer ${token}` } : {};
+  };
+  let started = false;
+
+  async function pump(): Promise<void> {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { accept: "text/event-stream", ...(await auth()), ...(headers ?? {}) },
+        signal: abortController.signal,
+      });
+      if (res.status === 401) {
+        throw new AgencyError(
+          ErrorCode.AUTH,
+          `MCP server "${serverName}" needs a sign-in: run \`agency mcp login ${serverName}\``,
+          { source: "mcp-transport", context: { serverName } },
+        );
+      }
+      if (!res.ok || !res.body) throw new Error(`MCP SSE ${res.status} ${res.statusText} for ${url}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (!abortController.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+        for (let sep = buf.indexOf("\n\n"); sep !== -1; sep = buf.indexOf("\n\n")) {
+          const { event, data } = sseEvent(buf.slice(0, sep));
+          buf = buf.slice(sep + 2);
+          if (event === "endpoint") {
+            const target = new URL(data.trim(), url);
+            if (target.origin !== new URL(url).origin) {
+              throw new Error(
+                `MCP SSE server "${serverName}" named an endpoint of another origin: ${target.origin}`,
+              );
+            }
+            setEndpoint(target.href);
+          } else if (event === "message" && data.trim() !== "") {
+            try {
+              handler?.(JSON.parse(data) as Record<string, unknown>);
+            } catch {
+              /* a frame that is not JSON-RPC */
+            }
+          }
+        }
+      }
+      failEndpoint(new Error(`MCP SSE stream of "${serverName}" ended`));
+    } catch (error) {
+      failEndpoint(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      if (!abortController.signal.aborted) closeHandler?.();
+    }
+  }
+
+  return {
+    async start() {
+      if (started) return;
+      started = true;
+      void pump();
+    },
+    async send(message) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const target = await Promise.race([
+        endpoint,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(`MCP SSE server "${serverName}" gave no endpoint in ${timeoutMs ?? 30_000}ms`),
+              ),
+            timeoutMs ?? 30_000,
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+      const res = await fetch(target, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await auth()), ...(headers ?? {}) },
+        body: JSON.stringify(message),
+        signal: abortController.signal,
+      });
+      const text = await res.text().catch(() => "");
+      if (!res.ok)
+        throw new Error(
+          `MCP SSE POST ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 500)}` : ""}`,
+        );
+      // The reply comes on the stream; a server that answers the POST itself is read too.
+      if ((res.headers.get("content-type") ?? "").includes("application/json") && text.trim() !== "") {
+        try {
+          handler?.(JSON.parse(text) as Record<string, unknown>);
+        } catch {}
+      }
+    },
+    onMessage(h) {
+      handler = h;
+    },
+    onClose(h) {
+      closeHandler = h;
+    },
+    stderrTail() {
+      return "";
+    },
+    async close() {
+      abortController.abort();
+      closeHandler?.();
+    },
+  };
 }
 
 function createHttpTransport(
@@ -318,6 +477,7 @@ function createStdioTransport(
   return createStdioTransportFromChild(
     () =>
       Bun.spawn([command, ...args], {
+        windowsHide: true,
         env: { ...process.env, ...env } as Record<string, string>,
         stdin: "pipe",
         stdout: "pipe",
@@ -371,8 +531,8 @@ function createStdioTransportFromChild(
               break;
             }
             buf += new TextDecoder().decode(value);
-            let idx = buf.indexOf("\n");
-            while (idx !== -1) {
+            // A `for` loop: `continue` on a blank line must still move to the next line, or the daemon spins.
+            for (let idx = buf.indexOf("\n"); idx !== -1; idx = buf.indexOf("\n")) {
               const line = buf.slice(0, idx).trim();
               buf = buf.slice(idx + 1);
               if (line.length === 0) continue;
@@ -380,7 +540,6 @@ function createStdioTransportFromChild(
                 const msg = JSON.parse(line) as Record<string, unknown>;
                 handler?.(msg);
               } catch {}
-              idx = buf.indexOf("\n");
             }
           }
         };

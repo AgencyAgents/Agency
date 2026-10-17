@@ -52,6 +52,44 @@ describe("bash: timeout + spill + progress (A6)", () => {
     expect(result.isError).toBe(true);
   }, 30_000);
 
+  test("a command with no timeout that runs too long moves to the background and keeps running", async () => {
+    const { deps, manager, root } = setup();
+    const tool = createBashTool(deps, resolveShell(process.platform), { cwd: root }, manager, 1_000);
+    const script = "console.log('first'); setTimeout(() => console.log('second'), 2500)";
+    const result = await tool.handler({ command: `bun -e "${script}"` }, { signal });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("first");
+    expect(result.content).not.toContain("second");
+    const id = /as process (\S+)\./.exec(result.content)?.[1] ?? "";
+    expect(manager.list().find((p) => p.id === id)?.running).toBe(true);
+
+    const rest = await createProcessOutputTool(manager).handler({ id, wait: 20 }, { signal });
+    expect(rest.content).toContain("second");
+    expect(rest.content).toContain("[the process has exited]");
+  }, 30_000);
+
+  test("the output of a long log is its end, with the exit status after it", async () => {
+    const { manager, root } = setup();
+    const shell = resolveShell(process.platform);
+    const script = "for (let i = 0; i < 5000; i++) console.log('line ' + i + ' of a long build log')";
+    const proc = manager.spawn([shell.command, ...shell.buildArgs(`bun -e "${script}"`)], { cwd: root });
+    const out = await createProcessOutputTool(manager).handler({ id: proc.id, wait: 20 }, { signal });
+    expect(out.content).toMatch(/^\[\d+ earlier characters left out\]/);
+    expect(out.content).toContain("line 4999 of a long build log");
+    expect(out.content).not.toContain("line 0 of");
+    expect(out.content.endsWith("[the process has exited]")).toBe(true);
+  }, 30_000);
+
+  test("a command with a timeout is killed at it, not moved to the background", async () => {
+    const { deps, manager, root } = setup();
+    const tool = createBashTool(deps, resolveShell(process.platform), { cwd: root }, manager, 500);
+    const command = process.platform === "win32" ? "Start-Sleep -Seconds 30" : "sleep 30";
+    const result = await tool.handler({ command, timeout: 1_500 }, { signal });
+    expect(result.content).toContain("[timeout");
+    expect(manager.list()).toHaveLength(0);
+  }, 30_000);
+
   test("a fast command is unaffected by a generous timeout", async () => {
     const { tool } = setup();
     const result = await tool.handler({ command: "echo ok", timeout: 30_000 }, { signal });

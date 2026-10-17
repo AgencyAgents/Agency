@@ -1,3 +1,4 @@
+import { CHATGPT_PROVIDER, chatgptAccessToken } from "./chatgpt.ts";
 import { oauthKey, refreshOAuthToken } from "./oauth.ts";
 import type { KeychainBackend } from "./types.ts";
 
@@ -29,7 +30,8 @@ export function keyEnvName(provider: string): string {
   return `AGENCY_${envId(provider)}_API_KEY`;
 }
 
-function envNames(provider: string, declared: readonly string[] = []): string[] {
+/** The variables that can hold the key of a provider, in the order that `resolveApiKey` reads them. */
+export function envNames(provider: string, declared: readonly string[] = []): string[] {
   return [...declared, keyEnvName(provider), ...(OWN_ENV[provider] ?? [`${envId(provider)}_API_KEY`])];
 }
 
@@ -47,6 +49,8 @@ export async function resolveApiKey(options: ResolveApiKeyOptions): Promise<stri
   if (fromEnv) return fromEnv;
 
   if (options.keychain) {
+    // The sign-in of a ChatGPT plan has its own client and refresh.
+    if (options.provider === CHATGPT_PROVIDER) return chatgptAccessToken(options.keychain, options.httpFetch);
     const overrides =
       options.oauthClientId !== undefined || options.oauthBaseUrl !== undefined
         ? { clientId: options.oauthClientId, baseUrl: options.oauthBaseUrl }

@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, dataDir, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
+import { cacheDir, dataDir, getSessionTitle, OUTPUT_CUT_NOTE, SessionStore } from "@agency/core";
 import { createFileTrustStore } from "@agency/guard";
 import { createFileFallbackBackend } from "@agency/providers";
 import type { DaemonClient } from "@agency/rpc";
@@ -272,6 +281,52 @@ describe("session commands", () => {
     expect(noArg.err.join("\n")).toContain("usage");
   });
 
+  test("session export writes the conversation as Markdown, to stdout or a file", async () => {
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    let parentId: string | null = null;
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "read a.md" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: "c1", name: "read", input: { path: "a.md" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", toolCallId: "c1", content: "has ``` inside", isError: false }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "It has a fence." }] },
+    ];
+    for (const message of messages) {
+      const entry = await store.append("s-x", { type: "message", parentId, message });
+      parentId = entry.id;
+    }
+    const { out, deps } = capture();
+    expect(await runEntrypoint(["session", "export", "s-x"], { sessionsDir, ...deps })).toBe(0);
+    const markdown = out.join("\n");
+    expect(markdown).toStartWith("# s-x\n\n## User\n\nread a.md");
+    expect(markdown).toContain('Tool call `read`:\n\n```json\n{\n  "path": "a.md"\n}\n```');
+    expect(markdown).toContain("Result:\n\n````\nhas ``` inside\n````");
+    expect(markdown).toContain("## Tool results\n\nResult:");
+    expect(markdown).toEndWith("## Assistant\n\nIt has a fence.");
+
+    const dir = tempDir("agency-ep-export-");
+    const file = capture();
+    expect(
+      await runEntrypoint(["session", "export", "s-x", "-o", "chat.md"], {
+        sessionsDir,
+        cwd: dir,
+        ...file.deps,
+      }),
+    ).toBe(0);
+    expect(readFileSync(join(dir, "chat.md"), "utf8")).toBe(`${markdown}\n`);
+    expect(await runEntrypoint(["session", "export", "nope"], { sessionsDir, ...capture().deps })).toBe(1);
+    await store.append("s-x", { type: "session_title", parentId, title: "fence talk" });
+    const byName = capture();
+    expect(await runEntrypoint(["session", "export", "fence talk"], { sessionsDir, ...byName.deps })).toBe(0);
+    expect(byName.out.join("\n")).toStartWith("# fence talk\n\n## User");
+  });
+
   test("session fork copies entries under a new id and rejects unknown ids", async () => {
     const sessionsDir = tempDir("agency-ep-sessions-");
     const store = new SessionStore(sessionsDir);
@@ -400,6 +455,7 @@ describe("auth commands", () => {
     const states = JSON.parse(json.out.join(""));
     expect(states).toEqual({
       anthropic: true,
+      chatgpt: false,
       deepseek: false,
       google: false,
       groq: false,
@@ -425,9 +481,9 @@ describe("auth commands", () => {
       flowed = provider;
     };
 
-    expect(await runEntrypoint(["auth", "login", "anthropic", "--oauth"], deps)).toBe(0);
-    expect(flowed).toBe("anthropic");
-    expect(out.join("\n")).toContain("anthropic");
+    expect(await runEntrypoint(["auth", "login", "google", "--oauth"], deps)).toBe(0);
+    expect(flowed).toBe("google");
+    expect(out.join("\n")).toContain("google");
   });
 
   test("auth login --oauth rejects providers without an OAuth registry entry", async () => {
@@ -445,10 +501,10 @@ describe("auth commands", () => {
     deps.keychain = createFileFallbackBackend(tempDir("agency-ep-keys-"));
     deps.configDir = tempDir("agency-ep-config-");
     deps.oauthFlow = async () => {
-      throw new Error('OAuth not configured for provider "openai"');
+      throw new Error('OAuth not configured for provider "google"');
     };
 
-    expect(await runEntrypoint(["auth", "login", "openai", "--oauth"], deps)).toBe(1);
+    expect(await runEntrypoint(["auth", "login", "google", "--oauth"], deps)).toBe(1);
     expect(err.join("\n")).toContain("OAuth not configured");
   });
 });
@@ -568,6 +624,25 @@ describe("-p headless mode", () => {
     expect(code).toBe(1);
     expect(err.join(" ")).toContain("Cannot read the image file no-such-file.png");
     expect(fake.calls).toHaveLength(0);
+  });
+
+  test("-p keeps a new session and reports its id; --no-session-persistence keeps none", async () => {
+    const fake = fakeRunHeadless();
+    const { out, deps } = capture();
+    const run = (...flags: string[]) =>
+      runEntrypoint(["-p", "hello", "--model", "openai/fake-1", "--output-format", "json", ...flags], {
+        ...baseDeps(),
+        ...deps,
+        runHeadless: fake.runHeadless,
+      });
+    expect(await run()).toBe(0);
+    const id = fake.calls[0]?.sessionId;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(out.join("")).session_id).toBe(id);
+    out.length = 0;
+    expect(await run("--no-session-persistence")).toBe(0);
+    expect(fake.calls[1]?.sessionId).toBeUndefined();
+    expect(JSON.parse(out.join("")).session_id).toBeUndefined();
   });
 
   test("a retry shows as a line of progress, so a wait for a rate limit is not silent", async () => {
@@ -813,9 +888,26 @@ describe("-p headless mode", () => {
 
     expect(code).toBe(1);
     expect(JSON.parse(out.join(""))).toEqual({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      result: "Internal Server Error",
       error: { code: "transient", message: "Internal Server Error" },
     });
     expect(err).toEqual(["Internal Server Error"]);
+
+    const stream = capture();
+    const failing = async () => {
+      throw new Error("down");
+    };
+    const argv = ["-p", "--output-format", "stream-json", "--model", "openai/fake-1", "hello"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...stream.deps, runHeadless: failing })).toBe(1);
+    expect(stream.out).toHaveLength(1);
+    expect(JSON.parse(stream.out[0] as string)).toMatchObject({
+      type: "result",
+      is_error: true,
+      result: "down",
+    });
   });
 
   test("-p - takes the prompt from stdin, and an empty stdin is an error", async () => {
@@ -961,10 +1053,74 @@ describe("-p headless mode", () => {
     expect((send!.params as { nonInteractive: boolean }).nonInteractive).toBe(true);
   });
 
+  test("-n names the session of the run, and --resume finds a session by its name", async () => {
+    const fake = fakeClient();
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    const deps = { ...baseDeps(), ...capture().deps, sessionsDir, ensureClient: async () => fake.client };
+    expect(
+      await runEntrypoint(
+        ["-p", "--session", "s-1", "-n", "auth work", "--model", "openai/fake-1", "a"],
+        deps,
+      ),
+    ).toBe(0);
+    expect(getSessionTitle(store.load("s-1"))).toBe("auth work");
+    expect(await runEntrypoint(["-p", "-r", "auth work", "--model", "openai/fake-1", "b"], deps)).toBe(0);
+    const sends = fake.calls.filter((c) => c.method === "session_send");
+    expect(sends.map((c) => (c.params as { sessionId: string }).sessionId)).toEqual(["s-1", "s-1"]);
+  });
+
+  test("--fork-session runs the turn in a copy of the session, and needs a session", async () => {
+    const fake = fakeClient();
+    const sessionsDir = tempDir("agency-ep-sessions-");
+    const store = new SessionStore(sessionsDir);
+    await store.append("base", {
+      type: "message",
+      parentId: null,
+      message: { role: "user", content: [{ type: "text", text: "first" }] },
+    });
+    const { out, deps } = capture();
+    const argv = [
+      "-p",
+      "-r",
+      "base",
+      "--fork-session",
+      "--model",
+      "openai/fake-1",
+      "--output-format",
+      "json",
+      "next",
+    ];
+    expect(
+      await runEntrypoint(argv, {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir,
+        ensureClient: async () => fake.client,
+      }),
+    ).toBe(0);
+    const forkId = JSON.parse(out.join("")).session_id as string;
+    expect(forkId).toStartWith("base-fork-");
+    const send = fake.calls.find((c) => c.method === "session_send");
+    expect((send?.params as { sessionId?: string } | undefined)?.sessionId).toBe(forkId);
+    expect(store.load(forkId)).toHaveLength(1);
+    expect(store.load("base")).toHaveLength(1);
+    expect(() => parseArgv(["-p", "x", "--fork-session"])).not.toThrow();
+    const bad = capture();
+    expect(
+      await runEntrypoint(["-p", "x", "--model", "openai/fake-1", "--fork-session"], {
+        ...baseDeps(),
+        ...bad.deps,
+      }),
+    ).toBe(1);
+    expect(bad.err.join("\n")).toContain("--fork-session needs");
+  });
+
   test("--permission-mode parses, defaults to ask, and reaches the headless call", async () => {
     expect(parseArgv(["-p", "hi"]).permissionMode).toBe("ask");
     expect(parseArgv(["-p", "hi", "--permission-mode", "allow-edits"]).permissionMode).toBe("allow-edits");
     expect(parseArgv(["-p", "hi", "--permission-mode", "allow-all"]).permissionMode).toBe("allow-all");
+    expect(parseArgv(["-p", "hi", "--permission-mode", "auto"]).permissionMode).toBe("auto");
     expect(() => parseArgv(["-p", "hi", "--permission-mode", "yes"])).toThrow("permission-mode");
     const fake = fakeRunHeadless();
     const { deps } = capture();
@@ -975,6 +1131,393 @@ describe("-p headless mode", () => {
     });
     expect(code).toBe(0);
     expect(fake.calls[0]?.permissionMode).toBe("deny");
+  });
+
+  test("--allowed-tools and --disallowedTools become the permission rules of the turn; an unknown rule fails", async () => {
+    const parsed = parseArgv([
+      "-p",
+      "hi",
+      "--allowed-tools",
+      "Bash(git log,diff *),Read",
+      "--disallowedTools=Bash(rm *)",
+    ]);
+    expect(parsed.allowedTools).toEqual(["Bash(git log,diff *)", "Read"]);
+    expect(parsed.disallowedTools).toEqual(["Bash(rm *)"]);
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const code = await runEntrypoint(
+      [
+        "-p",
+        "hi",
+        "--model",
+        "openai/fake-1",
+        "--allowed-tools",
+        "Bash(git *),Read",
+        "--disallowed-tools",
+        "Bash(rm *)",
+      ],
+      { ...baseDeps(), ...deps, runHeadless: headless.runHeadless },
+    );
+    expect(code).toBe(0);
+    expect(headless.calls[0]?.permissions).toEqual({
+      bash: { "git *": "allow", "rm *": "deny" },
+      read: "allow",
+      grep: "allow",
+      glob: "allow",
+    });
+    const session = fakeClient();
+    await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--session", "rules", "--allowed-tools", "Edit"],
+      {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir: tempDir("agency-ep-sessions-"),
+        ensureClient: async () => session.client,
+      },
+    );
+    expect(session.calls.find((call) => call.method === "session_send")?.params).toMatchObject({
+      permissions: { edit: "allow" },
+    });
+    const bad = capture();
+    const badCode = await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--disallowed-tools", "Read(~/.ssh/**)"],
+      { ...baseDeps(), ...bad.deps, runHeadless: headless.runHeadless },
+    );
+    expect(badCode).toBe(1);
+    expect(bad.err.join("\n")).toContain("Read(~/.ssh/**)");
+    expect(headless.calls).toHaveLength(1);
+  });
+
+  test("--mcp-config gives the MCP servers of a file and of JSON text to the turn; a bad one fails", async () => {
+    const cwd = tempDir("agency-ep-mcp-");
+    writeFileSync(join(cwd, "servers.json"), JSON.stringify({ mcpServers: { fs: { command: "fs-srv" } } }));
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const json = JSON.stringify({
+      docs: { url: "https://d.test/mcp", headers: { "X-Key": `\${DOCS_KEY}` } },
+    });
+    const argv = [
+      "-p",
+      "hi",
+      "--model",
+      "openai/fake-1",
+      "--mcp-config",
+      "servers.json",
+      "--mcp-config",
+      json,
+    ];
+    const env = { ...baseDeps().env, DOCS_KEY: "k-1" };
+    expect(
+      await runEntrypoint([...argv, "--strict-mcp-config"], {
+        ...baseDeps({ cwd, env }),
+        ...deps,
+        ...headless,
+      }),
+    ).toBe(0);
+    expect(headless.calls[0]?.mcp).toEqual({
+      servers: {
+        fs: { command: "fs-srv" },
+        docs: { url: "https://d.test/mcp", headers: { "X-Key": "k-1" } },
+      },
+      strict: true,
+    });
+    await runEntrypoint(["-p", "hi", "--model", "openai/fake-1"], { ...baseDeps(), ...deps, ...headless });
+    expect(headless.calls[1]?.mcp).toBeUndefined();
+    const bad = capture();
+    const code = await runEntrypoint(
+      ["-p", "hi", "--model", "openai/fake-1", "--mcp-config", "missing.json"],
+      {
+        ...baseDeps({ cwd }),
+        ...bad.deps,
+        ...headless,
+      },
+    );
+    expect(code).toBe(1);
+    expect(bad.err.join("\n")).toContain("--mcp-config is not valid");
+    expect(headless.calls).toHaveLength(2);
+  });
+
+  test("-o writes the answer, or the structured answer, to a file", async () => {
+    const file = join(tempDir("agency-ep-last-"), "last.txt");
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "-o", file];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...fakeRunHeadless() })).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("hi from the fake daemon\n");
+    const structured = fakeRunHeadless({
+      ...TURN_RESULT,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_call", id: "s1", name: "structured_output", input: { ok: true } }],
+        },
+      ],
+    });
+    const schema = JSON.stringify({ type: "object" });
+    expect(
+      await runEntrypoint([...argv, "--json-schema", schema], { ...baseDeps(), ...deps, ...structured }),
+    ).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe('{"ok":true}\n');
+  });
+
+  test("--tools gives the turn the built-in tools by their names here; default is all, and empty is none", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    for (const value of ["Bash, Read,TodoWrite", "default", ""]) {
+      const argv = ["-p", "hi", "--model", "openai/fake-1", "--tools", value];
+      expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    }
+    expect(headless.calls.map((call) => call.tools)).toEqual([["bash", "read", "todo_write"], undefined, []]);
+  });
+
+  test("--thinking reaches the turn, and a level that is not one fails", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "--thinking", "high"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.thinkingLevel).toBe("high");
+    expect(() => parseArgv(["-p", "hi", "--thinking", "huge"])).toThrow("--thinking must be one of");
+  });
+
+  test("the -p flags of Claude Code, codex exec and Pi parse as the flags here", async () => {
+    const cc = parseArgv(["-p", "--output-format", "stream-json", "--verbose", "--max-turns", "3", "fix it"]);
+    expect([cc.print, cc.streamJson, cc.maxSteps, cc.command]).toEqual(["fix it", true, 3, undefined]);
+    expect(parseArgv(["--print"]).print).toBe("-");
+    expect(parseArgv(["-p", "-"]).print).toBe("-");
+    expect(parseArgv(["-p", "hi"]).print).toBe("hi");
+    expect(parseArgv(["-p", "--", "-x y"]).print).toBe("-x y");
+    expect(parseArgv(["-p=-x y"]).print).toBe("-x y");
+    expect(parseArgv(["-c", "-p", "go on"]).continueLast).toBe(true);
+    expect(parseArgv(["-p", "-r", "s-1", "go on"]).session).toBe("s-1");
+    expect(parseArgv(["-p", "x", "--session-id", "s-2"]).session).toBe("s-2");
+    expect(parseArgv(["-p", "x", "--dangerously-skip-permissions"]).permissionMode).toBe("allow-all");
+    const modes = ["default", "dontAsk", "acceptEdits", "plan", "bypassPermissions"].map(
+      (mode) => parseArgv(["-p", "x", "--permission-mode", mode]).permissionMode,
+    );
+    expect(modes).toEqual(["ask", "ask", "allow-edits", "plan", "allow-all"]);
+    const codex = parseArgv(["-p", "x", "-C", "repo", "--output-schema", "s.json", "--skip-git-repo-check"]);
+    expect([codex.workspace, codex.jsonSchema]).toEqual(["repo", "s.json"]);
+    expect(parseArgv(["-p", "x", "--no-tools"]).disallowedTools).toEqual(["*"]);
+    const file = join(tempDir("agency-ep-prompt-"), "extra.md");
+    writeFileSync(file, "From the file.");
+    const prompts = parseArgv([
+      "-p",
+      "x",
+      "--append-system-prompt",
+      "Text.",
+      "--append-system-prompt-file",
+      file,
+    ]);
+    expect(prompts.appendSystemPrompt).toBe("From the file.\n\nText.");
+    expect(parseArgv(["-p", "x", "--system-prompt-file", file]).systemPrompt).toBe("From the file.");
+    expect(() => parseArgv(["-p", "x", "--system-prompt-file", `${file}.none`])).toThrow("cannot read");
+    const more = parseArgv([
+      "-p",
+      "x",
+      "--max-budget-usd",
+      "2.5",
+      "--effort",
+      "ultracode",
+      "--input-format",
+      "text",
+    ]);
+    expect([more.maxCost, more.thinking]).toEqual([2.5, "xhigh"]);
+    expect(parseArgv(["-p", "x", "--permission-mode", "manual"]).permissionMode).toBe("ask");
+    expect(() => parseArgv(["-p", "x", "--input-format", "stream-json"])).toThrow("--input-format");
+
+    const headless = fakeRunHeadless();
+    const { deps, out } = capture();
+    const argv = ["-p", "--model", "openai/fake-1", "--output-format", "json", "say hi"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.prompt).toBe("say hi");
+    const payload = JSON.parse(out.join("\n"));
+    expect(payload).toMatchObject({ type: "result", subtype: "success", is_error: false, num_turns: 1 });
+    expect([payload.result, payload.stopReason]).toEqual(["hi from the fake daemon", "end_turn"]);
+  });
+
+  test("codex exec and the flags of codex and pi run as -p", async () => {
+    const exec = parseArgv(["exec", "--skip-git-repo-check", "-m", "openai/fake-1", "fix it"]);
+    expect([exec.print, exec.command, exec.model]).toEqual(["fix it", undefined, "openai/fake-1"]);
+    const last = parseArgv(["exec", "resume", "--last", "go on"]);
+    expect([last.print, last.continueLast, last.session]).toEqual(["go on", true, undefined]);
+    const byId = parseArgv(["exec", "resume", "s-1", "go on"]);
+    expect([byId.print, byId.session, byId.forkSession]).toEqual(["go on", "s-1", false]);
+    const fork = parseArgv(["exec", "fork", "s-1", "try"]);
+    expect([fork.print, fork.session, fork.forkSession]).toEqual(["try", "s-1", true]);
+    expect(() => parseArgv(["exec", "resume"])).toThrow("needs a session id");
+    expect(parseArgv(["exec"]).print).toBe("-");
+    const codex = parseArgv([
+      "-p",
+      "x",
+      "--json",
+      "-i",
+      "a.png",
+      "--yolo",
+      "--ephemeral",
+      "--exclude-tools",
+      "bash, grep",
+    ]);
+    expect([codex.streamJson, codex.images, codex.permissionMode, codex.disallowedTools]).toEqual([
+      true,
+      ["a.png"],
+      "allow-all",
+      ["bash", "grep"],
+    ]);
+    const pi = parseArgv(["-p", "x", "--mode", "json", "--no-session", "--fork", "s-2", "-nt"]);
+    expect([pi.streamJson, pi.session, pi.forkSession, pi.disallowedTools]).toEqual([
+      true,
+      "s-2",
+      true,
+      ["*"],
+    ]);
+
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    expect(
+      await runEntrypoint(["exec", "--model", "openai/fake-1", "say hi"], {
+        ...baseDeps(),
+        ...deps,
+        ...headless,
+      }),
+    ).toBe(0);
+    expect(headless.calls[0]?.prompt).toBe("say hi");
+  });
+
+  test("a deny of * takes every tool away, and a deny of mcp__* the MCP tools", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const run = (rules: string) =>
+      runEntrypoint(["-p", "x", "--model", "openai/fake-1", "--disallowedTools", rules], {
+        ...baseDeps(),
+        ...deps,
+        ...headless,
+      });
+    expect(await run("*")).toBe(0);
+    expect(await run("mcp__*,Bash")).toBe(0);
+    const [all, mcp] = headless.calls;
+    expect([all?.tools, all?.mcp, all?.permissions]).toEqual([[], { servers: {}, strict: true }, undefined]);
+    expect([mcp?.tools, mcp?.mcp, mcp?.permissions]).toEqual([
+      undefined,
+      { servers: {}, strict: true },
+      { bash: "deny" },
+    ]);
+  });
+
+  test("--settings of Claude Code gives its permissions, model, fallback and effort; a flag wins", async () => {
+    const file = join(tempDir("agency-ep-settings-"), "settings.json");
+    const settings = {
+      permissions: { allow: ["Read"], deny: ["Bash(rm *)"], ask: ["Edit"], defaultMode: "acceptEdits" },
+      model: "openai/fake-1",
+      fallbackModel: ["openai/fake-2", "openai/fake-3"],
+      effortLevel: "high",
+      hooks: {},
+      env: { A: "1" },
+    };
+    writeFileSync(file, JSON.stringify(settings));
+    const parsed = parseArgv(["-p", "x", "--settings", file]);
+    expect([parsed.allowedTools, parsed.disallowedTools, parsed.askTools]).toEqual([
+      ["Read"],
+      ["Bash(rm *)"],
+      ["Edit"],
+    ]);
+    expect([parsed.permissionMode, parsed.model, parsed.fallbackModel, parsed.thinking]).toEqual([
+      "allow-edits",
+      "openai/fake-1",
+      "openai/fake-2",
+      "high",
+    ]);
+    expect(parsed.ignoredSettings).toEqual(["hooks", "env"]);
+    const flags = parseArgv([
+      "-p",
+      "x",
+      "--permission-mode",
+      "deny",
+      "--settings",
+      file,
+      "--model",
+      "openai/fake-9",
+    ]);
+    expect([flags.permissionMode, flags.model]).toEqual(["deny", "openai/fake-9"]);
+    expect(parseArgv(["-p", "x", "--settings", '{"model":"openai/inline"}']).model).toBe("openai/inline");
+    expect(() => parseArgv(["-p", "x", "--settings", "{not json"])).toThrow("--settings is not valid");
+
+    const headless = fakeRunHeadless();
+    const { deps, err } = capture();
+    expect(
+      await runEntrypoint(["-p", "x", "--settings", file], { ...baseDeps(), ...deps, ...headless }),
+    ).toBe(0);
+    expect(headless.calls[0]?.permissions).toEqual({
+      read: "allow",
+      grep: "allow",
+      glob: "allow",
+      edit: "ask",
+      write: "ask",
+      notebook_edit: "ask",
+      bash: { "rm *": "deny" },
+    });
+    expect(err.join("\n")).toContain("not used by a run here: hooks, env");
+  });
+
+  test("--image sends a PDF as a PDF, and an image as its type", async () => {
+    const dir = tempDir("agency-ep-files-");
+    writeFileSync(join(dir, "report.pdf"), "%PDF-1.4");
+    writeFileSync(join(dir, "shot.JPG"), "jpg");
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = [
+      "-p",
+      "x",
+      "--model",
+      "openai/fake-1",
+      "--image",
+      join(dir, "report.pdf"),
+      "-i",
+      join(dir, "shot.JPG"),
+    ];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.images?.map((image) => image.mimeType)).toEqual([
+      "application/pdf",
+      "image/jpeg",
+    ]);
+  });
+
+  test("--fallback-model reaches the turn", async () => {
+    const headless = fakeRunHeadless();
+    const { deps } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "--fallback-model", "openai/fake-2"];
+    expect(await runEntrypoint(argv, { ...baseDeps(), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[0]?.fallbackModel).toBe("openai/fake-2");
+    expect(parseArgv(["-p", "x", "--fallback-model", "openai/a, openai/b"]).fallbackModel).toBe("openai/a");
+  });
+
+  test("--worktree runs the turn in a git worktree, uses it again, and refuses a bad name", async () => {
+    const repo = tempDir("agency-ep-wt-");
+    const git = (...args: string[]) =>
+      Bun.spawnSync(["git", ...args], { cwd: repo })
+        .stdout.toString()
+        .trim();
+    git("init", "-q");
+    git("-c", "user.name=t", "-c", "user.email=t@t.test", "commit", "-q", "--allow-empty", "-m", "init");
+    const headless = fakeRunHeadless();
+    const { deps, err } = capture();
+    const argv = ["-p", "hi", "--model", "openai/fake-1", "-w", "fix-1"];
+    expect(await runEntrypoint(argv, { ...baseDeps({ cwd: repo }), ...deps, ...headless })).toBe(0);
+    const dir = join(realpathSync(repo), ".agency", "worktrees", "fix-1");
+    expect(headless.calls[0]?.workspaceRoot).toBe(dir);
+    expect(git("-C", dir, "branch", "--show-current")).toBe("agency/fix-1");
+    expect(err.join("\n")).toContain("agency/fix-1");
+    expect(await runEntrypoint(argv, { ...baseDeps({ cwd: repo }), ...deps, ...headless })).toBe(0);
+    expect(headless.calls[1]?.workspaceRoot).toBe(dir);
+    expect(git("status", "--porcelain")).toBe("");
+
+    const bad = capture();
+    const code = await runEntrypoint(["-p", "hi", "--model", "openai/fake-1", "--worktree", "../x"], {
+      ...baseDeps({ cwd: repo }),
+      ...bad.deps,
+      ...headless,
+    });
+    expect(code).toBe(1);
+    expect(bad.err.join("\n")).toContain("--worktree name is not valid");
+    expect(headless.calls).toHaveLength(2);
   });
 
   test("--max-steps parses, rejects a bad value, and reaches both kinds of turn", async () => {
@@ -1175,7 +1718,7 @@ describe("bare agency", () => {
 
     const list = capture();
     await runEntrypoint(["auth", "list", "--format", "json"], { ...shared, ...list.deps });
-    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(7).fill(false));
+    expect(Object.values(JSON.parse(list.out.join("\n")))).toEqual(Array(8).fill(false));
   });
 });
 
@@ -1304,5 +1847,94 @@ describe("daemon status", () => {
     const code = await runEntrypoint(["daemon", "status"], deps);
     expect(code).toBe(0);
     expect(out.join("\n")).toContain("not running");
+  });
+});
+
+describe("mcp serve", () => {
+  test("serves the agency tool over JSON-RPC: a call is a session turn with the permission mode of the server", async () => {
+    const fake = fakeClient();
+    const { out, deps } = capture();
+    const requests = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "agency", arguments: { prompt: "fix it", model: "openai/fake-2" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "agency", arguments: { prompt: "x", session: "../up" } },
+      },
+      { jsonrpc: "2.0", id: 5, method: "resources/list" },
+      { jsonrpc: "2.0", id: 6, method: "initialize", params: { protocolVersion: "1999-01-01" } },
+    ];
+    const code = await runEntrypoint(
+      ["mcp", "serve", "--model", "openai/fake-1", "--permission-mode", "allow-edits"],
+      {
+        ...baseDeps(),
+        ...deps,
+        sessionsDir: tempDir("agency-ep-sessions-"),
+        ensureClient: async () => fake.client,
+        mcpInput: (async function* () {
+          for (const request of requests) yield JSON.stringify(request);
+        })(),
+      },
+    );
+    expect(code).toBe(0);
+    const replies = new Map(out.map((line) => JSON.parse(line)).map((reply) => [reply.id, reply]));
+    expect(replies.size).toBe(6);
+    expect(replies.get(1).result).toMatchObject({
+      protocolVersion: "2025-06-18",
+      serverInfo: { name: "agency" },
+    });
+    expect(replies.get(6).result.protocolVersion).toBe("2025-11-25");
+    expect(replies.get(2).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["agency"]);
+    const call = replies.get(3).result;
+    expect(call.isError).toBe(false);
+    expect(call.structuredContent.text).toBe("hi from the fake daemon");
+    expect(call.structuredContent.session).toMatch(/^mcp-/);
+    expect(replies.get(4).error.code).toBe(-32602);
+    expect(replies.get(5).error.code).toBe(-32601);
+    const sends = fake.calls.filter((c) => c.method === "session_send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.params).toMatchObject({
+      sessionId: call.structuredContent.session,
+      userText: "fix it",
+      model: "fake-2",
+      permissionMode: "allow-edits",
+      nonInteractive: true,
+    });
+  });
+
+  test("a turn that fails is a tool result with isError, and the server goes on", async () => {
+    const { out, deps } = capture();
+    const call = (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "agency", arguments: { prompt: "hi", session: "s1" } },
+    });
+    await runEntrypoint(["mcp", "serve", "--model", "openai/fake-1"], {
+      ...baseDeps({ env: {} }),
+      ...deps,
+      mcpInput: (async function* () {
+        yield JSON.stringify(call(1));
+        yield "not json";
+        yield JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" });
+      })(),
+    });
+    const replies = out.map((line) => JSON.parse(line));
+    expect(replies.find((r) => r.id === 1).result).toMatchObject({
+      isError: true,
+      structuredContent: { session: "s1" },
+    });
+    expect(replies.find((r) => r.id === 1).result.content[0].text).toContain("No API key for openai");
+    expect(replies.find((r) => r.id === null).error.code).toBe(-32700);
+    expect(replies.find((r) => r.id === 2).result).toEqual({});
   });
 });

@@ -18,6 +18,7 @@ interface Entry {
   startedAt: string;
   log: string;
   exited: boolean;
+  done?: Promise<unknown>;
 }
 
 function appendBounded(log: string, chunk: string): string {
@@ -34,34 +35,52 @@ function appendBounded(log: string, chunk: string): string {
 export class ProcessManager {
   private readonly entries = new Map<string, Entry>();
 
-  spawn(command: string[], options: { cwd?: string } = {}): ManagedProcessInfo {
+  spawn(command: string[], options: { cwd?: string; env?: Record<string, string> } = {}): ManagedProcessInfo {
     const id = randomUUID();
     const proc = Bun.spawn(command, {
+      windowsHide: true,
       cwd: options.cwd,
-      env: modelCommandEnv(),
+      env: { ...modelCommandEnv(), ...options.env },
       stdout: "pipe",
       stderr: "pipe",
     });
     trackJob(proc.pid, proc.exited);
-
-    const entry: Entry = {
-      proc,
-      command: command.join(" "),
-      startedAt: new Date().toISOString(),
-      log: "",
-      exited: false,
-    };
-    this.entries.set(id, entry);
-
-    // proc.exitCode only updates once something has awaited `.exited`, so
-    // that's tracked explicitly here rather than read lazily on demand.
-    void proc.exited.then(() => {
-      entry.exited = true;
-    });
+    this.track(id, proc, command.join(" "), "");
     void this.pump(id, proc.stdout);
     void this.pump(id, proc.stderr);
+    return this.toInfo(id, this.entries.get(id) as Entry);
+  }
 
-    return this.toInfo(id, entry);
+  /** Takes over a foreground command that runs too long: the caller keeps reading its pipes and calls `append`. */
+  take(proc: ReturnType<typeof Bun.spawn>, command: string, log: string): string {
+    const id = randomUUID();
+    this.track(id, proc, command, log);
+    return id;
+  }
+
+  append(id: string, text: string): void {
+    const entry = this.entries.get(id);
+    if (entry) entry.log = appendBounded(entry.log, text);
+  }
+
+  /** Waits up to `ms` for the process to exit; true when it has. */
+  async wait(id: string, ms: number): Promise<boolean> {
+    const entry = this.entries.get(id);
+    if (!entry?.done || entry.exited) return entry?.exited ?? false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([entry.done, new Promise((r) => (timer = setTimeout(r, ms)))]);
+    clearTimeout(timer);
+    return entry.exited;
+  }
+
+  private track(id: string, proc: ReturnType<typeof Bun.spawn>, command: string, log: string): void {
+    const entry: Entry = { proc, command, startedAt: new Date().toISOString(), log, exited: false };
+    // proc.exitCode only updates once something has awaited `.exited`, so
+    // that's tracked explicitly here rather than read lazily on demand.
+    entry.done = proc.exited.then(() => {
+      entry.exited = true;
+    });
+    this.entries.set(id, entry);
   }
 
   private async pump(id: string, stream: ReadableStream<Uint8Array>): Promise<void> {
@@ -151,7 +170,7 @@ export class ProcessManager {
         // The job first: it holds the descendants that the tree of Windows does not show.
         killJob(pid);
         // /T walks the child tree, /F forces termination.
-        Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"]);
+        Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"], { windowsHide: true });
         return;
       }
       try {
@@ -173,7 +192,7 @@ export class ProcessManager {
   private killDescendants(pid: number): void {
     let children: number[];
     try {
-      const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+      const result = Bun.spawnSync(["pgrep", "-P", String(pid)], { windowsHide: true });
       children = result.stdout
         .toString()
         .split(/\s+/)

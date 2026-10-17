@@ -102,194 +102,188 @@ export const GIT_WRITE_DEFAULT: GitWriteDecision = "deny";
 /** Tool name (or `external_directory`) -> bare decision or pattern map. */
 export type PermissionsConfig = Record<string, ToolPermission>;
 
-export const ConfigSchema = z
-  .object({
-    schemaVersion: z.literal(CONFIG_SCHEMA_VERSION),
-    logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
-    locale: z.string().default("en"),
-    /** Opt-in anonymous usage metrics; off by default, nothing recorded until set. */
-    telemetryEnabled: z.boolean().default(false),
-    /** Opt-in local crash reports feeding `agency debug`; off by default. */
-    crashReportsEnabled: z.boolean().default(false),
-    /** Config-defined providers, merged over the models.dev catalog. */
-    provider: z.record(z.string(), ProviderConfigSchema).default({}),
-    /** Default model as "provider/model"; the model id may itself contain "/". */
-    model: z.string().optional(),
-    /** Cheap model for background work (titles, compaction). */
-    small_model: z.string().optional(),
-    /**
-     * TUI palette name (dark, light, high-contrast). Validated at render time:
-     * an unknown name falls back to the default palette instead of erroring.
-     */
-    theme: z.string().optional(),
-    disabled_providers: z.array(z.string()).default([]),
-    enabled_providers: z.array(z.string()).optional(),
-    /**
-     * External MCP servers, name -> {command, args, env} or {url}. Kept as a
-     * loose record here so the MCP config grammar evolves in @agency/tools,
-     * which re-validates it via parseMcpServers at startup.
-     */
-    mcpServers: z.record(z.string(), z.unknown()).optional(),
-    /** `auto` keeps the schemas of the MCP tools out of a request when there are more than 10, until the model loads them. */
-    mcpDeferTools: z.enum(["auto", "always", "never"]).optional(),
-    /**
-     * Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox
-     * (Linux, macOS). `"host"` runs it with the authority of a shell command.
-     */
-    codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
-    lspServers: z.record(z.string(), z.unknown()).optional(),
-    /**
-     * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
-     * `external_directory` key gating out-of-workspace access. Unlisted tools
-     * default by risk tier: `safe` tools run freely, everything else asks.
-     */
-    permissions: z.record(z.string(), ToolPermissionSchema).default({}),
-    /** Trust behavior: when `required`, tools above the `safe` risk tier refuse to run in an untrusted workspace. */
-    trust: z.object({ required: z.boolean().default(false) }).default({ required: false }),
-    /** Sandbox backend switch plus container options. Software is the default. */
-    sandbox: z
-      .object({
-        /** Local in-process boundary or container exec. Invalid values fail load. */
-        backend: z.enum(["software", "docker", "os"]).default("software"),
-        /** With the `os` backend: shell commands get the network. Default: no network. */
-        allowNetwork: z.boolean().optional(),
-        /** Image for one-shot `docker run` exec. */
-        image: z.string().optional(),
-        /** Existing container for `docker exec`; unset means `docker run --rm`. */
-        container: z.string().optional(),
-        /** Container-side mount point. Defaults to /workspace. */
-        containerRoot: z.string().optional(),
-        /** Docker CLI binary. Defaults to docker. */
-        dockerBin: z.string().optional(),
-        /**
-         * Egress hostname allowlist for container runs. Undefined means
-         * unrestricted (no `--network` flag, current behavior). Defined —
-         * even empty — is deny-by-default: one-shot `docker run` gets
-         * `--network=none` unless `network` names an explicit network.
-         * Per-host enforcement lives at tool-policy level (`requireNetwork`
-         * over capabilities), since plain `docker run` flags cannot express
-         * hostname allowlists; the container network gate is the coarse lock.
-         */
-        egress: z.array(z.string().min(1)).optional(),
-        /** Named Docker network for one-shot runs; honors explicit user intent. */
-        network: z.string().min(1).optional(),
-        /**
-         * Linux capabilities to drop (`--cap-drop`); validated against the
-         * known-good set at backend construction, unknown names fail boot.
-         * `CAP_`-prefixed and lowercase spellings are accepted and canonicalized.
-         */
-        capDrop: z.array(z.string().min(1)).optional(),
-        /** Names of environment variables that a shell command of the model does not get (tokens, keys). */
-        denyEnv: z.array(z.string().min(1)).optional(),
-        /** Names with KEY, SECRET or TOKEN that a shell command of the model still gets, such as `GH_TOKEN`. */
-        allowEnv: z.array(z.string().min(1)).optional(),
-        /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
-        forecastCostUsd: z.number().optional(),
-      })
-      .default({ backend: "software" }),
-    /**
-     * Formatter run after every successful write/edit, e.g.
-     * `formatter: {command: ["biome", "format", "--write"]}`; the file path is
-     * appended as the final argument. Absent/empty means no formatter.
-     */
-    formatter: z.object({ command: z.array(z.string()).optional() }).optional(),
-    /**
-     * Which shell the bash tool actually spawns on Windows (powershell, gitbash
-     * or cmd); other platforms always use POSIX sh. Defaults to powershell.
-     */
-    windowsShell: z.enum(["powershell", "gitbash", "cmd"]).optional(),
-    /**
-     * Web search for the websearch tool: a GET endpoint the query is appended
-     * to as `?q=`. Absent means the tool is not offered to the model at all.
-     */
-    websearch: z
-      .object({
-        endpoint: z.string().optional(),
-        /** The OpenRouter model of a search when there is no endpoint. Default `deepseek/deepseek-v4-flash`. */
-        model: z.string().optional(),
-      })
-      .optional(),
-    /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
-    plugins: z.array(z.string()).optional(),
-    /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */
-    hooks: CommandHooksSchema.optional(),
-    fallback_model: z.string().optional(),
-    /** Tool steps that one turn may take when the caller sets no limit. Absent means the loop default. */
-    maxSteps: z.number().int().positive().optional(),
-    /** Text for the model that writes the summary of a compaction: what the summary must keep. */
-    compactionInstructions: z.string().optional(),
-    /** Tokens of history at which a session is compacted when the window of the model is larger. Absent means 220000. */
-    compactionLimit: z.number().int().positive().optional(),
-    trace: z
-      .object({
-        export: z
-          .object({
-            endpoint: z.string(),
-            headers: z.record(z.string(), z.string()).optional(),
-          })
-          .optional(),
-      })
-      .optional(),
-    task: z
-      .object({
-        maxDepth: z.number().int().min(1).optional(),
-      })
-      .optional(),
-    agents: z
-      .record(
-        z.string().regex(/^[a-z][a-z0-9-]*$/, "handle must match [a-z][a-z0-9-]*"),
-        z.object({
-          role: z.string().min(1),
-          provider: z.string().min(1).optional(),
-          model: z.string().min(1).optional(),
-          effort: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]).optional(),
-          enabled: z.boolean().optional().default(false),
-          permissions: z.record(z.string(), ToolPermissionSchema).optional(),
-        }),
-      )
-      .optional(),
-    leader: z
-      .string()
-      .regex(/^[a-z][a-z0-9-]*$/)
-      .optional(),
-    budgets: z
-      .object({
-        perAgentUsd: z.number().nonnegative().optional(),
-        teamUsd: z.number().nonnegative().optional(),
-        dailyUsd: z.number().nonnegative().optional(),
-        monthlyUsd: z.number().nonnegative().optional(),
-      })
-      .optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (!data.agents) return;
-    const entries = Object.keys(data.agents);
-    if (entries.length === 0) return;
-    const leader = data.agents.leader;
-    if (!leader) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "leader agent is required when agents are configured",
-        path: ["agents", "leader"],
-      });
-      return;
-    }
-    if (leader.enabled === false) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "leader agent must be enabled",
-        path: ["agents", "leader", "enabled"],
-      });
-    }
-    const enabledCount = Object.values(data.agents).filter((a) => a.enabled !== false).length;
-    if (enabledCount === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "at least one agent must be enabled (leader is required)",
-        path: ["agents"],
-      });
-    }
-  });
+export const ConfigSchema = z.object({
+  schemaVersion: z.literal(CONFIG_SCHEMA_VERSION),
+  logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  locale: z.string().default("en"),
+  /** Opt-in anonymous usage metrics; off by default, nothing recorded until set. */
+  telemetryEnabled: z.boolean().default(false),
+  /** Opt-in local crash reports feeding `agency debug`; off by default. */
+  crashReportsEnabled: z.boolean().default(false),
+  /** Config-defined providers, merged over the models.dev catalog. */
+  provider: z.record(z.string(), ProviderConfigSchema).default({}),
+  /** Default model as "provider/model"; the model id may itself contain "/". */
+  model: z.string().optional(),
+  /** Cheap model for background work (titles, compaction). */
+  small_model: z.string().optional(),
+  /** The reviewer of `--permission-mode auto` as "provider/model". Default: `small_model`, else `model`. */
+  auto_review_model: z.string().optional(),
+  /**
+   * TUI palette name (dark, light, high-contrast). Validated at render time:
+   * an unknown name falls back to the default palette instead of erroring.
+   */
+  theme: z.string().optional(),
+  disabled_providers: z.array(z.string()).default([]),
+  enabled_providers: z.array(z.string()).optional(),
+  /**
+   * External MCP servers, name -> {command, args, env} or {url}. Kept as a
+   * loose record here so the MCP config grammar evolves in @agency/tools,
+   * which re-validates it via parseMcpServers at startup.
+   */
+  mcpServers: z.record(z.string(), z.unknown()).optional(),
+  /** `auto` keeps the schemas of the MCP tools out of a request when there are more than 10, until the model loads them. */
+  mcpDeferTools: z.enum(["auto", "always", "never"]).optional(),
+  /**
+   * Gives the model the `code` tool: one script that calls the other tools. `true` runs the script in an OS sandbox
+   * (Linux, macOS). `"host"` runs it with the authority of a shell command.
+   */
+  codeMode: z.union([z.boolean(), z.literal("host")]).optional(),
+  lspServers: z.record(z.string(), z.unknown()).optional(),
+  /** The name of an output style: a Markdown file of `output-styles/` whose text joins the instructions. */
+  outputStyle: z.string().optional(),
+  /** The `memory` tool and its notes in the prompt of each session. Default true. */
+  memory: z.boolean().optional(),
+  /** Loads the code plugins of the user folders of OpenCode and Pi too. Off by default: they are code. */
+  userAgentPlugins: z.boolean().optional(),
+  /** `disabled`: names of skills that do not load, neither as a prompt line nor as `/name`. */
+  skills: z.object({ disabled: z.array(z.string()).optional() }).optional(),
+  /** Loads the user instructions of other agents (`~/.claude/CLAUDE.md`). Off by default: they are often about that agent. */
+  userAgentInstructions: z.boolean().optional(),
+  /**
+   * Per-tool permission policy (allow/ask/deny, bare or pattern maps) plus the
+   * `external_directory` key gating out-of-workspace access. Unlisted tools
+   * default by risk tier: `safe` tools run freely, everything else asks.
+   */
+  permissions: z.record(z.string(), ToolPermissionSchema).default({}),
+  /** Trust behavior: when `required`, tools above the `safe` risk tier refuse to run in an untrusted workspace. */
+  trust: z.object({ required: z.boolean().default(false) }).default({ required: false }),
+  /** Sandbox backend switch plus container options. */
+  sandbox: z
+    .object({
+      /** Unset: `os` on Linux and macOS where it works, else `software` (see `chooseSandboxBackend`). */
+      backend: z.enum(["software", "docker", "os"]).optional(),
+      /** With the `os` backend: shell commands get the network. Default: no network. */
+      allowNetwork: z.boolean().optional(),
+      /** With the `os` backend on Linux and macOS: shell commands reach only these hosts, through a proxy. */
+      allowedDomains: z.array(z.string().min(1)).optional(),
+      /** Image for one-shot `docker run` exec. */
+      image: z.string().optional(),
+      /** Existing container for `docker exec`; unset means `docker run --rm`. */
+      container: z.string().optional(),
+      /** Container-side mount point. Defaults to /workspace. */
+      containerRoot: z.string().optional(),
+      /** Docker CLI binary. Defaults to docker. */
+      dockerBin: z.string().optional(),
+      /**
+       * Egress hostname allowlist for container runs. Undefined means
+       * unrestricted (no `--network` flag, current behavior). Defined —
+       * even empty — is deny-by-default: one-shot `docker run` gets
+       * `--network=none` unless `network` names an explicit network.
+       * Per-host enforcement lives at tool-policy level (`requireNetwork`
+       * over capabilities), since plain `docker run` flags cannot express
+       * hostname allowlists; the container network gate is the coarse lock.
+       */
+      egress: z.array(z.string().min(1)).optional(),
+      /** Named Docker network for one-shot runs; honors explicit user intent. */
+      network: z.string().min(1).optional(),
+      /**
+       * Linux capabilities to drop (`--cap-drop`); validated against the
+       * known-good set at backend construction, unknown names fail boot.
+       * `CAP_`-prefixed and lowercase spellings are accepted and canonicalized.
+       */
+      capDrop: z.array(z.string().min(1)).optional(),
+      /** Names of environment variables that a shell command of the model does not get (tokens, keys). */
+      denyEnv: z.array(z.string().min(1)).optional(),
+      /** Names with KEY, SECRET or TOKEN that a shell command of the model still gets, such as `GH_TOKEN`. */
+      allowEnv: z.array(z.string().min(1)).optional(),
+      /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
+      forecastCostUsd: z.number().optional(),
+    })
+    .default({}),
+  /**
+   * Formatter run after every successful write/edit, e.g.
+   * `formatter: {command: ["biome", "format", "--write"]}`; the file path is
+   * appended as the final argument. Absent/empty means no formatter.
+   */
+  formatter: z.object({ command: z.array(z.string()).optional() }).optional(),
+  /**
+   * Which shell the bash tool actually spawns on Windows (powershell, gitbash
+   * or cmd); other platforms always use POSIX sh. Defaults to powershell.
+   */
+  windowsShell: z.enum(["powershell", "gitbash", "cmd"]).optional(),
+  /** Variables added to the environment of the shell commands of the model, even when a name looks secret. */
+  shellEnv: z.record(z.string(), z.string()).optional(),
+  /** Shell script that runs once per session in the workspace root, before its first turn. A failure fails that turn. */
+  setupScript: z.string().optional(),
+  /**
+   * Web search for the websearch tool: a GET endpoint the query is appended
+   * to as `?q=`. Absent means the tool is not offered to the model at all.
+   */
+  websearch: z
+    .object({
+      endpoint: z.string().optional(),
+      /** The OpenRouter model of a search when there is no endpoint. Default `deepseek/deepseek-v4-flash`. */
+      model: z.string().optional(),
+    })
+    .optional(),
+  /** Plugins to load via npm package names (e.g. ["my-agency-plugin"]). Discovery order: .agency/plugins/ -> user config plugins/ -> npm entries. */
+  plugins: z.array(z.string()).optional(),
+  /** Shell commands that run on agent events, in the format of Claude Code settings. Exit code 2 blocks. */
+  hooks: CommandHooksSchema.optional(),
+  fallback_model: z.string().optional(),
+  /** Tool steps that one turn may take when the caller sets no limit. Absent means the loop default. */
+  maxSteps: z.number().int().positive().optional(),
+  /** Text for the model that writes the summary of a compaction: what the summary must keep. */
+  compactionInstructions: z.string().optional(),
+  /** Tokens of history at which a session is compacted when the window of the model is larger. Absent means 220000. */
+  compactionLimit: z.number().int().positive().optional(),
+  /** True: old results of re-runnable tools stay whole in each request, where by default they become a short note. */
+  keepToolResults: z.boolean().optional(),
+  /** False: a turn that changed code and ran no passing check after may end. By default it is sent back once. */
+  verifyGate: z.boolean().optional(),
+  trace: z
+    .object({
+      /** True: each turn also writes a cassette for `/replay`, which holds the whole history and grows with the session. */
+      cassettes: z.boolean().optional(),
+      export: z
+        .object({
+          endpoint: z.string(),
+          headers: z.record(z.string(), z.string()).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  task: z
+    .object({
+      maxDepth: z.number().int().min(1).optional(),
+    })
+    .optional(),
+  agents: z
+    .record(
+      z.string().regex(/^[a-z][a-z0-9-]*$/, "handle must match [a-z][a-z0-9-]*"),
+      z.object({
+        role: z.string().min(1),
+        provider: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        effort: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]).optional(),
+        enabled: z.boolean().optional().default(false),
+        permissions: z.record(z.string(), ToolPermissionSchema).optional(),
+      }),
+    )
+    .optional(),
+  leader: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .optional(),
+  budgets: z
+    .object({
+      perAgentUsd: z.number().nonnegative().optional(),
+      teamUsd: z.number().nonnegative().optional(),
+      dailyUsd: z.number().nonnegative().optional(),
+      monthlyUsd: z.number().nonnegative().optional(),
+    })
+    .optional(),
+});
 
 export type ModelOverrideConfig = z.infer<typeof ModelOverrideSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
@@ -308,153 +302,6 @@ export interface AgentConfig {
   enabled?: boolean;
   permissions?: Record<string, ToolPermission>;
 }
-
-/**
- * Starter roster shipped with every fresh config: 8 named roles, each an
- * ordinary `{role, provider, model, effort}` entry additionally carrying the
- * `permissions` map the Phase 2 gate reads per agent (unlisted tools are
- * denied, so each map is the role's full tool allowlist). Handles double as
- * role names. Leader is enabled, satisfying the schema's leader requirement.
- * Providers spread across vendors by role, so cross-provider adjudication
- * and heterogeneous routing work out of the box.
- */
-export const DEFAULT_ROSTER: Record<string, AgentConfig> = {
-  leader: {
-    role: "leader",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      write: "allow",
-      edit: "allow",
-      bash: "allow",
-      glob: "allow",
-      grep: "allow",
-      fetch: "allow",
-      websearch: "allow",
-      dispatch: "allow",
-      task: "allow",
-      todo_read: "allow",
-      todo_write: "allow",
-      process_output: "allow",
-      process_list: "allow",
-      process_kill: "allow",
-    },
-  },
-  planner: {
-    role: "planner",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      write: {
-        "*": "deny",
-        ".agency/plans/**": "allow",
-        ".opencode/plans/**": "allow",
-        ".omo/plans/**": "allow",
-      },
-      edit: {
-        "*": "deny",
-        ".agency/plans/**": "allow",
-        ".opencode/plans/**": "allow",
-        ".omo/plans/**": "allow",
-      },
-    },
-  },
-  "plan-reviewer": {
-    role: "plan-reviewer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-    },
-  },
-  coder: {
-    role: "coder",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
-    effort: "high",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      write: {
-        "*": "allow",
-        ".agency/plans/**": "deny",
-        ".opencode/plans/**": "deny",
-        ".omo/plans/**": "deny",
-      },
-      edit: {
-        "*": "allow",
-        ".agency/plans/**": "deny",
-        ".opencode/plans/**": "deny",
-        ".omo/plans/**": "deny",
-      },
-      bash: "allow",
-    },
-  },
-  executor: {
-    role: "executor",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      bash: "allow",
-      process_output: "allow",
-      process_list: "allow",
-      process_kill: "allow",
-    },
-  },
-  explorer: {
-    role: "explorer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "low",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-    },
-  },
-  researcher: {
-    role: "researcher",
-    provider: "openai",
-    model: "gpt-5.2",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      fetch: "allow",
-      websearch: "allow",
-    },
-  },
-  "code-reviewer": {
-    role: "code-reviewer",
-    provider: "google",
-    model: "gemini-3-pro",
-    effort: "medium",
-    enabled: true,
-    permissions: {
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      bash: "allow",
-    },
-  },
-};
 
 export const defaultConfig: Config = ConfigSchema.parse({
   schemaVersion: CONFIG_SCHEMA_VERSION,

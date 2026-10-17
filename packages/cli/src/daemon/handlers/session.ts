@@ -1,26 +1,41 @@
 import { randomUUID } from "node:crypto";
 import {
+  addUsage,
   buildEnvironmentBlock,
   CALL_TOOL,
   CODE_TOOL,
   compact,
   composeSystemPrompt,
+  formatSystemReminders,
   gatherEnvironmentInfo,
   generateTitle,
   getSessionTitle,
+  type MessageEntry,
+  type MessageOrigin,
   modelSummarizer,
   newEntryId,
+  planOffReminder,
   projectSessionView,
+  readOnlyReminder,
   resolveSmallModel,
   runChildTurn,
+  type SentRequest,
+  type SessionEntry,
   type Summarizer,
+  summarizeAtEnd,
   summarizeTranscript,
   TOOL_SEARCH,
   type ToolSpec,
   withOverhead,
 } from "@agency/core";
-import type { Capabilities, PermissionsGate } from "@agency/guard";
-import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
+import { type Capabilities, type PermissionsGate, sandboxNetwork } from "@agency/guard";
+import {
+  type KeychainBackend,
+  pickCheapModel,
+  resolveApiKey,
+  tokenizerFor,
+  type Usage,
+} from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -32,10 +47,13 @@ import {
   type ToolSpec as ToolsToolSpec,
 } from "@agency/tools";
 import { modelRunOptions } from "../costing.ts";
-import { handleForSession } from "../team-context.ts";
+import { handleForSession, NO_AGENTS_MESSAGE } from "../team-context.ts";
 import {
+  autoReviewerFor,
   type DaemonContext,
+  DEFAULT_SYSTEM_PROMPT,
   keySourcesFor,
+  PLAN_EXIT_TOOL,
   projectInstructions,
   type RunTurnParams,
   type SessionMessageParams,
@@ -50,6 +68,10 @@ import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
  *  former client default until the catalog supplies a real one. */
 const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
 
+/** The last request of each recent session, with the entry it ends on: a compaction asks its summary there. */
+const sentRequests = new Map<string, { sent: SentRequest; tip: string | null }>();
+const SENT_SESSIONS = 16;
+
 /** The summarizer of a session's compaction: its own model writes the summary. With no key, the offline one. */
 export function sessionSummarizer(
   ctx: DaemonContext,
@@ -57,6 +79,7 @@ export function sessionSummarizer(
   model: string,
   /** Instructions for this one summary (`/compact <session> <text>`): they go after those of the config. */
   extraInstructions?: string,
+  onUsage?: (usage: Usage) => void,
 ): Summarizer {
   let inner: Summarizer | undefined;
   const wanted = [ctx.config.compactionInstructions, extraInstructions].filter(Boolean).join("\n");
@@ -78,6 +101,7 @@ export function sessionSummarizer(
             apiKey,
             ...(maxTokens ? { maxTokens } : {}),
             ...(wanted ? { instructions: wanted } : {}),
+            ...(onUsage ? { onUsage } : {}),
           })
         : async (text) => summarizeTranscript(text);
     }
@@ -134,7 +158,8 @@ export async function generateSessionTitle(
                 adapterFor: (p: string) => adapterFor(p),
                 ...(cheapModel ? { cheapModel } : {}),
               });
-              if (title) {
+              // The user can name the session while the title model runs; their name wins.
+              if (title && !getSessionTitle(todoStore.load(sessionId))) {
                 const tip = todoStore.latestTip(todoStore.load(sessionId)) ?? null;
                 await todoStore.append(sessionId, { type: "session_title", parentId: tip, title });
               }
@@ -165,6 +190,15 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_delete requires sessionId", {
         source: "session",
       });
+    // The turn would write on into a removed file, and its scope would be gone under it.
+    if (sendQueues.has(sessionId))
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        "the session runs a turn: stop it, then delete the session",
+        {
+          source: "session",
+        },
+      );
     const scope = sessionScopes.get(sessionId);
     if (scope) {
       try {
@@ -289,7 +323,45 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       contextWindow: window || DEFAULT_SESSION_CONTEXT_WINDOW,
       ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
     };
-    const summarize = sessionSummarizer(ctx, p.provider, p.model);
+    const turnId = p.turnId ?? randomUUID();
+    // The summaries of this turn's compactions are paid with the turn.
+    let compactionUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+    const payCompaction = (usage: Usage): void => {
+      compactionUsage = addUsage(compactionUsage, usage);
+    };
+    const summarizeAll = sessionSummarizer(ctx, p.provider, p.model, undefined, payCompaction);
+    // The summary takes a model call: the client shows that the session compacts meanwhile.
+    const summarize: typeof summarizeAll = async (...args) => {
+      broadcast(`turn.${turnId}`, { type: "compaction", phase: "start", sessionId: p.sessionId });
+      try {
+        return await summarizeAll(...args);
+      } finally {
+        broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
+      }
+    };
+    summarize.detailed = summarizeAll.detailed;
+    // The summary of the chain up to `from`, at the end of the last request: only while that request is in the chain.
+    const wholeAt = (from: string) => async (): Promise<string | undefined> => {
+      const known = sentRequests.get(p.sessionId);
+      const entries = store.load(p.sessionId);
+      if (known?.tip == null || !store.chainFor(entries, from).some((e) => e.id === known.tip))
+        return undefined;
+      const prefix = store.messagesFor(entries, known.tip).length;
+      if (prefix !== known.sent.request.messages.length) return undefined;
+      broadcast(`turn.${turnId}`, { type: "compaction", phase: "start", sessionId: p.sessionId });
+      try {
+        return await summarizeAtEnd(
+          ctx.adapterFor(p.provider),
+          ctx.http,
+          known.sent,
+          store.messagesFor(entries, from).slice(prefix),
+          ctx.config.compactionInstructions,
+          payCompaction,
+        );
+      } finally {
+        broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
+      }
+    };
     if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
@@ -298,14 +370,41 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     checkpoints.push(tipId);
     turnCheckpoints.set(p.sessionId, checkpoints);
     if (tipId) {
+      summarize.whole = wholeAt(tipId);
       const outcome = await compact(store, p.sessionId, tipId, tokenizer, threshold, summarize);
       tipId = outcome.tipId;
       compacted = outcome.compacted;
     }
+    // Plan mode goes with the prompt: in the system prompt, each switch would miss the cache of the whole history.
+    const planNote = formatSystemReminders([readOnlyReminder()]);
+    const lastPrompt =
+      tipId === null
+        ? undefined
+        : store
+            .chainFor(store.load(p.sessionId), tipId)
+            .findLast(
+              (e): e is MessageEntry & SessionEntry => e.type === "message" && typeof e.turnId === "string",
+            );
+    const wasPlan =
+      lastPrompt?.message.content.some((b) => b.type === "text" && b.text === planNote) ?? false;
+    const note =
+      p.permissionMode === "plan"
+        ? planNote
+        : wasPlan
+          ? formatSystemReminders([planOffReminder()])
+          : undefined;
     const userEntry = await store.append(p.sessionId, {
       type: "message",
       parentId: tipId,
-      message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: p.userText },
+          ...(note === undefined ? [] : [{ type: "text" as const, text: note }]),
+          ...(p.images ?? []),
+        ],
+      },
+      turnId,
     });
     let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
     // Reactive compaction forks the branch, so new appends rebase onto
@@ -315,6 +414,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       // From the current tip, not the prompt: the steps this turn has done stay in the model's view.
       const from = tip ?? userEntry.id;
       const room = withOverhead(threshold, overheadTokens);
+      summarize.whole = wholeAt(from);
       const outcome = await compact(store, p.sessionId, from, tokenizer, room, summarize, 4, {
         force: true,
       });
@@ -323,27 +423,43 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       compacted = true;
       return history;
     };
-    const turnId = p.turnId ?? randomUUID();
     const runParams: RunTurnParams = {
       turnId,
       sessionId: p.sessionId,
       provider: p.provider,
       model: p.model,
-      systemPrompt: p.systemPrompt,
+      systemPrompt: p.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
       systemPromptParts: p.systemPromptParts,
       thinkingLevel: p.thinkingLevel,
       session: history,
       budget: p.budget ?? sessionBudgets.get(p.sessionId),
       permissionMode: p.permissionMode,
+      planInPrompt: true,
+      ...(p.permissions === undefined ? {} : { permissions: p.permissions }),
+      ...(p.mcp === undefined ? {} : { mcp: p.mcp }),
+      ...(p.fallbackModel === undefined ? {} : { fallbackModel: p.fallbackModel }),
+      ...(p.tools === undefined ? {} : { tools: p.tools }),
       maxToolIterations: p.maxToolIterations,
       nonInteractive: p.nonInteractive,
       ...(p.images?.length ? { images: p.images } : {}),
     };
     // Each message is stored as the turn produces it: a failed turn or a dead daemon keeps the finished steps.
-    const onMessage = async (message: Message): Promise<void> => {
-      tip = (await store.append(p.sessionId, { type: "message", parentId: tip, message })).id;
+    const onMessage = async (message: Message, origin?: MessageOrigin): Promise<void> => {
+      tip = (
+        await store.append(p.sessionId, {
+          type: "message",
+          parentId: tip,
+          message,
+          ...(origin ? { origin } : {}),
+        })
+      ).id;
     };
-    const hooks = { onContextOverflow, onMessage };
+    const onSent = (sent: SentRequest): void => {
+      sentRequests.delete(p.sessionId);
+      sentRequests.set(p.sessionId, { sent, tip });
+      for (const id of sentRequests.keys()) if (sentRequests.size > SENT_SESSIONS) sentRequests.delete(id);
+    };
+    const hooks = { onContextOverflow, onMessage, onSent };
     let result: Awaited<ReturnType<typeof executeTurn>>;
     try {
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
@@ -360,10 +476,14 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
     }
     const served = result.servedBy ?? p;
+    if (compactionUsage.inputTokens > 0)
+      result = { ...result, usage: addUsage(result.usage, compactionUsage) };
     const parentId = await appendUsageEntry(store, p.sessionId, tip, {
       usage: result.usage,
       model: served.model,
       pricing: ctx.catalogModel(served.provider, served.model)?.pricing,
+      ...(result.timing === undefined ? {} : { timing: result.timing }),
+      ...(result.contextTokens === undefined ? {} : { contextTokens: result.contextTokens }),
     });
     const response: SessionSendResult = {
       ...result,
@@ -384,6 +504,8 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       throw new AgencyError(ErrorCode.INVALID_REQUEST, "session_message requires text", {
         source: "session",
       });
+    // No turn will read it: queued, it would only surface inside some later turn. The client sends a turn instead.
+    if (!ctx.steerableSessions.has(sessionId)) return { queued: false, depth: 0 };
     const box = sessionInboxes.get(sessionId) ?? [];
     sessionInboxes.set(sessionId, box);
     box.push({ role: "user", content: [{ type: "text", text }] });
@@ -396,7 +518,14 @@ export function sessionToolsFor(list: ToolSpec[], offerGate: PermissionsGate): r
   const offered = list.filter((t) => offerGate.toolOffered(t.name, t.riskTier));
   if (offered.length === list.length) return "*" as const;
   // The tools that a turn adds are not in `list`. A turn adds one only when the gate offers it.
-  return [...offered.map((t) => t.name), TOOL_SEARCH, CALL_TOOL, CODE_TOOL, STRUCTURED_OUTPUT_TOOL];
+  return [
+    ...offered.map((t) => t.name),
+    TOOL_SEARCH,
+    CALL_TOOL,
+    CODE_TOOL,
+    STRUCTURED_OUTPUT_TOOL,
+    PLAN_EXIT_TOOL,
+  ];
 }
 
 export function gateForSession(ctx: DaemonContext, sessionId: string): PermissionsGate {
@@ -412,17 +541,30 @@ export async function defaultCapabilitiesForSession(
   const { builtinsMode, gate, getOrCreateScope, options, sessionScopes, tools } = ctx;
   if (options.capabilities) return options.capabilities;
   if (!builtinsMode) {
-    return { tools: sessionToolsFor(tools, gate), pathScopes: "*", network: "*" };
+    return {
+      tools: sessionToolsFor(tools, gate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   }
   const sid = sessionId ?? "default";
   const sessionGate = gateForSession(ctx, sid);
   const cached = sessionScopes.get(sid);
-  if (cached) return { tools: sessionToolsFor(cached.tools, sessionGate), pathScopes: "*", network: "*" };
+  if (cached)
+    return {
+      tools: sessionToolsFor(cached.tools, sessionGate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   try {
     const scope = await getOrCreateScope(sid);
-    return { tools: sessionToolsFor(scope.tools, sessionGate), pathScopes: "*", network: "*" };
+    return {
+      tools: sessionToolsFor(scope.tools, sessionGate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   } catch {
-    return { tools: "*", pathScopes: "*", network: "*" };
+    return { tools: "*", pathScopes: "*", network: sandboxNetwork(ctx.config.sandbox) };
   }
 }
 
@@ -448,6 +590,12 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     todoStore,
     warnPersistence,
   } = daemon;
+  /** The environment block that the session holds, without the memory notes that follow it. */
+  const parentEnvironment = (sessionId: string | undefined): string | undefined => {
+    const block = sessionId === undefined ? undefined : daemon.sessionEnvironments.get(sessionId);
+    const end = block?.indexOf("</environment>") ?? -1;
+    return end === -1 ? undefined : block?.slice(0, end + "</environment>".length);
+  };
   const spawnMaxDepth = (config as unknown as { spawn?: { maxDepth?: number } }).spawn?.maxDepth ?? 1;
   // An agent with a description is a type that the model can choose: the roster holds the files of the config folder and the workspace.
   type AgentType = {
@@ -468,8 +616,9 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     runTask: async (input, ctx) => {
       const agentType = agentTypes.find((type) => type.name === input.agent);
       if (input.agent !== undefined && agentType === undefined) {
-        const names = agentTypes.map((type) => type.name).join(", ") || "none";
-        return { content: `unknown agent type: ${input.agent}. The types are: ${names}`, isError: true };
+        const names = agentTypes.map((type) => type.name).join(", ");
+        const known = names ? `The types are: ${names}` : NO_AGENTS_MESSAGE;
+        return { content: `unknown agent type: ${input.agent}. ${known}`, isError: true };
       }
       const parentTurnId = ctx.turnId;
       const parentSessionId = ctx.sessionId ?? "default";
@@ -478,7 +627,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       const parentProvider = meta?.provider ?? "anthropic";
       const parentModel = meta?.model ?? "test-model";
       const parentApiKey = meta?.apiKey ?? "";
-      const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
+      const parentCaps = meta?.capabilities ?? {
+        tools: "*",
+        pathScopes: "*",
+        network: sandboxNetwork(daemon.config.sandbox),
+      };
       const parentTools = meta?.tools ?? scope.registry.list();
 
       let childProvider = agentType?.provider ?? parentProvider;
@@ -568,10 +721,13 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           trustStore: daemon.trustStore,
         }),
         toolDescriptions: [],
-        // Without it a worker does not know its folder, its shell or the date.
-        context: buildEnvironmentBlock(
-          gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
-        ),
+        // Without it a worker does not know its folder, its shell or the date. The block of the parent session: a new
+        // one per worker counted the changed files again, and the workers of a session shared no cached prefix.
+        context:
+          parentEnvironment(ctx.sessionId) ??
+          buildEnvironmentBlock(
+            gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
+          ),
       });
 
       const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
@@ -593,6 +749,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           capabilities: childCaps,
           toolPolicy: workerGate,
           ...(ctx.requestApproval === undefined ? {} : { requestApproval: ctx.requestApproval }),
+          reviewApproval: autoReviewerFor(daemon, meta?.permissionMode),
           budget: meta?.budget,
           ...modelRunOptions(childModelInfo),
           turnId: childTurnId,
@@ -653,7 +810,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           warnPersistence("child messages append", error);
         }
         try {
-          if (childTraceRecorder && childResult) {
+          if (childTraceRecorder && childResult && daemon.config.trace?.cassettes) {
             const rec = childTraceRecorder.toCassetteRecord(
               {
                 provider: childProvider,

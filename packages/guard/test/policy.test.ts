@@ -240,6 +240,49 @@ describe("PermissionsGate", () => {
     ).toBe("deny");
   });
 
+  test("plan mode refuses writes, other shell commands and agents, even where a rule allows them", async () => {
+    const plan = new PermissionsGate({
+      permissions: { write: "allow", spawn: "allow" },
+      workspaceRoot: root,
+    }).withMode("plan");
+    const ask = async () => "once" as const;
+    expect({
+      write: await plan.check({ tool: "write", path: "a.txt", riskTier: "moderate" }, ask),
+      edit: await plan.check({ tool: "edit", path: "a.txt", riskTier: "moderate" }, ask),
+      rm: await plan.check({ tool: "bash", command: "rm a.txt", riskTier: "dangerous" }, ask),
+      spawn: await plan.check({ tool: "spawn", riskTier: "safe" }, ask),
+      memory: await plan.check({ tool: "memory", riskTier: "safe" }, ask),
+      read: await plan.check({ tool: "read", path: "a.txt", riskTier: "safe" }, undefined),
+      ls: await plan.check({ tool: "bash", command: "git status", riskTier: "dangerous" }, undefined),
+    }).toEqual({
+      write: "deny",
+      edit: "deny",
+      rm: "deny",
+      spawn: "deny",
+      memory: "deny",
+      read: "allow",
+      ls: "allow",
+    });
+    expect(plan.denyReason({ tool: "write", riskTier: "moderate" })).toContain("plan mode");
+    expect(plan.denyReason({ tool: "read", riskTier: "safe" })).toBeUndefined();
+  });
+
+  test("plan mode asks for a web read as ask mode does, and setMode ends it in place", async () => {
+    const plan = new PermissionsGate({ workspaceRoot: root }).withMode("plan");
+    const asked: string[] = [];
+    const ask = async (request: { tool: string }) => {
+      asked.push(request.tool);
+      return "once" as const;
+    };
+    expect(await plan.check({ tool: "fetch", riskTier: "moderate" }, ask)).toBe("allow");
+    expect(asked).toEqual(["fetch"]);
+    const write = { tool: "write", path: "a.txt", riskTier: "moderate" } as const;
+    expect(await plan.check(write, ask)).toBe("deny");
+    plan.setMode("allow-edits");
+    expect(await plan.check(write, undefined)).toBe("allow");
+    expect(plan.denyReason(write)).toBeUndefined();
+  });
+
   test("a ceiling caps an agent gate: above safe, the stricter verdict of the two gates wins", async () => {
     const agentMap = { bash: "allow", write: "allow", read: "allow" } as const;
     const agent = new PermissionsGate({
@@ -250,7 +293,7 @@ describe("PermissionsGate", () => {
     const verdicts = async (run: PermissionsGate) => {
       const capped = agent.withCeiling(run);
       return {
-        bash: await capped.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+        bash: await capped.check({ tool: "bash", command: "npm test", riskTier: "dangerous" }, undefined),
         write: await capped.check({ tool: "write", path: "a.txt", riskTier: "moderate" }, undefined),
         read: await capped.check({ tool: "read", path: "a.txt", riskTier: "safe" }, undefined),
         edit: await capped.check({ tool: "edit", path: "a.txt", riskTier: "moderate" }, undefined),
@@ -260,7 +303,7 @@ describe("PermissionsGate", () => {
       new PermissionsGate({ permissions, workspaceRoot: root });
 
     expect({
-      uncapped: await agent.check({ tool: "bash", command: "ls", riskTier: "dangerous" }, undefined),
+      uncapped: await agent.check({ tool: "bash", command: "npm test", riskTier: "dangerous" }, undefined),
       defaultMode: await verdicts(run()),
       allowEdits: await verdicts(run().withMode("allow-edits")),
       allowAll: await verdicts(run().withMode("allow-all")),

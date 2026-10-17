@@ -446,6 +446,19 @@ export function readOnlyReminder(): SystemReminder {
   };
 }
 
+/** The first prompt after plan mode: without it the model would keep to the plan reminder of the earlier prompts. */
+export function planOffReminder(): SystemReminder {
+  return {
+    kind: "plan_mode",
+    text: "Read-only (plan) mode is off: you may modify files and run commands again.",
+  };
+}
+
+/** A text block that the harness stored in a prompt of the user: clients show the prompt without it. */
+export function isReminderText(text: string): boolean {
+  return text.startsWith(SYSTEM_REMINDER_OPEN);
+}
+
 /** A file the conversation previously read has changed on disk since. */
 export function fileChangedReminder(path: string): SystemReminder {
   return {

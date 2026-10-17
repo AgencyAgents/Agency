@@ -39,7 +39,7 @@ OAuth tokens stored as `{type:"oauth", accessToken, refreshToken, expiresAt}` in
 
 ## Fallback
 
-`fallback_model` (string `provider/model`) in config; on provider-down (retryable exhausted) the daemon retries once on the fallback and emits a `fallback` event.
+`fallback_model` (string `provider/model`) in config, or `--fallback-model` with `-p`; on provider-down (retryable exhausted) the daemon retries once on the fallback and emits a `fallback` event.
 
 ## Serve threat model
 

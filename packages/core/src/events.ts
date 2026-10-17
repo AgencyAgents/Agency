@@ -10,9 +10,14 @@ export interface AgencyEvents {
   "log.entry": { level: string; message: string; traceId?: string };
   "tool.execute.before": {
     tool: string;
+    /** A listener can put another input here: the permission rules and the tool get that one. */
     input: Record<string, unknown>;
     sessionId?: string;
     turnId?: string;
+    /** A hook answered the prompt of a default ask (`allow`), or wants the user asked though a rule allows (`ask`). */
+    decision?: "allow" | "ask";
+    /** Text of a hook that goes to the model with the result. */
+    context?: string;
   };
   "tool.execute.after": {
     tool: string;
@@ -20,6 +25,8 @@ export interface AgencyEvents {
     result: { content: string; isError?: boolean };
     sessionId?: string;
     turnId?: string;
+    /** A listener can put another result here: the model gets it in place of the result of the tool. */
+    output?: string;
   };
   /** All calls of one reply, after the last one ended and before the next request. */
   "tool.batch.after": {
@@ -39,6 +46,15 @@ export interface AgencyEvents {
   "file.edited": { path: string };
   "permission.asked": { tool: string; command?: string; path?: string; decision: string };
   "permission.replied": { tool: string; command?: string; path?: string; decision: string };
+  /** The reviewer of auto mode blocked a call. A PermissionDenied hook sets `retry` to let the model try again. */
+  "permission.denied": {
+    sessionId?: string;
+    tool: string;
+    input: Record<string, unknown>;
+    toolUseId: string;
+    reason: string;
+    retry: boolean;
+  };
   "tool.audit": {
     tool: string;
     target?: string;
@@ -47,7 +63,7 @@ export interface AgencyEvents {
     turnId?: string;
     agentHandle?: string;
   };
-  "shell.env": { env: Record<string, string> };
+  "shell.env": { env: Record<string, string>; sessionId?: string };
   "session.start": { sessionId: string; workspaceRoot: string };
   "session.end": { sessionId: string; reason: string };
   "prompt.submit": { sessionId: string; prompt: string };
@@ -55,7 +71,14 @@ export interface AgencyEvents {
   "board.item.complete": { itemId: string; status: string };
   "pre.merge": { sessionId: string; restored: string[] };
   "cost.threshold": { reason: string; sessionId?: string };
-  "turn.stop": { sessionId?: string; turnId?: string; taskDepth: number; stopHookActive: boolean };
+  "turn.stop": {
+    sessionId?: string;
+    turnId?: string;
+    taskDepth: number;
+    stopHookActive: boolean;
+    /** The text of the reply that ends the turn. */
+    lastAssistantMessage?: string;
+  };
   event: { event: string; payload: unknown };
 }
 

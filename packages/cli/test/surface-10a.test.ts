@@ -197,6 +197,10 @@ describe("Phase 10a surface contract", () => {
       systemPrompt: "sys",
       userText: "hello",
     });
+    const titled = (await rpcOk(base, token, "session_list")) as {
+      sessions: { id: string; title?: string }[];
+    };
+    expect(titled.sessions.find((s) => s.id === "c1")?.title).toBe("hello");
     const exported = (await rpcOk(base, token, "session_export", { sessionId: "c1" })) as {
       entries: unknown[];
     };

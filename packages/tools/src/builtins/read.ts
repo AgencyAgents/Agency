@@ -1,15 +1,17 @@
 import { readFileSync, statSync } from "node:fs";
 import { requirePathScope } from "@agency/guard";
 import { t } from "@agency/i18n";
-import type { ImageBlock } from "@agency/schema";
+import { type ImageBlock, PDF_MIME } from "@agency/schema";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ReadState } from "../read-state.ts";
 import { lineCount, str, summarize } from "../render.ts";
+import { renderNotebook } from "./notebook.ts";
 
 const MAX_READ_BYTES = 1_000_000; // ~1MB; bigger files should be grepped or read in slices
 
-/** Image formats every vision-capable provider we ship accepts (P7 image input). */
+/** Image formats every vision-capable provider we ship accepts (P7 image input), and PDF: the adapters send it. */
 export const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".pdf": PDF_MIME,
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -33,6 +35,24 @@ function positiveIntOr(value: unknown, fallback: number): number {
 
 function limitOrAll(input: unknown): number | undefined {
   return typeof input === "number" && Number.isInteger(input) && input >= 1 ? input : undefined;
+}
+
+/** The loop cuts a result at 2000 lines or 50 KB: a read stops first, at a whole line, and says where the rest starts. */
+const HEAD_LINES = 2000;
+const HEAD_BYTES = 45_000;
+
+function headOf(content: string): { content: string } {
+  const lines = content.split("\n");
+  let kept = 0;
+  for (let used = 0; kept < lines.length && kept < HEAD_LINES; kept++) {
+    used += Buffer.byteLength(lines[kept] as string, "utf8") + 1;
+    if (used > HEAD_BYTES) break;
+  }
+  // One line over the limit (a minified file) is the loop's to cut.
+  if (kept === 0 || kept >= lines.length) return { content };
+  return {
+    content: `${lines.slice(0, kept).join("\n")}\n[The file has ${lines.length} lines: these are lines 1 to ${kept}. Read with offset ${kept + 1} for the rest, or grep for what you need.]`,
+  };
 }
 
 function numberedSlice(content: string, offset: number, limit: number | undefined): string {
@@ -111,7 +131,15 @@ export function createReadTool(deps: ToolDeps, options?: ReadToolOptions): ToolS
       }
 
       const content = readFileSync(resolved, "utf8");
-      if (!slicing) return { content };
+      // A notebook reads as its cells and their outputs, as in Claude Code; a slice gives the raw JSON.
+      if (!slicing && resolved.toLowerCase().endsWith(".ipynb")) {
+        try {
+          return { content: renderNotebook(content) };
+        } catch {
+          return { content };
+        }
+      }
+      if (!slicing) return headOf(content);
       return { content: numberedSlice(content, offset, limit) };
     },
   };

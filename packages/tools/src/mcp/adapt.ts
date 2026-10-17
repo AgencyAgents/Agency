@@ -7,6 +7,7 @@ export interface McpToolDefinition {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean };
 }
 
 export interface AdaptOptions {
@@ -83,6 +84,8 @@ export function adaptMcpTool(client: McpClient, def: McpToolDefinition, options:
     description: def.description ?? `MCP tool ${def.name} from ${options.serverName}`,
     inputSchema: def.inputSchema ?? { type: "object", properties: {} },
     riskTier: options.riskTier,
+    // The server's hint only lets calls overlap; the permission check still asks by the risk tier.
+    ...(def.annotations?.readOnlyHint === true ? { readOnly: () => true } : {}),
     origin: "mcp",
     renderCall: (input) => `${options.serverName}.${def.name} ${JSON.stringify(input)}`,
     renderResult: (result) => result.content,

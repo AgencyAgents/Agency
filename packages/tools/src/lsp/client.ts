@@ -111,6 +111,7 @@ export class LspClient {
 
   private async start(): Promise<void> {
     this.child = spawn(this.options.command, this.options.args ?? [], {
+      windowsHide: true,
       cwd: this.options.cwd,
       env: this.options.env ? ({ ...process.env, ...this.options.env } as Record<string, string>) : undefined,
       stdio: ["pipe", "pipe", "ignore"],
