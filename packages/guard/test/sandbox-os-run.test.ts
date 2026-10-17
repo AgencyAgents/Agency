@@ -52,6 +52,21 @@ describe.skipIf(!runs)("OS sandbox: real commands", () => {
     if (process.platform === "linux") expect(made.stderr).toContain("agency sandbox: removed .mcp.json");
   });
 
+  test.skipIf(process.platform !== "linux" || !existsSync("/run/dbus/system_bus_socket"))(
+    "a command cannot reach the system bus or the runtime folder of the user, which run programs outside it",
+    async () => {
+      const ws = dir(tmpdir());
+      const sandbox = new OsSandboxBackend(ws);
+      expect(await sandbox.isAvailable()).toBe(true);
+      const uid = process.getuid?.() ?? 0;
+      const probe = await sandbox.exec(
+        ["sh", "-c", `test -S /run/dbus/system_bus_socket && echo bus; ls -A /run/user/${uid} 2>/dev/null`],
+        { cwd: ws },
+      );
+      expect(probe.stdout.trim()).toBe("");
+    },
+  );
+
   const domainsRun =
     runs && Bun.which("curl") !== null && (process.platform !== "linux" || Bun.which("socat") !== null);
   test.skipIf(!domainsRun)(

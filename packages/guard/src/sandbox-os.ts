@@ -53,8 +53,8 @@ exec "$@"`;
 
 /**
  * bubblewrap argv: the whole disk read-only, the workspace and a private /tmp writable, no network, and the
- * `hidden` folders empty. A mount point cannot be renamed: that pins `.git`. See `PROTECTED_PATHS`. With
- * `proxySocket` the command reaches only that proxy.
+ * `hidden` folders empty and the `masked` sockets gone. A mount point cannot be renamed: that pins `.git`. See
+ * `PROTECTED_PATHS`. With `proxySocket` the command reaches only that proxy.
  */
 export function buildBwrapArgs(
   root: string,
@@ -63,6 +63,7 @@ export function buildBwrapArgs(
   bin = "bwrap",
   hidden: string[] = [],
   proxySocket?: string,
+  masked: string[] = [],
 ): string[] {
   const bind = (flag: string, paths: readonly string[]): string[] =>
     paths.flatMap((path) => [flag, `${root}/${path}`, `${root}/${path}`]);
@@ -78,6 +79,7 @@ export function buildBwrapArgs(
     "--tmpfs",
     "/tmp",
     ...hidden.flatMap((path) => ["--tmpfs", path]),
+    ...masked.flatMap((path) => ["--ro-bind", "/dev/null", path]),
     "--bind",
     root,
     root,
@@ -214,6 +216,33 @@ export function scriptSandboxAvailable(readPaths: string[] = []): Promise<boolea
 }
 
 /**
+ * Sockets of services that run a program on request outside any sandbox: the system bus (`systemd-run`), Docker and
+ * its kin. A read-only mount does not stop a connect, and a network namespace does not hold a socket of the disk.
+ */
+const HOST_SOCKETS = [
+  "/run/dbus/system_bus_socket",
+  "/var/run/dbus/system_bus_socket",
+  "/run/docker.sock",
+  "/var/run/docker.sock",
+  "/run/containerd/containerd.sock",
+  "/run/podman/podman.sock",
+  "/run/snapd.socket",
+];
+
+/** The runtime folder of the user: its bus runs `systemd-run --user`, and the SSH, GnuPG and Podman agents listen there. */
+function runtimeDirs(): string[] {
+  const uid = process.getuid?.();
+  return [
+    ...new Set([process.env.XDG_RUNTIME_DIR, uid === undefined ? undefined : `/run/user/${uid}`]),
+  ].filter((path): path is string => path !== undefined && path !== "");
+}
+
+/** The real paths of those that exist, once each: `/var/run` is most often a link to `/run`. */
+const existing = (paths: string[]): string[] => [
+  ...new Set(paths.filter((path) => existsSync(path)).map((path) => realpathSync(path))),
+];
+
+/**
  * Runs each shell command in a sandbox of the operating system: bubblewrap on Linux, Seatbelt on macOS, a
  * write-restricted token on Windows. Paths and permission rules are those of the software boundary.
  */
@@ -285,8 +314,9 @@ export class OsSandboxBackend implements SandboxBackend {
           cwd,
           this.allowNetwork,
           this.options.bwrapBin,
-          this.hidden(),
+          [...this.hidden(), ...existing(runtimeDirs())],
           this.proxy?.socket,
+          existing(HOST_SOCKETS),
         ),
         ...argv,
       ];

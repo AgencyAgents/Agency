@@ -441,6 +441,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A sandboxed command on Linux could run a program outside the sandbox** (security): bubblewrap left the
+  sockets of the disk open, so `systemd-run` over the system bus or the user bus, or `docker run`, started a
+  program with no sandbox (seen in WSL 2: a command wrote `/root` through the system bus). The system bus, the
+  runtime folder of the user and the sockets of Docker, containerd, Podman and snapd are now gone in the
+  sandbox, as the seccomp filter of Claude Code's sandbox keeps a command off them.
 - **A sandboxed command could change the files of other agents that Agency runs outside the sandbox**
   (security): with `sandbox.backend: "os"`, a command could write `.mcp.json`, `.claude/settings.json` (hooks),
   `opencode.json`, `.cursor/hooks.json` and the other files that Agency loads hooks, MCP servers or plugins
