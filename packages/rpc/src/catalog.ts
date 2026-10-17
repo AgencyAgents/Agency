@@ -46,6 +46,7 @@ export const METHOD_DOCS: Record<string, string> = {
   agent_message: "Deliver a message to an agent mailbox.",
   agents_list: "List team agents with state, session, and cost.",
   agents_upsert: "Write an agent file and refresh the registry entry.",
+  agents_remove: "Delete the project's file of an agent; the team changes on the next daemon start.",
   agent_inspect: "Timeline, step, or reasoning view over an agent's recorded spans.",
   activity_graph: "Delegation DAG of agents plus tasks with state and cost.",
   board_read: "List board items with status, claim, and scope, plus the event log.",

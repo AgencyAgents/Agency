@@ -14,6 +14,7 @@ export type RpcMethod =
   | "agent_message"
   | "agent_stop"
   | "agents_list"
+  | "agents_remove"
   | "agents_upsert"
   | "approval_respond"
   | "board_claim"
@@ -285,6 +286,8 @@ export interface SurfaceClient {
   agent_stop(params?: Record<string, unknown>): Promise<unknown>;
   /** List team agents with state, session, and cost. */
   agents_list(params?: Record<string, unknown>): Promise<unknown>;
+  /** Delete the project's file of an agent; the team changes on the next daemon start. */
+  agents_remove(params?: Record<string, unknown>): Promise<unknown>;
   /** Write an agent file and refresh the registry entry. */
   agents_upsert(params?: Record<string, unknown>): Promise<unknown>;
   /** Answer a pending approval ask once, always, or reject. */
@@ -418,6 +421,7 @@ export function createSurfaceClient(
     agent_message: (params) => call("agent_message", params ?? {}),
     agent_stop: (params) => call("agent_stop", params ?? {}),
     agents_list: (params) => call("agents_list", params ?? {}),
+    agents_remove: (params) => call("agents_remove", params ?? {}),
     agents_upsert: (params) => call("agents_upsert", params ?? {}),
     approval_respond: (params) => call("approval_respond", params ?? {}),
     board_claim: (params) => call("board_claim", params ?? {}),
