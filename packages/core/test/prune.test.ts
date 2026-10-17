@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Message } from "@agency/schema";
-import { pruneStaleResults } from "../src/prune.ts";
+import { dedupeReads, pruneStaleResults } from "../src/prune.ts";
 
 /** A history of `calls` model calls, each a call of `tool` with a result of `size` characters. */
 function history(calls: number, tool: string, size: number): Message[] {
@@ -50,4 +50,40 @@ test("a short history, short results and the results of other tools stay whole",
   expect(pruneStaleResults(small)).toBe(small);
   const agents = history(40, "spawn", 10_000);
   expect(pruneStaleResults(agents)).toBe(agents);
+});
+
+test("a read the model can still see comes back as a note; once that result is pruned, a read gives the text again", () => {
+  const text = "line\n".repeat(200);
+  const read = (id: string): Message => ({
+    role: "assistant",
+    content: [{ type: "tool_call", id, name: "read", input: { path: "a.ts" } }],
+  });
+  const result = (id: string, content = text) => ({
+    type: "tool_result" as const,
+    toolCallId: id,
+    content,
+    isError: false,
+  });
+  const visible: Message[] = [read("c1"), { role: "user", content: [result("c1")] }];
+  const calls = [{ id: "c2", name: "read", input: { path: "a.ts" } }];
+
+  const [same] = dedupeReads([result("c2")], calls, visible);
+  expect(same?.type === "tool_result" && same.content).toBe(
+    "[Unchanged: the same text as the earlier read result of a.ts, which is still above.]",
+  );
+  expect(dedupeReads([result("c2", `${text}changed`)], calls, visible)[0]).toEqual(
+    result("c2", `${text}changed`),
+  );
+  const pruned: Message[] = [
+    read("c1"),
+    { role: "user", content: [result("c1", "[The old result was removed.]")] },
+  ];
+  expect(dedupeReads([result("c2")], calls, pruned)[0]).toEqual(result("c2"));
+  const twice = dedupeReads(
+    [result("c2"), result("c3")],
+    [...calls, { id: "c3", name: "read", input: { path: "a.ts" } }],
+    [],
+  );
+  expect(twice[0]).toEqual(result("c2"));
+  expect(twice[1]?.type === "tool_result" && twice[1].content.startsWith("[Unchanged")).toBe(true);
 });

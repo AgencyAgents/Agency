@@ -32,7 +32,7 @@ import type { AutoReviewer } from "./auto-review.ts";
 import { CODE_TOOL } from "./codemode.ts";
 import { permissionsFromRules } from "./config/claude-permissions.ts";
 import { type AgencyEvents, HookBlock, HookStop } from "./events.ts";
-import { pruneStaleResults } from "./prune.ts";
+import { dedupeReads, pruneStaleResults } from "./prune.ts";
 import {
   compactMessages,
   countMessageTokens,
@@ -661,7 +661,8 @@ export async function runTurn(
           content: `${last.content}\n\n[harness: ${notes.join(" ")}]`,
         };
       }
-      await append({ role: "user", content: results });
+      const visible = options.keepToolResults ? messages : pruneStaleResults(messages);
+      await append({ role: "user", content: dedupeReads(results, toolCalls, visible) });
     } catch (error) {
       if (tracer && modelSpanId) {
         try {

@@ -1,4 +1,4 @@
-import type { Message } from "@agency/schema";
+import type { ContentBlock, Message } from "@agency/schema";
 
 /** Tools whose call the model can send again for the same result. */
 const RERUNNABLE = /^(read|bash|grep|glob|fetch|websearch|lsp_\w+)$/;
@@ -59,4 +59,42 @@ export function pruneStaleResults(messages: Message[]): Message[] {
       };
     }),
   }));
+}
+
+const SAME_READ_MIN_CHARS = 500;
+
+/**
+ * A `read` whose text the model can still see in `visible`, the history as the next request sends it, becomes a note
+ * that points at the earlier result. Checked against the sent view: once that result is pruned or compacted away, a
+ * new read gives the whole text again.
+ */
+export function dedupeReads<R extends ContentBlock>(
+  results: R[],
+  calls: ReadonlyArray<{ id: string; name: string; input: Record<string, unknown> }>,
+  visible: Message[],
+): R[] {
+  const earlier = new Map<string, string>();
+  const inputs = new Map<string, Record<string, unknown>>();
+  for (const message of visible) {
+    for (const block of message.content) {
+      if (block.type === "tool_call" && block.name === "read") inputs.set(block.id, block.input);
+      if (block.type === "tool_result" && !block.isError && inputs.has(block.toolCallId))
+        earlier.set(block.content, String(inputs.get(block.toolCallId)?.path ?? ""));
+    }
+  }
+  const byId = new Map(calls.map((call) => [call.id, call]));
+  return results.map((result) => {
+    if (result.type !== "tool_result" || result.isError) return result;
+    const call = byId.get(result.toolCallId);
+    if (call?.name !== "read" || result.content.length < SAME_READ_MIN_CHARS) return result;
+    const seen = earlier.get(result.content);
+    if (seen === undefined) {
+      earlier.set(result.content, String(call.input.path ?? ""));
+      return result;
+    }
+    return {
+      ...result,
+      content: `[Unchanged: the same text as the earlier read result of ${seen}, which is still above.]`,
+    };
+  });
 }
