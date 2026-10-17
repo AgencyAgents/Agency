@@ -13,6 +13,8 @@ test("a read-only command of the workspace, after the read-only set of Claude Co
     "git branch --show-current",
     "wc -l < in.txt",
     "rg -n foo src",
+    "sed -n 1p a.txt",
+    "sed 's|src/||' list.txt | sort",
   ]) {
     expect([command, isReadOnlyCommand(command)]).toEqual([command, true]);
   }
@@ -45,13 +47,32 @@ test("a read-only command of the workspace, after the read-only set of Claude Co
     "cat $HOME/x",
     "echo $(rm x)",
     "ls; npm test",
-    "sed -n 1p a.txt",
+    "sed -i s/a/b/ a.txt",
+    "sed 's/a/b/w out.txt' a.txt",
+    "sed 'e rm x' a.txt",
+    "sed -f script.sed a.txt",
     "PATH=. ls",
     "sudo cat a.txt",
     "cat (Remove-Item x)",
     "cat src\\a.ts",
   ]) {
     expect([command, isReadOnlyCommand(command)]).toEqual([command, false]);
+  }
+});
+
+test("an absolute path reads when it is in the workspace, in Windows or MSYS form", () => {
+  const root = String.raw`C:\Users\me\proj`;
+  const find = `find /c/Users/me/proj/packages -name "*.ts" -path "*/src/*" | sed 's|/c/Users/me/proj/||' | sort`;
+  expect(isReadOnlyCommand(find, root)).toBe(true);
+  expect(isReadOnlyCommand("cat C:/Users/me/proj/a.ts", root)).toBe(true);
+  expect(isReadOnlyCommand(find)).toBe(false);
+  for (const command of [
+    "cat /c/Users/me/other/a.ts",
+    "cat /c/Users/me/project2/a.ts",
+    "cat /c/Users/me/proj/../other/a.ts",
+    "cat /etc/passwd",
+  ]) {
+    expect([command, isReadOnlyCommand(command, root)]).toEqual([command, false]);
   }
 });
 

@@ -485,7 +485,7 @@ const READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
   ..."ls dir cat echo pwd head tail grep egrep fgrep rg find wc which diff stat du cd file tree sort cut".split(
     " ",
   ),
-  ..."nl tac basename dirname realpath strings od true git".split(" "),
+  ..."nl tac basename dirname realpath strings od true git sed".split(" "),
 ]);
 /** Options with which a program of the set writes a file, runs a command, or reads hidden files such as `.env`. */
 const UNSAFE_OPTIONS: Record<string, RegExp> = {
@@ -499,17 +499,35 @@ const UNSAFE_OPTIONS: Record<string, RegExp> = {
   file: /^(-[a-zA-Z]*[mfC]|--magic-file|--files-from|--compile)/,
   tree: /^-[a-zA-Z]*o/,
   git: /^(--output|--ext-diff|--open-files-in-pager|-[a-zA-Z]*O)/,
+  sed: /^(-[a-zA-Z]*[ifs]|--in-place|--file|--separate)/,
 };
+/** A sed command that only prints or substitutes: `w`, `e` and `r` of GNU sed write, run and read other files. */
+const SED_COMMAND = /^(\d+(,\d+)?)?[pdq=]$|^s(.)(?:\\.|(?!\3).)*\3(?:\\.|(?!\3).)*\3[gIip0-9]*$/;
 const READ_ONLY_GIT: ReadonlySet<string> = new Set(
   "status diff log show rev-parse ls-files blame describe shortlog grep branch".split(" "),
 );
 const GIT_BRANCH_LIST = /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current)$/;
 
+/** An absolute path of the workspace, in Windows or MSYS form (`/c/...`): the shell reads both. */
+function inWorkspace(word: string, workspaceRoot: string | undefined): boolean {
+  if (!workspaceRoot) return false;
+  const norm = (path: string) =>
+    path
+      .replace(/^\/([a-zA-Z])(\/|$)/, "$1:/")
+      .replace(/\\/g, "/")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  const root = norm(workspaceRoot);
+  const path = norm(word);
+  return path === root || path.startsWith(`${root}/`);
+}
+
 /**
  * True for a command line that only reads files of the workspace, so it can run without a prompt as in Claude Code.
- * Text this check cannot read for sure asks: `$`, quotes of PowerShell, an absolute path, `~`, `..`, a `.env` file.
+ * Text this check cannot read for sure asks: `$`, quotes of PowerShell, a path out of `workspaceRoot`, `~`, `..`,
+ * a `.env` file.
  */
-export function isReadOnlyCommand(command: string): boolean {
+export function isReadOnlyCommand(command: string, workspaceRoot?: string): boolean {
   // ponytail: an allowlist of characters, not a parser; `\` and `$` ask even where the shell would read them as text.
   if (command.length > 10_000 || /[$`(){}~\\!#@]/.test(command)) return false;
   const { parts, dynamic } = splitCommand(command);
@@ -536,10 +554,17 @@ export function isReadOnlyCommand(command: string): boolean {
     if (args.some((arg) => UNSAFE_OPTIONS[program]?.test(arg))) return false;
     // A path out of the workspace, or a `.env` file, which the read tool does not give by default either.
     const outside = (word: string): boolean =>
-      /^([/~]|[A-Za-z]:)/.test(word) || /(^|\/)\.\.(\/|$)/.test(word) || /(^|\/)\.env/.test(word);
+      (/^([/~]|[A-Za-z]:)/.test(word) && !inWorkspace(word, workspaceRoot)) ||
+      /(^|\/)\.\.(\/|$)/.test(word) ||
+      /(^|\/)\.env/.test(word);
     if (args.some((arg) => outside(arg) || outside(arg.slice(arg.indexOf("=") + 1)))) return false;
     // An unquoted glob can expand to `-delete` or, in PowerShell, `*env` to `.env`.
     if (/[*?[]/.test(part.replace(/'[^']*'|"[^"]*"/g, ""))) return false;
+    if (program === "sed") {
+      const scripts = args.flatMap((arg, i) => (args[i - 1] === "-e" ? [arg] : []));
+      const script = scripts.length > 0 ? scripts : args.filter((arg) => !arg.startsWith("-")).slice(0, 1);
+      if (!script.every((text) => text.split(";").every((cmd) => SED_COMMAND.test(cmd.trim())))) return false;
+    }
     if (program === "git") {
       const sub = args[0] ?? "";
       if (!READ_ONLY_GIT.has(sub)) return false;
@@ -889,7 +914,7 @@ export class PermissionsGate implements ToolPolicy {
   /** A read-only command (`isReadOnlyCommand`) with no part that an ask or deny pattern names, as in Claude Code. */
   private readOnlyShell(request: ToolCallPolicyRequest): boolean {
     if (request.command === undefined || !isCommandPatternTool(request.tool)) return false;
-    if (!isReadOnlyCommand(request.command)) return false;
+    if (!isReadOnlyCommand(request.command, this.options.workspaceRoot)) return false;
     return splitCommand(request.command).parts.every((part) => {
       const verdict = this.engine.evaluateWithMatch({ tool: request.tool, command: part });
       return verdict.decision === "allow" || verdict.matched?.commandPattern === undefined;
@@ -1006,7 +1031,7 @@ export class PermissionsGate implements ToolPolicy {
     return !(
       isCommandPatternTool(request.tool) &&
       request.command !== undefined &&
-      isReadOnlyCommand(request.command)
+      isReadOnlyCommand(request.command, this.options.workspaceRoot)
     );
   }
 
