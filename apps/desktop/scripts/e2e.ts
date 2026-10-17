@@ -382,10 +382,13 @@ try {
     const last = (label: string) =>
       `[...document.querySelectorAll('.pmt-foot button[aria-label="${label}"]:not([disabled])')].at(-1)`;
     const card = `document.querySelector('section[aria-label="Approval request"]')`;
-    const allow = async () => {
+    const allow = async (keys = false) => {
       await until("approval card", card);
       if (existsSync(hello)) throw new Error("hello.txt is still there after the rewind");
-      await click(button("Allow once", card), "Allow once");
+      if (!keys) await click(button("Allow once", card), "Allow once");
+      else
+        for (const type of ["keyDown", "keyUp"])
+          await cdp.send("Input.dispatchKeyEvent", { type, key: "y", code: "KeyY", modifiers: 1 });
       await until("hello.txt again", `${bodyHas("Wrote hello.txt.")} && !${card}`);
       if (!existsSync(hello)) throw new Error("the new turn did not write hello.txt");
     };
@@ -398,7 +401,8 @@ try {
     );
     if (existsSync(hello)) throw new Error("hello.txt is still there after the rewind");
     await click(`document.querySelector('button[aria-label="Send"]:not([disabled])')`, "Send");
-    await allow();
+    // Alt+Y answers the ask from the keyboard.
+    await allow(true);
     const prompts = await ev(
       `[...document.querySelectorAll(".pmt .bubble")].filter((b) => b.textContent === "write it").length`,
     );

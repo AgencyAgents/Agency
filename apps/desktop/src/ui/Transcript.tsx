@@ -417,8 +417,20 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
       : command()
         ? "Run this command?"
         : `Allow ${r().tool}?`;
+  // Alt+Y and Alt+N answer from anywhere, the composer too; the focus stays, so a typed Enter never approves.
+  const onKey = (e: KeyboardEvent) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.repeat) return;
+    const answer = e.code === "KeyY" ? "once" : e.code === "KeyN" ? "reject" : undefined;
+    if (answer === undefined) return;
+    e.preventDefault();
+    void respond(props.root, props.approval, answer);
+  };
+  onMount(() => window.addEventListener("keydown", onKey, true));
+  onCleanup(() => window.removeEventListener("keydown", onKey, true));
   const why = () => {
     const source = r().source ?? "";
+    if (source.startsWith("protected:"))
+      return "Its hooks, servers or plugins would run later outside the sandbox, so it asks in every mode.";
     if (source.startsWith("rule") || source.includes("permission"))
       return `It matches the rule ${source.replace(/^rule:/, "")}, which asks first.`;
     const reason = r().reason;
@@ -442,14 +454,26 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
         <div class="mono cmdline">{command() ?? r().argsSummary}</div>
       </Show>
       <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
-        <button type="button" class="pri" onClick={() => void respond(props.root, props.approval, "once")}>
+        <button
+          type="button"
+          class="pri"
+          aria-keyshortcuts="Alt+Y"
+          title="Alt+Y"
+          onClick={() => void respond(props.root, props.approval, "once")}
+        >
           Allow once
         </button>
         <button type="button" class="ol" onClick={() => void respond(props.root, props.approval, "always")}>
           {isEdit() ? "Always allow edits" : `Always allow ${r().tool}`}
         </button>
         <div style={{ flex: 1 }} />
-        <button type="button" class="gh" onClick={() => void respond(props.root, props.approval, "reject")}>
+        <button
+          type="button"
+          class="gh"
+          aria-keyshortcuts="Alt+N"
+          title="Alt+N"
+          onClick={() => void respond(props.root, props.approval, "reject")}
+        >
           Deny
         </button>
       </div>
