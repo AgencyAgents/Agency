@@ -1,5 +1,5 @@
 /**
- * Packs the built desktop app as the npm package `agencyharness`: `npm i -g agencyharness`, then `agency [folder]`.
+ * Packs the built desktop app as the npm package `@endeavorai/agency`: `npm i -g @endeavorai/agency`, then `agency [folder]`.
  * The `agency` command updates from npm at launch, so the updater of the installer stays off in this copy.
  * Usage: bun scripts/npm-pack.ts --app <release dir of the tauri build> --out <dir>
  */
@@ -16,7 +16,7 @@ const arg = (flag: string): string => {
 
 const app = arg("--app");
 const out = arg("--out");
-const stage = join(out, "agencyharness");
+const stage = join(out, "agency");
 const { version } = JSON.parse(
   readFileSync(join(import.meta.dir, "..", "src-tauri", "tauri.conf.json"), "utf8"),
 );
@@ -32,11 +32,12 @@ writeFileSync(
   join(stage, "package.json"),
   `${JSON.stringify(
     {
-      name: "agencyharness",
+      name: "@endeavorai/agency",
+      publishConfig: { access: "public" },
       version,
       description: "Agency: a desktop app for coding agents.",
       license: "MIT",
-      repository: { type: "git", url: "git+https://github.com/AgencyHarness/Agency.git" },
+      repository: { type: "git", url: "git+https://github.com/EndeavorAI/Agency.git" },
       bin: { agency: "agency.js" },
       os: ["win32"],
       cpu: ["x64"],

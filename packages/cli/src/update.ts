@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { getUpdatePublicKey } from "./update-public-key.ts";
 
-const REPO = "AgencyHarness/Agency";
+const REPO = "EndeavorAI/Agency";
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 

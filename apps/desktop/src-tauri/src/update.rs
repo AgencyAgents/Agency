@@ -19,7 +19,7 @@ enum Found {
 #[derive(Default)]
 pub struct Pending(Mutex<Option<Found>>);
 
-/// The package folder when this app runs from `node_modules/agencyharness/app`.
+/// The package folder when this app runs from `node_modules/@endeavorai/agency/app`.
 fn npm_package() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     if !exe.components().any(|c| c.as_os_str() == "node_modules") {
@@ -35,7 +35,7 @@ fn newer(latest: &str, current: &str) -> bool {
 
 async fn npm_latest() -> Result<String, String> {
     let registry = std::env::var("AGENCY_NPM_REGISTRY").unwrap_or_else(|_| "https://registry.npmjs.org".into());
-    let url = format!("{}/agencyharness/latest", registry.trim_end_matches('/'));
+    let url = format!("{}/@endeavorai%2Fagency/latest", registry.trim_end_matches('/'));
     let body: Value = crate::daemon::http_client()
         .get(url)
         .send()

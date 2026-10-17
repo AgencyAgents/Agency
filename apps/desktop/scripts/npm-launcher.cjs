@@ -49,7 +49,7 @@ function shortcut() {
 function install(version, quiet) {
   // The version goes into a shell command.
   if (!/^\d+\.\d+\.\d+[\w.-]*$/.test(version)) throw new Error(`bad version ${version}`);
-  execSync(`npm install -g agencyharness@${version}`, {
+  execSync(`npm install -g @endeavorai/agency@${version}`, {
     stdio: quiet ? "ignore" : "inherit",
     windowsHide: true,
   });
@@ -68,7 +68,7 @@ if (after > 0 && to) {
 } else if (!process.env.AGENCY_NO_UPDATE && !__dirname.includes("_npx")) {
   try {
     const opts = { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true };
-    const latest = execSync("npm view agencyharness version", opts).trim();
+    const latest = execSync("npm view @endeavorai/agency version", opts).trim();
     if (newer(latest, current)) {
       console.log(`Updating Agency ${current} to ${latest}`);
       install(latest, false);
