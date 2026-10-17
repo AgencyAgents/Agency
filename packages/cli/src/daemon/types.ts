@@ -799,18 +799,23 @@ export function resolvePrompt(
   const stored = params.sessionId === undefined ? undefined : options.environments?.get(params.sessionId);
   // A block of another day has the wrong date, and the cache of the provider is gone by then.
   const kept = stored?.includes(`date: ${environmentDate(options.now ?? new Date())}\n`) ? stored : undefined;
+  // The notes are kept with the block: a memory write in the session would change the system prompt and miss the cache.
+  const notes = instructions === undefined ? memoryInstructions(options.memoryFile) : [];
   const context =
     parts?.context === false
       ? undefined
       : (kept ??
-        buildEnvironmentBlock(
-          gatherEnvironmentInfo({
-            cwd: options.workspaceRoot,
-            now: options.now,
-            git: options.git,
-            shell: options.shellLabel,
-          }),
-        ));
+        [
+          buildEnvironmentBlock(
+            gatherEnvironmentInfo({
+              cwd: options.workspaceRoot,
+              now: options.now,
+              git: options.git,
+              shell: options.shellLabel,
+            }),
+          ),
+          ...notes,
+        ].join("\n\n"));
   if (context !== undefined && params.sessionId !== undefined)
     options.environments?.set(params.sessionId, context);
 
@@ -821,7 +826,7 @@ export function resolvePrompt(
       ...(options.userAgentInstructions ? loadUserAgentInstructions() : []),
       ...projectInstructions(options),
       ...(options.pluginInstructions ?? []),
-      ...memoryInstructions(options.memoryFile),
+      ...(parts?.context === false ? notes : []),
     ],
     toolDescriptions: [],
     context,

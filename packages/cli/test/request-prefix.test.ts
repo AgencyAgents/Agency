@@ -9,10 +9,16 @@ import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 const daemons: AgentDaemon[] = [];
 const dirs: string[] = [];
 const prevKey = process.env.AGENCY_ANTHROPIC_API_KEY;
+const prevHome = process.env.AGENCY_HOME;
 process.env.AGENCY_ANTHROPIC_API_KEY = "test-key-prefix";
+// The memory file of the workspace goes under AGENCY_HOME, not in the data of the user.
+process.env.AGENCY_HOME = mkdtempSync(join(tmpdir(), "agency-prefix-home-"));
 afterAll(() => {
   if (prevKey === undefined) delete process.env.AGENCY_ANTHROPIC_API_KEY;
   else process.env.AGENCY_ANTHROPIC_API_KEY = prevKey;
+  rmSync(process.env.AGENCY_HOME as string, { recursive: true, force: true });
+  if (prevHome === undefined) delete process.env.AGENCY_HOME;
+  else process.env.AGENCY_HOME = prevHome;
 });
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop();
@@ -62,7 +68,11 @@ test("every request of a session only appends to the one before it", async () =>
       { name: "read", input: { path: "a.ts" } },
       { name: "glob", input: { pattern: "*.ts" } },
     ],
-    [{ name: "bash", input: { command: "echo hi" } }],
+    [
+      { name: "bash", input: { command: "echo hi" } },
+      // A note saved in the session reaches later sessions, not the system prompt of this one.
+      { name: "memory", input: { action: "add", note: "tests run with bun test" } },
+    ],
     [],
   ];
   const daemon = await createAgentDaemon({
