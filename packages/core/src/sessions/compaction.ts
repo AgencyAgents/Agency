@@ -510,6 +510,8 @@ async function foldChain(
   threshold: CompactionThreshold,
   summarize: Summarizer,
   keepLastN: number,
+  /** The summary of the whole chain, when `summarize.whole` gave one: it covers the kept tail too. */
+  whole?: string,
 ): Promise<{ summaryText: string; summarized: Set<string>; carryForward: SessionEntry[] } | undefined> {
   const target = targetTokens(threshold);
   // A short summary alone makes the model find its place again: the newest messages stay word for word up to a budget.
@@ -547,8 +549,7 @@ async function foldChain(
     while ((await countChainTokensAsync(carryForward, tokenizer)) > target && moveOldest()) {}
   }
 
-  // It covers the kept tail too, so the tail can shrink to the target with no new request.
-  const whole = await summarize.whole?.();
+  // With a summary of the whole chain the tail can shrink to the target with no new request.
   for (;;) {
     passes += 1;
     const summarizeSet = chain.filter((e) => summarized.has(e.id)).filter(isMessageEntry);
@@ -681,9 +682,10 @@ export async function compactMessages(
   keepLastN = 4,
 ): Promise<Message[] | undefined> {
   const chain = asChain(messages);
-  const elided = await elideToTarget(chain, tokenizer, threshold);
+  const whole = await summarize.whole?.();
+  const elided = whole === undefined ? await elideToTarget(chain, tokenizer, threshold) : undefined;
   if (elided !== undefined) return elided.chain.filter(isMessageEntry).map((entry) => entry.message);
-  const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
+  const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN, whole);
   if (folded === undefined) return undefined;
   return [
     compactionSummaryMessage({ summary: folded.summaryText }),
@@ -733,14 +735,19 @@ export async function compact(
     return parent;
   };
   // A person who asks for a compaction wants the summary.
-  const elided = trigger === "manual" ? undefined : await elideToTarget(chain, tokenizer, threshold);
+  // A summary from the cached request first: it costs little, and it keeps what the removed results said.
+  const whole = await summarize.whole?.();
+  const elided =
+    trigger === "manual" || whole !== undefined
+      ? undefined
+      : await elideToTarget(chain, tokenizer, threshold);
   let parentId: string;
   if (elided !== undefined) {
     // The entries before the first changed one stay as they are: the new branch starts there.
     const from = elided.chain[elided.first]?.parentId ?? null;
     parentId = (await rebase(from, elided.chain.slice(elided.first))) ?? tipId;
   } else {
-    const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN);
+    const folded = await foldChain(chain, tokenizer, threshold, summarize, keepLastN, whole);
     if (folded === undefined) return { compacted: false, tipId };
     const summaryEntry = await store.append(sessionId, {
       type: "compaction_summary",

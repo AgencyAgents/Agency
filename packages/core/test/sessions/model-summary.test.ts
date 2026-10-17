@@ -138,7 +138,7 @@ test("the instructions of the user for a summary go to the summarizer after the 
 });
 
 describe("a fold after a request that the provider cached", () => {
-  const run = async (cachedInputTokens: number) => {
+  const run = async (cachedInputTokens: number, session?: Message[]) => {
     const requests: ProviderRequest[] = [];
     const isWhole = (r: ProviderRequest) =>
       JSON.stringify(r.messages.at(-1)).includes("This message is from the harness");
@@ -181,9 +181,11 @@ describe("a fold after a request that the provider cached", () => {
       model: "m",
       apiKey: "k",
       contextWindow: 1000,
-      session: Array.from({ length: 8 }, (_, i) =>
-        text(i % 2 === 0 ? "user" : "assistant", `message ${i} ${"word ".repeat(320)}`),
-      ),
+      session:
+        session ??
+        Array.from({ length: 8 }, (_, i) =>
+          text(i % 2 === 0 ? "user" : "assistant", `message ${i} ${"word ".repeat(320)}`),
+        ),
     });
     expect(result.stopReason).toBe("end_turn");
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
@@ -209,5 +211,23 @@ describe("a fold after a request that the provider cached", () => {
     const { requests, whole } = await run(0);
     expect(whole).toBeUndefined();
     expect(requests.some((r) => r.system === compactionPrompt())).toBe(true);
+  });
+
+  test("comes before the removal of old tool results, which would lose what they said", async () => {
+    // Removing the old result alone would bring this history under the target.
+    const { requests, whole } = await run(900, [
+      text("user", "read it"),
+      { role: "assistant", content: [{ type: "tool_call", id: "c0", name: "echo", input: {} }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", toolCallId: "c0", content: `the secret is w919 ${"filler ".repeat(600)}` },
+        ],
+      },
+      text("assistant", "read"),
+      text("user", "go on"),
+    ]);
+    expect(whole).toBeDefined();
+    expect(JSON.stringify(requests.at(-1)?.messages)).not.toContain("output removed to save context");
   });
 });
