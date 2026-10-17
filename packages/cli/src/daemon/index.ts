@@ -58,6 +58,7 @@ import {
   Redactor,
   type SandboxBackend,
   SandboxBoundary,
+  sandboxNetwork,
   type ToolPermissionValue,
   type TrustStore,
 } from "@agency/guard";
@@ -177,6 +178,8 @@ export function createSandboxBackend(
 }
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
+  // fetch, websearch and the browser get the network limit of shell commands.
+  const network = sandboxNetwork(config.sandbox);
   const providers = config.provider;
 
   // R11 wiring: every key that resolves anywhere in this process is registered
@@ -291,7 +294,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
     return {
       tools: offered.length === tools.length ? ("*" as const) : offered.map((t) => t.name),
       pathScopes: "*" as const,
-      network: "*" as const,
+      network,
     };
   }
 
@@ -569,8 +572,8 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   const defaultCapabilitiesSync: Capabilities =
     options.capabilities ??
     (builtinsMode
-      ? { tools: "*", pathScopes: "*", network: "*" }
-      : { tools: sessionToolsFor(tools, gate), pathScopes: "*", network: "*" });
+      ? { tools: "*", pathScopes: "*", network }
+      : { tools: sessionToolsFor(tools, gate), pathScopes: "*", network });
 
   const teamRegistry = new AgentRegistry();
   const boardStore: BoardStore = new BoardStore({

@@ -39,6 +39,20 @@ export interface Capabilities {
 export const NO_CAPABILITIES: Capabilities = { tools: [], pathScopes: [], network: "none" };
 export const FULL_CAPABILITIES: Capabilities = { tools: "*", pathScopes: "*", network: "*" };
 
+/** The hosts that tools such as fetch may reach under a sandbox config: the limit that shell commands get too.
+ *  The os backend has no network unless `allowNetwork`; Docker `egress`, once set, lists the hosts. */
+export function sandboxNetwork(
+  sandbox:
+    | { backend?: string; allowNetwork?: boolean; allowedDomains?: string[]; egress?: string[] }
+    | undefined,
+): Capabilities["network"] {
+  if (sandbox?.backend === "os" && sandbox.allowNetwork !== true)
+    return sandbox.allowedDomains?.length ? sandbox.allowedDomains : "none";
+  if (sandbox?.backend === "docker" && sandbox.egress !== undefined)
+    return sandbox.egress.length > 0 ? sandbox.egress : "none";
+  return "*";
+}
+
 function deny(caller: CallerIdentity, detail: string): never {
   throw new AgencyError(ErrorCode.PERMISSION_DENIED, detail, {
     source: callerLabel(caller),

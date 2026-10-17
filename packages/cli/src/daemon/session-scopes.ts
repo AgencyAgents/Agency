@@ -9,7 +9,12 @@ import {
   storagePaths,
   type ToolSpec,
 } from "@agency/core";
-import type { CallerIdentity, PermissionsGate, SandboxBackend } from "@agency/guard";
+import {
+  type CallerIdentity,
+  type PermissionsGate,
+  type SandboxBackend,
+  sandboxNetwork,
+} from "@agency/guard";
 import type { HttpClient } from "@agency/net";
 import { GATEWAY_BASE_URLS, resolveApiKey } from "@agency/providers";
 import {
@@ -130,7 +135,11 @@ export function createSessionScopes(deps: SessionScopeFactoryDeps): {
       }
       const websearch = await webSearchFor(config, getCtx());
       const scope = await createSessionScope({
-        deps: { identity, capabilities: { tools: "*", pathScopes: "*", network: "*" }, sandbox },
+        deps: {
+          identity,
+          capabilities: { tools: "*", pathScopes: "*", network: sandboxNetwork(config.sandbox) },
+          sandbox,
+        },
         http,
         workspaceRoot: options.workspaceRoot,
         snapshotDir,

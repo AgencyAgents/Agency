@@ -20,7 +20,7 @@ import {
   type ToolSpec,
   withOverhead,
 } from "@agency/core";
-import type { Capabilities, PermissionsGate } from "@agency/guard";
+import { type Capabilities, type PermissionsGate, sandboxNetwork } from "@agency/guard";
 import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
@@ -458,17 +458,30 @@ export async function defaultCapabilitiesForSession(
   const { builtinsMode, gate, getOrCreateScope, options, sessionScopes, tools } = ctx;
   if (options.capabilities) return options.capabilities;
   if (!builtinsMode) {
-    return { tools: sessionToolsFor(tools, gate), pathScopes: "*", network: "*" };
+    return {
+      tools: sessionToolsFor(tools, gate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   }
   const sid = sessionId ?? "default";
   const sessionGate = gateForSession(ctx, sid);
   const cached = sessionScopes.get(sid);
-  if (cached) return { tools: sessionToolsFor(cached.tools, sessionGate), pathScopes: "*", network: "*" };
+  if (cached)
+    return {
+      tools: sessionToolsFor(cached.tools, sessionGate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   try {
     const scope = await getOrCreateScope(sid);
-    return { tools: sessionToolsFor(scope.tools, sessionGate), pathScopes: "*", network: "*" };
+    return {
+      tools: sessionToolsFor(scope.tools, sessionGate),
+      pathScopes: "*",
+      network: sandboxNetwork(ctx.config.sandbox),
+    };
   } catch {
-    return { tools: "*", pathScopes: "*", network: "*" };
+    return { tools: "*", pathScopes: "*", network: sandboxNetwork(ctx.config.sandbox) };
   }
 }
 
@@ -525,7 +538,11 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
       const parentProvider = meta?.provider ?? "anthropic";
       const parentModel = meta?.model ?? "test-model";
       const parentApiKey = meta?.apiKey ?? "";
-      const parentCaps = meta?.capabilities ?? { tools: "*", pathScopes: "*", network: "*" as const };
+      const parentCaps = meta?.capabilities ?? {
+        tools: "*",
+        pathScopes: "*",
+        network: sandboxNetwork(daemon.config.sandbox),
+      };
       const parentTools = meta?.tools ?? scope.registry.list();
 
       let childProvider = agentType?.provider ?? parentProvider;
