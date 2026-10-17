@@ -210,7 +210,11 @@ describe("loadModelsDevCatalog", () => {
     try {
       writeFileSync(
         join(dir, MODELS_DEV_CACHE_FILE),
-        JSON.stringify({ version: 2, savedAt: new Date().toISOString(), models: [model({ id: "old", family: "x" })] }),
+        JSON.stringify({
+          version: 2,
+          savedAt: new Date().toISOString(),
+          models: [model({ id: "old", family: "x" })],
+        }),
       );
       const result = await loadModelsDevCatalog({ cacheDir: dir, http: httpWith(SAMPLE_CATALOG) });
       expect(result.source).toBe("fresh");

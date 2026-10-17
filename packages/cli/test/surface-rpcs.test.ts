@@ -304,7 +304,11 @@ describe("context size", () => {
         if (calls === 1) {
           yield { type: "tool_call_start", id: "c1", name: "note" };
           yield { type: "tool_call_end", id: "c1" };
-          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 100, outputTokens: 7 } };
+          yield {
+            type: "message_stop",
+            stopReason: "tool_use",
+            usage: { inputTokens: 100, outputTokens: 7 },
+          };
           return;
         }
         yield { type: "text_delta", text: "done" };
@@ -320,9 +324,10 @@ describe("context size", () => {
     };
     const { client, sessionsDir } = await startDaemon({ adapterFor: () => adapter, tools: [noteTool] });
     await client.call("session_send", sendParams("ctx-s1", "ctx-t1"));
-    const entry = new SessionStore(sessionsDir)
-      .load("ctx-s1")
-      .find((e) => e.type === "usage") as unknown as { usage: { inputTokens: number }; contextTokens?: number };
+    const entry = new SessionStore(sessionsDir).load("ctx-s1").find((e) => e.type === "usage") as unknown as {
+      usage: { inputTokens: number };
+      contextTokens?: number;
+    };
     expect(entry.usage.inputTokens).toBe(400);
     expect(entry.contextTokens).toBe(320);
   }, 15_000);

@@ -237,7 +237,9 @@ describe("Phase 10b team surface", () => {
     };
     expect(removed.removed).toBe(true);
     expect(existsSync(removed.file)).toBe(false);
-    const config = (await rpcOk(base, token, "config_get")) as { config: { agents?: Record<string, unknown> } };
+    const config = (await rpcOk(base, token, "config_get")) as {
+      config: { agents?: Record<string, unknown> };
+    };
     expect(config.config.agents?.scout).toBeUndefined();
     expect(
       ((await rpcOk(base, token, "agents_remove", { handle: "scout" })) as { removed: boolean }).removed,

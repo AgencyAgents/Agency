@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
 import type { CachedCatalog } from "../catalog-cache.ts";
-import { ThinkingLevel } from "../types.ts";
 import {
   BUILTIN_MODELS,
   CATALOG_CACHE_VERSION,
@@ -11,6 +10,7 @@ import {
   type ModelStatus,
   normalizeCachedCatalog,
 } from "../registry.ts";
+import { ThinkingLevel } from "../types.ts";
 
 /**
  * The models.dev catalog (mirrored at models.opencode.ai) as a single blob:

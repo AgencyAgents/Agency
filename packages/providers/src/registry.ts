@@ -464,7 +464,9 @@ export async function fetchOpenRouterModels(
           thinking,
         },
         // No list: reasoning only turns on or off.
-        ...(thinking ? { efforts: ThinkingLevel.filter((level) => level !== "off" && has(efforts, level)) } : {}),
+        ...(thinking
+          ? { efforts: ThinkingLevel.filter((level) => level !== "off" && has(efforts, level)) }
+          : {}),
       },
     ];
   });
