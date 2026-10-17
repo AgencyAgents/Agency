@@ -93,7 +93,7 @@ fn last_line(bytes: &[u8]) -> String {
 }
 
 /// The updater turns on reqwest's rustls without a default provider, so a plain client panics without one.
-fn http_client() -> reqwest::Client {
+pub fn http_client() -> reqwest::Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::new()
 }
