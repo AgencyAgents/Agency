@@ -405,9 +405,11 @@ try {
     if (fake.aborted === before) throw new Error("the model request was not cancelled");
   });
 
-  await step("history survives a reload", async () => {
+  await step("a reload opens a new session, and the history survives it", async () => {
     await ev("location.reload()");
     await sleep(500);
+    await until("a new session at launch", bodyHas("What should we work on in"), 30_000);
+    await click(`document.querySelector("button.side-row.sess")`, "the session row");
     await until(
       "reloaded transcript",
       `${bodyHas("Hello from the fake model.")} && ${bodyHas("Wrote hello.txt.")}`,
@@ -418,8 +420,8 @@ try {
       `[...document.querySelectorAll(".work-head")].some((b) => b.textContent.includes("Wrote hello.txt"))`,
     );
     await until(
-      "a turn footer with latency, speed and tokens",
-      `[...document.querySelectorAll(".turn-foot")].some((f) => /latency/.test(f.textContent) && /tok\\/s/.test(f.textContent) && /tokens out/.test(f.textContent))`,
+      "a turn footer with latency and speed, not a token count",
+      `[...document.querySelectorAll(".turn-foot")].some((f) => /latency/.test(f.textContent) && /tok\\/s/.test(f.textContent) && !/tokens out/.test(f.textContent))`,
     );
   });
 
@@ -468,11 +470,10 @@ try {
       20_000,
     );
     await until("reconnected", UP, 60_000);
+    const replies = `document.body.innerText.split("Hello from the fake model.").length`;
+    const before = await ev<number>(replies);
     await say("say hello again");
-    await until(
-      "reply after reconnect",
-      `document.body.innerText.split("Hello from the fake model.").length > 2`,
-    );
+    await until("reply after reconnect", `${replies} > ${before}`);
   });
 
   await step("a settings change persists to the user config", async () => {
