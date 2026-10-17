@@ -141,6 +141,8 @@ function buildRequestBody(request: ProviderRequest, family: string): Record<stri
   // of a turn reads the cache up to the request before it.
   if (family === "openrouter" && request.model.startsWith("anthropic/"))
     body.cache_control = { type: "ephemeral" };
+  // Other servers of this format may refuse a field they do not know.
+  if (family === "openai" && request.cacheKey !== undefined) body.prompt_cache_key = request.cacheKey;
 
   if (request.tools?.length) {
     body.tools = request.tools.map((t) => ({

@@ -17,6 +17,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   the tools, the system prompt and the messages before it, as the API does. Before, each part had to pass
   1,024 tokens alone, so with the default prompt (about 500 tokens) the system prompt and the messages of
   a new session were sent again uncached at each step until the messages alone passed that size.
+- **`prompt_cache_key` for OpenAI**: each request of a session names the session, so OpenAI sends it to
+  the machine that holds its cached prefix, as Codex does. Other servers of the format do not get the field.
 - **More rule files**: `.windsurf/rules/` (by `trigger`), `.kilocode/rules/`, Zed's `.rules`,
   `.trae/rules/project_rules.md`, and the `AGENTS.override.md` of Codex in place of `AGENTS.md`.
 - **`opencode.json` of a workspace**: its `instructions` files, its `command` map and its

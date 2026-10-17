@@ -385,6 +385,7 @@ export async function runTurn(
         thinkingLevel: options.thinkingLevel,
         ...(options.vision === undefined ? {} : { vision: options.vision }),
         ...(options.efforts === undefined ? {} : { efforts: options.efforts }),
+        ...(options.sessionId === undefined ? {} : { cacheKey: options.sessionId }),
         signal: options.signal,
       };
       const turn = await scheduler.schedule(

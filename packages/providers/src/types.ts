@@ -34,6 +34,8 @@ export interface ProviderRequest {
   baseUrl?: string;
   /** Extra headers merged over the adapter's own (auth headers stay). */
   headers?: Record<string, string>;
+  /** Groups requests that share a prefix (a session): OpenAI routes them to the same cache with `prompt_cache_key`. */
+  cacheKey?: string;
   signal?: AbortSignal;
 }
 
