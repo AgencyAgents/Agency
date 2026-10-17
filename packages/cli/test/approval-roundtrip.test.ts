@@ -269,7 +269,7 @@ describe("approval round-trip over a real daemon", () => {
 
   test("malformed inputs: unknown id, double-respond, garbage decision and id", async () => {
     const calls = { count: 0 };
-    const { base, token, client } = await startDaemon({ command: "git stash list" }, calls);
+    const { base, token, client } = await startDaemon({ command: "git fetch" }, calls);
     const unknown = (await client.call("approval_respond", {
       requestId: "does-not-exist",
       decision: "once",
