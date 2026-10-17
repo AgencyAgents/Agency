@@ -148,7 +148,11 @@ describe("a fold after a request that the provider cached", () => {
         requests.push(request);
         if (isWhole(request) || request.system === compactionPrompt()) {
           yield { type: "text_delta", text: "SUMMARY: the user wants the port changed to 8443" };
-          yield { type: "message_stop", stopReason: "end_turn", usage };
+          yield {
+            type: "message_stop",
+            stopReason: "end_turn",
+            usage: { inputTokens: 5000, outputTokens: 300 },
+          };
           return;
         }
         if (requests.length === 1) {
@@ -191,6 +195,8 @@ describe("a fold after a request that the provider cached", () => {
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
       "SUMMARY: the user wants the port changed to 8443",
     );
+    // The turn pays for its summaries.
+    expect(result.usage.inputTokens).toBeGreaterThanOrEqual(5000);
     return { requests, whole: requests.find(isWhole) };
   };
 

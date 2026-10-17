@@ -406,8 +406,13 @@ export async function runTurn(
   let proactiveFolds = true;
   let costNoted = false;
   let lastSent: SentRequest | undefined;
+  const paySummary = (usage: Usage): void => {
+    cumulativeUsage = addUsage(cumulativeUsage, usage);
+    spentCostUsd += costOf(usage, options.pricePerMTok);
+  };
   const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> => {
     const summarize = modelSummarizer({
+      onUsage: paySummary,
       adapter,
       http,
       model: options.model,
@@ -426,6 +431,7 @@ export async function runTurn(
         sent,
         messages.slice(sent?.request.messages.length ?? 0),
         options.compactionInstructions,
+        paySummary,
       );
     return compactMessages(
       messages,

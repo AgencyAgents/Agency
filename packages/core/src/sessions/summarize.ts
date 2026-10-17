@@ -1,5 +1,5 @@
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter, ProviderRequest } from "@agency/providers";
+import type { ProviderAdapter, ProviderRequest, Usage } from "@agency/providers";
 import type { ContentBlock, Message } from "@agency/schema";
 import { wholeCompactionPrompt } from "../prompt/compaction.ts";
 import type { Summarizer } from "./compaction.ts";
@@ -13,29 +13,38 @@ export interface ModelAsk {
   signal?: AbortSignal;
   /** `compactionInstructions` of the config: what the user wants a summary to keep. */
   instructions?: string;
+  /** Gets the usage of each request: a summary costs as much as a turn's request, and the turn pays for it. */
+  onUsage?: (usage: Usage) => void;
 }
 
 /** One request with no tools, for the harness's own questions. Undefined for a failed request or a reply with no text. */
 export function askModel(opts: ModelAsk, system: string, text: string): Promise<string | undefined> {
-  return replyText(opts.adapter, opts.http, {
-    model: opts.model,
-    apiKey: opts.apiKey,
-    system,
-    messages: [{ role: "user", content: [{ type: "text", text }] }],
-    maxTokens: opts.maxTokens ?? 8192,
-    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-  });
+  return replyText(
+    opts.adapter,
+    opts.http,
+    {
+      model: opts.model,
+      apiKey: opts.apiKey,
+      system,
+      messages: [{ role: "user", content: [{ type: "text", text }] }],
+      maxTokens: opts.maxTokens ?? 8192,
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    },
+    opts.onUsage,
+  );
 }
 
 async function replyText(
   adapter: ProviderAdapter,
   http: HttpClient,
   request: ProviderRequest,
+  onUsage?: (usage: Usage) => void,
 ): Promise<string | undefined> {
   try {
     let reply = "";
     for await (const event of adapter.stream(request, http)) {
       if (event.type === "text_delta") reply += event.text;
+      if (event.type === "message_stop" && event.usage) onUsage?.(event.usage);
     }
     return reply.trim() || undefined;
   } catch {
@@ -63,6 +72,7 @@ export function summarizeAtEnd(
   sent: SentRequest | undefined,
   extra: Message[],
   instructions?: string,
+  onUsage?: (usage: Usage) => void,
   now = Date.now(),
 ): Promise<string | undefined> {
   if (!sent?.cached || now - sent.at > WARM_MS) return Promise.resolve(undefined);
@@ -80,7 +90,7 @@ export function summarizeAtEnd(
     last?.role === "user"
       ? [...messages.slice(0, -1), { ...last, content: [...last.content, prompt] }]
       : [...messages, { role: "user", content: [prompt] }];
-  return replyText(adapter, http, { ...sent.request, messages: asked });
+  return replyText(adapter, http, { ...sent.request, messages: asked }, onUsage);
 }
 
 /**

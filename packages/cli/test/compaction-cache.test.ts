@@ -43,7 +43,7 @@ test("a compaction before a turn asks its summary at the end of the last request
       yield {
         type: "message_stop",
         stopReason: "end_turn",
-        usage: { inputTokens: 10, outputTokens: 1, cachedInputTokens: 8 },
+        usage: { inputTokens: isWhole(request) ? 5000 : 10, outputTokens: 1, cachedInputTokens: 8 },
       };
     },
   };
@@ -57,6 +57,7 @@ test("a compaction before a turn asks its summary at the end of the last request
     http: { fetch: async () => new Response() } satisfies HttpClient,
   });
   daemons.push(daemon);
+  const usages: number[] = [];
   // The first prompt alone is over the trigger of a 4000-token window: the second turn compacts first.
   for (const userText of [`set the port to 8443 ${"word ".repeat(4000)}`, "go on"]) {
     const res = await fetch(`http://127.0.0.1:${daemon.httpPort}/rpc`, {
@@ -75,7 +76,9 @@ test("a compaction before a turn asks its summary at the end of the last request
         },
       }),
     });
-    expect(((await res.json()) as { error?: unknown }).error).toBeUndefined();
+    const body = (await res.json()) as { error?: unknown; result?: { usage: { inputTokens: number } } };
+    expect(body.error).toBeUndefined();
+    usages.push(body.result?.usage.inputTokens ?? 0);
   }
 
   const [first, whole, second] = seen;
@@ -87,4 +90,6 @@ test("a compaction before a turn asks its summary at the end of the last request
     JSON.stringify(first?.messages),
   );
   expect(JSON.stringify(second?.messages)).toContain("SUMMARY: the port is 8443");
+  // The second turn pays for the summary that it waited for.
+  expect(usages).toEqual([10, 5010]);
 }, 60_000);

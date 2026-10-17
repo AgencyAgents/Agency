@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  addUsage,
   buildEnvironmentBlock,
   CALL_TOOL,
   CODE_TOOL,
@@ -23,7 +24,13 @@ import {
   withOverhead,
 } from "@agency/core";
 import { type Capabilities, type PermissionsGate, sandboxNetwork } from "@agency/guard";
-import { type KeychainBackend, pickCheapModel, resolveApiKey, tokenizerFor } from "@agency/providers";
+import {
+  type KeychainBackend,
+  pickCheapModel,
+  resolveApiKey,
+  tokenizerFor,
+  type Usage,
+} from "@agency/providers";
 import type { MethodHandler } from "@agency/rpc";
 import type { Message } from "@agency/schema";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -67,6 +74,7 @@ export function sessionSummarizer(
   model: string,
   /** Instructions for this one summary (`/compact <session> <text>`): they go after those of the config. */
   extraInstructions?: string,
+  onUsage?: (usage: Usage) => void,
 ): Summarizer {
   let inner: Summarizer | undefined;
   const wanted = [ctx.config.compactionInstructions, extraInstructions].filter(Boolean).join("\n");
@@ -88,6 +96,7 @@ export function sessionSummarizer(
             apiKey,
             ...(maxTokens ? { maxTokens } : {}),
             ...(wanted ? { instructions: wanted } : {}),
+            ...(onUsage ? { onUsage } : {}),
           })
         : async (text) => summarizeTranscript(text);
     }
@@ -310,7 +319,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
     };
     const turnId = p.turnId ?? randomUUID();
-    const summarizeAll = sessionSummarizer(ctx, p.provider, p.model);
+    // The summaries of this turn's compactions are paid with the turn.
+    let compactionUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+    const payCompaction = (usage: Usage): void => {
+      compactionUsage = addUsage(compactionUsage, usage);
+    };
+    const summarizeAll = sessionSummarizer(ctx, p.provider, p.model, undefined, payCompaction);
     // The summary takes a model call: the client shows that the session compacts meanwhile.
     const summarize: typeof summarizeAll = async (...args) => {
       broadcast(`turn.${turnId}`, { type: "compaction", phase: "start", sessionId: p.sessionId });
@@ -337,6 +351,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
           known.sent,
           store.messagesFor(entries, from).slice(prefix),
           ctx.config.compactionInstructions,
+          payCompaction,
         );
       } finally {
         broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
@@ -430,6 +445,8 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);
     }
     const served = result.servedBy ?? p;
+    if (compactionUsage.inputTokens > 0)
+      result = { ...result, usage: addUsage(result.usage, compactionUsage) };
     const parentId = await appendUsageEntry(store, p.sessionId, tip, {
       usage: result.usage,
       model: served.model,
