@@ -14,7 +14,9 @@ import {
   projectSessionView,
   resolveSmallModel,
   runChildTurn,
+  type SentRequest,
   type Summarizer,
+  summarizeAtEnd,
   summarizeTranscript,
   TOOL_SEARCH,
   type ToolSpec,
@@ -53,6 +55,10 @@ import { executeTurn, PROMPT_HOOK_SOURCE } from "./turn.ts";
 /** Fallback window for daemon-side proactive compaction, matching the
  *  former client default until the catalog supplies a real one. */
 const DEFAULT_SESSION_CONTEXT_WINDOW = 200_000;
+
+/** The last request of each recent session, with the entry it ends on: a compaction asks its summary there. */
+const sentRequests = new Map<string, { sent: SentRequest; tip: string | null }>();
+const SENT_SESSIONS = 16;
 
 /** The summarizer of a session's compaction: its own model writes the summary. With no key, the offline one. */
 export function sessionSummarizer(
@@ -315,6 +321,27 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       }
     };
     summarize.detailed = summarizeAll.detailed;
+    // The summary of the chain up to `from`, at the end of the last request: only while that request is in the chain.
+    const wholeAt = (from: string) => async (): Promise<string | undefined> => {
+      const known = sentRequests.get(p.sessionId);
+      const entries = store.load(p.sessionId);
+      if (known?.tip == null || !store.chainFor(entries, from).some((e) => e.id === known.tip))
+        return undefined;
+      const prefix = store.messagesFor(entries, known.tip).length;
+      if (prefix !== known.sent.request.messages.length) return undefined;
+      broadcast(`turn.${turnId}`, { type: "compaction", phase: "start", sessionId: p.sessionId });
+      try {
+        return await summarizeAtEnd(
+          ctx.adapterFor(p.provider),
+          ctx.http,
+          known.sent,
+          store.messagesFor(entries, from).slice(prefix),
+          ctx.config.compactionInstructions,
+        );
+      } finally {
+        broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
+      }
+    };
     if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
@@ -323,6 +350,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
     checkpoints.push(tipId);
     turnCheckpoints.set(p.sessionId, checkpoints);
     if (tipId) {
+      summarize.whole = wholeAt(tipId);
       const outcome = await compact(store, p.sessionId, tipId, tokenizer, threshold, summarize);
       tipId = outcome.tipId;
       compacted = outcome.compacted;
@@ -341,6 +369,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       // From the current tip, not the prompt: the steps this turn has done stay in the model's view.
       const from = tip ?? userEntry.id;
       const room = withOverhead(threshold, overheadTokens);
+      summarize.whole = wholeAt(from);
       const outcome = await compact(store, p.sessionId, from, tokenizer, room, summarize, 4, {
         force: true,
       });
@@ -379,7 +408,12 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
         })
       ).id;
     };
-    const hooks = { onContextOverflow, onMessage };
+    const onSent = (sent: SentRequest): void => {
+      sentRequests.delete(p.sessionId);
+      sentRequests.set(p.sessionId, { sent, tip });
+      for (const id of sentRequests.keys()) if (sentRequests.size > SENT_SESSIONS) sentRequests.delete(id);
+    };
+    const hooks = { onContextOverflow, onMessage, onSent };
     let result: Awaited<ReturnType<typeof executeTurn>>;
     try {
       result = await executeTurn(ctx, runParams, { clientId: context.clientId }, hooks);

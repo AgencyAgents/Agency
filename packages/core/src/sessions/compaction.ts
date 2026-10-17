@@ -458,6 +458,8 @@ export interface CompactionResult {
  */
 export type Summarizer = ((transcript: string, instructions: string) => Promise<string>) & {
   detailed?: boolean;
+  /** A summary of the whole chain from the request that the provider caches; undefined falls back to the chunks. */
+  whole?: () => Promise<string | undefined>;
 };
 
 /** The store-free half of compact: which entries fold into the summary, its text, and what stays. */
@@ -545,16 +547,19 @@ async function foldChain(
     while ((await countChainTokensAsync(carryForward, tokenizer)) > target && moveOldest()) {}
   }
 
+  // It covers the kept tail too, so the tail can shrink to the target with no new request.
+  const whole = await summarize.whole?.();
   for (;;) {
     passes += 1;
     const summarizeSet = chain.filter((e) => summarized.has(e.id)).filter(isMessageEntry);
-    const transcript = summarize.detailed
-      ? renderTranscript(summarizeSet.map((entry) => entry.message))
-      : collapseTranscript(summarizeSet).text;
-    const chunks = await splitTranscriptToCapAsync(transcript, countText, cap);
-    const parts: string[] = [];
-    for (const chunk of chunks) {
-      parts.push(await summarize(chunk, prompt));
+    const parts: string[] = whole === undefined ? [] : [whole];
+    if (whole === undefined) {
+      const transcript = summarize.detailed
+        ? renderTranscript(summarizeSet.map((entry) => entry.message))
+        : collapseTranscript(summarizeSet).text;
+      for (const chunk of await splitTranscriptToCapAsync(transcript, countText, cap)) {
+        parts.push(await summarize(chunk, prompt));
+      }
     }
     const rawDigest = parts.join("\n");
     const digest = CONTRACT_RE.test(rawDigest) ? rawDigest.replace(CONTRACT_RE, "").trimEnd() : rawDigest;
@@ -582,7 +587,7 @@ async function foldChain(
     };
     const probeCount = await countChainTokensAsync([probe, ...carryForward], tokenizer);
     if (probeCount <= target) break;
-    if (passes > MAX_TARGET_PASSES || !moveOldest()) break;
+    if ((whole === undefined && passes > MAX_TARGET_PASSES) || !moveOldest()) break;
   }
   return { summaryText, summarized, carryForward };
 }

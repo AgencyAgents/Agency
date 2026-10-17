@@ -1,5 +1,7 @@
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter } from "@agency/providers";
+import type { ProviderAdapter, ProviderRequest } from "@agency/providers";
+import type { ContentBlock, Message } from "@agency/schema";
+import { wholeCompactionPrompt } from "../prompt/compaction.ts";
 import type { Summarizer } from "./compaction.ts";
 
 export interface ModelAsk {
@@ -14,24 +16,71 @@ export interface ModelAsk {
 }
 
 /** One request with no tools, for the harness's own questions. Undefined for a failed request or a reply with no text. */
-export async function askModel(opts: ModelAsk, system: string, text: string): Promise<string | undefined> {
+export function askModel(opts: ModelAsk, system: string, text: string): Promise<string | undefined> {
+  return replyText(opts.adapter, opts.http, {
+    model: opts.model,
+    apiKey: opts.apiKey,
+    system,
+    messages: [{ role: "user", content: [{ type: "text", text }] }],
+    maxTokens: opts.maxTokens ?? 8192,
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+  });
+}
+
+async function replyText(
+  adapter: ProviderAdapter,
+  http: HttpClient,
+  request: ProviderRequest,
+): Promise<string | undefined> {
   try {
     let reply = "";
-    const request = {
-      model: opts.model,
-      apiKey: opts.apiKey,
-      system,
-      messages: [{ role: "user" as const, content: [{ type: "text" as const, text }] }],
-      maxTokens: opts.maxTokens ?? 8192,
-      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-    };
-    for await (const event of opts.adapter.stream(request, opts.http)) {
+    for await (const event of adapter.stream(request, http)) {
       if (event.type === "text_delta") reply += event.text;
     }
     return reply.trim() || undefined;
   } catch {
     return undefined;
   }
+}
+
+/** A request as the loop sent it, and whether the provider read a part of it from its cache. */
+export interface SentRequest {
+  request: ProviderRequest;
+  cached: boolean;
+  at: number;
+}
+
+/** The provider keeps a cached prefix about 5 minutes: an older request is sent again at full price. */
+const WARM_MS = 240_000;
+
+/**
+ * A summary of the history of `sent` and the `extra` messages after it, asked at their end: the provider reads that
+ * history from its cache, and the model sees all of it. Undefined for a cold cache, a failed request or no text.
+ */
+export function summarizeAtEnd(
+  adapter: ProviderAdapter,
+  http: HttpClient,
+  sent: SentRequest | undefined,
+  extra: Message[],
+  instructions?: string,
+  now = Date.now(),
+): Promise<string | undefined> {
+  if (!sent?.cached || now - sent.at > WARM_MS) return Promise.resolve(undefined);
+  const wanted = instructions?.trim();
+  const prompt: ContentBlock = {
+    type: "text",
+    text: wanted
+      ? `${wholeCompactionPrompt()}\n\nInstructions of the user for this summary. They come first where they disagree with the rules above:\n${wanted}`
+      : wholeCompactionPrompt(),
+  };
+  const messages = [...sent.request.messages, ...extra];
+  const last = messages.at(-1);
+  // Some providers refuse two user messages in a row: the prompt joins a last message of the user.
+  const asked: Message[] =
+    last?.role === "user"
+      ? [...messages.slice(0, -1), { ...last, content: [...last.content, prompt] }]
+      : [...messages, { role: "user", content: [prompt] }];
+  return replyText(adapter, http, { ...sent.request, messages: asked });
 }
 
 /**

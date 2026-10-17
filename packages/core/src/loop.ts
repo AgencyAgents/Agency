@@ -11,6 +11,7 @@ import type { HttpClient } from "@agency/net";
 import {
   type CacheSegment,
   type ProviderAdapter,
+  type ProviderRequest,
   type Scheduler,
   selectModel,
   type ThinkingLevel,
@@ -41,7 +42,7 @@ import {
   withOverhead,
 } from "./sessions/compaction.ts";
 import type { MessageOrigin } from "./sessions/entry.ts";
-import { modelSummarizer } from "./sessions/summarize.ts";
+import { modelSummarizer, type SentRequest, summarizeAtEnd } from "./sessions/summarize.ts";
 import type { TraceRecorder } from "./trace/recorder.ts";
 import { truncateToolResults } from "./truncate.ts";
 
@@ -185,6 +186,8 @@ export interface RunTurnOptions {
    *  the history for the retry (reactive compact-and-retry). Absent means
    *  the loop folds its own transcript in memory. */
   onContextOverflow?: (overheadTokens?: number) => Promise<Message[] | undefined>;
+  /** Runs after each model request: an owner that compacts later can ask its summary at the end of this request. */
+  onSent?: (sent: SentRequest) => void;
   /** The model's window in tokens: sizes the in-memory fold. Default 200k. */
   contextWindow?: number;
   /** `compactionLimit` of the config: the history is compacted at this size also when the window is larger. */
@@ -356,34 +359,34 @@ export async function runTurn(
     });
   }
   const collectWithFallback = async (): Promise<CollectedTurn> => {
-    const runOne = (model: string): Promise<CollectedTurn> =>
-      scheduler.schedule(
+    const runOne = async (model: string): Promise<CollectedTurn> => {
+      const request: ProviderRequest = {
+        model,
+        apiKey: options.apiKey,
+        system: options.systemPrompt,
+        ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
+        // A copy: the loop changes `messages` in place, and the request is kept for a later compaction.
+        messages: [...(options.keepToolResults ? messages : pruneStaleResults(messages))],
+        tools: toolDefs(),
+        maxTokens: options.maxTokensPerRequest ?? 8192,
+        thinkingLevel: options.thinkingLevel,
+        ...(options.vision === undefined ? {} : { vision: options.vision }),
+        ...(options.efforts === undefined ? {} : { efforts: options.efforts }),
+        signal: options.signal,
+      };
+      const turn = await scheduler.schedule(
         () =>
-          collectTurn(
-            adapter,
-            http,
-            {
-              model,
-              apiKey: options.apiKey,
-              system: options.systemPrompt,
-              ...(options.systemSegments !== undefined ? { systemSegments: options.systemSegments } : {}),
-              messages: options.keepToolResults ? messages : pruneStaleResults(messages),
-              tools: toolDefs(),
-              maxTokens: options.maxTokensPerRequest ?? 8192,
-              thinkingLevel: options.thinkingLevel,
-              ...(options.vision === undefined ? {} : { vision: options.vision }),
-              ...(options.efforts === undefined ? {} : { efforts: options.efforts }),
-              signal: options.signal,
-            },
-            options.onEvent,
-            options.streamIdleMs ?? adapter.streamIdleMs,
-          ),
+          collectTurn(adapter, http, request, options.onEvent, options.streamIdleMs ?? adapter.streamIdleMs),
         {
           onRetry: (attempt, message, next) => {
             options.onEvent?.({ type: "retry", attempt, message, next });
           },
         },
       );
+      lastSent = { request, cached: (turn.usage.cachedInputTokens ?? 0) > 0, at: Date.now() };
+      options.onSent?.(lastSent);
+      return turn;
+    };
     if (!routingActive || routeSelection.routed !== "cheap") {
       return runOne(options.model);
     }
@@ -402,23 +405,35 @@ export async function runTurn(
   let requestTokens = 0;
   let proactiveFolds = true;
   let costNoted = false;
-  const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> =>
-    compactMessages(
+  let lastSent: SentRequest | undefined;
+  const foldInMemory = (overheadTokens = 0): Promise<Message[] | undefined> => {
+    const summarize = modelSummarizer({
+      adapter,
+      http,
+      model: options.model,
+      apiKey: options.apiKey,
+      ...(options.maxTokensPerRequest === undefined ? {} : { maxTokens: options.maxTokensPerRequest }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.compactionInstructions === undefined
+        ? {}
+        : { instructions: options.compactionInstructions }),
+    });
+    const sent = lastSent;
+    summarize.whole = () =>
+      summarizeAtEnd(
+        adapter,
+        http,
+        sent,
+        messages.slice(sent?.request.messages.length ?? 0),
+        options.compactionInstructions,
+      );
+    return compactMessages(
       messages,
       tokenizerFor(options.provider ?? ""),
       withOverhead(compactionThreshold, overheadTokens),
-      modelSummarizer({
-        adapter,
-        http,
-        model: options.model,
-        apiKey: options.apiKey,
-        ...(options.maxTokensPerRequest === undefined ? {} : { maxTokens: options.maxTokensPerRequest }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        ...(options.compactionInstructions === undefined
-          ? {}
-          : { instructions: options.compactionInstructions }),
-      }),
+      summarize,
     );
+  };
   for (let iteration = 0; iteration < maxToolIterations; iteration++) {
     // One fold for each request: a long turn can fill the window more than once.
     let overflowRetried = false;

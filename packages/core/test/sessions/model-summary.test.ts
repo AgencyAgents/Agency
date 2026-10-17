@@ -136,3 +136,77 @@ test("the instructions of the user for a summary go to the summarizer after the 
   await modelSummarizer(ask)("the transcript", "RULES");
   expect(seen[1]?.system).toBe("RULES");
 });
+
+describe("a fold after a request that the provider cached", () => {
+  const run = async (cachedInputTokens: number) => {
+    const requests: ProviderRequest[] = [];
+    const isWhole = (r: ProviderRequest) => JSON.stringify(r.messages.at(-1)).includes("Stop the task now.");
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push(request);
+        if (isWhole(request) || request.system === compactionPrompt()) {
+          yield { type: "text_delta", text: "SUMMARY: the user wants the port changed to 8443" };
+          yield { type: "message_stop", stopReason: "end_turn", usage };
+          return;
+        }
+        if (requests.length === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "echo" };
+          yield { type: "tool_call_delta", id: "c1", inputJsonDelta: "{}" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield {
+            type: "message_stop",
+            stopReason: "tool_use",
+            usage: { inputTokens: 950, outputTokens: 1, cachedInputTokens },
+          };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage };
+      },
+    };
+    const result = await runTurn(adapter, new Scheduler({ maxAttempts: 1 }), noopHttp, {
+      identity: { type: "user" },
+      capabilities: FULL_CAPABILITIES,
+      systemPrompt: "sys",
+      tools: [
+        {
+          name: "echo",
+          description: "echo",
+          inputSchema: { type: "object", properties: {} },
+          handler: async () => ({ content: "echoed" }),
+        },
+      ],
+      model: "m",
+      apiKey: "k",
+      contextWindow: 1000,
+      session: Array.from({ length: 8 }, (_, i) =>
+        text(i % 2 === 0 ? "user" : "assistant", `message ${i} ${"word ".repeat(320)}`),
+      ),
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
+      "SUMMARY: the user wants the port changed to 8443",
+    );
+    return { requests, whole: requests.find(isWhole) };
+  };
+
+  test("asks the summary at the end of that request, so the provider reads the history from its cache", async () => {
+    const { requests, whole } = await run(900);
+    const first = requests[0] as ProviderRequest;
+    expect(whole?.system).toBe(first.system);
+    expect(JSON.stringify(whole?.tools)).toBe(JSON.stringify(first.tools));
+    expect(JSON.stringify(whole?.messages.slice(0, first.messages.length))).toBe(
+      JSON.stringify(first.messages),
+    );
+    // The tool result after that request goes too, with the prompt in the same user message.
+    expect(JSON.stringify(whole?.messages.at(-1))).toContain("echoed");
+    expect(requests.some((r) => r.system === compactionPrompt())).toBe(false);
+  });
+
+  test("with no cached tokens, the chunks of the transcript go to the summarizer as before", async () => {
+    const { requests, whole } = await run(0);
+    expect(whole).toBeUndefined();
+    expect(requests.some((r) => r.system === compactionPrompt())).toBe(true);
+  });
+});

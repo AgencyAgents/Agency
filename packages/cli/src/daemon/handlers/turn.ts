@@ -191,6 +191,7 @@ export async function executeTurn(
       message: import("@agency/schema").Message,
       origin?: import("@agency/core").MessageOrigin,
     ) => Promise<void>;
+    onSent?: (sent: import("@agency/core").SentRequest) => void;
   },
 ): Promise<RunTurnRpcResult> {
   const {
@@ -751,6 +752,7 @@ export async function executeTurn(
               taskDepth: (params as unknown as { taskDepth?: number }).taskDepth ?? 0,
               onEvent: wrappedOnEvent,
               ...(hooks?.onContextOverflow ? { onContextOverflow: hooks.onContextOverflow } : {}),
+              ...(hooks?.onSent ? { onSent: hooks.onSent } : {}),
               onMessage: onPrimaryMessage,
             });
           } finally {
