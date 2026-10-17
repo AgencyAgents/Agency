@@ -129,6 +129,7 @@ export const en = {
   "tool.process.unknown": "unknown process id: {id}",
   "tool.process.no_output": "no output yet from process {id}",
   "tool.process.exited": "[the process has exited]",
+  "tool.process.earlier_left_out": "[{chars} earlier characters left out]",
   "tool.process.still_running": "[still running after {seconds} s]",
   "tool.process.killed": "killed process {id}",
   "tool.process.none_running": "no background processes",

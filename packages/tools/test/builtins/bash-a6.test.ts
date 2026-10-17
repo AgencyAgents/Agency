@@ -69,6 +69,18 @@ describe("bash: timeout + spill + progress (A6)", () => {
     expect(rest.content).toContain("[the process has exited]");
   }, 30_000);
 
+  test("the output of a long log is its end, with the exit status after it", async () => {
+    const { manager, root } = setup();
+    const shell = resolveShell(process.platform);
+    const script = "for (let i = 0; i < 5000; i++) console.log('line ' + i + ' of a long build log')";
+    const proc = manager.spawn([shell.command, ...shell.buildArgs(`bun -e "${script}"`)], { cwd: root });
+    const out = await createProcessOutputTool(manager).handler({ id: proc.id, wait: 20 }, { signal });
+    expect(out.content).toMatch(/^\[\d+ earlier characters left out\]/);
+    expect(out.content).toContain("line 4999 of a long build log");
+    expect(out.content).not.toContain("line 0 of");
+    expect(out.content.endsWith("[the process has exited]")).toBe(true);
+  }, 30_000);
+
   test("a command with a timeout is killed at it, not moved to the background", async () => {
     const { deps, manager, root } = setup();
     const tool = createBashTool(deps, resolveShell(process.platform), { cwd: root }, manager, 500);

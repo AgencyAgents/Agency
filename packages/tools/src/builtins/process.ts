@@ -2,6 +2,17 @@ import { t } from "@agency/i18n";
 import type { ToolDeps, ToolSpec } from "../contract.ts";
 import type { ProcessManager } from "../process-manager.ts";
 import { str, summarize } from "../render.ts";
+import { compactOutput } from "../truncate.ts";
+
+/** The newest output matters most in a long log, and the result cap of the loop keeps only the start. */
+const TAIL_CHARS = 30_000;
+
+function tailOf(log: string): string {
+  const text = compactOutput(log);
+  if (text.length <= TAIL_CHARS) return text;
+  return `${t("tool.process.earlier_left_out", { chars: text.length - TAIL_CHARS })}
+${text.slice(-TAIL_CHARS)}`;
+}
 
 function unknown(id: string): { content: string; isError: true } {
   return { content: t("tool.process.unknown", { id }), isError: true };
@@ -41,7 +52,7 @@ export function createProcessOutputTool(processManager: ProcessManager): ToolSpe
       }
       const logs = processManager.getLogs(str(input.id));
       if (logs === undefined) return unknown(str(input.id));
-      const content = logs.length === 0 ? t("tool.process.no_output", { id: str(input.id) }) : logs;
+      const content = logs.length === 0 ? t("tool.process.no_output", { id: str(input.id) }) : tailOf(logs);
       return {
         content: status
           ? `${content}
