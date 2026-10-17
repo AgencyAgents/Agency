@@ -37,6 +37,24 @@ function limitOrAll(input: unknown): number | undefined {
   return typeof input === "number" && Number.isInteger(input) && input >= 1 ? input : undefined;
 }
 
+/** The loop cuts a result at 2000 lines or 50 KB: a read stops first, at a whole line, and says where the rest starts. */
+const HEAD_LINES = 2000;
+const HEAD_BYTES = 45_000;
+
+function headOf(content: string): { content: string } {
+  const lines = content.split("\n");
+  let kept = 0;
+  for (let used = 0; kept < lines.length && kept < HEAD_LINES; kept++) {
+    used += Buffer.byteLength(lines[kept] as string, "utf8") + 1;
+    if (used > HEAD_BYTES) break;
+  }
+  // One line over the limit (a minified file) is the loop's to cut.
+  if (kept === 0 || kept >= lines.length) return { content };
+  return {
+    content: `${lines.slice(0, kept).join("\n")}\n[The file has ${lines.length} lines: these are lines 1 to ${kept}. Read with offset ${kept + 1} for the rest, or grep for what you need.]`,
+  };
+}
+
 function numberedSlice(content: string, offset: number, limit: number | undefined): string {
   const lines = content.split("\n");
   const selected = lines.slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit);
@@ -121,7 +139,7 @@ export function createReadTool(deps: ToolDeps, options?: ReadToolOptions): ToolS
           return { content };
         }
       }
-      if (!slicing) return { content };
+      if (!slicing) return headOf(content);
       return { content: numberedSlice(content, offset, limit) };
     },
   };
