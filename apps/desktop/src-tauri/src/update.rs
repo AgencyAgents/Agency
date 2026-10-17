@@ -10,6 +10,10 @@ use tokio::sync::Mutex;
 pub struct Pending(Mutex<Option<Update>>);
 
 pub async fn check(app: &AppHandle, pending: &Pending) -> Result<Option<Value>, String> {
+    // An npm copy updates with `npm update -g agencyharness`: the installer would add a second copy.
+    if std::env::current_exe().is_ok_and(|p| p.components().any(|c| c.as_os_str() == "node_modules")) {
+        return Ok(None);
+    }
     let mut builder = app.updater_builder();
     if let Ok(url) = std::env::var("AGENCY_UPDATE_URL") {
         let url = url.parse().map_err(|e| format!("AGENCY_UPDATE_URL: {e}"))?;
