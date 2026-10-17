@@ -159,3 +159,30 @@ test("context: fork runs the skill in a subagent of its agent type, and the mode
   );
   expect(answer).toEqual(["The skill hunt ran in a subagent. Its answer:\n\nthe bug is in parse()"]);
 });
+
+test("in auto mode the grant of a skill answers before the reviewer", async () => {
+  const ran: string[] = [];
+  const bash: ToolSpec = {
+    name: "bash",
+    description: "runs a command",
+    inputSchema: {},
+    riskTier: "dangerous",
+    handler: async (input) => {
+      ran.push(String(input.command));
+      return { content: "ok" };
+    },
+  };
+  await runTurn(calls([{ name: "bash", input: { command: "npm run build" } }]), new Scheduler(), noopHttp, {
+    identity: { type: "user" },
+    capabilities: FULL_CAPABILITIES,
+    systemPrompt: "sys",
+    tools: [bash],
+    model: "m",
+    apiKey: "k",
+    session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+    toolPolicy: new PermissionsGate({ workspaceRoot: process.cwd(), permissions: {} }),
+    reviewApproval: async () => ({ allow: false, reason: "the reviewer says no" }),
+    grantedTools: ["Bash(npm *)"],
+  });
+  expect(ran).toEqual(["npm run build"]);
+});

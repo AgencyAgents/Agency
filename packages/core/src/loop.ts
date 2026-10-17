@@ -285,12 +285,15 @@ export async function runTurn(
   http: HttpClient,
   options: RunTurnOptions,
 ): Promise<RunTurnResult> {
-  turnGrants.set(options, [...(options.grantedTools ?? [])]);
+  const grants = [...(options.grantedTools ?? [])];
+  turnGrants.set(options, grants);
   const messages = [...options.session];
   // The reviewer of auto mode reads the transcript of this turn as it grows.
   const review = options.reviewApproval;
   const toolOptions: RunTurnOptions =
     review === undefined ? options : { ...options, reviewApproval: (request) => review(request, messages) };
+  // Grants are kept by options object: each copy of the options shares the one list.
+  turnGrants.set(toolOptions, grants);
   const append = async (message: Message, origin?: MessageOrigin): Promise<void> => {
     messages.push(message);
     await options.onMessage?.(message, origin);
