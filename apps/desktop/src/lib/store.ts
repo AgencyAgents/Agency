@@ -692,12 +692,14 @@ export async function removeProject(root: string): Promise<void> {
 export async function trustProject(root: string): Promise<void> {
   try {
     await host.trust(root);
-    // A running daemon read the trust at start: it leaves once idle, and the host starts a new one.
-    if (project(root)?.conn === "up") await host.rpc(root, "daemon_restart").catch(() => {});
-    else {
+    if (project(root)?.conn === "down") {
       patchProject(root, { untrusted: false, conn: "connecting", error: null });
       await host.restart(root);
+      return;
     }
+    // A daemon that runs, or still starts, read the trust at its start: it leaves once idle, and the host starts a
+    // new one. A restart of the host during a start did nothing, and the folder stayed untrusted.
+    await rpcWhenUp(root, "daemon_restart").catch(() => {});
   } catch (error) {
     toast(errorText(error), { tone: "err" });
   }
