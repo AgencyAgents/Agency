@@ -67,6 +67,24 @@ describe.skipIf(!runs)("OS sandbox: real commands", () => {
     },
   );
 
+  test("a write or network error names the rule of the sandbox that it can come from", async () => {
+    const ws = dir(tmpdir());
+    const outside = dir(homedir());
+    const sandbox = new OsSandboxBackend(ws);
+    expect(await sandbox.isAvailable()).toBe(true);
+    const write = await sandbox.exec(["sh", "-c", `echo hi > '${join(outside, "x.txt")}'`], { cwd: ws });
+    expect(write.stderr).toContain("agency sandbox: this command runs in the sandbox");
+    const net = await sandbox.exec(
+      ["sh", "-c", "echo 'curl: (6) Could not resolve host: example.com' >&2; exit 6"],
+      {
+        cwd: ws,
+      },
+    );
+    expect(net.stderr).toContain("agency sandbox: this command has no network");
+    const fine = await sandbox.exec(["sh", "-c", "echo ok"], { cwd: ws });
+    expect(fine.stderr).toBe("");
+  });
+
   const domainsRun =
     runs && Bun.which("curl") !== null && (process.platform !== "linux" || Bun.which("socat") !== null);
   test.skipIf(!domainsRun)(

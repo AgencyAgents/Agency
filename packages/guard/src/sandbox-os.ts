@@ -352,6 +352,30 @@ export class OsSandboxBackend implements SandboxBackend {
     );
   }
 
+  /**
+   * The rule of the sandbox that an error in the output can come from. Without it a model reads "Read-only file
+   * system" or "Could not resolve host" as a fault to work around, and tries again in other ways.
+   */
+  private violations(output: string): string[] {
+    const notes: string[] = [];
+    if (/Read-only file system|EROFS|Operation not permitted|Access to the path .* is denied/i.test(output)) {
+      notes.push(
+        "agency sandbox: this command runs in the sandbox of the operating system. It can write only in the workspace and the temporary folder, and not in .git/hooks, .git/config, .agency or the hook and MCP files of agents. A write error above can come from that: do not try the same write in another way.",
+      );
+    }
+    const offline =
+      /Could not resolve host|Temporary failure in name resolution|Name or service not known|ENOTFOUND|EAI_AGAIN|getaddrinfo|Network is unreachable|ENETUNREACH/i;
+    if (!this.allowNetwork && offline.test(output)) {
+      const domains = this.domains();
+      notes.push(
+        domains?.length
+          ? `agency sandbox: this command reaches only ${domains.join(", ")} (sandbox.allowedDomains), through a proxy. A network error above can come from that: do not retry it. Say that the task needs another host in sandbox.allowedDomains.`
+          : "agency sandbox: this command has no network (sandbox.allowNetwork is off). A network error above comes from that: do not retry it. Do the work without the network, or say that the task needs sandbox.allowNetwork.",
+      );
+    }
+    return notes;
+  }
+
   /** True when the sandbox program of this platform starts a command. */
   async isAvailable(): Promise<boolean> {
     if (!["linux", "darwin", "win32"].includes(this.platform)) return false;
@@ -455,10 +479,18 @@ export class OsSandboxBackend implements SandboxBackend {
     try {
       const [stdout, output, exitCode] = await Promise.all([stdoutText, stderrText, child.exited]);
       const made = sweep();
+      const notes = [
+        ...(made.length === 0
+          ? []
+          : [
+              `agency sandbox: removed ${made.join(", ")}, which this command made: a command may not make files whose hooks or servers run outside the sandbox. Edit such a file with the edit or write tool, which asks the user.`,
+            ]),
+        ...this.violations(`${stdout}\n${output}`),
+      ];
       const stderr =
-        made.length === 0
+        notes.length === 0
           ? output
-          : `${output}${output && !output.endsWith("\n") ? "\n" : ""}agency sandbox: removed ${made.join(", ")}, which this command made: a command may not make files whose hooks or servers run outside the sandbox. Edit such a file with the edit or write tool, which asks the user.\n`;
+          : `${output}${output && !output.endsWith("\n") ? "\n" : ""}${notes.join("\n")}\n`;
       if (timedOut) {
         throw new AgencyError(ErrorCode.INTERNAL, "sandboxed command timed out", {
           source: "sandbox-os",

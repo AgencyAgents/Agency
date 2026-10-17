@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **A sandboxed command that fails names the rule it can come from**, as Cursor found agents need: under
+  `sandbox.backend: "os"`, "Read-only file system" or "Could not resolve host" in the output of a command gets a
+  line that says the command can write only in the workspace, or has no network (or only the hosts of
+  `allowedDomains`), and not to retry it in another way. Before, a model read these as faults to work around.
 - **Read-only calls run together, and start while the reply streams**, as in Claude Code: `fetch`,
   `websearch`, a read-only shell command with no `cd` (`git status`, `ls`, `cat`) and an MCP tool with
   `readOnlyHint` now run beside the other read-only calls of a reply, where before each ran alone. A read-only
