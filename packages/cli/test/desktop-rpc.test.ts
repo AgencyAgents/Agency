@@ -175,6 +175,14 @@ test("daemon_restart waits for a running turn, then leaves once", async () => {
   expect(shutdowns).toBe(1);
 }, 15_000);
 
+test("daemon_restart with no turn running leaves at once, so the app reconnects fast", async () => {
+  let shutdowns = 0;
+  const { call } = await start({ onIdleShutdown: () => shutdowns++ });
+  expect((await call("daemon_restart")).result).toEqual({ restarting: true, activeTurns: 0 });
+  await Bun.sleep(300);
+  expect(shutdowns).toBe(1);
+});
+
 test("provider_connect validates, then stores in the key store; provider_disconnect removes it", async () => {
   const { call, keychain } = await start();
   const connected = await call("provider_connect", { providerId: "openai", apiKey: "sk-test" });

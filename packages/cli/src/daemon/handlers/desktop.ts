@@ -18,7 +18,8 @@ import { createHttpValidator, isValidProviderId } from "../../connect.ts";
 import type { DaemonContext } from "../types.ts";
 
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const RESTART_POLL_MS = 1_000;
+/** A restart waits for the running turns; an idle daemon leaves within this time, and the app starts the next one. */
+const RESTART_POLL_MS = 100;
 
 /** Labels of the skill folders of other agents, by the folder that holds the `skills` directory. */
 const FOREIGN_ORIGINS: Array<[string, string]> = [
