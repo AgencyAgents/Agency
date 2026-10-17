@@ -110,5 +110,7 @@ test("tools get the network limit of shell commands: none or the allowed hosts u
   expect(sandboxNetwork({ backend: "os", allowedDomains: ["github.com"] })).toEqual(["github.com"]);
   expect(sandboxNetwork({ backend: "docker" })).toBe("*");
   expect(sandboxNetwork({ backend: "docker", egress: [] })).toBe("none");
-  expect(sandboxNetwork({ backend: "docker", egress: ["registry.npmjs.org"] })).toEqual(["registry.npmjs.org"]);
+  expect(sandboxNetwork({ backend: "docker", egress: ["registry.npmjs.org"] })).toEqual([
+    "registry.npmjs.org",
+  ]);
 });

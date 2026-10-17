@@ -180,7 +180,8 @@ export function createSandboxBackend(
 export function secretShellValues(shellEnv: Record<string, string> | undefined): string[] {
   return Object.entries(shellEnv ?? {}).flatMap(([name, value]) =>
     value &&
-    (/KEY|SECRET|TOKEN|PASS|PWD|AUTH(?!OR)|CREDENTIAL|PRIVATE/i.test(name) || /:\/\/[^/\s:@]+:[^/\s@]+@/.test(value))
+    (/KEY|SECRET|TOKEN|PASS|PWD|AUTH(?!OR)|CREDENTIAL|PRIVATE/i.test(name) ||
+      /:\/\/[^/\s:@]+:[^/\s@]+@/.test(value))
       ? [value]
       : [],
   );
