@@ -590,6 +590,12 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
     todoStore,
     warnPersistence,
   } = daemon;
+  /** The environment block that the session holds, without the memory notes that follow it. */
+  const parentEnvironment = (sessionId: string | undefined): string | undefined => {
+    const block = sessionId === undefined ? undefined : daemon.sessionEnvironments.get(sessionId);
+    const end = block?.indexOf("</environment>") ?? -1;
+    return end === -1 ? undefined : block?.slice(0, end + "</environment>".length);
+  };
   const spawnMaxDepth = (config as unknown as { spawn?: { maxDepth?: number } }).spawn?.maxDepth ?? 1;
   // An agent with a description is a type that the model can choose: the roster holds the files of the config folder and the workspace.
   type AgentType = {
@@ -715,10 +721,13 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           trustStore: daemon.trustStore,
         }),
         toolDescriptions: [],
-        // Without it a worker does not know its folder, its shell or the date.
-        context: buildEnvironmentBlock(
-          gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
-        ),
+        // Without it a worker does not know its folder, its shell or the date. The block of the parent session: a new
+        // one per worker counted the changed files again, and the workers of a session shared no cached prefix.
+        context:
+          parentEnvironment(ctx.sessionId) ??
+          buildEnvironmentBlock(
+            gatherEnvironmentInfo({ cwd: options.workspaceRoot, shell: daemon.shellLabel }),
+          ),
       });
 
       const freshSession: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
