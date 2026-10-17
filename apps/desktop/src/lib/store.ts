@@ -76,6 +76,8 @@ export interface LiveTurn {
   mine: boolean;
   /** The model gave its last answer; the turn settles soon. */
   ending?: boolean;
+  /** The daemon summarizes earlier messages to free context. */
+  compacting?: boolean;
 }
 
 export interface Toast {
@@ -93,6 +95,7 @@ interface Prefs {
   side: boolean;
   panel: boolean;
   fold: Record<string, boolean>;
+  /** The session opened last: a launch opens a new session in its project. */
   last: { root: string; id: string } | null;
   /** Model refs picked last, newest first. */
   recent: string[];
@@ -112,11 +115,14 @@ export const MODES: { value: PermissionMode; label: string; desc: string }[] = [
   { value: "auto", label: "Auto", desc: "Edits run. A reviewer model answers the other asks." },
 ];
 export const EFFORT_LABEL: Record<Effort, string> = {
+  minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
+  xhigh: "Extra high",
   max: "Max",
 };
+const EFFORT_ORDER = Object.keys(EFFORT_LABEL) as Effort[];
 
 function loadPrefs(): Prefs {
   const defaults: Prefs = {
@@ -360,8 +366,10 @@ function onTurnEvent(root: string, turnId: string, data: Record<string, unknown>
       break;
     }
     case "turn_complete": {
-      const usage = data.usage as { inputTokens?: number; cachedInputTokens?: number } | undefined;
-      if (usage) setState("live", key, "tokens", (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0));
+      // inputTokens counts the cached part too. The reply joins the context of the next request.
+      const usage = data.usage as { inputTokens?: number; outputTokens?: number } | undefined;
+      const size = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+      if (size > 0) setState("live", key, "tokens", size);
       if (data.stopReason !== "tool_use" && state.live[key]) setState("live", key, "ending", true);
       if (data.stopReason !== "tool_use" && !state.live[key]?.mine) {
         // A turn another client started has no promise here: its end is the last turn_complete.
@@ -369,6 +377,9 @@ function onTurnEvent(root: string, turnId: string, data: Record<string, unknown>
       }
       break;
     }
+    case "compaction":
+      setState("live", key, "compacting", data.phase === "start");
+      break;
     case "fallback":
       setState(
         "live",
@@ -480,15 +491,12 @@ export async function boot(): Promise<void> {
     "projects",
     projects.map((p) => blankProject(p)),
   );
-  const last = state.prefs.last;
-  if (last && projects.some((p) => p.path === last.root)) {
-    setState({ current: last, view: "session" });
-  } else if (projects.length > 0) {
-    setState({ view: "new", newRoot: projects[0]?.path ?? null });
+  const last = state.prefs.last?.root;
+  if (projects.length > 0) {
+    setState({ view: "new", newRoot: projects.find((p) => p.path === last)?.path ?? projects[0]?.path });
   }
   setState("booted", true);
   for (const p of projects) void host.connect(p.path, (frame) => onFrame(p.path, frame));
-  if (state.current) void loadSession(state.current.root, state.current.id);
   void host.onOpenPath((path) => void addProject(path));
   const launched = await host.launchPath().catch(() => null);
   if (launched) await addProject(launched);
@@ -713,23 +721,27 @@ export interface ModelChoice {
   desc: string;
   contextWindow: number;
   thinking: boolean;
+  efforts?: Effort[];
   free: boolean;
 }
 
 type CatalogModel = ProvidersList["all"][number]["models"][number];
 
-/** Reasoning levels the provider's API distinguishes: OpenAI-style APIs stop at high, so max would send high. */
+/** The levels the catalog lists for the model. Without a list, the levels the provider's API distinguishes:
+ *  OpenAI-style APIs stop at high, so max would send high. */
 export function effortsOf(m: ModelChoice | undefined): Effort[] {
   if (!m?.thinking) return [];
+  if (m.efforts) return m.efforts;
   return m.provider === "anthropic" || m.provider === "google"
     ? ["low", "medium", "high", "max"]
     : ["low", "medium", "high"];
 }
 
-/** The saved effort, lowered to the highest level the model has. */
+/** The saved effort, else the nearest lower level the model has, else its lowest. */
 export function effortFor(m: ModelChoice | undefined): Effort | undefined {
   const levels = effortsOf(m);
-  return levels.includes(state.prefs.effort) ? state.prefs.effort : levels.at(-1);
+  const at = EFFORT_ORDER.indexOf(state.prefs.effort);
+  return levels.filter((l) => EFFORT_ORDER.indexOf(l) <= at).at(-1) ?? levels[0];
 }
 
 const choiceCache = new WeakMap<object, { config: unknown; list: ModelChoice[] }>();
@@ -760,6 +772,7 @@ export function modelChoices(root: string | null | undefined): ModelChoice[] {
       desc: names.get(provider) ?? provider,
       contextWindow: m.contextWindow,
       thinking: m.capabilities?.thinking ?? false,
+      efforts: m.efforts,
       // A model of the user config has no price in the catalog: zero there means unknown, not free.
       free:
         m.id.endsWith(":free") ||
@@ -1018,8 +1031,11 @@ export function usageOf(view: SessionView | null): {
   if (!view) return out;
   for (const e of chain(view.entries, view.tipId)) {
     if (e.type !== "usage" || !e.usage) continue;
-    out.tokens = e.usage.inputTokens + (e.usage.cachedInputTokens ?? 0);
-    out.input += e.usage.inputTokens + (e.usage.cachedInputTokens ?? 0);
+    // A cancelled or failed turn reports nothing: the context is still that of the turn before.
+    // Entries older than contextTokens hold only the sum of the turn's requests.
+    const size = e.contextTokens ?? e.usage.inputTokens;
+    if (size > 0) out.tokens = size;
+    out.input += e.usage.inputTokens;
     out.cached += e.usage.cachedInputTokens ?? 0;
     out.costUsd += typeof e.costUsd === "number" ? e.costUsd : (e.usage.costUsd ?? 0);
   }

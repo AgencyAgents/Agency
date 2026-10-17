@@ -10,7 +10,6 @@ import {
   Show,
   Switch,
 } from "solid-js";
-import { tokens } from "../lib/format.ts";
 import {
   type Failure,
   keyOf,
@@ -254,7 +253,7 @@ function Parts(props: { parts: Part[]; id: string; live?: LiveTurn; elapsed?: st
 
 const secs = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 
-/** Model, time to first token, output speed, tokens and duration of a finished turn. */
+/** Model, time to first token, output speed and duration of a finished turn. */
 function Footer(props: { root: string; turn: Turn }) {
   const s = () => props.turn.stats;
   const label = () => {
@@ -298,17 +297,12 @@ function Footer(props: { root: string; turn: Turn }) {
       <Show when={s()?.ttftMs}>
         {(ms) => <span title="Time from the request to the first streamed token">{secs(ms())} latency</span>}
       </Show>
-      <Show when={rate()}>
-        <span title="Output tokens per second while the model streamed">{rate()} tok/s</span>
-      </Show>
-      <Show when={s()}>
-        {(x) => (
-          <span
-            title={`${x().inputTokens.toLocaleString()} input and ${x().outputTokens.toLocaleString()} output tokens`}
-          >
-            {tokens(x().outputTokens)} tokens out
-          </span>
-        )}
+      <Show when={s() && rate()}>
+        <span
+          title={`Output tokens per second while the model streamed. ${s()?.inputTokens.toLocaleString()} input and ${s()?.outputTokens.toLocaleString()} output tokens.`}
+        >
+          {rate()} tok/s
+        </span>
       </Show>
       <Show when={took()}>
         <span>{took()}</span>
@@ -371,6 +365,7 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
       return `It matches the rule ${source.replace(/^rule:/, "")}, which asks first.`;
     if (state.prefs.mode === "ask") return "Manual mode asks before each edit and command.";
     if (state.prefs.mode === "allow-edits") return "Accept edits mode still asks before commands.";
+    if (command()) return "It is not a read-only command, so it asks first.";
     return `This ${r().riskTier ?? ""} tool asks first.`.replace("  ", " ");
   };
   return (
@@ -569,7 +564,14 @@ export function Transcript(props: { root: string; id: string }) {
                       </Show>
                     )}
                   </Show>
-                  <Show when={!l().ending && l().parts.at(-1)?.kind !== "work"}>
+                  <Show when={l().compacting}>
+                    <div class="status">
+                      <Spinner size={12} />
+                      <span class="shimmer">Compacting the session</span>
+                      <span class="work-time">{elapsed()}</span>
+                    </div>
+                  </Show>
+                  <Show when={!l().compacting && !l().ending && l().parts.at(-1)?.kind !== "work"}>
                     <div class="status">
                       <Spinner size={12} />
                       <span class="shimmer">Working</span>

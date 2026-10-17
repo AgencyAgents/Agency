@@ -5,6 +5,7 @@ import { type Environment, FULL_NETWORK_ONLY } from "../lib/environments.ts";
 import { errorText, host } from "../lib/host.ts";
 import {
   applyEnvironment,
+  EFFORT_LABEL,
   MODES,
   modelChoices,
   project,
@@ -998,6 +999,19 @@ export default function Settings(props: { onClose?: () => void }) {
         : list.map((x, k) => (k === i ? ([handle, entry] as [string, Json]) : x));
     return write("agents", Object.fromEntries(next));
   }
+  /** An agent lives in a file of the project or in the config: both go. Writing the rest of the roster to the
+   *  config would copy the project's agents into every other project. */
+  async function removeAgent(handle: string): Promise<void> {
+    const r = root();
+    if (!r || !handle) return;
+    try {
+      await rpcWhenUp(r, "agents_remove", { handle });
+    } catch (e) {
+      toast(errorText(e), { tone: "err" });
+      return;
+    }
+    if (await write(`agents.${handle}`, null)) toast(`Removed ${handle}`);
+  }
   const agentModelOptions = (): [string, string][] => {
     const opts: [string, string][] = [
       ["", "Default"],
@@ -1066,13 +1080,8 @@ export default function Settings(props: { onClose?: () => void }) {
         pseg(
           "effort",
           "Reasoning effort",
-          "Default effort for models that support it.",
-          [
-            ["low", "Low"],
-            ["medium", "Medium"],
-            ["high", "High"],
-            ["max", "Max"],
-          ],
+          "Default effort. A model without this level uses the nearest lower one it has.",
+          Object.entries(EFFORT_LABEL),
           () => state.prefs.effort,
           (v) => savePrefs({ effort: v as Effort }),
         ),
@@ -1546,10 +1555,7 @@ export default function Settings(props: { onClose?: () => void }) {
               ]}
               editTitle={(i) => (i === null ? "New agent" : `Edit ${agents()[i]?.[0] ?? "agent"}`)}
               save={saveAgent}
-              remove={(i) => {
-                const left = Object.fromEntries(agents().filter((_, k) => k !== i));
-                void write("agents", Object.keys(left).length ? left : null);
-              }}
+              remove={(i) => void removeAgent(agents()[i]?.[0] ?? "")}
             />
           ),
         },

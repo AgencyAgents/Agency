@@ -24,6 +24,8 @@ export interface Entry {
   usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number; costUsd?: number };
   model?: string;
   summary?: string;
+  /** On a usage entry: tokens of the turn's last request, the context size. `usage` sums every request. */
+  contextTokens?: number;
   [key: string]: unknown;
 }
 
@@ -76,6 +78,8 @@ export interface ProviderSummary {
     pricing?: { inputPerMTok?: number; outputPerMTok?: number };
     status?: "alpha" | "beta" | "deprecated" | "active";
     releaseDate?: string;
+    /** The reasoning levels from the catalog. Empty: reasoning only turns on or off. */
+    efforts?: Effort[];
   }[];
 }
 
@@ -86,7 +90,7 @@ export interface ProvidersList {
 }
 
 export type PermissionMode = "ask" | "plan" | "allow-edits" | "auto";
-export type Effort = "low" | "medium" | "high" | "max";
+export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface SendResult {
   stopReason: string;

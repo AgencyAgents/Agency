@@ -1422,7 +1422,7 @@ header.bar {
 
 .pn {
   position: absolute;
-  right: max(16px, calc((100% - 832px) / 2 + 2px));
+  right: 14px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
