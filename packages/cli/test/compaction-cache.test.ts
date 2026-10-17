@@ -29,7 +29,8 @@ const tempDir = (prefix: string) => {
   return dir;
 };
 
-const isWhole = (r: ProviderRequest) => JSON.stringify(r.messages.at(-1)).includes("Stop the task now.");
+const isWhole = (r: ProviderRequest) =>
+  JSON.stringify(r.messages.at(-1)).includes("This message is from the harness");
 
 test("a compaction before a turn asks its summary at the end of the last request of the session", async () => {
   const ws = tempDir("agency-ccache-ws-");

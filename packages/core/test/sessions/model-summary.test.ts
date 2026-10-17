@@ -140,7 +140,8 @@ test("the instructions of the user for a summary go to the summarizer after the 
 describe("a fold after a request that the provider cached", () => {
   const run = async (cachedInputTokens: number) => {
     const requests: ProviderRequest[] = [];
-    const isWhole = (r: ProviderRequest) => JSON.stringify(r.messages.at(-1)).includes("Stop the task now.");
+    const isWhole = (r: ProviderRequest) =>
+      JSON.stringify(r.messages.at(-1)).includes("This message is from the harness");
     const adapter: ProviderAdapter = {
       family: "fake",
       async *stream(request): AsyncIterable<StreamEvent> {

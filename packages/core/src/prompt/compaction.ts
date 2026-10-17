@@ -24,8 +24,10 @@ export function compactionPrompt(): string {
 /** The last message of a compaction that the model writes at the end of the history it summarizes. */
 export function wholeCompactionPrompt(): string {
   return (
-    "Stop the task now. The conversation above will be replaced by a summary that you write now, followed by its " +
-    "newest messages word for word. Do not call tools. Reply only with the summary.\n\n" +
+    "This message is from the harness, not the user. Write a summary of the conversation above for yourself: it " +
+    "replaces the conversation, its newest messages follow it word for word, and then you go on with the task with " +
+    "all your tools. Reply with the summary text only; a tool call in this reply is refused. The summary must not " +
+    "mention this message.\n\n" +
     "Sections: the user's requests and rules in their own words; decisions and their reasons; files read and " +
     "changed, with what changed; commands run and their results; errors and their fixes; the state of the work; " +
     "the next step. Keep exact paths, names, commands and error texts. Keep the summary under 6000 tokens."
