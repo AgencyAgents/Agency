@@ -93,6 +93,8 @@ export type AnyToolSpec = ToolSpec<Record<string, unknown>>;
 /** The model is told one time when this number of tool steps is left, and when this share of the cost limit is spent. */
 const LOW_STEPS = 5;
 const COST_NOTE_SHARE = 0.8;
+/** The same failure of the same call this many times in a turn gets a note to the model. */
+const REPEATED_FAILURES = 3;
 
 export interface Budget {
   maxTokens?: number;
@@ -344,6 +346,8 @@ export async function runTurn(
   // dispatched peers. The solo team keeps its existing semantics: a runaway
   // loop is capped by maxToolIterations, not by input-identity heuristics.
   const doomHistory: string[] = [];
+  /** Failures of this turn by call and error: a model that sends the same failing call again only pays for it. */
+  const failures = new Map<string, number>();
   const doomDetection = options.doomLoopDetection === true;
   const routeSelection = selectModel(options.model, options.cheapModel, {
     ...(options.taskKind !== undefined ? { kind: options.taskKind } : {}),
@@ -669,6 +673,18 @@ export async function runTurn(
         notes.push(
           `${LOW_STEPS} tool steps are left in this turn. Finish the task, or say what is not done.`,
         );
+      }
+      for (const [index, call] of toolCalls.entries()) {
+        const result = results[index];
+        if (result?.type !== "tool_result" || !result.isError) continue;
+        const key = `${call.name}:${JSON.stringify(call.input)}:${result.content}`;
+        const times = (failures.get(key) ?? 0) + 1;
+        failures.set(key, times);
+        if (times === REPEATED_FAILURES) {
+          notes.push(
+            `${call.name} failed ${times} times with the same input and the same error. Do not send it again unchanged: change the input or the approach, or say what blocks you.`,
+          );
+        }
       }
       const costLimit = options.budget?.maxCostUsd;
       if (!costNoted && costLimit !== undefined && spentCostUsd >= costLimit * COST_NOTE_SHARE) {
