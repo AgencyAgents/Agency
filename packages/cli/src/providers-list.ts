@@ -27,6 +27,7 @@ export interface ProviderListModel {
   releaseDate?: string;
   /** Provider API base URL from the catalog, for gateway-style providers. */
   apiBaseURL?: string;
+  efforts?: ModelInfo["efforts"];
 }
 
 export interface ProviderListEntry {
@@ -52,6 +53,7 @@ function toListModel(model: ModelInfo): ProviderListModel {
     status: model.status,
     releaseDate: model.releaseDate,
     apiBaseURL: model.apiBaseURL,
+    ...(model.efforts ? { efforts: model.efforts } : {}),
   };
 }
 

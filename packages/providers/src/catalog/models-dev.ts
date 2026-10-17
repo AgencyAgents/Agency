@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { HttpClient } from "@agency/net";
 import { z } from "zod";
 import type { CachedCatalog } from "../catalog-cache.ts";
+import { ThinkingLevel } from "../types.ts";
 import {
   BUILTIN_MODELS,
   CATALOG_CACHE_VERSION,
@@ -65,6 +66,9 @@ const ModelsDevModelSchema = z.object({
   release_date: z.string().optional(),
   attachment: z.boolean().optional(),
   reasoning: z.boolean().optional(),
+  reasoning_options: z
+    .array(z.object({ type: z.string(), values: z.array(z.string().nullable()).optional() }))
+    .optional(),
   temperature: z.boolean().optional(),
   tool_call: z.boolean().optional(),
   cost: ModelsDevCostSchema.optional(),
@@ -100,6 +104,13 @@ const PER_MTOK = 1_000_000;
 /** The generic client package that makes any OpenAI-compatible endpoint work. */
 const DEFAULT_NPM = "@ai-sdk/openai-compatible";
 
+/** Effort values as listed, in ThinkingLevel order. "none" and unknown words drop out. */
+function effortsOf(options: ModelsDevModel["reasoning_options"]): ThinkingLevel[] | undefined {
+  const listed = options?.find((o) => o.type === "effort")?.values;
+  if (listed) return ThinkingLevel.filter((level) => level !== "off" && listed.includes(level));
+  return options?.length && options.every((o) => o.type === "toggle") ? [] : undefined;
+}
+
 /**
  * Maps one validated wire model onto Agency's flat ModelInfo. Shared by the
  * strict converter and the lenient one below, so both agree on pricing math.
@@ -114,6 +125,7 @@ function mapModel(
 ): ModelInfo {
   const id = model.id ?? modelKey;
   const inputModalities = model.modalities?.input;
+  const efforts = model.reasoning ? effortsOf(model.reasoning_options) : undefined;
   return {
     id,
     family: providerId,
@@ -136,6 +148,7 @@ function mapModel(
     inputModalities,
     apiBaseURL: model.provider?.api ?? providerApi,
     apiNpm: model.provider?.npm ?? providerNpm ?? DEFAULT_NPM,
+    ...(efforts ? { efforts } : {}),
   };
 }
 
@@ -296,7 +309,11 @@ export async function loadModelsDevCatalog(options: {
   // module's CATALOG_FRESH_TTL_MS at its own top level, so a static back-edge
   // would deadlock evaluation order (TDZ) depending on entry point.
   const { isStale } = await import("../catalog-cache.ts");
-  const fresh = !options.force && cached !== undefined && !isStale(cached, ttlMs);
+  const fresh =
+    !options.force &&
+    cached !== undefined &&
+    (cached.version ?? 1) >= CATALOG_CACHE_VERSION &&
+    !isStale(cached, ttlMs);
   const cachedModels = cached !== undefined && cached.models.length > 0 ? cached.models : undefined;
   if (offline || fresh) {
     return { models: cachedModels ?? BUILTIN_MODELS, source: cachedModels ? "cache" : "builtin" };

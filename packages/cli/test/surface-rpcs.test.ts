@@ -2,9 +2,17 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Config, memoryFile, SessionStore, type ToolSpec } from "@agency/core";
+import { type Config, dataDir, memoryFile, SessionStore, type ToolSpec } from "@agency/core";
 import type { HttpClient } from "@agency/net";
-import type { KeychainBackend, ModelInfo, ProviderAdapter, StreamEvent } from "@agency/providers";
+import {
+  type KeychainBackend,
+  type ModelInfo,
+  type ProviderAdapter,
+  type ProviderRequest,
+  type StreamEvent,
+  saveCachedCatalog,
+  saveModelsDevCatalog,
+} from "@agency/providers";
 import { connectToDaemon, type DaemonClient } from "@agency/rpc";
 import { type AgentDaemon, createAgentDaemon } from "../src/daemon.ts";
 import { listProviders } from "../src/providers-list.ts";
@@ -243,6 +251,46 @@ describe("session_delete", () => {
     release();
     await sending;
     expect(await client.call("session_delete", { sessionId: "del-s1" })).toMatchObject({ deleted: true });
+  }, 15_000);
+});
+
+describe("reasoning levels of the catalog", () => {
+  test("providers_list lists them and a turn passes them to the adapter with the level", async () => {
+    const requests: ProviderRequest[] = [];
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(request): AsyncIterable<StreamEvent> {
+        requests.push(request);
+        yield { type: "text_delta", text: "hi" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const base: ModelInfo = {
+      ...model("test-model", "anthropic"),
+      capabilities: { tools: true, vision: false, thinking: true },
+    };
+    const thinker: ModelInfo = { ...base, efforts: ["low", "xhigh", "max"] };
+    // The turn reads the base catalog; only the levels come from the models.dev cache.
+    const cache = join(dataDir(), "cache");
+    saveCachedCatalog(cache, [base]);
+    saveModelsDevCatalog(cache, [thinker]);
+    try {
+      const { client } = await startDaemon({ catalog: [thinker], adapterFor: () => adapter });
+      const list = (await client.call("providers_list", { models: "all" })) as {
+        all: Array<{ id: string; models: Array<{ id: string; efforts?: string[] }> }>;
+      };
+      const listed = list.all.find((p) => p.id === "anthropic")?.models.find((m) => m.id === "test-model");
+      expect(listed?.efforts).toEqual(["low", "xhigh", "max"]);
+
+      await client.call("session_send", { ...sendParams("eff-s1", "eff-t1"), thinkingLevel: "xhigh" });
+      expect(requests.at(-1)).toMatchObject({
+        thinkingLevel: "xhigh",
+        efforts: ["low", "xhigh", "max"],
+        maxTokens: 8000,
+      });
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
   }, 15_000);
 });
 

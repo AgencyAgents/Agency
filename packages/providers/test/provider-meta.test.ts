@@ -181,6 +181,8 @@ describe("live model ids", () => {
       maxOutputTokens: 32000,
       pricing: { inputPerMTok: 0.03, outputPerMTok: 1.28, cachedInputPerMTok: 0.03 },
       capabilities: { tools: true, vision: false, thinking: true },
+      // This recording has no reasoning.supported_efforts: reasoning only turns on or off.
+      efforts: [],
     });
     expect(of("liquid/lfm-2.5-2.6b:free")).toMatchObject({ contextWindow: 65536, maxOutputTokens: 8192 });
     expect(of("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")?.capabilities.vision).toBe(true);
@@ -194,6 +196,30 @@ describe("live model ids", () => {
       contextWindow: 65536,
       maxOutputTokens: 16384,
     });
+  });
+
+  test("the reasoning levels of an openrouter model come from its supported_efforts", async () => {
+    const entry = (id: string, reasoning: unknown, params = ["tools", "reasoning"]) => ({
+      id,
+      context_length: 100000,
+      supported_parameters: params,
+      reasoning,
+    });
+    const models = await fetchOpenRouterModels(
+      jsonHttp({
+        data: [
+          entry("a/levels", { supported_efforts: ["max", "xhigh", "high", "none"] }),
+          entry("a/toggle", { mandatory: false }),
+          entry("a/plain", undefined, ["tools"]),
+        ],
+      }),
+      "https://openrouter.ai/api/v1",
+    );
+    expect(models.map((m) => [m.id, m.efforts])).toEqual([
+      ["a/levels", ["high", "xhigh", "max"]],
+      ["a/toggle", []],
+      ["a/plain", undefined],
+    ]);
   });
 
   test("ollama reads tags verbatim with a localhost default", async () => {

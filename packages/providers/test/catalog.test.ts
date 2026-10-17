@@ -91,6 +91,33 @@ describe("convertModelsDevCatalog", () => {
     expect(opus?.providerName).toBe("Anthropic");
   });
 
+  test("effort options become the model's levels: a toggle gives none, a token budget leaves them unknown", () => {
+    const reasoning = (options: unknown) => ({
+      name: "m",
+      reasoning: true,
+      limit: { context: 1000 },
+      reasoning_options: options,
+    });
+    const models = convertModelsDevCatalog(
+      ModelsDevCatalogSchema.parse({
+        p: {
+          name: "P",
+          models: {
+            effort: reasoning([{ type: "effort", values: ["none", "max", "low", "xhigh", "default", null] }]),
+            toggle: reasoning([{ type: "toggle" }]),
+            budget: reasoning([{ type: "budget_tokens", min: 0, max: 32000 }]),
+            plain: { name: "plain", limit: { context: 1000 } },
+          },
+        },
+      }),
+    );
+    const efforts = (id: string) => models.find((m) => m.id === id)?.efforts;
+    expect(efforts("effort")).toEqual(["low", "xhigh", "max"]);
+    expect(efforts("toggle")).toEqual([]);
+    expect(efforts("budget")).toBeUndefined();
+    expect(efforts("plain")).toBeUndefined();
+  });
+
   test("unknown providers fall back to the openai-compatible npm package", () => {
     const models = convertModelsDevCatalog(ModelsDevCatalogSchema.parse(SAMPLE_CATALOG));
     const llama = models.find((m) => m.id === "llama-4");
@@ -173,6 +200,21 @@ describe("loadModelsDevCatalog", () => {
       });
       expect(result.source).toBe("cache");
       expect(result.models).toHaveLength(models.length);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a young cache of an older version refetches: it lacks fields this version reads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agency-catalog-test-"));
+    try {
+      writeFileSync(
+        join(dir, MODELS_DEV_CACHE_FILE),
+        JSON.stringify({ version: 2, savedAt: new Date().toISOString(), models: [model({ id: "old", family: "x" })] }),
+      );
+      const result = await loadModelsDevCatalog({ cacheDir: dir, http: httpWith(SAMPLE_CATALOG) });
+      expect(result.source).toBe("fresh");
+      expect(result.models.find((m) => m.id === "old")).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

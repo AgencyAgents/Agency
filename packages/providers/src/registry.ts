@@ -1,5 +1,5 @@
 import type { HttpClient } from "@agency/net";
-import type { ProviderAdapter } from "./types.ts";
+import { type ProviderAdapter, ThinkingLevel } from "./types.ts";
 
 export interface ModelPricing {
   /** USD per million input tokens. */
@@ -43,6 +43,9 @@ export interface ModelInfo {
   apiNpm?: string;
   /** Per-model effort-to-provider knob mapping. Absent = model has no variable reasoning. */
   effortMapping?: Record<string, unknown>;
+  /** The reasoning levels the model's API takes, from the catalog. Empty: reasoning only turns on or off.
+   *  Absent: not known, or a token budget that each level maps to. */
+  efforts?: ThinkingLevel[];
 }
 
 /**
@@ -124,9 +127,9 @@ export const BUILTIN_MODELS: ModelInfo[] = [
 /**
  * On-disk catalog cache schema version. v1 is the unversioned legacy shape
  * (no `version` field); v2+ stamps it. Lives here (not catalog-cache.ts) so
- * both cache files share one version without an import cycle.
+ * both cache files share one version without an import cycle. v3 adds `efforts`.
  */
-export const CATALOG_CACHE_VERSION = 2;
+export const CATALOG_CACHE_VERSION = 3;
 
 /**
  * Tolerantly normalizes a parsed cache blob. Unversioned legacy files migrate
@@ -435,12 +438,15 @@ export async function fetchOpenRouterModels(
       pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown };
       architecture?: { input_modalities?: unknown };
       supported_parameters?: unknown;
+      reasoning?: { supported_efforts?: unknown };
     };
     const window = Number(entry.context_length);
     if (typeof entry.id !== "string" || !(window > 0)) return [];
     const listed = Number(entry.top_provider?.max_completion_tokens) || LEARNED_OUTPUT_DEFAULT;
     const has = (list: unknown, value: string) => Array.isArray(list) && list.includes(value);
     const cached = entry.pricing?.input_cache_read;
+    const thinking = has(entry.supported_parameters, "reasoning");
+    const efforts = entry.reasoning?.supported_efforts;
     return [
       {
         id: entry.id,
@@ -455,8 +461,10 @@ export async function fetchOpenRouterModels(
         capabilities: {
           tools: has(entry.supported_parameters, "tools"),
           vision: has(entry.architecture?.input_modalities, "image"),
-          thinking: has(entry.supported_parameters, "reasoning"),
+          thinking,
         },
+        // No list: reasoning only turns on or off.
+        ...(thinking ? { efforts: ThinkingLevel.filter((level) => level !== "off" && has(efforts, level)) } : {}),
       },
     ];
   });

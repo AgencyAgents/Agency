@@ -238,6 +238,7 @@ export function modelRunOptions(info: ModelInfo | undefined) {
     maxTokensPerRequest: info?.maxOutputTokens,
     contextWindow: info?.contextWindow,
     vision: info?.capabilities.vision,
+    efforts: info?.efforts,
   };
 }
 

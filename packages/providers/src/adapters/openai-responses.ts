@@ -9,7 +9,7 @@ import {
 } from "@agency/schema";
 import { parseSse } from "../sse.ts";
 import type { ProviderAdapter, ProviderRequest, StreamEvent, Usage } from "../types.ts";
-import { REASONING_EFFORT, toAgencyError } from "./openai-compatible.ts";
+import { reasoningEffort, toAgencyError } from "./openai-compatible.ts";
 
 /** The plan route takes function tools only inside a namespace. */
 const NAMESPACE = "agency";
@@ -85,10 +85,7 @@ export function toResponsesInput(
  * `max_output_tokens` or `temperature`, which that route refuses.
  */
 export function buildResponsesBody(request: ProviderRequest, family: string): Record<string, unknown> {
-  const effort =
-    request.thinkingLevel && request.thinkingLevel !== "off"
-      ? REASONING_EFFORT[request.thinkingLevel]
-      : undefined;
+  const effort = reasoningEffort(request);
   return {
     model: request.model,
     ...(request.system ? { instructions: request.system } : {}),

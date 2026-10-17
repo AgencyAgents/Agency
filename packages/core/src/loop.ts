@@ -193,6 +193,8 @@ export interface RunTurnOptions {
   grantedTools?: string[];
   /** The model takes image input: images that a tool returned go to it. Absent means no. */
   vision?: boolean;
+  /** The reasoning levels the model lists (ModelInfo.efforts): a listed level goes to the API unchanged. */
+  efforts?: readonly ThinkingLevel[];
   /** Runs for each message the turn appends, in order and before the next step: a session owner persists here.
    *  `origin` marks a user-role message that did not come from the prompt (see MessageOrigin). */
   onMessage?: (message: Message, origin?: MessageOrigin) => void | Promise<void>;
@@ -366,6 +368,7 @@ export async function runTurn(
               maxTokens: options.maxTokensPerRequest ?? 8192,
               thinkingLevel: options.thinkingLevel,
               ...(options.vision === undefined ? {} : { vision: options.vision }),
+              ...(options.efforts === undefined ? {} : { efforts: options.efforts }),
               signal: options.signal,
             },
             options.onEvent,

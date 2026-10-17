@@ -152,11 +152,17 @@ function buildRequestBody(request: ProviderRequest, family: string): Record<stri
   );
   if (files && hasPdf) body.plugins = PDF_PLUGINS;
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  if (request.thinkingLevel && request.thinkingLevel !== "off") {
-    body.reasoning_effort = REASONING_EFFORT[request.thinkingLevel];
-  }
+  const effort = reasoningEffort(request);
+  if (effort) body.reasoning_effort = effort;
 
   return body;
+}
+
+/** A level the model lists goes out unchanged: the catalog knows models past high that the scale above lowers. */
+export function reasoningEffort(request: ProviderRequest): string | undefined {
+  const level = request.thinkingLevel;
+  if (!level || level === "off") return undefined;
+  return request.efforts?.includes(level) ? level : REASONING_EFFORT[level];
 }
 
 export async function toAgencyError(res: Response, family: string): Promise<AgencyError> {

@@ -96,4 +96,19 @@ describe("openaiAdapter", () => {
     const body = JSON.parse(capturedBody!);
     expect(body.reasoning_effort).toBe("high");
   });
+
+  test("sends a level the model lists unchanged", async () => {
+    const bodies: { reasoning_effort?: string }[] = [];
+    const http: HttpClient = {
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(init?.body as string));
+        return sseResponse("data: [DONE]\n\n");
+      },
+    };
+    const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
+    await collect(openaiAdapter.stream({ ...baseRequest, thinkingLevel: "max", efforts }, http));
+    await collect(openaiAdapter.stream({ ...baseRequest, thinkingLevel: "minimal", efforts }, http));
+
+    expect(bodies.map((b) => b.reasoning_effort)).toEqual(["max", "minimal"]);
+  });
 });

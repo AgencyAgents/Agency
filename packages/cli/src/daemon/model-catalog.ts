@@ -6,6 +6,7 @@ import {
   fetchOpenRouterModels,
   GATEWAY_BASE_URLS,
   loadCachedCatalog,
+  loadCachedModelsDevCatalog,
   type ModelInfo,
   mergeCatalogWithConfig,
 } from "@agency/providers";
@@ -32,8 +33,14 @@ export function createModelCatalog(providers: Record<string, ProviderConfig>, co
     }
     return mergedCatalog;
   };
+  // The levels come from models.dev, which the picker shows. Its limits do not: the base entry's stay.
   const catalogModel = (provider: string, model: string): ModelInfo | undefined => {
-    return ensureCatalog().find((m) => m.id === model && m.family === provider);
+    const found = ensureCatalog().find((m) => m.id === model && m.family === provider);
+    if (!found || found.efforts) return found;
+    const efforts = loadCachedModelsDevCatalog(join(dataDir(), "cache"))?.models.find(
+      (m) => m.id === model && m.family === provider,
+    )?.efforts;
+    return efforts ? { ...found, efforts } : found;
   };
   const resolveAgentModel = (provider: string, model?: string): string => {
     if (model) return model;
