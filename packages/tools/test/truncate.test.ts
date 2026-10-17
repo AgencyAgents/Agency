@@ -172,3 +172,53 @@ describe("truncateWithSpill", () => {
     expect(truncateWithSpill("😀🎉", 8, notices)).toBe("😀🎉");
   });
 });
+
+test("a run of passing test lines becomes one line, and failures and summaries stay word for word", () => {
+  const cargo = [
+    "running 4 tests",
+    "test parse::empty ... ok",
+    "test parse::nested ... ok",
+    "test parse::unicode ... ok",
+    "test parse::broken ... FAILED",
+    "",
+    "test result: FAILED. 3 passed; 1 failed",
+  ];
+  expect(compactOutput(cargo.join("\n"))).toBe(
+    [
+      "running 4 tests",
+      "[3 lines of passing tests or checks]",
+      "test parse::broken ... FAILED",
+      "",
+      "test result: FAILED. 3 passed; 1 failed",
+    ].join("\n"),
+  );
+  const pytest = [
+    "tests/test_a.py::test_one PASSED                [ 25%]",
+    "tests/test_a.py::test_two PASSED                [ 50%]",
+    "tests/test_a.py::test_three PASSED              [ 75%]",
+    "tests/test_a.py::test_four FAILED               [100%]",
+  ];
+  expect(compactOutput(pytest.join("\n")).split("\n")).toEqual([
+    "[3 lines of passing tests or checks]",
+    "tests/test_a.py::test_four FAILED               [100%]",
+  ]);
+  const go = [
+    "=== RUN   TestA",
+    "--- PASS: TestA (0.00s)",
+    "=== RUN   TestB",
+    "    b_test.go:9: want 2, got 3",
+    "--- FAIL: TestB (0.00s)",
+  ];
+  expect(compactOutput(go.join("\n")).split("\n")).toEqual([
+    "[3 lines of passing tests or checks]",
+    "    b_test.go:9: want 2, got 3",
+    "--- FAIL: TestB (0.00s)",
+  ]);
+  const jest = ["PASS src/a.test.ts", "  ✓ adds (2 ms)", "  ✓ subtracts", "  ✕ divides (4 ms)"];
+  expect(compactOutput(jest.join("\n")).split("\n")).toEqual([
+    "[3 lines of passing tests or checks]",
+    "  ✕ divides (4 ms)",
+  ]);
+  // Two lines cost less than the note.
+  expect(compactOutput("test a ... ok\ntest b ... ok")).toBe("test a ... ok\ntest b ... ok");
+});
