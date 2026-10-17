@@ -348,3 +348,32 @@ describe("prompt cache policy (7.0.7)", () => {
     expect(generate?.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
   });
 });
+
+test("a short system prompt and a short first message are cached when the whole prefix is long enough", async () => {
+  let body: Record<string, unknown> = {};
+  const http: HttpClient = {
+    fetch: async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return sseResponse('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+    },
+  };
+  // About 900 tokens of tools, 300 of system and a few of message: each part is under 1024, the prefix is not.
+  const tool = { name: "t", description: "d".repeat(3600), inputSchema: { type: "object" } };
+  await collect(
+    anthropicAdapter.stream(
+      {
+        model: "m",
+        apiKey: "k",
+        systemSegments: [{ stability: "shared", text: "s".repeat(1200) }],
+        tools: [tool],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        maxTokens: 64,
+      },
+      http,
+    ),
+  );
+  const system = body.system as Array<{ cache_control?: unknown }>;
+  const messages = body.messages as Array<{ content: Array<{ cache_control?: unknown }> }>;
+  expect(system[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  expect(messages[0]?.content[0]?.cache_control).toEqual({ type: "ephemeral" });
+});

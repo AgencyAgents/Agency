@@ -102,13 +102,61 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
       }))
       .filter((m) => m.content.length > 0);
 
+  const body: Record<string, unknown> = {
+    model: request.model,
+    max_tokens: request.maxTokens,
+    stream: true,
+  };
+
+  // The minimum cacheable size counts the whole prefix up to a mark (tools, then system, then messages), not one part.
+  const tools = request.tools?.map(
+    (t): { name: string; description?: string; input_schema: unknown; cache_control?: unknown } => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.inputSchema,
+    }),
+  );
+  const toolTokens = tools?.length ? estimateTokens(JSON.stringify(tools)) : 0;
+  const { stable, dynamic } = request.systemSegments
+    ? splitStableDynamic(request.systemSegments)
+    : { stable: "", dynamic: "" };
+  const stableMarked = stable !== "" && toolTokens + estimateTokens(stable) >= minTokens;
+
+  if (tools?.length) {
+    if (toolTokens >= minTokens) {
+      // The API wants a 1-hour entry before any 5-minute one, and tools come before the system text.
+      const lastTool = tools.at(-1);
+      if (lastTool)
+        lastTool.cache_control = stableMarked ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
+    }
+    body.tools = tools;
+  }
+
+  let systemTokens = 0;
+  if (request.systemSegments) {
+    const system: Record<string, unknown>[] = [];
+    if (stable) {
+      system.push(
+        stableMarked
+          ? { type: "text", text: stable, cache_control: { type: "ephemeral", ttl: "1h" } }
+          : { type: "text", text: stable },
+      );
+    }
+    if (dynamic) system.push({ type: "text", text: dynamic });
+    if (system.length > 0) body.system = system;
+    systemTokens = estimateTokens(stable) + estimateTokens(dynamic);
+  } else if (request.system) {
+    body.system = [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }];
+    systemTokens = estimateTokens(request.system);
+  }
+
   // Breakpoints 3 and 4 roll forward: the settled turn-back tail and the
-  // current tail. Each is skipped when the conversation is too short to pay.
+  // current tail. Each is skipped when the prefix is too short to pay.
   const userIdx = messages
     .map((m, i) => (m.role === "user" && m.content.length > 0 ? i : -1))
     .filter((i) => i >= 0);
   const prefixTokens = (through: number): number =>
-    estimateTokens(JSON.stringify(messages.slice(0, through + 1)));
+    toolTokens + systemTokens + estimateTokens(JSON.stringify(messages.slice(0, through + 1)));
   const lastIdx = userIdx.at(-1);
   const lastTail = lastIdx !== undefined ? messages[lastIdx]?.content.at(-1) : undefined;
   if (lastIdx !== undefined && lastTail && prefixTokens(lastIdx) >= minTokens) {
@@ -122,46 +170,6 @@ function buildRequestBody(request: ProviderRequest): Record<string, unknown> {
         settledBlock.cache_control = { type: "ephemeral" };
       }
     }
-  }
-
-  const body: Record<string, unknown> = {
-    model: request.model,
-    max_tokens: request.maxTokens,
-    stream: true,
-  };
-
-  if (request.tools?.length) {
-    const tools: { name: string; description?: string; input_schema: unknown; cache_control?: unknown }[] =
-      request.tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.inputSchema,
-      }));
-    if (estimateTokens(JSON.stringify(tools)) >= minTokens) {
-      // The API wants a 1-hour entry before any 5-minute one, and tools come before the system text.
-      const hour =
-        request.systemSegments !== undefined &&
-        estimateTokens(splitStableDynamic(request.systemSegments).stable) >= minTokens;
-      const lastTool = tools.at(-1);
-      if (lastTool) lastTool.cache_control = hour ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
-    }
-    body.tools = tools;
-  }
-
-  if (request.systemSegments) {
-    const { stable, dynamic } = splitStableDynamic(request.systemSegments);
-    const system: Record<string, unknown>[] = [];
-    if (stable) {
-      system.push(
-        estimateTokens(stable) >= minTokens
-          ? { type: "text", text: stable, cache_control: { type: "ephemeral", ttl: "1h" } }
-          : { type: "text", text: stable },
-      );
-    }
-    if (dynamic) system.push({ type: "text", text: dynamic });
-    if (system.length > 0) body.system = system;
-  } else if (request.system) {
-    body.system = [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }];
   }
 
   body.messages = messages;
