@@ -182,8 +182,33 @@ export function secretShellValues(shellEnv: Record<string, string> | undefined):
   );
 }
 
+/**
+ * Sets the backend that the config leaves unset: the sandbox of the OS on Linux and macOS, as Codex runs one, when
+ * its program works there; else software. A backend that the config names fails closed at boot instead. Returns
+ * why the default fell back, for the log.
+ */
+export async function chooseSandboxBackend(
+  config: { sandbox?: { backend?: "software" | "docker" | "os"; allowNetwork?: boolean } },
+  workspaceRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | undefined> {
+  const sandbox = config.sandbox ?? {};
+  config.sandbox = sandbox;
+  if (sandbox.backend !== undefined) return undefined;
+  if (platform !== "linux" && platform !== "darwin") {
+    sandbox.backend = "software";
+    return undefined;
+  }
+  const probe = new OsSandboxBackend(workspaceRoot, {}, undefined, { platform });
+  sandbox.backend = (await probe.isAvailable()) ? "os" : "software";
+  return sandbox.backend === "os"
+    ? undefined
+    : `the sandbox of the operating system does not work here, so shell commands run with your rights: ${probe.unavailableReason()}`;
+}
+
 export async function createAgentDaemon(options: AgentDaemonOptions): Promise<AgentDaemon> {
   const config = loadConfig({ globalDir: options.configDir, env: process.env });
+  const sandboxFallback = await chooseSandboxBackend(config, options.workspaceRoot);
   // fetch, websearch and the browser get the network limit of shell commands.
   const network = sandboxNetwork(config.sandbox);
   const providers = config.provider;
@@ -361,6 +386,7 @@ export async function createAgentDaemon(options: AgentDaemonOptions): Promise<Ag
   ]);
 
   logger.info("daemon started", { workspaceRoot: options.workspaceRoot, protocolVersion: PROTOCOL_VERSION });
+  if (sandboxFallback !== undefined) logger.warn(sandboxFallback);
 
   // Todo persistence: todo_write/execute_plan append a todo_state entry to the
   // session's JSONL (daemon-owned), and each run_turn rehydrates from the

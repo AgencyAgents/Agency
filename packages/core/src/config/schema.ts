@@ -157,11 +157,11 @@ export const ConfigSchema = z.object({
   permissions: z.record(z.string(), ToolPermissionSchema).default({}),
   /** Trust behavior: when `required`, tools above the `safe` risk tier refuse to run in an untrusted workspace. */
   trust: z.object({ required: z.boolean().default(false) }).default({ required: false }),
-  /** Sandbox backend switch plus container options. Software is the default. */
+  /** Sandbox backend switch plus container options. */
   sandbox: z
     .object({
-      /** Local in-process boundary or container exec. Invalid values fail load. */
-      backend: z.enum(["software", "docker", "os"]).default("software"),
+      /** Unset: `os` on Linux and macOS where it works, else `software` (see `chooseSandboxBackend`). */
+      backend: z.enum(["software", "docker", "os"]).optional(),
       /** With the `os` backend: shell commands get the network. Default: no network. */
       allowNetwork: z.boolean().optional(),
       /** With the `os` backend on Linux and macOS: shell commands reach only these hosts, through a proxy. */
@@ -199,7 +199,7 @@ export const ConfigSchema = z.object({
       /** Pre-dispatch cost-forecast threshold (USD): a dispatch estimated above this asks before spawning. */
       forecastCostUsd: z.number().optional(),
     })
-    .default({ backend: "software" }),
+    .default({}),
   /**
    * Formatter run after every successful write/edit, e.g.
    * `formatter: {command: ["biome", "format", "--write"]}`; the file path is

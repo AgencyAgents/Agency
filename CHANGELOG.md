@@ -8,6 +8,11 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **The sandbox of the OS is the default on Linux and macOS**, as Codex runs its sandbox by default: with no
+  `sandbox.backend`, shell commands run under bubblewrap or Seatbelt, with no network and writes only in the
+  workspace, when the program works there. A command that needs the network asks for it (`network: true`), or set
+  `sandbox.allowNetwork`. Where it does not work, and on Windows, commands run with your rights as before, and the
+  daemon log says why. `sandbox.backend: "software"` keeps the old behavior.
 - **A sandboxed command can ask for the network**, as the escalation of Codex and the unsandboxed retry of Claude
   Code: under `sandbox.backend: "os"` with no network, `bash` takes `network: true` for one command (an install, a
   fetch). You are asked each time, in every permission mode; the command then runs in the same sandbox with the

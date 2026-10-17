@@ -10,7 +10,7 @@ import {
   SandboxBoundary,
 } from "@agency/guard";
 import { sandboxWindowsShell } from "../src/daemon/session-scopes.ts";
-import { createSandboxBackend } from "../src/daemon.ts";
+import { chooseSandboxBackend, createSandboxBackend } from "../src/daemon.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -37,9 +37,9 @@ function expectZodSandboxError(fn: () => unknown): void {
 }
 
 describe("daemon sandbox backend selection", () => {
-  test("default config boots the software backend", () => {
+  test("default config leaves the backend to the platform; unset builds the software backend", () => {
     const config = loadConfig({ globalDir: tempDir("agency-sandbox-global-"), env: {} });
-    expect(config.sandbox.backend).toBe("software");
+    expect(config.sandbox.backend).toBeUndefined();
     const sandbox = createSandboxBackend(
       tempDir("agency-sandbox-root-"),
       { deny: [] },
@@ -220,4 +220,28 @@ describe("daemon sandbox backend selection", () => {
       createSandboxBackend(tempDir("agency-sandbox-root-"), { deny: [] }, undefined, config.sandbox),
     ).toThrow();
   });
+});
+
+test("an unset backend is the sandbox of the OS on Linux and macOS where it works, else software with the reason", async () => {
+  const root = tempDir("agency-choose-");
+  const named = { sandbox: { backend: "software" as const } };
+  expect(await chooseSandboxBackend(named, root, "linux")).toBeUndefined();
+  expect(named.sandbox.backend).toBe("software");
+  const windows: { sandbox?: { backend?: "software" | "docker" | "os" } } = {};
+  expect(await chooseSandboxBackend(windows, root, "win32")).toBeUndefined();
+  expect(windows.sandbox?.backend).toBe("software");
+  const here: { sandbox?: { backend?: "software" | "docker" | "os" } } = {};
+  const reason = await chooseSandboxBackend(
+    here,
+    root,
+    process.platform === "win32" ? "linux" : process.platform,
+  );
+  const works = await new OsSandboxBackend(root).isAvailable().catch(() => false);
+  if (process.platform !== "win32" && works) {
+    expect(here.sandbox?.backend).toBe("os");
+    expect(reason).toBeUndefined();
+  } else {
+    expect(here.sandbox?.backend).toBe("software");
+    expect(reason).toContain("shell commands run with your rights");
+  }
 });
