@@ -12,6 +12,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   `sandbox.backend: "os"`, "Read-only file system" or "Could not resolve host" in the output of a command gets a
   line that says the command can write only in the workspace, or has no network (or only the hosts of
   `allowedDomains`), and not to retry it in another way. Before, a model read these as faults to work around.
+- **An out-of-date read leaves the requests sooner**: a `read` of a file that a later read shows again (the
+  whole file, or the same slice) is due at once, not 10 model calls later, in the same cache-friendly 20,000-token
+  batches. The model no longer reads old text of a file it changed, and each request is smaller. An edit alone
+  does not count: the model anchors its next edits on the text it read.
 - **Read-only calls run together, and start while the reply streams**, as in Claude Code: `fetch`,
   `websearch`, a read-only shell command with no `cd` (`git status`, `ls`, `cat`) and an MCP tool with
   `readOnlyHint` now run beside the other read-only calls of a reply, where before each ran alone. A read-only

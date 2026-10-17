@@ -8,35 +8,69 @@ const BATCH_TOKENS = 20_000;
 /** What an image of a result counts as: about the tokens of a 1000-pixel image. */
 const IMAGE_CHARS = 6400;
 
+/** A read names a file and a slice; a read with no slice shows the whole file. */
+function readTarget(input: Record<string, unknown>): { path: string; slice: string } {
+  const path = String(input.path ?? "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+  const whole = input.offset === undefined && input.limit === undefined;
+  return { path, slice: whole ? "" : `${input.offset ?? 1}:${input.limit ?? ""}` };
+}
+
 /**
  * The history with the results of re-runnable tools over 10 model calls old put as a short note, as Densilo cuts
  * what an agent sends again. Measured on a long session: 25% fewer input tokens and 19% lower cost with the cache.
- * They go in batches of 20k tokens, decided by a replay of the history, so a history gives the same requests every
- * time and the prompt cache holds between two batches.
+ * A read that a later read of the same file shows again (the whole file, or the same slice) is due at once: its
+ * text is out of date. They go in batches of 20k tokens, decided by a replay of the history, so a history gives
+ * the same requests every time and the prompt cache holds between two batches.
  */
 export function pruneStaleResults(messages: Message[]): Message[] {
   const names = new Map<string, string>();
-  const candidates: Array<{ message: number; block: number; at: number; chars: number }> = [];
+  const reads = new Map<string, { path: string; slice: string; at: number }>();
+  const candidates: Array<{
+    message: number;
+    block: number;
+    due: number;
+    chars: number;
+    read?: { path: string; slice: string; at: number };
+  }> = [];
   let calls = 0;
   messages.forEach((message, index) => {
     message.content.forEach((block, blockIndex) => {
-      if (block.type === "tool_call") names.set(block.id, block.name);
+      if (block.type === "tool_call") {
+        names.set(block.id, block.name);
+        if (block.name === "read") reads.set(block.id, { ...readTarget(block.input), at: calls });
+      }
       if (block.type !== "tool_result" || !RERUNNABLE.test(names.get(block.toolCallId) ?? "")) return;
       const chars = block.content.length + (block.images?.length ?? 0) * IMAGE_CHARS;
-      if (chars > MIN_CHARS) candidates.push({ message: index, block: blockIndex, at: calls, chars });
+      const read = block.isError ? undefined : reads.get(block.toolCallId);
+      if (chars > MIN_CHARS)
+        candidates.push({
+          message: index,
+          block: blockIndex,
+          due: calls + AGE,
+          chars,
+          ...(read ? { read } : {}),
+        });
     });
     if (message.role === "assistant") calls += 1;
   });
+  // A later read of the whole file, or of the same slice, makes an earlier read due at its call.
+  for (const candidate of candidates) {
+    const own = candidate.read;
+    if (own === undefined) continue;
+    for (const later of reads.values()) {
+      if (later.at > own.at && later.path === own.path && (later.slice === "" || later.slice === own.slice))
+        candidate.due = Math.min(candidate.due, later.at - 1);
+    }
+  }
+  candidates.sort((a, b) => a.due - b.due);
   // Replays each model call of the history: once the old results that wait pass a batch, they all go.
   const pruned = new Set<string>();
   let next = 0;
   let waiting: typeof candidates = [];
   for (let call = 0; call <= calls; call++) {
-    for (
-      let candidate = candidates[next];
-      candidate && call - candidate.at > AGE;
-      candidate = candidates[next]
-    ) {
+    for (let candidate = candidates[next]; candidate && call > candidate.due; candidate = candidates[next]) {
       waiting.push(candidate);
       next += 1;
     }

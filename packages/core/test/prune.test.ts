@@ -87,3 +87,29 @@ test("a read the model can still see comes back as a note; once that result is p
   expect(twice[0]).toEqual(result("c2"));
   expect(twice[1]?.type === "tool_result" && twice[1].content.startsWith("[Unchanged")).toBe(true);
 });
+
+test("a read that a later read of the same file shows again goes in the next batch, not 10 calls later", () => {
+  const reads = (inputs: Array<Record<string, unknown>>): Message[] => [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    ...inputs.flatMap((input, i): Message[] => [
+      { role: "assistant", content: [{ type: "tool_call", id: `r${i}`, name: "read", input }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", toolCallId: `r${i}`, content: `v${i}:`.padEnd(10_000, "x"), isError: false },
+        ],
+      },
+    ]),
+  ];
+  // Ten whole reads of a.ts as it changes: by the tenth, the nine before are out of date and pass a batch.
+  const whole = reads(Array.from({ length: 10 }, () => ({ path: "a.ts" })));
+  expect(notes(pruneStaleResults(whole))).toEqual(Array.from({ length: 9 }, (_, i) => `r${i}`));
+  // A slice does not show the whole file again, and another file is another file.
+  const other = reads([
+    ...Array.from({ length: 10 }, () => ({ path: "a.ts" })),
+    { path: "a.ts", offset: 10, limit: 20 },
+  ]);
+  expect(notes(pruneStaleResults(other))).toEqual(Array.from({ length: 9 }, (_, i) => `r${i}`));
+  const files = reads(Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts` })));
+  expect(notes(pruneStaleResults(files))).toEqual([]);
+});
