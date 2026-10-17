@@ -31,6 +31,8 @@ export interface ApprovalRequest {
   source?: string;
   /** Redacted one-line summary of the parsed args (never raw secrets). */
   argsSummary?: string;
+  /** Why a shell command is not read-only, in plain words (`readOnlyRefusal`). */
+  reason?: string;
   /** An ask that "always" must not answer again, such as a plan: the answer counts once and grants nothing. */
   oneTime?: boolean;
 }

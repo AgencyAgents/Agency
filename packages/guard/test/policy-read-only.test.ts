@@ -33,7 +33,6 @@ test("a read-only command of the workspace, after the read-only set of Claude Co
     "cat .env",
     "head config/.env.local",
     "cat *env*",
-    "ls *.ts",
     "grep -r KEY .",
     "rg --hidden KEY",
     "find . -delete",
@@ -57,6 +56,75 @@ test("a read-only command of the workspace, after the read-only set of Claude Co
     "cat src\\a.ts",
   ]) {
     expect([command, isReadOnlyCommand(command)]).toEqual([command, false]);
+  }
+});
+
+test("the holes of the audit ask: home, abbreviated options, `<>`, secrets in any case, endless reads, drives", () => {
+  for (const command of [
+    "cd && cat .ssh/id_rsa",
+    "cd - && ls",
+    "sed --in=.bak 's/a/b/' a.txt",
+    "sort --out=X s.txt",
+    "sort --compress-p=sh a",
+    "file --mag x",
+    "cat <>NEWFILE",
+    "cat .ENV",
+    "head -n1 .Env.local",
+    "git show HEAD:.env",
+    "rg --unrestricted KEY",
+    "rg --no-ignore-dot KEY",
+    "rg -g '*.env' KEY",
+    "grep -f/etc/passwd a.txt",
+    "cat .npmrc",
+    "cat .aws/credentials",
+    "tail -f x.log",
+    "tail --follow x.log",
+    "cat CON",
+    "cat env:USERPROFILE",
+    "ls HKCU:/Software",
+    "cat '.e*'",
+    "cat '.[e]nv'",
+    "uniq in.txt out.txt",
+    "xxd -r dump bin",
+    "awk '{print > \"x\"}' f",
+    "awk 'BEGIN{system(\"rm x\")}'",
+    "jq -n env",
+    "ps e",
+    "node -e 1",
+    "command ls",
+    "git tag v1",
+    "git stash",
+    "git config user.name x",
+  ]) {
+    expect([command, isReadOnlyCommand(command)]).toEqual([command, false]);
+  }
+});
+
+test("common read-only commands of the audit run: quoted shell syntax, more programs, wildcards of plain readers", () => {
+  for (const command of [
+    "git diff HEAD~1",
+    "awk '{print $1}' f",
+    "sort a | uniq -c | sort -rn",
+    "grep -n 'foo$' f",
+    "grep -E '(a|b)' f",
+    "rg -g '!node_modules' foo",
+    "echo 'a>b'",
+    "sed -n '/foo/,/bar/p' a.txt",
+    "sed -E 's/(a)/\\1/' a.txt",
+    "ls *.ts",
+    "wc -l src/*.ts",
+    "LC_ALL=C sort a",
+    "timeout 5 ls",
+    "command -v bun",
+    "node -v",
+    "git --no-pager log -3",
+    "git remote -v",
+    "git config --get user.name",
+    "ps aux",
+    "jq '.name' package.json",
+    "echo hi >/dev/stdout",
+  ]) {
+    expect([command, isReadOnlyCommand(command)]).toEqual([command, true]);
   }
 });
 
@@ -94,4 +162,17 @@ test("a read-only command runs without a prompt unless an ask or deny rule names
   expect(decide({ bash: { "*": "ask", "git *": "allow" } }, "ls")).toBe("ask");
   expect(decide({ bash: "ask" }, "ls")).toBe("ask");
   expect(decide({ read: { "**": "allow", "secret.txt": "deny" } }, "cat secret.txt")).toBe("deny");
+});
+
+test("the ask of a command says why the command is not read-only", async () => {
+  const gate = new PermissionsGate({ workspaceRoot: process.cwd() });
+  const asked: Array<{ reason?: string }> = [];
+  await gate.check(
+    { tool: "bash", title: "uniq", command: "uniq in.txt out.txt", riskTier: "dangerous" },
+    async (r) => {
+      asked.push(r);
+      return "reject";
+    },
+  );
+  expect(asked[0]?.reason).toBe("`uniq` writes its second file");
 });

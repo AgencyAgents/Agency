@@ -92,6 +92,8 @@ export interface ApprovalRequestLike {
   path?: string;
   riskTier?: RiskTier;
   source?: string;
+  /** Why a shell command is not read-only (`readOnlyRefusal`). */
+  reason?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -480,33 +482,108 @@ export function shellFileTargets(command: string): { reads: string[]; writes: st
   return { reads: [...new Set(reads)], writes: [...new Set(writes)] };
 }
 
-/** Programs that only read and print, after the read-only set of Claude Code; `sed`, `awk`, `uniq` and `xxd` can write. */
+/**
+ * Programs that only read and print, after the read-only set of Claude Code. Each one with a way to write, run a
+ * program or reach a hidden file has a rule below.
+ */
 const READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
-  ..."ls dir cat echo pwd head tail grep egrep fgrep rg find wc which diff stat du cd file tree sort cut".split(
+  ..."ls dir cat echo printf pwd head tail grep egrep fgrep rg find wc which diff stat du cd file tree sort".split(
     " ",
   ),
-  ..."nl tac basename dirname realpath strings od true git sed".split(" "),
+  ..."cut uniq tr nl tac basename dirname realpath strings od xxd true false test date whoami id uname".split(
+    " ",
+  ),
+  ..."hostname sha1sum sha256sum sha512sum md5sum cksum jq git sed awk rev fold comm paste column expr seq".split(
+    " ",
+  ),
+  ..."readlink df ps tasklist type".split(" "),
+  // PowerShell's own read-only commands; `ls`, `cat` and `dir` are its aliases of the first two.
+  ..."get-childitem gci get-content gc select-string sls get-location test-path resolve-path get-item".split(
+    " ",
+  ),
+  ..."measure-object write-output".split(" "),
 ]);
-/** Options with which a program of the set writes a file, runs a command, or reads hidden files such as `.env`. */
-const UNSAFE_OPTIONS: Record<string, RegExp> = {
-  find: /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/,
-  sort: /^(-[a-zA-Z]*o|--output|--compress-program)/,
-  rg: /^(--pre|--hidden|--no-ignore|-[a-zA-Z]*[u.])/,
-  grep: /^(-[a-zA-Z]*[rRd]|--recursive|--dereference-recursive|--directories)/,
-  egrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
-  fgrep: /^(-[a-zA-Z]*[rRd]|--recursive|--directories)/,
-  diff: /^(-[a-zA-Z]*r|--recursive)/,
-  file: /^(-[a-zA-Z]*[mfC]|--magic-file|--files-from|--compile)/,
-  tree: /^-[a-zA-Z]*o/,
-  git: /^(--output|--ext-diff|--open-files-in-pager|-[a-zA-Z]*O)/,
-  sed: /^(-[a-zA-Z]*[ifs]|--in-place|--file|--separate)/,
-};
-/** A sed command that only prints or substitutes: `w`, `e` and `r` of GNU sed write, run and read other files. */
-const SED_COMMAND = /^(\d+(,\d+)?)?[pdq=]$|^s(.)(?:\\.|(?!\3).)*\3(?:\\.|(?!\3).)*\3[gIip0-9]*$/;
-const READ_ONLY_GIT: ReadonlySet<string> = new Set(
-  "status diff log show rev-parse ls-files blame describe shortlog grep branch".split(" "),
+/** Programs that are read-only only as `--version` and the like. */
+const VERSION_ONLY: ReadonlySet<string> = new Set(
+  "node bun deno python python3 py npm pnpm yarn npx cargo rustc go java dotnet tsc biome".split(" "),
 );
-const GIT_BRANCH_LIST = /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current)$/;
+/** Short options with which a program writes a file, runs a command, waits forever or reads hidden files. */
+const UNSAFE_SHORT: Record<string, RegExp> = {
+  find: /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/,
+  sort: /^-[a-zA-Z]*o/,
+  rg: /^-[a-zA-Z]*[uz.]/,
+  grep: /^-[a-zA-Z]*[rRd]/,
+  egrep: /^-[a-zA-Z]*[rRd]/,
+  fgrep: /^-[a-zA-Z]*[rRd]/,
+  diff: /^-[a-zA-Z]*r/,
+  file: /^-[a-zA-Z]*[mfC]/,
+  tree: /^-[a-zA-Z]*o/,
+  git: /^-[a-zA-Z]*O/,
+  sed: /^-[a-zA-Z]*[ifs]/,
+  tail: /^-[a-zA-Z0-9]*[fF]/,
+  xxd: /^-[a-zA-Z]*r/,
+  date: /^-[a-zA-Z]*s/,
+};
+/** The same as long options. GNU programs take any unambiguous prefix (`--in` for `--in-place`), so a prefix counts. */
+const UNSAFE_LONG: Record<string, string[]> = {
+  sort: ["output", "compress-program"],
+  rg: [
+    "pre",
+    "pre-glob",
+    "hidden",
+    "no-ignore",
+    "no-ignore-vcs",
+    "unrestricted",
+    "search-zip",
+    "hostname-bin",
+  ],
+  grep: ["recursive", "dereference-recursive", "directories"],
+  egrep: ["recursive", "dereference-recursive", "directories"],
+  fgrep: ["recursive", "dereference-recursive", "directories"],
+  diff: ["recursive"],
+  file: ["magic-file", "files-from", "compile"],
+  git: ["output", "ext-diff", "open-files-in-pager", "textconv", "exec"],
+  sed: ["in-place", "file", "separate"],
+  tail: ["follow"],
+  xxd: ["revert"],
+  date: ["set"],
+};
+/** Files that hold keys or tokens: the read tool does not give them by default either. */
+const SECRET_FILE =
+  /(^|[/:\\])(\.env|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.aws[/\\]|\.ssh[/\\]|id_(rsa|dsa|ecdsa|ed25519))/i;
+const SECRET_NAMES = [
+  ".env",
+  ".env.local",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  ".git-credentials",
+  "id_rsa",
+  "id_ed25519",
+];
+/** Options of grep and rg whose value is the next word, so that word is not the pattern. */
+const VALUE_OPTION =
+  /^-[gtTmABCMj]$|^--(glob|iglob|type|type-not|max-count|context|after-context|before-context)$/;
+/** Programs whose first word is a pattern or a program text, not a file. */
+const PATTERN_PROGRAMS: ReadonlySet<string> = new Set(["grep", "egrep", "fgrep", "rg", "sed", "awk", "jq"]);
+/** Programs whose second file argument is an output file (`uniq in out`), with their options that take a value. */
+const ONE_FILE: Record<string, string[]> = {
+  uniq: ["-f", "-s", "-w"],
+  xxd: ["-s", "-l", "-c", "-g", "-o", "-n"],
+};
+/** A sed command that only prints, deletes from the output or substitutes, after an optional address. The `w`, `e`, `r`
+ *  and `R` commands of GNU sed write, run and read other files. */
+const SED_COMMAND =
+  /^(?:(?:\d+|\$|\/(?:\\.|[^/])*\/)(?:,(?:\d+|\$|\/(?:\\.|[^/])*\/))?)?\s*(?:[pdq=]|s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[gIip0-9]*|y(.)(?:\\.|(?!\2).)*\2(?:\\.|(?!\2).)*\2)$/;
+const READ_ONLY_GIT: ReadonlySet<string> = new Set(
+  "status diff log show rev-parse ls-files blame describe shortlog grep branch rev-list ls-tree cat-file merge-base".split(
+    " ",
+  ),
+);
+const GIT_BRANCH_LIST =
+  /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current|--merged|--no-merged|--sort=.+|--format=.+)$/;
+/** git's own options before the subcommand that change nothing. */
+const GIT_QUIET = /^(--no-pager|-P|--no-optional-locks)$/;
 
 /** An absolute path of the workspace, in Windows or MSYS form (`/c/...`): the shell reads both. */
 function inWorkspace(word: string, workspaceRoot: string | undefined): boolean {
@@ -523,56 +600,183 @@ function inWorkspace(word: string, workspaceRoot: string | undefined): boolean {
 }
 
 /**
- * True for a command line that only reads files of the workspace, so it can run without a prompt as in Claude Code.
- * Text this check cannot read for sure asks: `$`, quotes of PowerShell, a path out of `workspaceRoot`, `~`, `..`,
- * a `.env` file.
+ * The first character the shell would not read as plain text, outside single quotes. Single quotes hold text only;
+ * double quotes still expand `$`, a backquote and `\`. Unquoted, `~` expands only at the start of a word.
  */
-export function isReadOnlyCommand(command: string, workspaceRoot?: string): boolean {
-  // ponytail: an allowlist of characters, not a parser; `\` and `$` ask even where the shell would read them as text.
-  if (command.length > 10_000 || /[$`(){}~\\!#@]/.test(command)) return false;
+function shellSyntax(command: string): string | undefined {
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+    } else if (quote === '"') {
+      if (ch === '"') quote = undefined;
+      else if ("$`\\".includes(ch)) return ch;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if ("$`\\(){}!#@".includes(ch)) return ch;
+    else if (ch === "~" && (i === 0 || /[\s=:]/.test(command[i - 1] as string))) return ch;
+  }
+  return undefined;
+}
+
+/** True when `arg` is a long option that names one of `options`, whole or as the prefix the program accepts. */
+function longOption(arg: string, options: string[] | undefined): boolean {
+  if (!options || !arg.startsWith("--")) return false;
+  const name = arg.slice(2).split("=")[0] ?? "";
+  // `--no-ignore-dot` is one of the `--no-ignore` family.
+  return name !== "" && options.some((option) => option.startsWith(name) || name.startsWith(option));
+}
+
+/**
+ * Why a command line is not read-only, or undefined when it only reads files of the workspace and can run without a
+ * prompt as in Claude Code. Text this check cannot read for sure asks: `$`, a path out of `workspaceRoot`, `..`, a
+ * `.env` file, a PowerShell drive such as `env:`.
+ */
+export function readOnlyRefusal(command: string, workspaceRoot?: string): string | undefined {
+  if (command.length > 10_000) return "the command is too long to check";
+  const syntax = shellSyntax(command);
+  if (syntax !== undefined) return `it uses \`${syntax}\`, which the shell expands`;
   const { parts, dynamic } = splitCommand(command);
-  if (dynamic || parts.length === 0) return false;
+  if (dynamic || parts.length === 0) return "it runs a nested command";
   const programs = new Set<string>();
   for (const part of parts) {
     const argv: string[] = [];
     const words = shellWords(part);
+    // A quoted `<` or `>` is text: only a part with an unquoted one has redirects.
+    const redirects = /[<>]/.test(part.replace(/'[^']*'|"[^"]*"/g, ""));
     for (let i = 0; i < words.length; i++) {
-      const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(words[i] as string);
+      const word = words[i] as string;
+      if (!redirects) {
+        argv.push(word);
+        continue;
+      }
+      // `<>file` opens the file for writing too.
+      if (/^\d*<>/.test(word)) return "it opens a file for writing";
+      const redirect = /^(\d*|&)(>>?|<)(.*)$/.exec(word);
       // A redirect inside a word (`echo x>a.txt`) writes as well: only the ones read above are known.
-      if (redirect === null && /[<>]/.test(words[i] as string)) return false;
-      if (redirect === null) argv.push(words[i] as string);
+      if (redirect === null && /[<>]/.test(word)) return "it writes a file";
+      if (redirect === null) argv.push(word);
       else {
         const target = redirect[3] || words[++i] || "";
         if (redirect[2] === "<") argv.push(target);
-        else if (!/^(&\d|\/dev\/null|nul)$/i.test(target)) return false;
+        else if (!/^(&\d|\/dev\/(null|stdout|stderr)|nul)$/i.test(target)) return "it writes a file";
       }
     }
+    // `LC_ALL=C sort`, `time ls`, `timeout 5 ls`: the command after them runs. Other assignments (`PATH=.`) ask.
+    while (argv.length > 1) {
+      const head = argv[0] as string;
+      if (/^(LC_\w+|LANG|TZ|NO_COLOR|COLUMNS|TERM)=/.test(head) || head === "time") argv.shift();
+      else if (head === "timeout" && /^\d+(\.\d+)?[smhd]?$/.test(argv[1] as string)) argv.splice(0, 2);
+      else break;
+    }
     const program = (argv[0] ?? "").toLowerCase();
-    if (!READ_ONLY_PROGRAMS.has(program)) return false;
-    programs.add(program);
     const args = argv.slice(1);
-    if (args.some((arg) => UNSAFE_OPTIONS[program]?.test(arg))) return false;
-    // A path out of the workspace, or a `.env` file, which the read tool does not give by default either.
+    if (program === "command" && /^-[vV]$/.test(args[0] ?? "")) continue;
+    if (VERSION_ONLY.has(program)) {
+      if (args.length === 1 && /^(--version|-v|-V|version)$/.test(args[0] as string)) continue;
+      return `\`${program}\` runs code`;
+    }
+    if (!READ_ONLY_PROGRAMS.has(program)) return `\`${program}\` is not on the read-only list`;
+    programs.add(program);
+    if (args.some((arg) => UNSAFE_SHORT[program]?.test(arg) || longOption(arg, UNSAFE_LONG[program])))
+      return `this option of \`${program}\` can write, run a program or read hidden files`;
+    if (program === "cd" && (args.length === 0 || args[0] === "-"))
+      return "`cd` with no folder leaves the project";
+    // A path out of the workspace, a secret file (also as `HEAD:.env`), or a PowerShell drive such as `env:`.
     const outside = (word: string): boolean =>
       (/^([/~]|[A-Za-z]:)/.test(word) && !inWorkspace(word, workspaceRoot)) ||
+      /^(env|variable|function|alias|cert|wsman|hk[a-z]+):/i.test(word) ||
+      // Windows devices: reading CON waits for the console.
+      (program !== "ps" && /^(con|prn|aux|com\d|lpt\d)(\.|$)/i.test(word)) ||
       /(^|\/)\.\.(\/|$)/.test(word) ||
-      /(^|\/)\.env/.test(word);
-    if (args.some((arg) => outside(arg) || outside(arg.slice(arg.indexOf("=") + 1)))) return false;
-    // An unquoted glob can expand to `-delete` or, in PowerShell, `*env` to `.env`.
-    if (/[*?[]/.test(part.replace(/'[^']*'|"[^"]*"/g, ""))) return false;
+      SECRET_FILE.test(word);
+    // The first word of grep, rg, sed, awk and jq is a pattern or a program, not a path: `sed -n '/foo/p'`.
+    const patternAt =
+      PATTERN_PROGRAMS.has(program) && !args.some((arg) => /^-[ef]$|^--(regexp|file)/.test(arg))
+        ? args.findIndex((arg, i) => !arg.startsWith("-") && !VALUE_OPTION.test(args[i - 1] ?? ""))
+        : -1;
+    // The value of an option counts too: `--file=/etc/passwd`, `-f/etc/passwd`.
+    const values = (arg: string) => [
+      arg,
+      arg.slice(arg.indexOf("=") + 1),
+      /^-[^-]./.test(arg) ? arg.slice(2) : "",
+    ];
+    if (args.some((arg, i) => i !== patternAt && values(arg).some((word) => word !== "" && outside(word))))
+      return "it names a path outside the project or a secret file";
+    // An unquoted glob can expand to an option such as `-delete`.
+    if (
+      /[*?[]/.test(part.replace(/'[^']*'|"[^"]*"/g, "")) &&
+      (UNSAFE_SHORT[program] || UNSAFE_LONG[program] || program === "cd")
+    )
+      return "an unquoted wildcard can expand to an option of this program";
+    // A wildcard that can match a secret file, quoted too: PowerShell and `rg -g` expand quoted ones.
+    // A `[...]` class matches one character, as `?` does.
+    const matches = (glob: string) =>
+      new RegExp(
+        globToRegExpSource((glob.split(/[/\\]/).at(-1) ?? glob).replace(/\[[^\]]*\]/g, "?"), "path"),
+      );
+    // find only prints the names its patterns match.
+    if (
+      program !== "find" &&
+      args.some((arg) => /[*?[]/.test(arg) && SECRET_NAMES.some((name) => matches(arg).test(name)))
+    )
+      return "a wildcard can match a secret file";
+    if (program === "ps" && args.some((arg) => !arg.startsWith("-") && arg.includes("e")))
+      return "`ps e` prints the environment of each process";
+    const valued = ONE_FILE[program];
+    if (valued) {
+      const files = args.filter((arg, i) => !arg.startsWith("-") && !valued.includes(args[i - 1] ?? ""));
+      if (files.length > 1) return `\`${program}\` writes its second file`;
+    }
+    if (program === "hostname" && args.some((arg) => !arg.startsWith("-")))
+      return "`hostname NAME` renames the computer";
+    if (program === "jq" && args.some((arg) => /\benv\b|\$ENV|--rawfile|--slurpfile/.test(arg)))
+      return "this jq filter reads the environment or other files";
+    // awk writes with `>` and `|`, runs programs with system() and getline, and reads the environment from ENVIRON.
+    if (
+      program === "awk" &&
+      args.some((arg) => /system|getline|ENVIRON|PROCINFO|[|>@]|^-f|^--file/.test(arg))
+    )
+      return "this awk program can write, run a program or read the environment";
     if (program === "sed") {
       const scripts = args.flatMap((arg, i) => (args[i - 1] === "-e" ? [arg] : []));
       const script = scripts.length > 0 ? scripts : args.filter((arg) => !arg.startsWith("-")).slice(0, 1);
-      if (!script.every((text) => text.split(";").every((cmd) => SED_COMMAND.test(cmd.trim())))) return false;
+      if (!script.every((text) => text.split(";").every((cmd) => SED_COMMAND.test(cmd.trim()))))
+        return "this sed script can write or run files";
     }
     if (program === "git") {
-      const sub = args[0] ?? "";
-      if (!READ_ONLY_GIT.has(sub)) return false;
-      if (sub === "branch" && !args.slice(1).every((arg) => GIT_BRANCH_LIST.test(arg))) return false;
+      const start = args.findIndex((arg) => !GIT_QUIET.test(arg));
+      const rest = start === -1 ? [] : args.slice(start);
+      const sub = rest[0] ?? "";
+      const more = rest.slice(1);
+      const listing =
+        sub === "--version" ||
+        READ_ONLY_GIT.has(sub) ||
+        (sub === "remote" && more.every((arg) => arg === "-v")) ||
+        (sub === "tag" && (more.length === 0 || more.some((arg) => arg === "-l" || arg === "--list"))) ||
+        (sub === "stash" && (more[0] === "list" || more[0] === "show")) ||
+        (sub === "reflog" &&
+          (more.length === 0 || more[0] === "show" || more[0]?.startsWith("-") === true)) ||
+        (sub === "config" &&
+          more.some((arg) => /^(--get|--get-all|--get-regexp|--list|-l)$/.test(arg)) &&
+          !more.some((arg) =>
+            /^(--add|--unset|--unset-all|--replace-all|--edit|-e|--rename-section|--remove-section)$/.test(
+              arg,
+            ),
+          ));
+      if (!listing) return `\`git ${sub}\` can change the repository`;
+      if (sub === "branch" && !more.every((arg) => GIT_BRANCH_LIST.test(arg)))
+        return "`git branch NAME` makes a branch";
     }
   }
   // git in another folder can run the hooks of that folder.
-  return !(programs.has("cd") && programs.has("git"));
+  if (programs.has("cd") && programs.has("git")) return "git in another folder can run that folder's hooks";
+  return undefined;
+}
+
+/** True for a command line that only reads files of the workspace (`readOnlyRefusal` finds no reason to ask). */
+export function isReadOnlyCommand(command: string, workspaceRoot?: string): boolean {
+  return readOnlyRefusal(command, workspaceRoot) === undefined;
 }
 
 /**
@@ -1006,6 +1210,9 @@ export class PermissionsGate implements ToolPolicy {
       path: request.path,
       riskTier: request.riskTier,
       source,
+      ...(request.command !== undefined && isCommandPatternTool(request.tool)
+        ? { reason: readOnlyRefusal(request.command, this.options.workspaceRoot) }
+        : {}),
       metadata: { riskTier: request.riskTier, source },
     });
     return response === "reject" ? "deny" : "allow";
