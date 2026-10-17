@@ -1,6 +1,6 @@
 import { relative, resolve } from "node:path";
 import { scopeMatchesPattern } from "./capabilities.ts";
-import { fromMsysPath } from "./sandbox.ts";
+import { fromMsysPath, PROTECTED_PATHS } from "./sandbox.ts";
 import type { TrustStore } from "./trust.ts";
 
 /**
@@ -22,6 +22,8 @@ export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /** Tools `allow-edits` and `auto` auto-allow: file mutations, not command execution. */
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "notebook_edit"]);
+/** The ask source of a write to a file that runs outside the sandbox later: only the user answers it, never a reviewer. */
+export const PROTECTED_SOURCE = "protected:";
 
 export interface PolicyRequest {
   tool: string;
@@ -1194,15 +1196,18 @@ export class PermissionsGate implements ToolPolicy {
     if (this.planRefuses(request)) return "deny";
 
     const decision = this.decisionFor(request);
-    if (decision === "allow") return "allow";
     if (decision === "deny") return "deny";
-    // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
-    if (this.options.permissionMode === "allow-all") return "allow";
-    const mode = this.options.permissionMode;
-    if ((mode === "allow-edits" || mode === "auto") && EDIT_TOOLS.has(request.tool)) return "allow";
+    const harness = this.harnessFileWritten(request);
+    if (harness === undefined) {
+      if (decision === "allow") return "allow";
+      // Answers asks only: a config deny, an item scope, `.env` reads and the trust gate refuse above.
+      if (this.options.permissionMode === "allow-all") return "allow";
+      const mode = this.options.permissionMode;
+      if ((mode === "allow-edits" || mode === "auto") && EDIT_TOOLS.has(request.tool)) return "allow";
+    }
     if (!ask) return "deny"; // no approval surface: fail closed
 
-    const source = this.askSource(request);
+    const source = harness === undefined ? this.askSource(request) : `${PROTECTED_SOURCE}${harness}`;
     const response = await ask({
       tool: request.tool,
       title: request.command ?? request.path ?? request.title ?? request.tool,
@@ -1216,6 +1221,27 @@ export class PermissionsGate implements ToolPolicy {
       metadata: { riskTier: request.riskTier, source },
     });
     return response === "reject" ? "deny" : "allow";
+  }
+
+  /**
+   * A file of `PROTECTED_PATHS` that the request writes, as the workspace names it. Its hooks, MCP servers and plugins
+   * run later outside the sandbox, so no mode or rule writes one without the user. Plans are files of the plan agent.
+   */
+  private harnessFileWritten(request: ToolCallPolicyRequest): string | undefined {
+    const targets =
+      EDIT_TOOLS.has(request.tool) && request.path !== undefined
+        ? [request.path]
+        : isCommandPatternTool(request.tool) && request.command !== undefined
+          ? shellFileTargets(request.command).writes
+          : [];
+    for (const target of targets) {
+      const rel = relativeWorkspacePath(this.options.workspaceRoot, target);
+      const key = process.platform === "win32" ? rel.toLowerCase() : rel;
+      const under = (dir: string) => key === dir || key.startsWith(`${dir}/`);
+      if ([...PROTECTED_PATHS.writable, ".agency/plans"].some(under)) continue;
+      if (PROTECTED_PATHS.readOnly.some(under)) return rel;
+    }
+    return undefined;
   }
 
   /** A read or edit deny rule that holds for a file that a shell command names. */
