@@ -379,3 +379,23 @@ describe("createOpenAiCompatibleAdapter", () => {
     };
   }
 });
+
+test("on OpenRouter a Claude request asks for the prompt cache, and another model's request does not", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const http: HttpClient = {
+    fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    },
+  };
+  const adapter = createOpenAiCompatibleAdapter("openrouter", "https://openrouter.ai/api/v1");
+  await collect(adapter.stream({ ...baseRequest, model: "anthropic/claude-haiku-5.5" }, http));
+  await collect(adapter.stream({ ...baseRequest, model: "deepseek/deepseek-v4.1-flash" }, http));
+  await collect(
+    createOpenAiCompatibleAdapter("gateway", "http://localhost/v1").stream(
+      { ...baseRequest, model: "anthropic/x" },
+      http,
+    ),
+  );
+  expect(bodies.map((b) => b.cache_control)).toEqual([{ type: "ephemeral" }, undefined, undefined]);
+});

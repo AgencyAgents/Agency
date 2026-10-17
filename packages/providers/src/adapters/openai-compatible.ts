@@ -135,6 +135,10 @@ function buildRequestBody(request: ProviderRequest, family: string): Record<stri
     stream: true,
     stream_options: { include_usage: true },
   };
+  // Claude caches only with a marker. OpenRouter's top-level one sets the breakpoint on the last block, so each request
+  // of a turn reads the cache up to the request before it.
+  if (family === "openrouter" && request.model.startsWith("anthropic/"))
+    body.cache_control = { type: "ephemeral" };
 
   if (request.tools?.length) {
     body.tools = request.tools.map((t) => ({
