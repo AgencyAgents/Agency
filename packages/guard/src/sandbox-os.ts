@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgencyError, ErrorCode } from "@agency/schema";
@@ -385,6 +385,18 @@ export class OsSandboxBackend implements SandboxBackend {
     } = {},
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     this.checkCommand(argv.join(" "));
+    // bubblewrap and the rules of Windows hold only the protected paths that exist: one that a command makes is
+    // removed after it, or its hooks or MCP servers would run outside the sandbox at the next start. Seatbelt
+    // refuses it already. ponytail: a background command is not swept; sweep at its end if one is seen to do this.
+    const absent =
+      this.platform === "darwin"
+        ? []
+        : PROTECTED_PATHS.readOnly.filter((path) => !existsSync(join(this.root, path)));
+    const sweep = (): string[] => {
+      const made = absent.filter((path) => existsSync(join(this.root, path)));
+      for (const path of made) rmSync(join(this.root, path), { recursive: true, force: true });
+      return made;
+    };
     const child = Bun.spawn(this.wrap(argv, opts.cwd), {
       windowsHide: true,
       cwd: opts.cwd ?? this.root,
@@ -411,7 +423,12 @@ export class OsSandboxBackend implements SandboxBackend {
           }, opts.timeoutMs)
         : undefined;
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([stdoutText, stderrText, child.exited]);
+      const [stdout, output, exitCode] = await Promise.all([stdoutText, stderrText, child.exited]);
+      const made = sweep();
+      const stderr =
+        made.length === 0
+          ? output
+          : `${output}${output && !output.endsWith("\n") ? "\n" : ""}agency sandbox: removed ${made.join(", ")}, which this command made: a command may not make files whose hooks or servers run outside the sandbox. Edit such a file with the edit or write tool, which asks the user.\n`;
       if (timedOut) {
         throw new AgencyError(ErrorCode.INTERNAL, "sandboxed command timed out", {
           source: "sandbox-os",
@@ -420,6 +437,7 @@ export class OsSandboxBackend implements SandboxBackend {
       }
       return { stdout, stderr, exitCode };
     } finally {
+      sweep();
       opts.signal?.removeEventListener("abort", kill);
       if (timer !== undefined) clearTimeout(timer);
     }

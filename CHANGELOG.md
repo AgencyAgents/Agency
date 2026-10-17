@@ -441,6 +441,13 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **A sandboxed command could change the files of other agents that Agency runs outside the sandbox**
+  (security): with `sandbox.backend: "os"`, a command could write `.mcp.json`, `.claude/settings.json` (hooks),
+  `opencode.json`, `.cursor/hooks.json` and the other files that Agency loads hooks, MCP servers or plugins
+  from, and these ran with your rights at the next start. They are now read-only to a command, as `.agency`
+  is, and so are `.gitmodules`, `.vscode` and `.idea`, as in the sandbox of Claude Code. A new one that a command
+  makes on Linux or Windows is removed when the command ends (tested with bubblewrap in WSL 2 and with the
+  token of Windows). `edit` and `write` ask before they change one, in every mode.
 - **The sandbox proxy refuses a host that resolves to a private address** (security), as the proxy of Claude
   Code does: an allowed name whose DNS gives 127.0.0.1, a private network or 169.254.169.254 (cloud metadata)
   reached this machine or the metadata of the cloud. The proxy now connects to the address it checked, and a

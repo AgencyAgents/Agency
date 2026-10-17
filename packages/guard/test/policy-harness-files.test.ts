@@ -35,6 +35,12 @@ test("a write to a file that runs outside the sandbox later goes to the user in 
       ".agency/plugins/x.ts",
       ".git/hooks/pre-commit",
       ".git/config",
+      ".claude/settings.json",
+      ".mcp.json",
+      "opencode.json",
+      ".cursor/hooks.json",
+      ".vscode/tasks.json",
+      ".github/mcp.json",
     ]) {
       const { result, asked } = await verdict(mode, { tool: "write", path });
       expect({ mode, path, result, asked }).toEqual({

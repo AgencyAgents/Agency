@@ -12,12 +12,38 @@ export interface CommandPolicy {
 }
 
 /**
- * Workspace paths that a sandboxed command must not change: git, and the hooks, MCP servers and plugins of `.agency`,
- * run later outside the sandbox. `.git` is pinned against a swap; the worktrees of a team stay writable.
+ * Workspace paths that a sandboxed command must not change: git, and the hooks, MCP servers and plugins of `.agency`
+ * and of the other agents whose files Agency loads, run later outside the sandbox; editor folders hold tasks that run
+ * on open, as in Claude Code. `.git` is pinned against a swap; the worktrees of a team stay writable. Lowercase.
  */
 export const PROTECTED_PATHS = {
   pinned: [".git"],
-  readOnly: [".git/hooks", ".git/config", ".agency"],
+  readOnly: [
+    ".git/hooks",
+    ".git/config",
+    ".gitmodules",
+    ".agency",
+    ".claude",
+    ".mcp.json",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".opencode",
+    "opencode.json",
+    "opencode.jsonc",
+    ".pi",
+    ".zed",
+    ".kiro",
+    ".qwen",
+    ".amp",
+    ".kilocode",
+    ".roo",
+    "crush.json",
+    ".crush.json",
+    ".github/mcp.json",
+    ".vscode",
+    ".idea",
+  ],
   writable: [".agency/worktrees"],
 } as const;
 

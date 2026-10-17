@@ -38,6 +38,20 @@ describe.skipIf(!runs)("OS sandbox: real commands", () => {
     expect(net.stdout).not.toContain("site body");
   });
 
+  test("a command cannot change a file whose hooks run outside the sandbox, nor make a new one", async () => {
+    const ws = dir(tmpdir());
+    const sandbox = new OsSandboxBackend(ws);
+    expect(await sandbox.isAvailable()).toBe(true);
+    await Bun.write(join(ws, ".claude", "settings.json"), "{}");
+    const edit = await sandbox.exec(["sh", "-c", "echo x > .claude/settings.json"], { cwd: ws });
+    expect(edit.exitCode).not.toBe(0);
+    expect(await Bun.file(join(ws, ".claude", "settings.json")).text()).toBe("{}");
+    const made = await sandbox.exec(["sh", "-c", "echo '{}' > .mcp.json; echo ok"], { cwd: ws });
+    expect(made.stdout).toContain("ok");
+    expect(existsSync(join(ws, ".mcp.json"))).toBe(false);
+    if (process.platform === "linux") expect(made.stderr).toContain("agency sandbox: removed .mcp.json");
+  });
+
   const domainsRun =
     runs && Bun.which("curl") !== null && (process.platform !== "linux" || Bun.which("socat") !== null);
   test.skipIf(!domainsRun)(
