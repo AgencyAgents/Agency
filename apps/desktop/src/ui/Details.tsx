@@ -27,11 +27,28 @@ export function Details() {
       typeof config().compactionLimit === "number" ? (config().compactionLimit as number) : undefined;
     return limit ? Math.min(limit, window()) : Math.round(window() * 0.9);
   };
+  // What the sandbox enforces. The software backend checks paths of the file tools only: commands are not isolated.
   const sandbox = () => {
-    const s = (config().sandbox ?? {}) as { backend?: string; allowNetwork?: boolean };
-    const backend =
-      { software: "Software", docker: "Docker", os: "OS" }[s.backend ?? "software"] ?? s.backend;
-    return `${backend}, ${s.allowNetwork ? "network on" : "no network"}`;
+    const s = (config().sandbox ?? {}) as {
+      backend?: string;
+      allowNetwork?: boolean;
+      allowedDomains?: string[];
+      egress?: string[];
+    };
+    const hosts = (list: string[]) => `${list.length} allowed host${list.length === 1 ? "" : "s"}`;
+    if (s.backend === "os")
+      return s.allowNetwork
+        ? "OS, network on"
+        : s.allowedDomains?.length
+          ? `OS, ${hosts(s.allowedDomains)}`
+          : "OS, no network";
+    if (s.backend === "docker")
+      return s.egress === undefined
+        ? "Docker, network on"
+        : s.egress.length
+          ? `Docker, ${hosts(s.egress)}`
+          : "Docker, no network";
+    return "None: approvals are the only check";
   };
 
   return (

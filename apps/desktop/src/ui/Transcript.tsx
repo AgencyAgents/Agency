@@ -363,7 +363,10 @@ function ApprovalCard(props: { root: string; approval: Approval; input?: Record<
     const source = r().source ?? "";
     if (source.startsWith("rule") || source.includes("permission"))
       return `It matches the rule ${source.replace(/^rule:/, "")}, which asks first.`;
-    if (state.prefs.mode === "ask") return "Manual mode asks before each edit and command.";
+    const reason = r().reason;
+    if (reason) return `${reason[0]?.toUpperCase()}${reason.slice(1)}, so it asks first.`;
+    if (state.prefs.mode === "ask")
+      return isEdit() ? "Manual mode asks before each edit." : "Manual mode asks first.";
     if (state.prefs.mode === "allow-edits") return "Accept edits mode still asks before commands.";
     if (command()) return "It is not a read-only command, so it asks first.";
     return `This ${r().riskTier ?? ""} tool asks first.`.replace("  ", " ");

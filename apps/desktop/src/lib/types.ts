@@ -58,6 +58,8 @@ export interface ApprovalRequest {
   riskTier?: string;
   argsSummary?: string;
   source?: string;
+  /** Why the command is not read-only, from the daemon's check. */
+  reason?: string;
 }
 
 export interface Approval {
