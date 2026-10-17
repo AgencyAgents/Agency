@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildTurns, history, summarize, type Work } from "../src/lib/transcript.ts";
+import { buildTurns, coldContext, history, summarize, type Work } from "../src/lib/transcript.ts";
 import type { Entry, Message } from "../src/lib/types.ts";
 
 let n = 0;
@@ -162,4 +162,20 @@ test("a prompt shows without the reminder that the daemon stored with it", () =>
     ]),
   );
   expect(buildTurns(history([u], u.id)).map((t) => t.prompt)).toEqual(["plan the change"]);
+});
+
+test("the context of a session counts as cold once its last request is older than the cache", () => {
+  const u = entry(null, msg("user", [{ type: "text", text: "go" }]));
+  const usage = entry(u.id, {
+    type: "usage",
+    usage: { inputTokens: 900, outputTokens: 10 },
+    contextTokens: 120_000,
+  });
+  const at = Date.parse(usage.createdAt);
+  expect(coldContext([u, usage], usage.id, at + 60_000)).toBeUndefined();
+  expect(coldContext([u, usage], usage.id, at + 6 * 60_000)).toBe(120_000);
+  // A turn that was cut reports nothing: the request before it set the cache.
+  const cut = entry(usage.id, { type: "usage", usage: { inputTokens: 0, outputTokens: 0 } });
+  expect(coldContext([u, usage, cut], cut.id, at + 6 * 60_000)).toBe(120_000);
+  expect(coldContext([u], u.id, at + 6 * 60_000)).toBeUndefined();
 });

@@ -330,3 +330,17 @@ export function peek(text: string, last = false): string {
     .filter(Boolean);
   return (last ? lines.at(-1) : lines[0]) ?? "";
 }
+
+/** A provider keeps a cached prompt about 5 minutes after its last use. */
+export const CACHE_TTL_MS = 5 * 60_000;
+
+/** The context that the next message reads again at full price: the last request of the session is older than the cache. */
+export function coldContext(entries: Entry[], tipId: string, now: number): number | undefined {
+  const last = chain(entries, tipId).findLast(
+    (e) => e.type === "usage" && (e.contextTokens ?? e.usage?.inputTokens ?? 0) > 0,
+  );
+  if (!last) return undefined;
+  return now - Date.parse(last.createdAt) > CACHE_TTL_MS
+    ? (last.contextTokens ?? last.usage?.inputTokens)
+    : undefined;
+}

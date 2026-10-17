@@ -1,6 +1,6 @@
 import fuzzysort from "fuzzysort";
-import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import { bytes, fileKind, tokens } from "../lib/format.ts";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { bytes, fileKind, tokens, usd } from "../lib/format.ts";
 import { errorText, host } from "../lib/host.ts";
 import {
   type Attachment,
@@ -21,6 +21,7 @@ import {
   toast,
   usageOf,
 } from "../lib/store.ts";
+import { coldContext } from "../lib/transcript.ts";
 import { I, P } from "./icons.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { Choices, openMenu, Pop, toggleMenu } from "./menu.tsx";
@@ -276,6 +277,19 @@ export function Composer(props: {
             ? "Steer the running turn"
             : "Ask for follow-up changes";
 
+  // After the cache of the provider expired, the next message reads the whole context again at the full input price.
+  const [now, setNow] = createSignal(Date.now());
+  const tick = setInterval(() => setNow(Date.now()), 30_000);
+  onCleanup(() => clearInterval(tick));
+  const cold = createMemo(() => {
+    const view = props.root && props.id ? state.sessions[keyOf(props.root, props.id)]?.view : undefined;
+    if (!view || running()) return undefined;
+    const used = coldContext(view.entries, view.tipId, now());
+    if (used === undefined || used < 20_000) return undefined;
+    const price = model()?.inputPerMTok;
+    return { used, cost: price ? (used / 1_000_000) * price : undefined };
+  });
+
   const context = createMemo(() => {
     if (!props.root || !props.id) return null;
     const used = live()?.tokens || usageOf(state.sessions[keyOf(props.root, props.id)]?.view ?? null).tokens;
@@ -476,6 +490,17 @@ export function Composer(props: {
               {project(props.root)?.git?.worktree ? "Worktree" : "Local"}
             </span>
             <div style={{ flex: 1 }} />
+            <Show when={cold()}>
+              {(c) => (
+                <span
+                  class="hide-sm"
+                  style={{ color: "var(--amber)" }}
+                  title="The provider keeps a cached prompt about 5 minutes. After that, the next message reads the whole context again at the full input price. /compact makes the context smaller first."
+                >
+                  {`Cache expired: the next message reads ${tokens(c().used)} tokens again${c().cost === undefined ? "" : `, about ${usd(c().cost as number)}`}`}
+                </span>
+              )}
+            </Show>
             <Show when={context()}>
               {(c) => (
                 <span class="hide-sm" title={`${tokens(c().used)} of ${tokens(c().window)} tokens`}>

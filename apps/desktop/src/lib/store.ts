@@ -736,6 +736,8 @@ export interface ModelChoice {
   thinking: boolean;
   efforts?: Effort[];
   free: boolean;
+  /** Dollars for a million input tokens, when the catalog knows it. */
+  inputPerMTok?: number;
 }
 
 type CatalogModel = ProvidersList["all"][number]["models"][number];
@@ -792,6 +794,7 @@ export function modelChoices(root: string | null | undefined): ModelChoice[] {
         (m.pricing?.inputPerMTok === 0 &&
           m.pricing?.outputPerMTok === 0 &&
           !custom[provider]?.models?.[m.id]),
+      ...(m.pricing?.inputPerMTok ? { inputPerMTok: m.pricing.inputPerMTok } : {}),
     });
   };
   const configured = typeof p.config?.model === "string" ? p.config.model : undefined;
