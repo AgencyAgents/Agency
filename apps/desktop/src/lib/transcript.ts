@@ -71,7 +71,11 @@ export const toolsOf = (work: Work): ToolStep[] =>
   work.items.filter((a): a is Extract<Activity, { kind: "tool" }> => a.kind === "tool");
 
 function promptOf(message: Message): { text: string; images: number } | null {
-  const texts = message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text);
+  // A reminder that the daemon stored with the prompt (plan mode) is for the model, not part of what the user wrote.
+  const texts = message.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { text: string }).text)
+    .filter((text) => !text.startsWith("<system-reminder>"));
   if (texts.length === 0) return null;
   return { text: texts.join("\n"), images: message.content.filter((b) => b.type === "image").length };
 }

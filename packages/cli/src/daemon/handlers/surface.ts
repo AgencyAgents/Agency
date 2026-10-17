@@ -2,6 +2,7 @@ import { join } from "node:path";
 import {
   announceHook,
   getSessionTitle,
+  isReminderText,
   loadTraceSpansSync,
   type MessageEntry,
   restoreIntegrationCheckpoint,
@@ -421,7 +422,9 @@ export function registerSurfaceHandlers(handlers: Record<string, MethodHandler>,
       return { rewound: false, conflicts: outcome.conflicts };
     await todoStore.rollback(sessionId, prompt.parentId);
     turnCheckpoints.delete(sessionId);
-    const text = prompt.message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
+    const text = prompt.message.content
+      .flatMap((c) => (c.type === "text" && !isReminderText(c.text) ? [c.text] : []))
+      .join("\n");
     return { rewound: true, files: outcome.files, conflicts: outcome.conflicts, prompt: text };
   };
 

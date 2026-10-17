@@ -6,16 +6,21 @@ import {
   CODE_TOOL,
   compact,
   composeSystemPrompt,
+  formatSystemReminders,
   gatherEnvironmentInfo,
   generateTitle,
   getSessionTitle,
+  type MessageEntry,
   type MessageOrigin,
   modelSummarizer,
   newEntryId,
+  planOffReminder,
   projectSessionView,
+  readOnlyReminder,
   resolveSmallModel,
   runChildTurn,
   type SentRequest,
+  type SessionEntry,
   type Summarizer,
   summarizeAtEnd,
   summarizeTranscript,
@@ -370,10 +375,35 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       tipId = outcome.tipId;
       compacted = outcome.compacted;
     }
+    // Plan mode goes with the prompt: in the system prompt, each switch would miss the cache of the whole history.
+    const planNote = formatSystemReminders([readOnlyReminder()]);
+    const lastPrompt =
+      tipId === null
+        ? undefined
+        : store
+            .chainFor(store.load(p.sessionId), tipId)
+            .findLast(
+              (e): e is MessageEntry & SessionEntry => e.type === "message" && typeof e.turnId === "string",
+            );
+    const wasPlan =
+      lastPrompt?.message.content.some((b) => b.type === "text" && b.text === planNote) ?? false;
+    const note =
+      p.permissionMode === "plan"
+        ? planNote
+        : wasPlan
+          ? formatSystemReminders([planOffReminder()])
+          : undefined;
     const userEntry = await store.append(p.sessionId, {
       type: "message",
       parentId: tipId,
-      message: { role: "user", content: [{ type: "text", text: p.userText }, ...(p.images ?? [])] },
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: p.userText },
+          ...(note === undefined ? [] : [{ type: "text" as const, text: note }]),
+          ...(p.images ?? []),
+        ],
+      },
       turnId,
     });
     let history = store.messagesFor(store.load(p.sessionId), userEntry.id);
@@ -404,6 +434,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       session: history,
       budget: p.budget ?? sessionBudgets.get(p.sessionId),
       permissionMode: p.permissionMode,
+      planInPrompt: true,
       ...(p.permissions === undefined ? {} : { permissions: p.permissions }),
       ...(p.mcp === undefined ? {} : { mcp: p.mcp }),
       ...(p.fallbackModel === undefined ? {} : { fallbackModel: p.fallbackModel }),

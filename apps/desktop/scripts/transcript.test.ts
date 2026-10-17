@@ -149,3 +149,17 @@ test("hook context the daemon put in the inbox shows as an aside, not as a messa
   const [turn] = buildTurns(history([u, h, a], a.id));
   expect(turn?.parts[0]).toEqual({ kind: "aside", label: "A hook added context", text: "branch: dev" });
 });
+
+test("a prompt shows without the reminder that the daemon stored with it", () => {
+  const u = entry(
+    null,
+    msg("user", [
+      { type: "text", text: "plan the change" },
+      {
+        type: "text",
+        text: "<system-reminder>\n- [plan_mode] Read-only (plan) mode is active\n</system-reminder>",
+      },
+    ]),
+  );
+  expect(buildTurns(history([u], u.id)).map((t) => t.prompt)).toEqual(["plan the change"]);
+});

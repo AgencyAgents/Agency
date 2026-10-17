@@ -145,6 +145,8 @@ export interface RunTurnParams {
   /** Dynamic notices active on THIS turn only (plan mode, changed files, dead
    *  MCP servers); rendered as one <system-reminder> block, absent otherwise. */
   systemReminders?: SystemReminder[];
+  /** The plan reminder is in the prompts of the session: the system prompt leaves it out and keeps its cache. */
+  planInPrompt?: boolean;
   thinkingLevel?: ThinkingLevel;
   session: Message[];
   budget?: Budget;
@@ -833,7 +835,7 @@ export function resolvePrompt(
   });
 
   const reminders: SystemReminder[] = [...(params.systemReminders ?? [])];
-  if (params.permissionMode === "plan") reminders.push(readOnlyReminder());
+  if (params.permissionMode === "plan" && !params.planInPrompt) reminders.push(readOnlyReminder());
   if (options.mcpFailures) {
     for (const [name, reason] of options.mcpFailures) reminders.push(mcpServerDownReminder(name, reason));
   }

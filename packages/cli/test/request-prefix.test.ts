@@ -119,3 +119,43 @@ test("every request of a session only appends to the one before it", async () =>
   // A session with no team sends no tools of the team.
   expect(seen[0]?.tools?.map((t) => t.name)).not.toContain("board_read");
 }, 60_000);
+
+test("plan mode goes with the prompt, so a switch keeps the system prompt and its cache", async () => {
+  const ws = tempDir("agency-prefix-ws-");
+  const seen: ProviderRequest[] = [];
+  const turns: Call[][] = [[], [], []];
+  const daemon = await createAgentDaemon({
+    workspaceRoot: ws,
+    instanceFile: join(ws, ".agency", "instance.json"),
+    sessionsDir: tempDir("agency-prefix-sess-"),
+    approvalsDir: tempDir("agency-prefix-appr-"),
+    configDir: tempDir("agency-prefix-cfg-"),
+    adapterFor: () => recorder(turns, seen),
+    http: { fetch: async () => new Response() } satisfies HttpClient,
+  });
+  daemons.push(daemon);
+  for (const [userText, permissionMode] of [
+    ["look", "allow-all"],
+    ["plan it", "plan"],
+    ["do it", "allow-all"],
+  ]) {
+    const res = await fetch(`http://127.0.0.1:${daemon.httpPort}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${daemon.server.token}` },
+      body: JSON.stringify({
+        id: 1,
+        method: "session_send",
+        params: { sessionId: "s", provider: "anthropic", model: "m", userText, permissionMode },
+      }),
+    });
+    expect(((await res.json()) as { error?: unknown }).error).toBeUndefined();
+  }
+  expect(new Set(seen.map((r) => r.system)).size).toBe(1);
+  const prompt = (r: ProviderRequest | undefined) => JSON.stringify(r?.messages.at(-1));
+  expect(prompt(seen[0])).not.toContain("plan) mode");
+  expect(prompt(seen[1])).toContain("Read-only (plan) mode is active");
+  expect(prompt(seen[2])).toContain("Read-only (plan) mode is off");
+  expect(JSON.stringify(seen[2]?.messages.slice(0, seen[1]?.messages.length))).toBe(
+    JSON.stringify(seen[1]?.messages),
+  );
+}, 60_000);
