@@ -117,6 +117,8 @@ impl Daemons {
     async fn ensure(&self, root: &str) -> Result<Conn, String> {
         let mut cmd = command(&self.agency);
         cmd.args(["daemon", "start", "--format", "json", "--workspace", root]);
+        // The daemon leaves when this app does; a daemon that the CLI started stays.
+        cmd.env("AGENCY_PARENT_PID", std::process::id().to_string());
         let layer = environment_file(&self.environments, root);
         if layer.exists() {
             cmd.env("AGENCY_CONFIG_OVERLAY", layer);
