@@ -891,7 +891,7 @@ export async function executeTurn(
           }
         }
         try {
-          if (traceRecorder) {
+          if (traceRecorder && config.trace?.cassettes) {
             const cassetteMcpFailures = builtinsMode ? turnScope?.mcpFailures : undefined;
             const sysPrompt = resolveSystemPrompt(params, {
               workspaceRoot: options.workspaceRoot,

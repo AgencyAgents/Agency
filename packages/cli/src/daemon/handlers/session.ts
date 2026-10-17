@@ -770,7 +770,7 @@ export function buildSpawnTool(daemon: DaemonContext, scope: SessionScope): Tool
           warnPersistence("child messages append", error);
         }
         try {
-          if (childTraceRecorder && childResult) {
+          if (childTraceRecorder && childResult && daemon.config.trace?.cassettes) {
             const rec = childTraceRecorder.toCassetteRecord(
               {
                 provider: childProvider,

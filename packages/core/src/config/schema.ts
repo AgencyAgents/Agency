@@ -243,6 +243,8 @@ export const ConfigSchema = z.object({
   verifyGate: z.boolean().optional(),
   trace: z
     .object({
+      /** True: each turn also writes a cassette for `/replay`, which holds the whole history and grows with the session. */
+      cassettes: z.boolean().optional(),
       export: z
         .object({
           endpoint: z.string(),

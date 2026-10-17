@@ -115,8 +115,6 @@ describe("task ephemeral workers", () => {
 
     const tracePath = join(sdir, `${tr.childSessionId}.trace.jsonl`);
     expect(existsSync(tracePath)).toBe(true);
-    const cassettePath = join(sdir, `${tr.childSessionId}.${tr.childTurnId}.cassette.json`);
-    expect(existsSync(cassettePath)).toBe(true);
   });
 
   test("a worker that did not finish returns an error result, not a normal one", async () => {

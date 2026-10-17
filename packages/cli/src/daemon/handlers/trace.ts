@@ -79,9 +79,11 @@ export function registerTraceHandlers(handlers: Record<string, MethodHandler>, c
       });
     const record = await readCassetteRecord(todoSessionsDir, sessionId, turnId);
     if (!record)
-      throw new AgencyError(ErrorCode.INVALID_REQUEST, `no cassette for ${sessionId}/${turnId}`, {
-        source: "trace",
-      });
+      throw new AgencyError(
+        ErrorCode.INVALID_REQUEST,
+        `no cassette for ${sessionId}/${turnId}: a turn writes one when trace.cassettes is true in the config`,
+        { source: "trace" },
+      );
     const targetProvider = overrides?.provider ?? record.params.provider;
     const targetModel = overrides?.model ?? record.params.model;
     const targetSystemPrompt = overrides?.systemPrompt ?? record.params.systemPrompt;
