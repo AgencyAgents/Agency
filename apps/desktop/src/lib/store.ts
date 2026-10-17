@@ -459,7 +459,7 @@ function onFrame(root: string, frame: DaemonFrame): void {
   if (frame.kind === "status") {
     const untrusted = frame.state === "down" && /trust/i.test(frame.error ?? "");
     patchProject(root, { conn: frame.state, error: frame.error ?? null, untrusted });
-    if (frame.state === "up") void loadProject(root);
+    if (frame.state === "up") loads.set(root, loadProject(root));
     return;
   }
   const data = (frame.data ?? {}) as Record<string, unknown>;
@@ -521,6 +521,9 @@ function blankProject(p: Project): ProjectState {
     commands: [],
   };
 }
+
+/** The last load of each project: a send made before its first providers_list returns waits for it. */
+const loads = new Map<string, Promise<void>>();
 
 async function loadProject(root: string): Promise<void> {
   // The open session needs none of the rest: the first providers_list waits for the model catalogs (678 ms measured).
@@ -860,6 +863,7 @@ export async function send(
   text: string,
   attachments: Attachment[],
 ): Promise<void> {
+  if (!currentModel(root)) await loads.get(root);
   const model = currentModel(root);
   if (!model) {
     toast("Connect a provider in Settings to send.", { tone: "err" });
