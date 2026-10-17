@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 
 export interface Project {
   path: string;
@@ -64,6 +65,11 @@ export const host = {
   removeProject: (path: string) => invoke<void>("projects_remove", { path }),
   /** A folder passed on the command line: at startup, or to a second launch that focused this window. */
   launchPath: () => invoke<string | null>("launch_path"),
+  /** Flashes the taskbar button of a window in the back: a turn waits for the user, or has ended. */
+  async attention(): Promise<void> {
+    const win = getCurrentWindow();
+    if (!(await win.isFocused())) await win.requestUserAttention(UserAttentionType.Informational);
+  },
   onOpenPath: (fn: (path: string) => void) => listen<string>("open-path", (e) => fn(e.payload)),
 
   connect(root: string, onFrame: (frame: DaemonFrame) => void): Promise<void> {

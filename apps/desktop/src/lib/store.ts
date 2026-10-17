@@ -417,6 +417,7 @@ function addLiveTool(key: string, id: string, name: string, input: Record<string
 function setApproval(key: string, data: Record<string, unknown>): void {
   const requestId = String(data.requestId ?? data.id ?? "");
   if (!requestId || state.live[key]?.approval?.requestId === requestId) return;
+  void host.attention().catch(() => {});
   setState("live", key, "approval", {
     requestId,
     sessionId: String(data.sessionId ?? ""),
@@ -955,6 +956,7 @@ export async function send(
     await loadSession(root, id);
     setState("live", key, undefined as never);
     endTurn(turnId);
+    void host.attention().catch(() => {});
     settling.delete(key);
     settled();
     refreshSoon(root);

@@ -358,6 +358,11 @@ try {
     await say("say hello");
     await until("streamed reply", bodyHas("Hello from the fake model."));
     await until("session row", `document.querySelector("button.side-row.sess")`);
+    // The end of a turn and an ask flash the taskbar: the window must be allowed to.
+    const flash = await ev<string>(
+      `window.__TAURI_INTERNALS__.invoke("plugin:window|request_user_attention", { label: "main", value: { type: "Informational" } }).then(() => "ok", (e) => String(e))`,
+    );
+    if (flash !== "ok") throw new Error(`the window may not flash the taskbar: ${flash}`);
   });
 
   await step("tool call asks, Allow once runs it", async () => {
