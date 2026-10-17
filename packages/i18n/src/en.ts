@@ -108,6 +108,9 @@ export const en = {
   "tool.bash.detached":
     "[still running after {seconds} s: moved to the background as process {id}. process_output with wait reads the rest; process_kill stops it]",
   "tool.bash.exit_code": "[exit code: {code}]",
+  "tool.bash.network_ask": "Run with the network, outside the network limit of the sandbox: {command}",
+  "tool.bash.network_refused":
+    "not run: the user did not allow the network for this command. Do the work without the network, or say that the task needs it.",
   "tool.bash.cwd_kept": "[cwd kept: {cwd} resolves outside the workspace]",
   "tool.grep.no_matches": "no matches",
   "tool.grep.no_search_binary": "neither ripgrep (rg) nor grep is installed or on PATH",

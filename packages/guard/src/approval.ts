@@ -58,6 +58,8 @@ function grantKey(request: ApprovalRequest): string {
   // Doom-loop grants include the looping tool so one loop cannot approve all future loops.
   if (request.tool === "doom-loop" && typeof request.metadata?.toolName === "string")
     return `tool\u0000doom-loop\u0000${request.metadata.toolName}`;
+  // A way out of the sandbox is its own grant: allowing a command does not give it the network.
+  if (request.source === "sandbox:network") return `net\u0000${request.command ?? ""}`;
   if (request.command !== undefined) {
     // A compound command, or one that the shell builds at run time, is granted as its exact text only.
     const { parts, dynamic } = splitCommand(request.command);

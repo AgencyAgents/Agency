@@ -8,6 +8,10 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Changed
 
+- **A sandboxed command can ask for the network**, as the escalation of Codex and the unsandboxed retry of Claude
+  Code: under `sandbox.backend: "os"` with no network, `bash` takes `network: true` for one command (an install, a
+  fetch). You are asked each time, in every permission mode; the command then runs in the same sandbox with the
+  network. Before, such a command had no way on. A network error in a sandboxed command names this way.
 - **A sandboxed command that fails names the rule it can come from**, as Cursor found agents need: under
   `sandbox.backend: "os"`, "Read-only file system" or "Could not resolve host" in the output of a command gets a
   line that says the command can write only in the workspace, or has no network (or only the hosts of

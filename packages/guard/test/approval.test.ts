@@ -167,3 +167,13 @@ describe("ApprovalManager", () => {
     });
   });
 });
+
+test("an always grant of a command does not give it the network, and a network grant is for that command only", () => {
+  const manager = new ApprovalManager();
+  const net = (command: string): ApprovalRequest => ({ ...bashRequest(command), source: "sandbox:network" });
+  manager.grantAlways(bashRequest("npm install"));
+  expect(manager.hasAlways(net("npm install"))).toBe(false);
+  manager.grantAlways(net("npm install"));
+  expect(manager.hasAlways(net("npm install"))).toBe(true);
+  expect(manager.hasAlways(net("npm install evil-pkg"))).toBe(false);
+});

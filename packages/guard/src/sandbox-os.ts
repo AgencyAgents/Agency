@@ -305,27 +305,33 @@ export class OsSandboxBackend implements SandboxBackend {
     }
   }
 
-  /** The argv that runs `argv` in the sandbox. */
-  wrap(argv: string[], cwd: string = this.root): string[] {
+  /** True when a command has no network, or only the hosts of `allowedDomains`. */
+  get offline(): boolean {
+    return !this.allowNetwork;
+  }
+
+  /** The argv that runs `argv` in the sandbox. `network` gives this one command the network, which the user allowed. */
+  wrap(argv: string[], cwd: string = this.root, network = false): string[] {
+    const allowNetwork = this.allowNetwork || network;
     if (this.platform === "linux") {
       return [
         ...buildBwrapArgs(
           this.root,
           cwd,
-          this.allowNetwork,
+          allowNetwork,
           this.options.bwrapBin,
           [...this.hidden(), ...existing(runtimeDirs())],
-          this.proxy?.socket,
+          allowNetwork ? undefined : this.proxy?.socket,
           existing(HOST_SOCKETS),
         ),
         ...argv,
       ];
     }
     if (this.platform === "darwin") {
-      const port = this.proxy?.port;
+      const port = allowNetwork ? undefined : this.proxy?.port;
       const profile = buildSeatbeltProfile(
         this.root,
-        this.allowNetwork,
+        allowNetwork,
         process.env.TMPDIR ?? "/private/tmp",
         this.hidden(),
         port,
@@ -356,7 +362,7 @@ export class OsSandboxBackend implements SandboxBackend {
    * The rule of the sandbox that an error in the output can come from. Without it a model reads "Read-only file
    * system" or "Could not resolve host" as a fault to work around, and tries again in other ways.
    */
-  private violations(output: string): string[] {
+  private violations(output: string, network: boolean): string[] {
     const notes: string[] = [];
     if (/Read-only file system|EROFS|Operation not permitted|Access to the path .* is denied/i.test(output)) {
       notes.push(
@@ -365,12 +371,14 @@ export class OsSandboxBackend implements SandboxBackend {
     }
     const offline =
       /Could not resolve host|Temporary failure in name resolution|Name or service not known|ENOTFOUND|EAI_AGAIN|getaddrinfo|Network is unreachable|ENETUNREACH/i;
-    if (!this.allowNetwork && offline.test(output)) {
+    if (!this.allowNetwork && !network && offline.test(output)) {
       const domains = this.domains();
       notes.push(
-        domains?.length
-          ? `agency sandbox: this command reaches only ${domains.join(", ")} (sandbox.allowedDomains), through a proxy. A network error above can come from that: do not retry it. Say that the task needs another host in sandbox.allowedDomains.`
-          : "agency sandbox: this command has no network (sandbox.allowNetwork is off). A network error above comes from that: do not retry it. Do the work without the network, or say that the task needs sandbox.allowNetwork.",
+        `${
+          domains?.length
+            ? `agency sandbox: this command reaches only ${domains.join(", ")} (sandbox.allowedDomains), through a proxy. A network error above can come from that.`
+            : "agency sandbox: this command has no network (sandbox.allowNetwork is off). A network error above comes from that."
+        } Do not retry it the same way. If the task needs the network, run the command again with network: true, which asks the user, or do the work without it.`,
       );
     }
     return notes;
@@ -436,6 +444,7 @@ export class OsSandboxBackend implements SandboxBackend {
       timeoutMs?: number;
       signal?: AbortSignal;
       env?: Record<string, string | undefined>;
+      network?: boolean;
     } = {},
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     this.checkCommand(argv.join(" "));
@@ -451,7 +460,7 @@ export class OsSandboxBackend implements SandboxBackend {
       for (const path of made) rmSync(join(this.root, path), { recursive: true, force: true });
       return made;
     };
-    const child = Bun.spawn(this.wrap(argv, opts.cwd), {
+    const child = Bun.spawn(this.wrap(argv, opts.cwd, opts.network), {
       windowsHide: true,
       cwd: opts.cwd ?? this.root,
       stdout: "pipe",
@@ -485,7 +494,7 @@ export class OsSandboxBackend implements SandboxBackend {
           : [
               `agency sandbox: removed ${made.join(", ")}, which this command made: a command may not make files whose hooks or servers run outside the sandbox. Edit such a file with the edit or write tool, which asks the user.`,
             ]),
-        ...this.violations(`${stdout}\n${output}`),
+        ...this.violations(`${stdout}\n${output}`, opts.network === true),
       ];
       const stderr =
         notes.length === 0

@@ -75,6 +75,7 @@ async function runContainerExec(
     timedOut: boolean,
     normalizeCwd?: (cwd: string) => string,
   ) => ToolResult,
+  network = false,
 ): Promise<ToolResult> {
   let abortFired = false;
   const onAbort = (): void => {
@@ -110,6 +111,7 @@ async function runContainerExec(
         timeoutMs: timeout,
         signal: ctx.signal,
         env: { ...modelCommandEnv(), ...ctx.env },
+        ...(network ? { network } : {}),
       });
     } catch (e) {
       if (e instanceof AgencyError && e.code === ErrorCode.INTERNAL && e.context.timedOut === true) {
@@ -155,7 +157,10 @@ export function createBashTool(
   processManager: ProcessManager,
   detachMs = DETACH_MS,
 ): ToolSpec {
-  const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number }> = {
+  // Under an OS sandbox with no network, a command can ask for it: the user decides each time, as the escalation
+  // of Codex and the unsandboxed retry of Claude Code. Else a command that needs the network has no way on.
+  const offline = (deps.sandbox as { offline?: boolean }).offline === true;
+  const spec: ToolSpec<{ command: string; background?: boolean; timeout?: number; network?: boolean }> = {
     name: "bash",
     description:
       `Runs a shell command in ${shell.label}. ` +
@@ -166,13 +171,24 @@ export function createBashTool(
       "across calls within this session; environment variables do not. Pass background: true for " +
       "long-running processes (dev servers, watchers) instead of waiting for them to exit. Pass " +
       "timeout (milliseconds) to kill a command that may hang. A command with no timeout that runs " +
-      `over ${Math.round(detachMs / 1000)} seconds moves to the background and keeps running.`,
+      `over ${Math.round(detachMs / 1000)} seconds moves to the background and keeps running.` +
+      (offline
+        ? " Commands run in a sandbox with no network. Pass network: true only for a command that needs it (an install, a fetch): the user is asked first."
+        : ""),
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
         background: { type: "boolean" },
         timeout: { type: "number", description: "Kill the command after this many milliseconds." },
+        ...(offline
+          ? {
+              network: {
+                type: "boolean",
+                description: "Run this command with the network. The user is asked each time.",
+              },
+            }
+          : {}),
       },
       required: ["command"],
     },
@@ -188,15 +204,31 @@ export function createBashTool(
 
     async handler(input, ctx) {
       deps.sandbox.checkCommand(input.command);
+      const network = offline && input.network === true;
+      if (network) {
+        // Asked in every mode, as a rule or a mode allows the command and not its way out of the sandbox.
+        const answer = await ctx.requestApproval?.({
+          tool: "bash",
+          title: t("tool.bash.network_ask", { command: input.command }),
+          command: input.command,
+          riskTier: "dangerous",
+          source: "sandbox:network",
+        });
+        if (answer !== "once" && answer !== "always") {
+          return { content: t("tool.bash.network_refused"), isError: true as const };
+        }
+      }
 
       if (input.background) {
         const argv = [shell.command, ...shell.buildArgs(input.command)];
-        const wrap = (deps.sandbox as { wrap?: (argv: string[], cwd?: string) => string[] }).wrap;
+        const wrap = (
+          deps.sandbox as { wrap?: (argv: string[], cwd?: string, network?: boolean) => string[] }
+        ).wrap;
         // A backend that runs commands elsewhere must hold this one too: on the host it has the user's rights.
         if (wrap === undefined && asContainerExecBackend(deps.sandbox) !== undefined) {
           return { content: t("tool.bash.background_refused"), isError: true as const };
         }
-        const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd) : argv, {
+        const info = processManager.spawn(wrap ? wrap.call(deps.sandbox, argv, state.cwd, network) : argv, {
           cwd: state.cwd,
           ...(ctx.env === undefined ? {} : { env: ctx.env }),
         });
@@ -264,7 +296,7 @@ export function createBashTool(
 
       const container = asContainerExecBackend(deps.sandbox);
       if (container !== undefined) {
-        return runContainerExec(container, argv, state.cwd, ctx, timeout, finish);
+        return runContainerExec(container, argv, state.cwd, ctx, timeout, finish, network);
       }
 
       const proc = Bun.spawn(argv, {
