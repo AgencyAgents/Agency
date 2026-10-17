@@ -23,6 +23,8 @@ export interface UsageTurn {
   model: string;
   pricing?: ModelPricing;
   timing?: TurnTiming;
+  /** Tokens of the turn's last request: the context size, which `usage` (a sum of all requests) is not. */
+  contextTokens?: number;
 }
 
 export interface SessionUsageTotals {
@@ -68,6 +70,7 @@ export interface UsageSessionEntry {
   costUsd: number;
   cacheHitRate: number | undefined;
   timing?: TurnTiming;
+  contextTokens?: number;
 }
 
 export function usageEntry(turn: UsageTurn): UsageSessionEntry {
@@ -78,6 +81,7 @@ export function usageEntry(turn: UsageTurn): UsageSessionEntry {
     costUsd: turnCostUsd(turn.usage, turn.pricing),
     cacheHitRate: cacheHitRate(turn.usage),
     ...(turn.timing === undefined ? {} : { timing: turn.timing }),
+    ...(turn.contextTokens === undefined ? {} : { contextTokens: turn.contextTokens }),
   };
 }
 

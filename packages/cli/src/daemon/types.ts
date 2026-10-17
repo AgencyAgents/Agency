@@ -236,6 +236,8 @@ export interface RunTurnRpcResult {
   usage: Usage;
   budgetExceeded: boolean;
   cancelled: boolean;
+  /** Tokens of the last request, prompt and reply (RunTurnResult.contextTokens). */
+  contextTokens?: number;
   /** Why the turn did not finish: the provider stream died after content arrived, or the step limit was reached. */
   error?: TurnError;
   /** Set when the fallback model produced the result: usage is priced as this model, not as the one requested. */

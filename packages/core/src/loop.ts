@@ -233,6 +233,8 @@ export interface RunTurnResult {
   stopReason: StopReason;
   usage: Usage;
   budgetExceeded: boolean;
+  /** Tokens of the last request, prompt and reply: the context the next request starts from. `usage` sums all. */
+  contextTokens?: number;
   /** Why the turn did not finish: a salvaged stream (stop reason `error`) or the step limit (stop reason `tool_use`).
    *  A turn that fails before any content throws instead. */
   error?: TurnError;
@@ -524,7 +526,13 @@ export async function runTurn(
           spentCostUsd,
         });
         endTurnOk();
-        return { messages, stopReason, usage: cumulativeUsage, budgetExceeded: true };
+        return {
+          messages,
+          stopReason,
+          usage: cumulativeUsage,
+          budgetExceeded: true,
+          ...(requestTokens > 0 ? { contextTokens: requestTokens } : {}),
+        };
       }
 
       if (stopReason !== "tool_use" || options.signal?.aborted) {
@@ -712,6 +720,7 @@ export async function runTurn(
     stopReason,
     usage: cumulativeUsage,
     budgetExceeded: false,
+    ...(requestTokens > 0 ? { contextTokens: requestTokens } : {}),
     ...(turnError ? { error: turnError } : {}),
   };
 }

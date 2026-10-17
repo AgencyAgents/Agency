@@ -303,7 +303,17 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       contextWindow: window || DEFAULT_SESSION_CONTEXT_WINDOW,
       ...(ctx.config.compactionLimit ? { limitTokens: ctx.config.compactionLimit } : {}),
     };
-    const summarize = sessionSummarizer(ctx, p.provider, p.model);
+    const turnId = p.turnId ?? randomUUID();
+    const summarizeAll = sessionSummarizer(ctx, p.provider, p.model);
+    // The summary takes a model call: the client shows that the session compacts meanwhile.
+    const summarize: typeof summarizeAll = async (...args) => {
+      broadcast(`turn.${turnId}`, { type: "compaction", phase: "start", sessionId: p.sessionId });
+      try {
+        return await summarizeAll(...args);
+      } finally {
+        broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
+      }
+    };
     if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
@@ -337,7 +347,6 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       compacted = true;
       return history;
     };
-    const turnId = p.turnId ?? randomUUID();
     const runParams: RunTurnParams = {
       turnId,
       sessionId: p.sessionId,
@@ -390,6 +399,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
       model: served.model,
       pricing: ctx.catalogModel(served.provider, served.model)?.pricing,
       ...(result.timing === undefined ? {} : { timing: result.timing }),
+      ...(result.contextTokens === undefined ? {} : { contextTokens: result.contextTokens }),
     });
     const response: SessionSendResult = {
       ...result,

@@ -294,6 +294,40 @@ describe("reasoning levels of the catalog", () => {
   }, 15_000);
 });
 
+describe("context size", () => {
+  test("the usage entry sums the requests and keeps the last one's size as the context", async () => {
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      family: "fake",
+      async *stream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call_start", id: "c1", name: "note" };
+          yield { type: "tool_call_end", id: "c1" };
+          yield { type: "message_stop", stopReason: "tool_use", usage: { inputTokens: 100, outputTokens: 7 } };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 300, outputTokens: 20 } };
+      },
+    };
+    const noteTool: ToolSpec = {
+      name: "note",
+      description: "Records a note.",
+      inputSchema: { type: "object", properties: {} },
+      riskTier: "safe",
+      handler: async () => ({ content: "noted" }),
+    };
+    const { client, sessionsDir } = await startDaemon({ adapterFor: () => adapter, tools: [noteTool] });
+    await client.call("session_send", sendParams("ctx-s1", "ctx-t1"));
+    const entry = new SessionStore(sessionsDir)
+      .load("ctx-s1")
+      .find((e) => e.type === "usage") as unknown as { usage: { inputTokens: number }; contextTokens?: number };
+    expect(entry.usage.inputTokens).toBe(400);
+    expect(entry.contextTokens).toBe(320);
+  }, 15_000);
+});
+
 describe("turn timing", () => {
   test("session_send, the usage entry and turn_complete carry ttft, stream time and output tokens", async () => {
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
