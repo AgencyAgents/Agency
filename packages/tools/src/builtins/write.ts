@@ -50,6 +50,7 @@ export function createWriteTool(
         snapshots.capture(resolved, before, ctx.turnId);
       } else {
         mkdirSync(dirname(resolved), { recursive: true });
+        snapshots.captureCreated(resolved, ctx.turnId);
       }
 
       writeFileSync(resolved, input.content, "utf8");
