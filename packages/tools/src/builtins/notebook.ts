@@ -69,6 +69,7 @@ export function createNotebookEditTool(
   const spec: ToolSpec<{ path: string; cell?: string; source?: string; cell_type?: string; mode?: string }> =
     {
       name: "notebook_edit",
+      deferred: true,
       description:
         "Edits one cell of a Jupyter notebook (.ipynb). mode replace (the default) sets the source of a cell and clears its outputs; insert adds a new cell after the cell (or at the start when cell is absent); delete removes the cell. cell is the number of the cell, as read shows it, or its id.",
       inputSchema: {

@@ -10,6 +10,7 @@ function unknown(id: string): { content: string; isError: true } {
 export function createProcessOutputTool(processManager: ProcessManager): ToolSpec {
   const spec: ToolSpec<{ id: string }> = {
     name: "process_output",
+    deferred: true,
     description:
       "Reads the accumulated output of a background process started via bash with background: true.",
     inputSchema: {
@@ -39,6 +40,7 @@ export function createProcessOutputTool(processManager: ProcessManager): ToolSpe
 export function createProcessListTool(processManager: ProcessManager): ToolSpec {
   const spec: ToolSpec<Record<string, never>> = {
     name: "process_list",
+    deferred: true,
     description: "Lists background processes started this session, with id, pid, command and running state.",
     inputSchema: { type: "object", properties: {} },
     riskTier: "safe",
@@ -62,6 +64,7 @@ export function createProcessListTool(processManager: ProcessManager): ToolSpec 
 export function createProcessKillTool(_deps: ToolDeps, processManager: ProcessManager): ToolSpec {
   const spec: ToolSpec<{ id: string }> = {
     name: "process_kill",
+    deferred: true,
     description: "Kills a background process (and its process tree) started this session.",
     inputSchema: {
       type: "object",

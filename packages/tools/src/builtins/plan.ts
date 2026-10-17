@@ -567,6 +567,7 @@ export function createPlanExitTool(deps: ToolDeps, opts: { nonInteractive?: bool
 export function createExecutePlanTool(deps: ToolDeps, todos: TodoStore): ToolSpec {
   const spec: ToolSpec<{ path: string }> = {
     name: "execute_plan",
+    deferred: true,
     description:
       "Executes an approved plan file (a markdown GFM task list). The plan must carry a matching " +
       "plan_approval record; editing the plan after approval invalidates it. Unchecked steps " +

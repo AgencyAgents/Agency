@@ -80,8 +80,10 @@ export interface ToolSpec<Input = Record<string, unknown>> extends ToolDefinitio
    *  gate both consume it (`safe` runs freely, the rest asks and needs a
    *  trusted workspace). Unclassified tools are treated as ungated. */
   riskTier?: RiskTier;
-  /** Asked before each request: a hidden tool is not in the tool list, and a call of it is refused. */
+  /** Asked before each request: a hidden tool is not in the tool list, but a call of it by name still runs. */
   hidden?: () => boolean;
+  /** Seldom needed: kept out of the tool list until `tool_search` finds it, so each request is smaller. */
+  deferred?: boolean;
 }
 
 /** Erased tool type for registries holding mixed-input tools. */
@@ -914,7 +916,6 @@ async function executeOne(
   modelCall: Extract<ContentBlock, { type: "tool_call" }>,
   options: RunTurnOptions,
   signal: AbortSignal | undefined,
-  inner = false,
 ): Promise<{ content: string; isError: boolean; images?: ImageBlock[] }> {
   let call = modelCall;
   const resolved = spec ?? resolveToolSpec(options.tools, call.name);
@@ -922,12 +923,6 @@ async function executeOne(
     const available = options.tools.map((t) => t.name).join(", ");
     return { content: `no such tool: "${call.name}" (available: ${available})`, isError: true };
   }
-  // A hidden tool is out of the tool list of the request. A call from another tool (call_tool, code) can reach it.
-  if (!inner && resolved.hidden?.()) {
-    const hint = `the tool "${resolved.name}" is not loaded: find it with tool_search, then call it with call_tool`;
-    return { content: hint, isError: true };
-  }
-
   try {
     requireTool(options.identity, options.capabilities, resolved.name);
   } catch (error) {
@@ -1122,7 +1117,7 @@ async function executeOne(
     callTool: (name: string, input: Record<string, unknown>) => {
       innerCalls += 1;
       const inner = { type: "tool_call" as const, id: `${call.id}.${innerCalls}`, name, input };
-      return executeOne(undefined, inner, options, signal, true);
+      return executeOne(undefined, inner, options, signal);
     },
     signal: toolSignal,
     turnId: options.turnId,

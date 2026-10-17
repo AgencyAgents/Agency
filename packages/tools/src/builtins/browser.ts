@@ -98,6 +98,7 @@ export function createBrowserTool(deps: ToolDeps, http: HttpClient): ToolSpec {
 
   const spec: ToolSpec<BrowserInput> = {
     name: "browser",
+    deferred: true,
     description:
       "Headless-browser minimum without bundled chromium: navigate fetches a page over HTTP(S), " +
       "snapshot returns an accessibility-tree-like view (title, headings, links, text), close discards " +

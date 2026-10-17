@@ -114,6 +114,7 @@ export function validateTodoItems(items: unknown): string | undefined {
 export function createTodoReadTool(store: TodoStore): ToolSpec {
   const spec: ToolSpec<Record<string, never>> = {
     name: "todo_read",
+    deferred: true,
     description: "Reads the current todo list for this task.",
     inputSchema: { type: "object", properties: {} },
     riskTier: "safe",
