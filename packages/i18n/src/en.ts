@@ -105,6 +105,8 @@ export const en = {
   "tool.bash.truncated_no_spill": "[truncated: output exceeded {bytes} bytes]",
   "tool.bash.cancelled": "[cancelled: command aborted before completion]",
   "tool.bash.timeout": "[timeout: command exceeded {ms}ms and was killed]",
+  "tool.bash.detached":
+    "[still running after {seconds} s: moved to the background as process {id}. process_output with wait reads the rest; process_kill stops it]",
   "tool.bash.exit_code": "[exit code: {code}]",
   "tool.bash.cwd_kept": "[cwd kept: {cwd} resolves outside the workspace]",
   "tool.grep.no_matches": "no matches",
@@ -126,6 +128,8 @@ export const en = {
   "tool.todo.invalid": "todo_write rejected: {detail}",
   "tool.process.unknown": "unknown process id: {id}",
   "tool.process.no_output": "no output yet from process {id}",
+  "tool.process.exited": "[the process has exited]",
+  "tool.process.still_running": "[still running after {seconds} s]",
   "tool.process.killed": "killed process {id}",
   "tool.process.none_running": "no background processes",
   "tool.question.answer_next_message": "(the user's answer will arrive in their next message)",
