@@ -18,7 +18,7 @@ const need = (flag: string): string => {
 const version = need("--version");
 const bundle = need("--bundle");
 const out = need("--out");
-const base = arg("--base-url") ?? `https://github.com/EndeavorAI/Agency/releases/download/v${version}`;
+const base = arg("--base-url") ?? `https://github.com/EndeavourAI/Agency/releases/download/v${version}`;
 
 const installer = readdirSync(bundle).find((f) => f.endsWith("-setup.exe") && f.includes(`_${version}_`));
 if (!installer) throw new Error(`no ${version} setup.exe in ${bundle}`);

@@ -39,7 +39,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1MjcxQkQzODMzNjlDREEKUldUYW5EYUQweHNuVmRSWTZubnJGRkNBVVZrRXhCUmtNbm9kWEFtZFE4Q2kzbktINElkcFFZdVcK",
-      "endpoints": ["https://github.com/EndeavorAI/Agency/releases/latest/download/latest.json"],
+      "endpoints": ["https://github.com/EndeavourAI/Agency/releases/latest/download/latest.json"],
       "windows": { "installMode": "passive" }
     }
   }

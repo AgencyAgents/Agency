@@ -1,13 +1,13 @@
 # Installs the Agency binary from a GitHub release. Fails closed: a missing or
 # mismatched checksum aborts the install, nothing is written.
 #
-# Usage: irm https://raw.githubusercontent.com/EndeavorAI/Agency/master/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/EndeavourAI/Agency/master/scripts/install.ps1 | iex
 # Env overrides: AGENCY_VERSION (default: latest release), AGENCY_INSTALL_DIR (default: %LOCALAPPDATA%\Programs\agency),
 # AGENCY_RELEASE_BASE_URL (default: the GitHub release download URL; set to a mirror or local server for testing),
 # AGENCY_NO_MODIFY_PATH (set to 1 to leave the user PATH as it is).
 $ErrorActionPreference = "Stop"
 
-$Repo = "EndeavorAI/Agency"
+$Repo = "EndeavourAI/Agency"
 $InstallDir = if ($env:AGENCY_INSTALL_DIR) { $env:AGENCY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\agency" }
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {

@@ -1,5 +1,5 @@
 /**
- * Packs the built desktop app as the npm package `@endeavorai/agency`: `npm i -g @endeavorai/agency`, then `agency [folder]`.
+ * Packs the built desktop app as the npm package `@endeavourai/agency`: `npm i -g @endeavourai/agency`, then `agency [folder]`.
  * The `agency` command updates from npm at launch, so the updater of the installer stays off in this copy.
  * Usage: bun scripts/npm-pack.ts --app <release dir of the tauri build> --out <dir>
  */
@@ -32,12 +32,12 @@ writeFileSync(
   join(stage, "package.json"),
   `${JSON.stringify(
     {
-      name: "@endeavorai/agency",
+      name: "@endeavourai/agency",
       publishConfig: { access: "public" },
       version,
       description: "Agency: a desktop app for coding agents.",
       license: "MIT",
-      repository: { type: "git", url: "git+https://github.com/EndeavorAI/Agency.git" },
+      repository: { type: "git", url: "git+https://github.com/EndeavourAI/Agency.git" },
       bin: { agency: "agency.js" },
       os: ["win32"],
       cpu: ["x64"],
