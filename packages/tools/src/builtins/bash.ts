@@ -259,6 +259,7 @@ export function createBashTool(
       }
 
       const proc = Bun.spawn(argv, {
+        windowsHide: true,
         cwd: state.cwd,
         env: { ...modelCommandEnv(), ...ctx.env },
         stdout: "pipe",

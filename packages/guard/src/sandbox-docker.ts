@@ -216,6 +216,7 @@ export async function isDockerAvailable(
   const bin = dockerBin ?? process.env.AGENCY_DOCKER_BIN ?? "docker";
   try {
     const child = Bun.spawn([bin, "info", "--format", "{{.ServerVersion}}"], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -242,6 +243,7 @@ export function hasLocalImage(image: string, dockerBin?: string): boolean {
   const bin = dockerBin ?? process.env.AGENCY_DOCKER_BIN ?? "docker";
   try {
     const out = spawnSync(bin, ["image", "inspect", image], {
+      windowsHide: true,
       stdio: "ignore",
       timeout: DOCKER_PROBE_TIMEOUT_MS,
     });
@@ -368,7 +370,7 @@ export class DockerSandboxBackend implements SandboxBackend {
     this.checkCommand(argv.join(" "));
     const workdir = opts.cwd ? this.toContainerPath(opts.cwd) : this.containerRoot;
     const args = this.runArgs(argv, workdir, false);
-    const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(args, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
     const stdoutText = new Response(child.stdout).text();
     const stderrText = new Response(child.stderr).text();
     const killCli = (): void => {
@@ -428,6 +430,7 @@ export class DockerSandboxBackend implements SandboxBackend {
     this.checkCommand(argv.join(" "));
     const workdir = opts.cwd ? this.toContainerPath(opts.cwd) : this.containerRoot;
     const child = Bun.spawn(this.runArgs(argv, workdir, true, opts.env), {
+      windowsHide: true,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

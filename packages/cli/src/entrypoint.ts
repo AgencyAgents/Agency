@@ -1253,7 +1253,7 @@ async function runPrintMode(
 function worktreeRoot(name: string, workspaceRoot: string, err: LineSink): string {
   if (!/^\w[\w.-]*$/.test(name)) throw new Error(t("cli.error.worktree_name", { name }));
   const git = (...args: string[]): Bun.SyncSubprocess<"pipe", "pipe"> =>
-    Bun.spawnSync(["git", ...args], { cwd: workspaceRoot });
+    Bun.spawnSync(["git", ...args], { windowsHide: true, cwd: workspaceRoot });
   const top = git("rev-parse", "--show-toplevel");
   if (top.exitCode !== 0)
     throw new Error(t("cli.error.worktree_git", { detail: top.stderr.toString().trim() }));
@@ -1325,7 +1325,7 @@ async function reviewCmd(
   const cwd = workspaceRootOf(parsed, deps);
   const ref = parsed.subcommand;
   const git = (...args: string[]): string => {
-    const done = Bun.spawnSync(["git", ...args], { cwd });
+    const done = Bun.spawnSync(["git", ...args], { windowsHide: true, cwd });
     if (done.exitCode !== 0)
       throw new Error(t("cli.error.review_git", { detail: done.stderr.toString().trim() }));
     return done.stdout.toString();

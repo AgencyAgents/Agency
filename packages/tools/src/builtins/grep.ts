@@ -10,7 +10,7 @@ const MATCH_LINE = /^(.+):(\d+):/;
 
 function trySpawn(args: string[]) {
   try {
-    return Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    return Bun.spawn(args, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
   } catch {
     return undefined;
   }
@@ -19,7 +19,11 @@ function trySpawn(args: string[]) {
 function searchBinaryAvailable(): boolean {
   for (const binary of ["rg", "grep"]) {
     try {
-      const result = Bun.spawnSync([binary, "--version"], { stdout: "ignore", stderr: "ignore" });
+      const result = Bun.spawnSync([binary, "--version"], {
+        windowsHide: true,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
       if (result.exitCode === 0) return true;
     } catch {
       // not on PATH

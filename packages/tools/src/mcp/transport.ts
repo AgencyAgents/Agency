@@ -475,6 +475,7 @@ function createStdioTransport(
   return createStdioTransportFromChild(
     () =>
       Bun.spawn([command, ...args], {
+        windowsHide: true,
         env: { ...process.env, ...env } as Record<string, string>,
         stdin: "pipe",
         stdout: "pipe",

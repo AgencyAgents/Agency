@@ -37,6 +37,7 @@ export class ProcessManager {
   spawn(command: string[], options: { cwd?: string; env?: Record<string, string> } = {}): ManagedProcessInfo {
     const id = randomUUID();
     const proc = Bun.spawn(command, {
+      windowsHide: true,
       cwd: options.cwd,
       env: { ...modelCommandEnv(), ...options.env },
       stdout: "pipe",
@@ -151,7 +152,7 @@ export class ProcessManager {
         // The job first: it holds the descendants that the tree of Windows does not show.
         killJob(pid);
         // /T walks the child tree, /F forces termination.
-        Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"]);
+        Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"], { windowsHide: true });
         return;
       }
       try {
@@ -173,7 +174,7 @@ export class ProcessManager {
   private killDescendants(pid: number): void {
     let children: number[];
     try {
-      const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+      const result = Bun.spawnSync(["pgrep", "-P", String(pid)], { windowsHide: true });
       children = result.stdout
         .toString()
         .split(/\s+/)

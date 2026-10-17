@@ -287,7 +287,12 @@ export async function piExtensions(
     },
     registerCommand: (name: string) => logger?.warn(`[pi:${id}] the command /${name} does not run here`),
     exec: async (command: string, args: string[] = []) => {
-      const child = Bun.spawn([command, ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });
+      const child = Bun.spawn([command, ...args], {
+        windowsHide: true,
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const [stdout, stderr, code] = await Promise.all([
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),

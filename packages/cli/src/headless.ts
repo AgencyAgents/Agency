@@ -149,7 +149,7 @@ export async function connectHeadlessClient(
           instanceFile,
         ],
         // Detached: without it Windows kills the daemon when this CLI exits, so no later run could reuse it.
-        { stdio: ["ignore", "ignore", "ignore"], detached: true },
+        { stdio: ["ignore", "ignore", "ignore"], detached: true, windowsHide: true },
       ).unref();
     },
   })

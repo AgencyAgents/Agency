@@ -211,6 +211,7 @@ function withClone<T>(git: GitSource, use: (dir: string) => T): T {
   try {
     const ref = git.ref === undefined ? [] : ["--branch", git.ref];
     const result = spawnSync("git", ["clone", "--quiet", "--depth", "1", ...ref, "--", git.url, dir], {
+      windowsHide: true,
       encoding: "utf8",
       stdio: ["ignore", "ignore", "pipe"],
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },

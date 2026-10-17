@@ -14,7 +14,11 @@ export async function runFormatter(config: FormatterConfig, filePath: string): P
   if (!config.command || config.command.length === 0) return;
 
   try {
-    const proc = Bun.spawn([...config.command, filePath], { stdout: "ignore", stderr: "ignore" });
+    const proc = Bun.spawn([...config.command, filePath], {
+      windowsHide: true,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
     await proc.exited;
   } catch {
     // Best-effort; the edit itself already succeeded.

@@ -205,7 +205,7 @@ export function scriptSandboxAvailable(readPaths: string[] = []): Promise<boolea
     const argv = buildScriptSandboxArgv(windows ? ["cmd.exe", "/d", "/c", "exit 0"] : ["/usr/bin/true"], []);
     if (argv === undefined) return false;
     try {
-      return (await Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).exited) === 0;
+      return (await Bun.spawn(argv, { windowsHide: true, stdout: "ignore", stderr: "ignore" }).exited) === 0;
     } catch {
       return false;
     }
@@ -335,7 +335,7 @@ export class OsSandboxBackend implements SandboxBackend {
       // Here the folders get the rules of the SID, one time for each daemon start.
       if (this.platform === "win32" && !(await prepareWindowsSandbox(this.root, this.sid))) return false;
       const probe = this.platform === "win32" ? ["cmd.exe", "/d", "/c", "exit 0"] : ["true"];
-      const child = Bun.spawn(this.wrap(probe), { stdout: "ignore", stderr: "ignore" });
+      const child = Bun.spawn(this.wrap(probe), { windowsHide: true, stdout: "ignore", stderr: "ignore" });
       return (await child.exited) === 0;
     } catch {
       return false;
@@ -386,6 +386,7 @@ export class OsSandboxBackend implements SandboxBackend {
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     this.checkCommand(argv.join(" "));
     const child = Bun.spawn(this.wrap(argv, opts.cwd), {
+      windowsHide: true,
       cwd: opts.cwd ?? this.root,
       stdout: "pipe",
       stderr: "pipe",
