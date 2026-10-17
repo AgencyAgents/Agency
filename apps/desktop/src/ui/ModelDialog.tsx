@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js"
 import { tokens } from "../lib/format.ts";
 import {
   currentModel,
-  EFFORT_LABEL,
   effortFor,
   effortsOf,
   type ModelChoice,
@@ -12,7 +11,7 @@ import {
   state,
 } from "../lib/store.ts";
 import { Check, I, P } from "./icons.tsx";
-import { closeMenu, openMenu } from "./menu.tsx";
+import { closeMenu, EffortSlider, openMenu } from "./menu.tsx";
 
 /** The model picker: search, recent picks, then each connected provider's models. Opens where `/model` or the
  *  composer's model button sets the "model" menu. */
@@ -137,21 +136,11 @@ export function ModelDialog(props: { root: string | null }) {
           <Show when={levels().length > 0}>
             <div class="picker-foot">
               <span>Reasoning effort</span>
-              <div class="seg" role="radiogroup" aria-label="Reasoning effort">
-                <For each={levels()}>
-                  {(l) => (
-                    // biome-ignore lint/a11y/useSemanticElements: .seg styles button[aria-checked]
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={effortFor(cur()) === l}
-                      onClick={() => savePrefs({ effort: l })}
-                    >
-                      {EFFORT_LABEL[l]}
-                    </button>
-                  )}
-                </For>
-              </div>
+              <EffortSlider
+                levels={levels()}
+                value={effortFor(cur())}
+                set={(effort) => savePrefs({ effort })}
+              />
             </div>
           </Show>
         </div>

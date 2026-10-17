@@ -1,4 +1,6 @@
 import { createSignal, For, type JSX, Show } from "solid-js";
+import { EFFORT_LABEL } from "../lib/store.ts";
+import type { Effort } from "../lib/types.ts";
 import { Check, I, P } from "./icons.tsx";
 
 /** One open popover at a time; a click outside or Escape closes it. */
@@ -121,5 +123,36 @@ export function Pop(props: {
         </div>
       </Show>
     </Show>
+  );
+}
+
+/** A reasoning effort slider: one stop per level, the labels under it. */
+export function EffortSlider(props: {
+  levels: Effort[];
+  value: Effort | undefined;
+  set: (e: Effort) => void;
+}) {
+  const at = () => Math.max(0, props.levels.indexOf(props.value ?? props.levels[0] ?? "low"));
+  return (
+    <div class="effort">
+      <input
+        type="range"
+        min="0"
+        max={props.levels.length - 1}
+        step="1"
+        value={at()}
+        aria-label="Reasoning effort"
+        aria-valuetext={EFFORT_LABEL[props.levels[at()] ?? "low"]}
+        onInput={(e) => {
+          const level = props.levels[Number(e.currentTarget.value)];
+          if (level) props.set(level);
+        }}
+      />
+      <div class="effort-stops" aria-hidden="true">
+        <For each={props.levels}>
+          {(l, i) => <span classList={{ on: i() === at() }}>{EFFORT_LABEL[l]}</span>}
+        </For>
+      </div>
+    </div>
   );
 }

@@ -17,7 +17,7 @@ import {
 } from "../lib/store.ts";
 import type { Effort, PermissionMode, ProvidersList } from "../lib/types.ts";
 import { I, P } from "./icons.tsx";
-import { type Choice, Choices, closeMenu, openMenu, Pop, toggleMenu } from "./menu.tsx";
+import { type Choice, Choices, closeMenu, EffortSlider, openMenu, Pop, toggleMenu } from "./menu.tsx";
 
 type Json = Record<string, unknown>;
 
@@ -1113,14 +1113,19 @@ export default function Settings(props: { onClose?: () => void }) {
         csel("auto_review_model", "Reviewer model", "Reviews tool calls in auto permission mode.", () =>
           modelItems("auto_review_model", "Same as small model"),
         ),
-        pseg(
-          "effort",
-          "Reasoning effort",
-          "Default effort. A model without this level uses the nearest lower one it has.",
-          Object.entries(EFFORT_LABEL),
-          () => state.prefs.effort,
-          (v) => savePrefs({ effort: v as Effort }),
-        ),
+        {
+          key: "effort",
+          label: "Reasoning effort",
+          hint: () => "Default effort. A model without this level uses the nearest lower one it has.",
+          app: true,
+          ctl: () => (
+            <EffortSlider
+              levels={Object.keys(EFFORT_LABEL) as Effort[]}
+              value={state.prefs.effort}
+              set={(effort) => savePrefs({ effort })}
+            />
+          ),
+        },
         {
           key: "provider",
           label: "Providers",

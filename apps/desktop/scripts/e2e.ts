@@ -556,6 +556,33 @@ try {
     await until("settings closed", `!document.querySelector('input[placeholder="Search settings"]')`);
   });
 
+  await step("the effort slider moves with the arrow keys, and the choice persists", async () => {
+    const slider = `document.querySelector('input[aria-label="Reasoning effort"]')`;
+    await click(button("Settings"), "Settings");
+    await until("settings dialog", `document.querySelector('input[placeholder="Search settings"]')`);
+    await ev(`document.querySelector('input[placeholder="Search settings"]').focus()`);
+    await cdp.send("Input.insertText", { text: "effort" });
+    await until("effort slider", `${slider}?.getAttribute("aria-valuetext") === "High"`);
+    await ev(`${slider}.focus()`);
+    for (const type of ["keyDown", "keyUp"])
+      await cdp.send("Input.dispatchKeyEvent", {
+        type,
+        key: "ArrowRight",
+        code: "ArrowRight",
+        windowsVirtualKeyCode: 39,
+      });
+    await until("slider at Extra high", `${slider}.getAttribute("aria-valuetext") === "Extra high"`);
+    await until(
+      "the stop label follows",
+      `document.querySelector(".effort-stops > .on")?.textContent === "Extra high"`,
+    );
+    const saved = await ev<string>(`JSON.parse(localStorage.getItem("agency.prefs")).effort`);
+    if (saved !== "xhigh") throw new Error(`prefs effort is ${saved}`);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await until("settings closed", `!document.querySelector('input[placeholder="Search settings"]')`);
+  });
+
   await step("skills: trust the folder, create one, switch it off and on, use it", async () => {
     await click(button("Skills"), "Skills");
     const note = bodyHas("Skills in this folder load once you trust it.");

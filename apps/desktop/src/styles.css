@@ -614,6 +614,28 @@ header .ol {
   gap: 12px;
   font-size: 13px;
 }
+.effort {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 260px;
+  max-width: 100%;
+}
+.effort > input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.effort-stops {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+.effort-stops > .on {
+  color: var(--text);
+  font-weight: 500;
+}
 .seg {
   display: flex;
   gap: 2px;
