@@ -33,7 +33,7 @@
     "externalBin": ["binaries/agency"],
     "createUpdaterArtifacts": true,
     "windows": {
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "./windows/hooks.nsh" }
     }
   },
   "plugins": {
