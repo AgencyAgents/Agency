@@ -1217,6 +1217,25 @@ export default function Settings(props: { onClose?: () => void }) {
           ),
         },
         {
+          key: "defaultEnv",
+          label: "New projects",
+          hint: () => "The environment of a folder you open from now on. Worktrees keep their project's.",
+          app: true,
+          ctl: () => (
+            <Sel
+              id="defaultEnv"
+              label="Environment of new projects"
+              value={state.prefs.defaultEnv}
+              items={[
+                { value: "", label: "None" },
+                ...state.prefs.envs.map((e) => ({ value: e.id, label: e.name })),
+              ]}
+              disabled={false}
+              set={(v) => savePrefs({ defaultEnv: v })}
+            />
+          ),
+        },
+        {
           key: "environments",
           label: "Environments",
           hint: () => ENV_HINT,
@@ -1286,8 +1305,17 @@ export default function Settings(props: { onClose?: () => void }) {
               remove={(i) => {
                 const gone = state.prefs.envs[i];
                 if (!gone) return;
-                savePrefs({ envs: state.prefs.envs.filter((e) => e !== gone) });
+                const users = Object.values(state.prefs.envOf).filter((id) => id === gone.id).length;
+                savePrefs({
+                  envs: state.prefs.envs.filter((e) => e !== gone),
+                  ...(state.prefs.defaultEnv === gone.id ? { defaultEnv: "" } : {}),
+                });
                 void reapply(gone.id);
+                // Its network limit and variables go with it: say so, the projects now run with none.
+                if (users > 0)
+                  toast(
+                    `${users} project${users === 1 ? "" : "s"} no longer ${users === 1 ? "has" : "have"} an environment.`,
+                  );
               }}
             />
           ),

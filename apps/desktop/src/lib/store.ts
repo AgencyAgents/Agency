@@ -104,6 +104,8 @@ interface Prefs {
   envs: Environment[];
   /** The environment id of each project root. */
   envOf: Record<string, string>;
+  /** The environment id that a project added without one gets; empty for none. */
+  defaultEnv: string;
 }
 
 const PREFS_KEY = "agency.prefs";
@@ -139,6 +141,7 @@ function loadPrefs(): Prefs {
     archived: [],
     envs: [],
     envOf: {},
+    defaultEnv: "",
   };
   try {
     const saved = { ...defaults, ...(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Partial<Prefs>) };
@@ -588,16 +591,18 @@ export function goNew(root?: string): void {
   });
 }
 
-/** `envId`: the environment of the new project, written before its daemon starts and reads it. */
+/** `envId`: the environment of a new project, else `defaultEnv`, written before its daemon starts and reads it. */
 export async function addProject(path: string, envId?: string): Promise<void> {
   try {
     const p = await host.addProject(path);
-    const env = envId ? state.prefs.envs.find((e) => e.id === envId) : undefined;
+    const known = state.projects.some((x) => x.path === p.path);
+    // A folder opened again keeps its environment; a new one gets the given one, else the default.
+    const env = known ? undefined : state.prefs.envs.find((e) => e.id === (envId ?? state.prefs.defaultEnv));
     if (env) {
       await host.setEnvironment(p.path, environmentLayer(env));
       savePrefs({ envOf: { ...state.prefs.envOf, [p.path]: env.id } });
     }
-    if (!state.projects.some((x) => x.path === p.path)) {
+    if (!known) {
       setState("projects", state.projects.length, blankProject(p));
       void host.connect(p.path, (frame) => onFrame(p.path, frame));
     }
