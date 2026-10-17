@@ -169,3 +169,40 @@ describe("tool overlap", () => {
     expect(aborted).toBe(true);
   });
 });
+
+test("an early call that asks waits until its reply is stored", async () => {
+  const order: string[] = [];
+  const net = tool("net", { riskTier: "moderate", readOnly: () => true }, async () => {
+    order.push("ran");
+    return { content: "ok" };
+  });
+  const a = adapter([
+    async function* () {
+      yield* call("a", "net");
+      await new Promise((r) => setTimeout(r, 20));
+      yield { type: "message_stop", stopReason: "tool_use", usage };
+    },
+    done,
+  ]);
+  await runTurn(a, new Scheduler({ maxConcurrent: 4, requestsPerMinute: 6000 }), http, {
+    identity: { type: "user" },
+    capabilities: FULL_CAPABILITIES,
+    systemPrompt: "sys",
+    tools: [net],
+    model: "m",
+    apiKey: "k",
+    session: [{ role: "user", content: [{ type: "text", text: "go" }] }],
+    toolPolicy: {
+      check: async (request, ask) =>
+        (await ask?.({ tool: request.tool, title: request.tool })) === "once" ? "allow" : "deny",
+    },
+    requestApproval: async () => {
+      order.push("ask");
+      return "once";
+    },
+    onMessage: (message) => {
+      if (message.role === "assistant") order.push("reply stored");
+    },
+  });
+  expect(order.slice(0, 3)).toEqual(["reply stored", "ask", "ran"]);
+});

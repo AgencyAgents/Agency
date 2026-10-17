@@ -12,7 +12,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
   `websearch`, a read-only shell command with no `cd` (`git status`, `ls`, `cat`) and an MCP tool with
   `readOnlyHint` now run beside the other read-only calls of a reply, where before each ran alone. A read-only
   call before the first write of a reply starts as soon as its arguments are complete, while the model still
-  writes the rest; a call whose result the turn does not use is cancelled.
+  writes the rest; a call whose result the turn does not use is cancelled. A call that asks waits until the
+  reply is whole, so you and the auto reviewer see all of it.
 - **Claude caches a short system prompt and the first messages**: the minimum size of a cache mark counts
   the tools, the system prompt and the messages before it, as the API does. Before, each part had to pass
   1,024 tokens alone, so with the default prompt (about 500 tokens) the system prompt and the messages of
@@ -440,6 +441,8 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **The `allowed-tools` of a skill in auto mode**: with the auto reviewer on, a call that the grant of a
+  skill or of `/name` allows went to the reviewer, which could block it.
 - **A deny rule behind `timeout`, `stdbuf`, `builtin` or `noglob`**: a deny of `rm *` let
   `timeout 5 rm -rf build` run. These wrappers are now taken away before the rules, as Claude
   Code does.

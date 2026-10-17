@@ -368,11 +368,31 @@ export async function runTurn(
     });
   }
   // A read-only call starts as soon as its arguments are whole, while the model still writes the rest of its reply.
+  // An early call that asks waits until its reply is in the transcript: the user and the reviewer see the reply whole.
+  let replyStored: Promise<void> = Promise.resolve();
+  let storeReply = (): void => {};
   const startCall: StartCall = (call, signal) => {
     const spec = resolveToolSpec(options.tools, call.name);
-    return parallelSafe(spec, undefined, call.input)
-      ? runCall({ call, ...(spec ? { spec } : {}) }, toolOptions, signal)
-      : undefined;
+    if (!parallelSafe(spec, undefined, call.input)) return undefined;
+    const afterReply = async (): Promise<boolean> => {
+      await replyStored;
+      return !signal.aborted;
+    };
+    const { requestApproval: askUser, reviewApproval: askReviewer } = toolOptions;
+    const gated: RunTurnOptions = {
+      ...toolOptions,
+      ...(askUser === undefined
+        ? {}
+        : { requestApproval: async (request) => ((await afterReply()) ? askUser(request) : "reject") }),
+      ...(askReviewer === undefined
+        ? {}
+        : {
+            reviewApproval: async (request, seen) =>
+              (await afterReply()) ? askReviewer(request, seen) : undefined,
+          }),
+    };
+    turnGrants.set(gated, grants);
+    return runCall({ call, ...(spec ? { spec } : {}) }, gated, signal);
   };
   const collectWithFallback = async (): Promise<CollectedTurn> => {
     const runOne = async (model: string): Promise<CollectedTurn> => {
@@ -496,6 +516,9 @@ export async function runTurn(
       });
     }
     let discardStarted: (() => void) | undefined;
+    replyStored = new Promise((resolve) => {
+      storeReply = resolve;
+    });
     try {
       let turn: CollectedTurn;
       try {
@@ -524,6 +547,7 @@ export async function runTurn(
       }
       // A reply with no content is not stored: strict providers reject an empty message.
       if (turn.content.length > 0) await append({ role: "assistant", content: turn.content });
+      storeReply();
       spoke = turn.content.some((block) => block.type === "text" && block.text.trim() !== "");
       cumulativeUsage = addUsage(cumulativeUsage, turn.usage);
       requestTokens = turn.usage.inputTokens + turn.usage.outputTokens;
@@ -760,6 +784,7 @@ export async function runTurn(
     } finally {
       // Calls that started early and whose results the turn did not take are cancelled; taken ones are done already.
       discardStarted?.();
+      storeReply();
     }
   }
 
