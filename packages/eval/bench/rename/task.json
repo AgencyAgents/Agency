@@ -1,0 +1,4 @@
+{
+  "prompt": "Rename the function fmtDate to formatDate everywhere in src, including its uses. The tests show the API they expect.",
+  "check": "bun test ./test/api.check.ts"
+}
