@@ -29,6 +29,7 @@ struct Daemon {
     wake: Notify,
     /// A reloaded webview needs the `state` snapshot that only a new SSE connection sends.
     resubscribe: AtomicBool,
+    pumping: AtomicBool,
 }
 
 enum Ended {
@@ -150,22 +151,35 @@ impl Daemons {
                     channel: Mutex::new(None),
                     wake: Notify::new(),
                     resubscribe: AtomicBool::new(false),
+                    pumping: AtomicBool::new(false),
                 })
             })
             .clone()
     }
 
-    /// Attaches the webview's channel; the first call for a root also starts its event pump.
+    /// Starts the root's daemon while the webview loads; its statuses wait for `connect`.
+    pub async fn prestart(self: &Arc<Self>, root: String) {
+        let daemon = self.daemon(&root).await;
+        self.pump_once(daemon);
+    }
+
+    /// Attaches the webview's channel. A pump that ran without one sends its `up` and snapshot again.
     pub async fn connect(self: &Arc<Self>, root: String, channel: Channel<Value>) {
         let daemon = self.daemon(&root).await;
-        let first = daemon.channel.lock().await.replace(channel).is_none();
-        if first {
-            let this = self.clone();
-            tauri::async_runtime::spawn(async move { this.pump(daemon).await });
-        } else {
+        daemon.channel.lock().await.replace(channel);
+        if !self.pump_once(daemon.clone()) {
             daemon.resubscribe.store(true, Ordering::SeqCst);
             daemon.wake.notify_one();
         }
+    }
+
+    fn pump_once(self: &Arc<Self>, daemon: Arc<Daemon>) -> bool {
+        if daemon.pumping.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move { this.pump(daemon).await });
+        true
     }
 
     pub async fn restart(&self, root: &str) {

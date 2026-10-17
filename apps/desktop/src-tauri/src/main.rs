@@ -181,8 +181,13 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let dir = data_dir(app.handle())?.join("environments");
-            app.manage(Arc::new(daemon::Daemons::new(dir)));
+            let data = data_dir(app.handle())?;
+            let daemons = Arc::new(daemon::Daemons::new(data.join("environments")));
+            for project in host::load_projects(&data) {
+                let daemons = daemons.clone();
+                tauri::async_runtime::spawn(async move { daemons.prestart(project.path).await });
+            }
+            app.manage(daemons);
             Ok(())
         })
         .manage(update::Pending::default())
