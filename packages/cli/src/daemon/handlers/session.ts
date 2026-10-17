@@ -314,6 +314,7 @@ export function registerSessionHandlers(handlers: Record<string, MethodHandler>,
         broadcast(`turn.${turnId}`, { type: "compaction", phase: "end", sessionId: p.sessionId });
       }
     };
+    summarize.detailed = summarizeAll.detailed;
     if (p.goal !== undefined) await setSessionGoal(ctx, p.sessionId, p.goal);
     let tipId = store.latestTip(store.load(p.sessionId)) ?? null;
     let compacted = false;
