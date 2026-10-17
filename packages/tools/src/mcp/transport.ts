@@ -78,7 +78,9 @@ export function transportForWithContainerSandbox(
       return createContainerStdioTransport(stdio, config, options);
     };
   }
-  if (asContainerExecBackend(sandbox) !== undefined) {
+  // A backend that wraps commands on this host (the sandbox of the OS) runs no container: MCP servers start here,
+  // outside it, as hooks do.
+  if (asContainerExecBackend(sandbox) !== undefined && !("wrap" in sandbox)) {
     return (serverName, config) => {
       if (config.url) return createMcpTransport(serverName, config, options);
       throw new AgencyError(

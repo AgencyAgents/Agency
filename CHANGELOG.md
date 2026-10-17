@@ -453,6 +453,9 @@ yet guarantee a stable versioning cadence, but versions are SemVer.
 
 ### Fixed
 
+- **MCP servers over stdio did not start with `sandbox.backend: "os"`**: the backend was taken for a container, so
+  each local server failed with "needs container stdio". They start on this machine again, outside the sandbox,
+  as the docs say.
 - **A sandboxed command on Linux could run a program outside the sandbox** (security): bubblewrap left the
   sockets of the disk open, so `systemd-run` over the system bus or the user bus, or `docker run`, started a
   program with no sandbox (seen in WSL 2: a command wrote `/root` through the system bus). The system bus, the

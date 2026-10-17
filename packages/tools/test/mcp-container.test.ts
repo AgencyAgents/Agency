@@ -8,6 +8,7 @@ import {
   FULL_CAPABILITIES,
   hasLocalImage,
   isDockerAvailable,
+  OsSandboxBackend,
   SandboxBoundary,
   translateHostToMount,
   translateMountToHost,
@@ -178,6 +179,10 @@ describe("container transport selection", () => {
     const impostor = new FakeStdioBackend(root) as unknown as Record<string, unknown>;
     impostor.spawnStdio = 42;
     expect(asContainerStdioBackend(impostor as unknown as SandboxBackend)).toBeUndefined();
+  });
+
+  test("the sandbox of the OS runs on this host: MCP servers start here, not through a container", () => {
+    expect(transportForWithContainerSandbox(new OsSandboxBackend(tempRoot("os")))).toBeUndefined();
   });
 
   test("stdio backend routes commands to the container, urls stay on HTTP", async () => {
