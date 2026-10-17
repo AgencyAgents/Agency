@@ -399,3 +399,37 @@ test("on OpenRouter a Claude request asks for the prompt cache, and another mode
   );
   expect(bodies.map((b) => b.cache_control)).toEqual([{ type: "ephemeral" }, undefined, undefined]);
 });
+
+test("a text next to tool results goes to the model as a user message after the tool messages", async () => {
+  const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+  const http: HttpClient = {
+    fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    },
+  };
+  const adapter = createOpenAiCompatibleAdapter("gateway", "http://localhost/v1");
+  await collect(
+    adapter.stream(
+      {
+        ...baseRequest,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "read it" }] },
+          { role: "assistant", content: [{ type: "tool_call", id: "c1", name: "read", input: {} }] },
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", toolCallId: "c1", content: "file text" },
+              { type: "text", text: "Now write the summary." },
+            ],
+          },
+        ],
+      },
+      http,
+    ),
+  );
+  expect(bodies[0]?.messages.slice(-2)).toEqual([
+    { role: "tool", tool_call_id: "c1", content: "file text" },
+    { role: "user", content: "Now write the summary." },
+  ]);
+});

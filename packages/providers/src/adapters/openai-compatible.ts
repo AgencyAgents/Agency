@@ -113,9 +113,11 @@ function toOpenAiMessages(
         ),
       });
     }
-    if (toolResults.length > 0) continue;
+    // A text of the harness next to the results (a compaction prompt, a note) follows them as a user message.
+    const rest = toolResults.length > 0 ? m.content.filter((b) => b.type !== "tool_result") : m.content;
+    if (rest.length === 0) continue;
 
-    out.push({ role: m.role, content: toOpenAiContent(m.content, files) });
+    out.push({ role: m.role, content: toOpenAiContent(rest, files) });
   }
 
   return out;
