@@ -37,6 +37,8 @@ export interface ProjectState extends Project {
   git: GitStatus | null;
   providers: ProvidersList | null;
   config: Record<string, unknown> | null;
+  /** The user file alone: Settings writes whole keys from it, so project values stay out of it. */
+  userConfig?: Record<string, unknown>;
   commands: { name: string; description?: string; source?: string }[];
 }
 
@@ -530,6 +532,10 @@ async function loadProject(root: string): Promise<void> {
     host
       .rpc<{ config: Record<string, unknown> }>(root, "config_get")
       .then((r) => patchProject(root, { config: r.config }))
+      .catch(() => {}),
+    host
+      .rpc<{ config: Record<string, unknown> }>(root, "config_user")
+      .then((r) => patchProject(root, { userConfig: r.config }))
       .catch(() => {}),
     host
       .rpc<{ commands: ProjectState["commands"] }>(root, "commands_list")

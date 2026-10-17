@@ -99,6 +99,13 @@ const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 const home = mkdtempSync(join(tmpdir(), "agency-e2e-home-"));
 const ws = mkdtempSync(join(tmpdir(), "agency-e2e-ws-"));
 mkdirSync(join(home, "config"), { recursive: true });
+// Two agents of a project file: Settings must edit one without copying the roster into the user config.
+mkdirSync(join(ws, ".agency", "agents"), { recursive: true });
+for (const handle of ["coder", "helper"])
+  writeFileSync(
+    join(ws, ".agency", "agents", `${handle}.md`),
+    `---\nrole: ${handle}\nprovider: fake-openai\nmodel: m\neffort: low\n---\nWorks as ${handle}.\n`,
+  );
 const configFile = join(home, "config", "config.jsonc");
 writeFileSync(
   configFile,
@@ -539,6 +546,25 @@ try {
       "composer holds the command",
       `document.getElementById("composer")?.value.startsWith("/e2e-skill ")`,
     );
+  });
+
+  await step("editing an agent of a project file turns on that agent alone in the user config", async () => {
+    await click(button("Settings"), "Settings");
+    await until("settings dialog", `document.querySelector('input[placeholder="Search settings"]')`);
+    await ev(`document.querySelector('input[placeholder="Search settings"]').focus()`);
+    await cdp.send("Input.insertText", { text: "Agents" });
+    await click(`document.querySelector('button[aria-label="Edit coder"]:not([disabled])')`, "Edit coder");
+    await click(button("Save", `document.querySelector("fieldset")`), "Save");
+    await waitFile(configFile, /"coder":\s*\{[^}]*"enabled":\s*true/, "the user config turns coder on");
+    const text = readFileSync(configFile, "utf8");
+    if (text.includes("helper") || text.includes("Works as"))
+      throw new Error(`the roster leaked into the user config:\n${text}`);
+    const file = readFileSync(join(ws, ".agency", "agents", "coder.md"), "utf8");
+    if (!file.includes("Works as coder.") || !file.includes("model: m"))
+      throw new Error(`coder.md changed:\n${file}`);
+    await click(`document.querySelector('button[aria-label="Close settings"]')`, "Close settings");
+    await until("settings closed", `!document.querySelector('input[placeholder="Search settings"]')`);
+    await until("daemon up after the restart", UP, 60_000);
   });
 
   await step("workflows: a two-step run survives a daemon restart", async () => {

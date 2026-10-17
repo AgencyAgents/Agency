@@ -581,6 +581,7 @@ export default function Settings(props: { onClose?: () => void }) {
   const root = createMemo(() => state.current?.root ?? state.newRoot ?? state.projects[0]?.path ?? null);
   const proj = createMemo(() => project(root()));
   const cfg = createMemo<Json>(() => proj()?.config ?? {});
+  const ucfg = createMemo<Json>(() => proj()?.userConfig ?? {});
   const locked = () => !proj()?.config;
   const choices = createMemo(() => modelChoices(root()));
   const [section, setSection] = createSignal<keyof typeof ICONS>("general");
@@ -620,18 +621,21 @@ export default function Settings(props: { onClose?: () => void }) {
     try {
       await rpcWhenUp(r, "config_write", { key, value });
       for (const x of state.projects) {
-        if (!x.config) continue;
-        const next = structuredClone(unwrap(x.config)) as Record<string, unknown>;
-        const parts = key.split(".");
-        let o = next;
-        for (const part of parts.slice(0, -1)) {
-          if (!o[part] || typeof o[part] !== "object") o[part] = {};
-          o = o[part] as Record<string, unknown>;
+        for (const layer of ["config", "userConfig"] as const) {
+          const was = x[layer];
+          if (!was) continue;
+          const next = structuredClone(unwrap(was)) as Record<string, unknown>;
+          const parts = key.split(".");
+          let o = next;
+          for (const part of parts.slice(0, -1)) {
+            if (!o[part] || typeof o[part] !== "object") o[part] = {};
+            o = o[part] as Record<string, unknown>;
+          }
+          const last = parts.at(-1) ?? key;
+          if (value === null) delete o[last];
+          else o[last] = value;
+          setState("projects", (p) => p.path === x.path, layer, reconcile(next));
         }
-        const last = parts.at(-1) ?? key;
-        if (value === null) delete o[last];
-        else o[last] = value;
-        setState("projects", (p) => p.path === x.path, "config", reconcile(next));
       }
       for (const x of state.projects) {
         if (x.conn === "up") void host.rpc(x.path, "daemon_restart").catch(() => {});
@@ -843,7 +847,7 @@ export default function Settings(props: { onClose?: () => void }) {
   }
   const rules = createMemo<Rule[]>(() => {
     const out: Rule[] = [];
-    for (const [tool, v] of Object.entries(obj(cfg().permissions))) {
+    for (const [tool, v] of Object.entries(obj(ucfg().permissions))) {
       if (typeof v === "string") out.push({ tool, pattern: "*", decision: v });
       else
         for (const [pattern, decision] of Object.entries(obj(v)))
@@ -869,7 +873,7 @@ export default function Settings(props: { onClose?: () => void }) {
   ]);
 
   const servers = createMemo(() =>
-    Object.entries(obj(cfg().mcpServers)).map(([name, v]) => [name, obj(v)] as const),
+    Object.entries(obj(ucfg().mcpServers)).map(([name, v]) => [name, obj(v)] as const),
   );
   const commandLine = (o: Json) =>
     [str(o.command), ...(Array.isArray(o.args) ? o.args.map(String) : [])].join(" ").trim();
@@ -909,7 +913,7 @@ export default function Settings(props: { onClose?: () => void }) {
   }
   const hookRows = createMemo<HookLoc[]>(() => {
     const out: HookLoc[] = [];
-    for (const [event, groups] of Object.entries(obj(cfg().hooks))) {
+    for (const [event, groups] of Object.entries(obj(ucfg().hooks))) {
       if (!Array.isArray(groups)) continue;
       groups.forEach((g, gi) => {
         const group = obj(g);
@@ -957,7 +961,7 @@ export default function Settings(props: { onClose?: () => void }) {
   const writeHooks = (hooks: Json) => write("hooks", Object.keys(hooks).length ? hooks : null);
   async function saveHook(i: number | null, d: string[]): Promise<boolean> {
     const [event = "", matcher = "", command = ""] = d;
-    const next = plain(obj(cfg().hooks));
+    const next = plain(obj(ucfg().hooks));
     const loc = i === null ? undefined : hookRows()[i];
     if (loc && loc.event === event && loc.matcher === matcher) {
       const hook = (((next[event] as Json[])[loc.g] as Json).hooks as Json[])[loc.h] as Json;
@@ -972,20 +976,20 @@ export default function Settings(props: { onClose?: () => void }) {
   const agents = createMemo(() => Object.entries(obj(cfg().agents)).map(([h, v]) => [h, obj(v)] as const));
   const agentModel = (a: Json) =>
     a.provider && a.model ? `${str(a.provider)}/${str(a.model)}` : str(a.model);
+  /** Writes one agent, never the roster: the roster also holds agent files, which must not land in the user
+   *  config. A file wins over the config for the model, so an agent of a file is edited in a project file. */
   async function saveAgent(i: number | null, d: string[]): Promise<boolean> {
     const [handle = "", model = "", effort = ""] = d;
-    const list = agents().map(([h, v]) => [h, plain(v)] as [string, Json]);
-    if (list.some(([h], k) => h === handle && k !== i)) {
+    const r = root();
+    if (!r) return false;
+    if (agents().some(([h], k) => h === handle && k !== i)) {
       toast(`An agent named ${handle} exists.`, { tone: "err" });
       return false;
     }
-    const old = i === null ? {} : (list[i]?.[1] ?? {});
-    const { provider: _p, model: _m, effort: _e, ...rest } = old;
+    const [was = "", old = {}] = i === null ? [] : (agents()[i] ?? []);
+    const own = obj(ucfg().agents);
     const slash = model.indexOf("/");
-    const entry: Json = {
-      ...rest,
-      role: str(old.role) || handle,
-      enabled: typeof old.enabled === "boolean" ? old.enabled : true,
+    const picked: Json = {
       ...(model
         ? slash > 0
           ? { provider: model.slice(0, slash), model: model.slice(slash + 1) }
@@ -993,11 +997,43 @@ export default function Settings(props: { onClose?: () => void }) {
         : {}),
       ...(effort ? { effort } : {}),
     };
-    const next =
-      i === null
-        ? [...list, [handle, entry] as [string, Json]]
-        : list.map((x, k) => (k === i ? ([handle, entry] as [string, Json]) : x));
-    return write("agents", Object.fromEntries(next));
+    const role = str(old.role) || handle;
+    if (typeof old.file === "string") {
+      try {
+        await rpcWhenUp(r, "agents_upsert", {
+          handle,
+          role,
+          ...picked,
+          body: str(old.systemPrompt),
+          ...Object.fromEntries(
+            ["permissions", "tools", "pathScope", "replace"].flatMap((k) =>
+              old[k] === undefined ? [] : [[k, plain(old[k])]],
+            ),
+          ),
+        });
+        if (was !== handle) await rpcWhenUp(r, "agents_remove", { handle: was });
+      } catch (e) {
+        toast(errorText(e), { tone: "err" });
+        return false;
+      }
+      if (was !== handle && own[was] !== undefined && !(await write(`agents.${was}`, null))) return false;
+      // The config only turns the agent on; the file keeps its model.
+      const mine = obj(own[handle]);
+      return write(`agents.${handle}`, {
+        ...plain(mine),
+        role: str(mine.role) || role,
+        enabled: typeof mine.enabled === "boolean" ? mine.enabled : true,
+      });
+    }
+    const { provider: _p, model: _m, effort: _e, ...rest } = obj(own[was]);
+    const entry: Json = {
+      ...rest,
+      role,
+      enabled: typeof old.enabled === "boolean" ? old.enabled : true,
+      ...picked,
+    };
+    if (i !== null && was !== handle && !(await write(`agents.${was}`, null))) return false;
+    return write(`agents.${handle}`, entry);
   }
   /** An agent lives in a file of the project or in the config: both go. Writing the rest of the roster to the
    *  config would copy the project's agents into every other project. */
@@ -1521,7 +1557,7 @@ export default function Settings(props: { onClose?: () => void }) {
               remove={(i) => {
                 const loc = hookRows()[i];
                 if (!loc) return;
-                const next = plain(obj(cfg().hooks));
+                const next = plain(obj(ucfg().hooks));
                 dropHook(next, loc);
                 void writeHooks(next);
               }}
